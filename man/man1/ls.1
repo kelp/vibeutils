@@ -1,0 +1,92 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt LS 1
+.Os
+.Sh NAME
+.Nm ls
+.Nd list directory contents
+.Sh SYNOPSIS
+.Nm ls
+.Op Fl 1AadhklR
+.Op Ar file ...
+.Sh DESCRIPTION
+For each operand that names a
+.Ar file
+of a type other than directory,
+.Nm
+displays its name as well as any requested,
+associated information.
+For each operand that names a
+.Ar file
+of type directory,
+.Nm
+displays the names of files contained
+within that directory, as well as any requested, associated
+information.
+.Pp
+If no operands are given, the contents of the current
+directory are displayed.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl 1
+(The numeric digit one.)
+Force output to be one entry per line.
+.It Fl A
+Include directory entries whose names begin with a
+dot
+.Pq Sq \&.
+except for
+.Pa \&.
+and
+.Pa .. .
+.It Fl a
+Include directory entries whose names begin with a
+dot
+.Pq Sq \&. .
+.It Fl d
+Directories are listed as plain files (not searched recursively).
+.It Fl h
+When used with the
+.Fl l
+option, use unit suffixes: Byte, Kilobyte,
+Megabyte, Gigabyte, Terabyte and Petabyte in order to reduce the
+number of digits to three or less using base 2 for sizes.
+.It Fl k
+Display file sizes in kilobytes when used with the
+.Fl l
+option.
+.It Fl l
+(The lowercase letter ell.)
+List in long format.
+.It Fl R
+Recursively list subdirectories encountered.
+.El
+.Sh EXAMPLES
+List all files in the current directory in long format:
+.Bd -literal -offset indent
+$ ls -la
+.Ed
+.Pp
+List files with human-readable sizes:
+.Bd -literal -offset indent
+$ ls -lh
+.Ed
+.Pp
+List only the names of subdirectories:
+.Bd -literal -offset indent
+$ ls -d */
+.Ed
+.Sh EXIT STATUS
+.Ex -std ls
+.Sh SEE ALSO
+.Xr chmod 1 ,
+.Xr find 1 ,
+.Xr stat 1 ,
+.Xr symlink 7
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.

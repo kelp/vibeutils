@@ -1,0 +1,109 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt CAT 1
+.Os
+.Sh NAME
+.Nm cat
+.Nd concatenate and print files
+.Sh SYNOPSIS
+.Nm cat
+.Op Fl AbeEnstTuv
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility reads files sequentially, writing their contents
+to the standard output.
+The file operands are processed in command-line order.
+If
+.Ar file
+is a single dash
+.Pq Sq -
+or absent,
+.Nm
+reads from the standard input.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl A
+Equivalent to
+.Fl vET .
+.It Fl b
+Number the non-blank output lines, starting at 1.
+.It Fl e
+Equivalent to
+.Fl vE .
+.It Fl E
+Display non-printing characters (see the
+.Fl v
+option), and display a dollar sign
+.Pq Ql $
+at the end of each line.
+.It Fl n
+Number the output lines, starting at 1.
+.It Fl s
+Squeeze multiple adjacent empty lines, causing the output to be
+single spaced.
+.It Fl t
+Equivalent to
+.Fl vT .
+.It Fl T
+Display non-printing characters (see the
+.Fl v
+option), and display tab characters as
+.Ql ^I .
+.It Fl u
+The
+.Fl u
+option is ignored for
+.Tn POSIX
+compatibility.
+.It Fl v
+Display non-printing characters so they are visible.
+Control characters print as
+.Ql ^X
+for control-X; the delete character (octal 0177) prints as
+.Ql ^? .
+Non-ASCII characters (with the high bit set) are printed as
+.Ql M-
+(for meta) followed by the character for the low 7 bits.
+.El
+.Sh EXAMPLES
+Print the contents of
+.Pa file1
+to the standard output:
+.Bd -literal -offset indent
+$ cat file1
+.Ed
+.Pp
+Concatenate
+.Pa file1
+and
+.Pa file2
+to
+.Pa file3 :
+.Bd -literal -offset indent
+$ cat file1 file2 > file3
+.Ed
+.Pp
+Number the lines of
+.Pa file1 :
+.Bd -literal -offset indent
+$ cat -n file1
+.Ed
+.Sh EXIT STATUS
+.Ex -std cat
+.Sh SEE ALSO
+.Xr head 1 ,
+.Xr less 1 ,
+.Xr more 1 ,
+.Xr pr 1 ,
+.Xr sh 1 ,
+.Xr tail 1 ,
+.Xr vis 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.

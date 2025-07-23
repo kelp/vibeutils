@@ -1,0 +1,91 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt ECHO 1
+.Os
+.Sh NAME
+.Nm echo
+.Nd write arguments to standard output
+.Sh SYNOPSIS
+.Nm echo
+.Op Fl enE
+.Op Ar string ...
+.Sh DESCRIPTION
+The
+.Nm
+utility writes its arguments to standard output,
+separated by spaces and terminated with a newline.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl e
+Enable interpretation of backslash escapes.
+.It Fl E
+Disable interpretation of backslash escapes (default).
+.It Fl n
+Do not print the trailing newline character.
+.El
+.Pp
+If
+.Fl e
+is in effect, the following sequences are recognized:
+.Bl -tag -width Ds -compact
+.It Li \ea
+Alert (bell)
+.It Li \eb
+Backspace
+.It Li \ec
+Suppress further output
+.It Li \ee
+Escape character
+.It Li \ef
+Form feed
+.It Li \en
+New line
+.It Li \er
+Carriage return
+.It Li \et
+Horizontal tab
+.It Li \ev
+Vertical tab
+.It Li \e\e
+Backslash
+.It Li \e0nnn
+Character with octal value nnn (1-3 digits)
+.It Li \exhh
+Character with hex value hh (2 digits)
+.El
+.Sh EXAMPLES
+Print a simple message:
+.Bd -literal -offset indent
+$ echo Hello world
+Hello world
+.Ed
+.Pp
+Print without newline:
+.Bd -literal -offset indent
+$ echo -n prompt:
+prompt:$
+.Ed
+.Pp
+Print multiple arguments:
+.Bd -literal -offset indent
+$ echo one two three
+one two three
+.Ed
+.Pp
+Print with escape sequences:
+.Bd -literal -offset indent
+$ echo -e "Line 1\\nLine 2\\tTabbed"
+Line 1
+Line 2	Tabbed
+.Ed
+.Sh EXIT STATUS
+.Ex -std echo
+.Sh SEE ALSO
+.Xr printf 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
