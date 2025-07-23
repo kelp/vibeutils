@@ -2,8 +2,8 @@
 
 ## Progress Summary
 - **Utilities Completed**: 2/22 (echo ✓, cat ✓)
-- **Utilities In Progress**: 1/22 (ls - Phase 1 & most of Phase 2 complete)
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~50% (most useful features)
+- **Utilities In Progress**: 1/22 (ls - Phase 1 & 2 complete ✓)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~60% (most useful features)
 - **Common Library**: Core functionality implemented (including user/group lookup)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
@@ -78,7 +78,7 @@ For each utility:
 - [x] Implement: -u flag (no-op for POSIX)
 - [x] Implement: Long option support (--show-all already works)
 
-#### 3. ls - Phase 1 ✓, Phase 2 in progress
+#### 3. ls - Phase 1 ✓, Phase 2 ✓
 - [x] Test: Basic directory listing
 - [x] Test: Hidden files (-a)
 - [x] Test: One file per line (-1)
