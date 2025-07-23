@@ -10,22 +10,23 @@ pub fn main() !void {
 
     // Define parameters using zig-clap
     const params = comptime clap.parseParamsComptime(
-        \\    --help             Display this help and exit.
-        \\-V, --version          Output version information and exit.
-        \\-a, --all              Do not ignore entries starting with .
-        \\-A, --almost-all       Do not list implied . and ..
-        \\-l                     Use a long listing format.
-        \\-h, --human-readable   With -l, print sizes in human readable format.
-        \\-k                     With -l, print sizes in kilobytes.
-        \\-1                     List one file per line.
-        \\-d, --directory        List directories themselves, not their contents.
-        \\-F                     Append indicator (one of */=>@|) to entries.
-        \\-R, --recursive        List subdirectories recursively.
-        \\-t                     Sort by modification time, newest first.
-        \\-S                     Sort by file size, largest first.
-        \\-r                     Reverse order while sorting.
-        \\    --color <str>      When to use colors (valid: always, auto, never).
-        \\<str>...               Files and directories to list.
+        \\    --help                      Display this help and exit.
+        \\-V, --version                   Output version information and exit.
+        \\-a, --all                       Do not ignore entries starting with .
+        \\-A, --almost-all                Do not list implied . and ..
+        \\-l                              Use a long listing format.
+        \\-h, --human-readable            With -l, print sizes in human readable format.
+        \\-k                              With -l, print sizes in kilobytes.
+        \\-1                              List one file per line.
+        \\-d, --directory                 List directories themselves, not their contents.
+        \\-F                              Append indicator (one of */=>@|) to entries.
+        \\-R, --recursive                 List subdirectories recursively.
+        \\-t                              Sort by modification time, newest first.
+        \\-S                              Sort by file size, largest first.
+        \\-r                              Reverse order while sorting.
+        \\    --color <str>               When to use colors (valid: always, auto, never).
+        \\    --group-directories-first   Group directories before files.
+        \\<str>...                        Files and directories to list.
         \\
     );
 
@@ -84,6 +85,7 @@ pub fn main() !void {
         .reverse_sort = res.args.r != 0,
         .file_type_indicators = res.args.F != 0,
         .color_mode = color_mode,
+        .group_directories_first = res.args.@"group-directories-first" != 0,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -126,6 +128,8 @@ fn printHelp() !void {
         \\  -1                       list one file per line
         \\      --color=WHEN         colorize output; WHEN can be 'always' (default
         \\                           if omitted), 'auto', or 'never'
+        \\      --group-directories-first
+        \\                           group directories before files
         \\      --help               display this help and exit
         \\      --version            output version information and exit
         \\
@@ -159,6 +163,7 @@ const LsOptions = struct {
     file_type_indicators: bool = false,
     color_mode: ColorMode = .auto,
     terminal_width: ?u16 = null, // null means auto-detect
+    group_directories_first: bool = false,
 };
 
 fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
@@ -273,13 +278,24 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     }
 
     // Sort entries based on options
-    if (options.sort_by_time) {
-        std.mem.sort(Entry, entries.items, {}, Entry.lessThanTime);
-    } else if (options.sort_by_size) {
-        std.mem.sort(Entry, entries.items, {}, Entry.lessThanSize);
+    if (options.group_directories_first) {
+        if (options.sort_by_time) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTimeDirFirst);
+        } else if (options.sort_by_size) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSizeDirFirst);
+        } else {
+            // Default: sort alphabetically with directories first
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanDirFirst);
+        }
     } else {
-        // Default: sort alphabetically
-        std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
+        if (options.sort_by_time) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTime);
+        } else if (options.sort_by_size) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSize);
+        } else {
+            // Default: sort alphabetically
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
+        }
     }
     
     // Reverse order if requested
@@ -575,6 +591,45 @@ const Entry = struct {
         
         // If sizes are equal, sort by name
         return lessThan({}, a, b);
+    }
+    
+    fn lessThanDirFirst(_: void, a: Entry, b: Entry) bool {
+        const a_is_dir = a.kind == .directory;
+        const b_is_dir = b.kind == .directory;
+        
+        // If one is dir and other is not, dir comes first
+        if (a_is_dir != b_is_dir) {
+            return a_is_dir;
+        }
+        
+        // Both are same type, sort by name
+        return lessThan({}, a, b);
+    }
+    
+    fn lessThanTimeDirFirst(_: void, a: Entry, b: Entry) bool {
+        const a_is_dir = a.kind == .directory;
+        const b_is_dir = b.kind == .directory;
+        
+        // If one is dir and other is not, dir comes first
+        if (a_is_dir != b_is_dir) {
+            return a_is_dir;
+        }
+        
+        // Both are same type, sort by time
+        return lessThanTime({}, a, b);
+    }
+    
+    fn lessThanSizeDirFirst(_: void, a: Entry, b: Entry) bool {
+        const a_is_dir = a.kind == .directory;
+        const b_is_dir = b.kind == .directory;
+        
+        // If one is dir and other is not, dir comes first
+        if (a_is_dir != b_is_dir) {
+            return a_is_dir;
+        }
+        
+        // Both are same type, sort by size
+        return lessThanSize({}, a, b);
     }
 };
 
@@ -1128,6 +1183,54 @@ test "ls color scheme for different file types" {
     try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[92mexecutable\x1b[0m") != null);
 }
 
+test "ls --group-directories-first" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a mix of files and directories
+    try tmp_dir.dir.makeDir("aaa_dir");
+    try tmp_dir.dir.makeDir("zzz_dir");
+    try tmp_dir.dir.makeDir("mid_dir");
+    const file1 = try tmp_dir.dir.createFile("aaa_file.txt", .{});
+    file1.close();
+    const file2 = try tmp_dir.dir.createFile("zzz_file.txt", .{});
+    file2.close();
+    const file3 = try tmp_dir.dir.createFile("mid_file.txt", .{});
+    file3.close();
+
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // List with directories first
+    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{
+        .one_per_line = true,
+        .group_directories_first = true,
+    }, testing.allocator);
+
+    const output = buffer.items;
+    
+    // Find positions of each item
+    const aaa_dir_pos = std.mem.indexOf(u8, output, "aaa_dir") orelse return error.NotFound;
+    const mid_dir_pos = std.mem.indexOf(u8, output, "mid_dir") orelse return error.NotFound;
+    const zzz_dir_pos = std.mem.indexOf(u8, output, "zzz_dir") orelse return error.NotFound;
+    const aaa_file_pos = std.mem.indexOf(u8, output, "aaa_file.txt") orelse return error.NotFound;
+    const mid_file_pos = std.mem.indexOf(u8, output, "mid_file.txt") orelse return error.NotFound;
+    const zzz_file_pos = std.mem.indexOf(u8, output, "zzz_file.txt") orelse return error.NotFound;
+
+    // All directories should come before all files
+    try testing.expect(aaa_dir_pos < aaa_file_pos);
+    try testing.expect(mid_dir_pos < aaa_file_pos);
+    try testing.expect(zzz_dir_pos < aaa_file_pos);
+    
+    // Directories should be sorted alphabetically among themselves
+    try testing.expect(aaa_dir_pos < mid_dir_pos);
+    try testing.expect(mid_dir_pos < zzz_dir_pos);
+    
+    // Files should be sorted alphabetically among themselves
+    try testing.expect(aaa_file_pos < mid_file_pos);
+    try testing.expect(mid_file_pos < zzz_file_pos);
+}
+
 test "ls column width calculation" {
     // Test column width calculation
     const entries = [_][]const u8{
@@ -1250,13 +1353,24 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
     }
 
     // Sort entries based on options
-    if (options.sort_by_time) {
-        std.mem.sort(Entry, entries.items, {}, Entry.lessThanTime);
-    } else if (options.sort_by_size) {
-        std.mem.sort(Entry, entries.items, {}, Entry.lessThanSize);
+    if (options.group_directories_first) {
+        if (options.sort_by_time) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTimeDirFirst);
+        } else if (options.sort_by_size) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSizeDirFirst);
+        } else {
+            // Default: sort alphabetically with directories first
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanDirFirst);
+        }
     } else {
-        // Default: sort alphabetically
-        std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
+        if (options.sort_by_time) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTime);
+        } else if (options.sort_by_size) {
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSize);
+        } else {
+            // Default: sort alphabetically
+            std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
+        }
     }
     
     // Reverse order if requested

@@ -2,9 +2,9 @@
 
 ## Progress Summary
 - **Utilities Completed**: 2/22 (echo ✓, cat ✓)
-- **Utilities In Progress**: 1/22 (ls - Phase 1 & 2 complete ✓, Phase 3 in progress)
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~65% (most useful features + colors)
-- **Common Library**: Core functionality implemented (including user/group lookup)
+- **Utilities In Progress**: 1/22 (ls - Phase 1 & 2 complete ✓, Phase 3 mostly complete ✓)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~75% (most useful features + colors + responsive layout)
+- **Common Library**: Core functionality implemented (including user/group lookup, terminal utils)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
 - **New Approach**: Balancing OpenBSD simplicity with GNU's most-used features + modern UX
@@ -127,15 +127,15 @@ For each utility:
 ###### Phase 3: Modern UX & Color (TDD)
 - [x] Test: Color capability detection (isatty, TERM)
 - [x] Test: --color=auto/always/never modes
-- [x] Test: Basic color scheme (dirs, executables, symlinks)
+- [x] Test: Basic color scheme (dirs, executables, symlinks) ✓
 - [ ] Test: LS_COLORS environment variable parsing
 - [ ] Test: --group-directories-first option
-- [ ] Test: Terminal width detection for columns
-- [ ] Test: Smart column formatting (-C is default)
-- [x] Implement: Color system with graceful degradation
+- [x] Test: Terminal width detection for columns ✓
+- [x] Test: Smart column formatting (-C is default) ✓
+- [x] Implement: Color system with graceful degradation ✓
 - [ ] Implement: LS_COLORS parser (simplified)
 - [ ] Implement: Directory grouping logic
-- [ ] Implement: Responsive column layout
+- [x] Implement: Responsive column layout ✓
 
 ###### Phase 4: Recursive & Nice-to-Have (TDD)
 - [ ] Test: Recursive listing (-R) with proper formatting
