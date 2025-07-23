@@ -4,6 +4,7 @@ const std = @import("std");
 pub const style = @import("style.zig");
 pub const args = @import("args.zig");
 pub const file = @import("file.zig");
+pub const terminal = @import("terminal.zig");
 
 /// Version information
 pub const version = "0.2.1";

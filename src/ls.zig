@@ -158,6 +158,7 @@ const LsOptions = struct {
     reverse_sort: bool = false,
     file_type_indicators: bool = false,
     color_mode: ColorMode = .auto,
+    terminal_width: ?u16 = null, // null means auto-detect
 };
 
 fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
@@ -414,32 +415,8 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
             try writer.writeByte('\n');
         }
     } else {
-        // Default format: entries separated by spaces/newlines
-        for (entries.items, 0..) |entry, i| {
-            if (i > 0) try writer.writeAll("  ");
-            
-            // Apply color based on file type
-            const file_style = style.styleFileType(entry.kind);
-            if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
-            }
-            
-            try writer.writeAll(entry.name);
-            
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
-            
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-        }
-        if (entries.items.len > 0) {
-            try writer.writeAll("\n");
-        }
+        // Default format: multi-column layout
+        try printColumnar(entries.items, writer, options, style);
     }
 }
 
@@ -461,6 +438,79 @@ fn getFileTypeIndicator(entry: Entry) u8 {
             return 0; // No indicator for regular files
         },
         else => return 0,
+    }
+}
+
+fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+    if (entries.len == 0) return;
+    
+    // Get terminal width
+    const term_width = options.terminal_width orelse common.terminal.getWidth() catch 80;
+    
+    // Calculate the width needed for each entry
+    var max_width: usize = 0;
+    for (entries) |entry| {
+        var width = entry.name.len;
+        if (options.file_type_indicators) {
+            const indicator = getFileTypeIndicator(entry);
+            if (indicator != 0) width += 1;
+        }
+        max_width = @max(max_width, width);
+    }
+    
+    // Add padding between columns
+    const col_width = max_width + 2;
+    
+    // Calculate number of columns that fit
+    const num_cols = @max(@as(usize, 1), term_width / col_width);
+    
+    // Calculate number of rows needed
+    const num_rows = (entries.len + num_cols - 1) / num_cols;
+    
+    // Print in column-major order (like GNU ls)
+    for (0..num_rows) |row| {
+        for (0..num_cols) |col| {
+            const idx = col * num_rows + row;
+            if (idx >= entries.len) break;
+            
+            const entry = entries[idx];
+            
+            // Apply color
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
+            // Print name
+            try writer.print("{s}", .{entry.name});
+            
+            // Print file type indicator
+            if (options.file_type_indicators) {
+                const indicator = getFileTypeIndicator(entry);
+                if (indicator != 0) {
+                    try writer.writeByte(indicator);
+                }
+            }
+            
+            // Reset color
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
+            
+            // Pad to column width (except for last column)
+            if (col < num_cols - 1 and idx < entries.len - 1) {
+                var width = entry.name.len;
+                if (options.file_type_indicators) {
+                    const indicator = getFileTypeIndicator(entry);
+                    if (indicator != 0) width += 1;
+                }
+                const padding = col_width - width;
+                for (0..padding) |_| {
+                    try writer.writeByte(' ');
+                }
+            }
+        }
+        try writer.writeByte('\n');
     }
 }
 
@@ -1054,6 +1104,56 @@ test "ls color scheme for different file types" {
     try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[39mexecutable\x1b[0m") != null);
 }
 
+test "ls column width calculation" {
+    // Test column width calculation
+    const entries = [_][]const u8{
+        "short",
+        "medium_name",
+        "very_long_filename.txt",
+    };
+    
+    var max_width: usize = 0;
+    for (entries) |entry| {
+        max_width = @max(max_width, entry.len);
+    }
+    
+    // Column width should be max length + padding
+    const col_width = max_width + 2;
+    try testing.expectEqual(@as(usize, 24), col_width); // 22 + 2
+}
+
+test "ls multi-column output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create several files with different name lengths
+    const files = [_][]const u8{
+        "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg", "hhhhhhhh"
+    };
+    for (files) |name| {
+        const f = try tmp_dir.dir.createFile(name, .{});
+        f.close();
+    }
+    
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // List without -1 (should use columns)
+    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{
+        .terminal_width = 40, // Force specific width for testing
+    }, testing.allocator);
+
+    // Output should have multiple entries per line
+    var lines = std.mem.splitScalar(u8, buffer.items, '\n');
+    var line_count: usize = 0;
+    while (lines.next()) |line| {
+        if (line.len > 0) line_count += 1;
+    }
+    
+    // With 8 files and 40 char width, should fit multiple per line
+    try testing.expect(line_count < files.len);
+}
+
 // Test helper that uses a Dir instead of path
 fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
     // Initialize style based on color mode
@@ -1268,31 +1368,7 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
             try writer.writeByte('\n');
         }
     } else {
-        // Default format: entries separated by spaces/newlines
-        for (entries.items, 0..) |entry, i| {
-            if (i > 0) try writer.writeAll("  ");
-            
-            // Apply color based on file type
-            const file_style = style.styleFileType(entry.kind);
-            if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
-            }
-            
-            try writer.writeAll(entry.name);
-            
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
-            
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-        }
-        if (entries.items.len > 0) {
-            try writer.writeAll("\n");
-        }
+        // Default format: multi-column layout
+        try printColumnar(entries.items, writer, options, style);
     }
 }
