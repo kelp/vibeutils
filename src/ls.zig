@@ -70,6 +70,26 @@ pub fn main() !void {
         }
     }
 
+    // Parse LS_COLORS if available and colors are enabled
+    var ls_colors: ?std.StringHashMap([]const u8) = null;
+    defer {
+        if (ls_colors) |*colors| {
+            var iter = colors.iterator();
+            while (iter.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            colors.deinit();
+        }
+    }
+    
+    if (color_mode != .never) {
+        if (std.process.getEnvVarOwned(allocator, "LS_COLORS")) |ls_colors_env| {
+            defer allocator.free(ls_colors_env);
+            ls_colors = parseLsColors(ls_colors_env, allocator) catch null;
+        } else |_| {}
+    }
+
     // Create options struct
     const options = LsOptions{
         .all = res.args.all != 0,
@@ -86,6 +106,7 @@ pub fn main() !void {
         .file_type_indicators = res.args.F != 0,
         .color_mode = color_mode,
         .group_directories_first = res.args.@"group-directories-first" != 0,
+        .ls_colors = ls_colors,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -148,6 +169,49 @@ const ColorMode = enum {
     never,
 };
 
+// LS_COLORS parsing
+fn parseLsColors(ls_colors: []const u8, allocator: std.mem.Allocator) !std.StringHashMap([]const u8) {
+    var map = std.StringHashMap([]const u8).init(allocator);
+    errdefer map.deinit();
+    
+    // Split by colon
+    var iter = std.mem.tokenizeScalar(u8, ls_colors, ':');
+    while (iter.next()) |pair| {
+        // Split by equals
+        const eq_pos = std.mem.indexOf(u8, pair, "=");
+        if (eq_pos) |pos| {
+            const key = pair[0..pos];
+            const value = pair[pos + 1..];
+            
+            // Duplicate strings for the map
+            const key_copy = try allocator.dupe(u8, key);
+            errdefer allocator.free(key_copy);
+            const value_copy = try allocator.dupe(u8, value);
+            errdefer allocator.free(value_copy);
+            
+            try map.put(key_copy, value_copy);
+        }
+    }
+    
+    return map;
+}
+
+// Convert LS_COLORS format to ANSI codes
+fn lsColorToAnsi(ls_color: []const u8) []const u8 {
+    // Common mappings
+    if (std.mem.eql(u8, ls_color, "0")) return "39"; // reset to default
+    if (std.mem.eql(u8, ls_color, "1;34")) return "94"; // bright blue
+    if (std.mem.eql(u8, ls_color, "1;36")) return "96"; // bright cyan
+    if (std.mem.eql(u8, ls_color, "1;32")) return "92"; // bright green
+    if (std.mem.eql(u8, ls_color, "0;33")) return "33"; // yellow
+    if (std.mem.eql(u8, ls_color, "0;31")) return "31"; // red
+    if (std.mem.eql(u8, ls_color, "1;35")) return "95"; // bright magenta
+    if (std.mem.eql(u8, ls_color, "01;36")) return "96"; // bright cyan (alt format)
+    
+    // Default to the input if we don't recognize it
+    return ls_color;
+}
+
 const LsOptions = struct {
     all: bool = false,
     almost_all: bool = false,
@@ -164,6 +228,7 @@ const LsOptions = struct {
     color_mode: ColorMode = .auto,
     terminal_width: ?u16 = null, // null means auto-detect
     group_directories_first: bool = false,
+    ls_colors: ?std.StringHashMap([]const u8) = null,
 };
 
 fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
@@ -1229,6 +1294,46 @@ test "ls --group-directories-first" {
     // Files should be sorted alphabetically among themselves
     try testing.expect(aaa_file_pos < mid_file_pos);
     try testing.expect(mid_file_pos < zzz_file_pos);
+}
+
+test "ls LS_COLORS parsing" {
+    // Test parsing LS_COLORS environment variable
+    const test_ls_colors = "di=1;34:ln=1;36:ex=1;32:*.txt=0;33:*.log=0;31";
+    
+    var colors = try parseLsColors(test_ls_colors, testing.allocator);
+    defer {
+        // Free all allocated memory
+        var iter = colors.iterator();
+        while (iter.next()) |entry| {
+            testing.allocator.free(entry.key_ptr.*);
+            testing.allocator.free(entry.value_ptr.*);
+        }
+        colors.deinit();
+    }
+    
+    // Check directory color
+    const dir_color = colors.get("di");
+    try testing.expect(dir_color != null);
+    try testing.expectEqualStrings("1;34", dir_color.?);
+    
+    // Check symlink color
+    const link_color = colors.get("ln");
+    try testing.expect(link_color != null);
+    try testing.expectEqualStrings("1;36", link_color.?);
+    
+    // Check executable color
+    const exec_color = colors.get("ex");
+    try testing.expect(exec_color != null);
+    try testing.expectEqualStrings("1;32", exec_color.?);
+    
+    // Check file extension colors
+    const txt_color = colors.get("*.txt");
+    try testing.expect(txt_color != null);
+    try testing.expectEqualStrings("0;33", txt_color.?);
+    
+    const log_color = colors.get("*.log");
+    try testing.expect(log_color != null);
+    try testing.expectEqualStrings("0;31", log_color.?);
 }
 
 test "ls column width calculation" {
