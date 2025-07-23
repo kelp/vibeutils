@@ -57,38 +57,14 @@ pub fn main() !void {
     // Parse color mode
     var color_mode = ColorMode.auto;
     if (res.args.color) |color_arg| {
-        if (std.mem.eql(u8, color_arg, "always")) {
-            color_mode = .always;
-        } else if (std.mem.eql(u8, color_arg, "auto")) {
-            color_mode = .auto;
-        } else if (std.mem.eql(u8, color_arg, "never")) {
-            color_mode = .never;
-        } else {
+        color_mode = parseColorMode(color_arg) catch {
             try std.io.getStdErr().writer().print("ls: invalid argument '{s}' for '--color'\n", .{color_arg});
             try std.io.getStdErr().writer().writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
             return;
-        }
+        };
     }
 
-    // Parse LS_COLORS if available and colors are enabled
-    var ls_colors: ?std.StringHashMap([]const u8) = null;
-    defer {
-        if (ls_colors) |*colors| {
-            var iter = colors.iterator();
-            while (iter.next()) |entry| {
-                allocator.free(entry.key_ptr.*);
-                allocator.free(entry.value_ptr.*);
-            }
-            colors.deinit();
-        }
-    }
-    
-    if (color_mode != .never) {
-        if (std.process.getEnvVarOwned(allocator, "LS_COLORS")) |ls_colors_env| {
-            defer allocator.free(ls_colors_env);
-            ls_colors = parseLsColors(ls_colors_env, allocator) catch null;
-        } else |_| {}
-    }
+    // Remove LS_COLORS parsing - not used in current implementation
 
     // Create options struct
     const options = LsOptions{
@@ -106,7 +82,6 @@ pub fn main() !void {
         .file_type_indicators = res.args.F != 0,
         .color_mode = color_mode,
         .group_directories_first = res.args.@"group-directories-first" != 0,
-        .ls_colors = ls_colors,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -169,48 +144,14 @@ const ColorMode = enum {
     never,
 };
 
-// LS_COLORS parsing
-fn parseLsColors(ls_colors: []const u8, allocator: std.mem.Allocator) !std.StringHashMap([]const u8) {
-    var map = std.StringHashMap([]const u8).init(allocator);
-    errdefer map.deinit();
-    
-    // Split by colon
-    var iter = std.mem.tokenizeScalar(u8, ls_colors, ':');
-    while (iter.next()) |pair| {
-        // Split by equals
-        const eq_pos = std.mem.indexOf(u8, pair, "=");
-        if (eq_pos) |pos| {
-            const key = pair[0..pos];
-            const value = pair[pos + 1..];
-            
-            // Duplicate strings for the map
-            const key_copy = try allocator.dupe(u8, key);
-            errdefer allocator.free(key_copy);
-            const value_copy = try allocator.dupe(u8, value);
-            errdefer allocator.free(value_copy);
-            
-            try map.put(key_copy, value_copy);
-        }
-    }
-    
-    return map;
+fn parseColorMode(arg: []const u8) !ColorMode {
+    return std.meta.stringToEnum(ColorMode, arg) orelse error.InvalidColorMode;
 }
 
-// Convert LS_COLORS format to ANSI codes
-fn lsColorToAnsi(ls_color: []const u8) []const u8 {
-    // Common mappings
-    if (std.mem.eql(u8, ls_color, "0")) return "39"; // reset to default
-    if (std.mem.eql(u8, ls_color, "1;34")) return "94"; // bright blue
-    if (std.mem.eql(u8, ls_color, "1;36")) return "96"; // bright cyan
-    if (std.mem.eql(u8, ls_color, "1;32")) return "92"; // bright green
-    if (std.mem.eql(u8, ls_color, "0;33")) return "33"; // yellow
-    if (std.mem.eql(u8, ls_color, "0;31")) return "31"; // red
-    if (std.mem.eql(u8, ls_color, "1;35")) return "95"; // bright magenta
-    if (std.mem.eql(u8, ls_color, "01;36")) return "96"; // bright cyan (alt format)
-    
-    // Default to the input if we don't recognize it
-    return ls_color;
-}
+// Constants for better readability
+const BLOCK_SIZE = 512;
+const BLOCK_ROUNDING = BLOCK_SIZE - 1;
+const COLUMN_PADDING = 2;
 
 const LsOptions = struct {
     all: bool = false,
@@ -228,22 +169,26 @@ const LsOptions = struct {
     color_mode: ColorMode = .auto,
     terminal_width: ?u16 = null, // null means auto-detect
     group_directories_first: bool = false,
-    ls_colors: ?std.StringHashMap([]const u8) = null,
 };
 
-fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
-    // Initialize style based on color mode
-    const StyleType = common.style.Style(@TypeOf(writer));
-    var style = StyleType.init(writer);
-    if (options.color_mode == .never) {
+fn initStyle(writer: anytype, color_mode: ColorMode) common.style.Style(@TypeOf(writer)) {
+    var style = common.style.Style(@TypeOf(writer)).init(writer);
+    if (color_mode == .never) {
         style.color_mode = .none;
-    } else if (options.color_mode == .always) {
+    } else if (color_mode == .always) {
         // Keep the detected mode but ensure it's at least basic
         if (style.color_mode == .none) {
             style.color_mode = .basic;
         }
     }
     // For .auto, use the detected mode (which checks isatty)
+    return style;
+}
+
+fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
+    // Initialize style based on color mode
+    const style = initStyle(writer, options.color_mode);
+    
     // If -d is specified, just list the directory itself
     if (options.directory) {
         if (options.one_per_line) {
@@ -298,7 +243,13 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
         return err;
     };
     defer dir.close();
+    
+    // Call the shared implementation
+    try listDirectoryImpl(dir, path, writer, options, allocator, style);
+}
 
+// Shared implementation that works with an open directory handle
+fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) !void {
     var entries = std.ArrayList(Entry).init(allocator);
     defer entries.deinit();
 
@@ -343,30 +294,14 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     }
 
     // Sort entries based on options
-    if (options.group_directories_first) {
-        if (options.sort_by_time) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTimeDirFirst);
-        } else if (options.sort_by_size) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSizeDirFirst);
-        } else {
-            // Default: sort alphabetically with directories first
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanDirFirst);
-        }
-    } else {
-        if (options.sort_by_time) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTime);
-        } else if (options.sort_by_size) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSize);
-        } else {
-            // Default: sort alphabetically
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
-        }
-    }
+    const sort_config = SortConfig{
+        .by_time = options.sort_by_time,
+        .by_size = options.sort_by_size,
+        .dirs_first = options.group_directories_first,
+        .reverse = options.reverse_sort,
+    };
     
-    // Reverse order if requested
-    if (options.reverse_sort) {
-        std.mem.reverse(Entry, entries.items);
-    }
+    std.mem.sort(Entry, entries.items, sort_config, compareEntries);
     defer {
         for (entries.items) |entry| {
             allocator.free(entry.name);
@@ -405,7 +340,7 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
         // Calculate total blocks
         for (entries.items) |entry| {
             if (entry.stat) |stat| {
-                total_blocks += (stat.size + 511) / 512; // 512-byte blocks
+                total_blocks += (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
             }
         }
         
@@ -499,6 +434,47 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     } else {
         // Default format: multi-column layout
         try printColumnar(entries.items, writer, options, style);
+    }
+    
+    // Handle recursive listing
+    if (options.recursive) {
+        // We need to track which entries correspond to which paths
+        var dir_entries = std.ArrayList(struct { name: []const u8, path: []const u8 }).init(allocator);
+        defer dir_entries.deinit();
+        
+        for (entries.items) |entry| {
+            if (entry.kind == .directory) {
+                // Skip . and .. to avoid infinite recursion
+                if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
+                    continue;
+                }
+                
+                // Build the full path
+                const full_path = try std.fs.path.join(allocator, &[_][]const u8{ path, entry.name });
+                try dir_entries.append(.{ .name = entry.name, .path = full_path });
+            }
+        }
+        
+        // Recurse into subdirectories
+        for (dir_entries.items) |dir_entry| {
+            defer allocator.free(dir_entry.path);
+            
+            try writer.writeAll("\n");
+            try writer.print("{s}:\n", .{dir_entry.path});
+            
+            // Open the subdirectory relative to the current directory
+            var sub_dir = dir.openDir(dir_entry.name, .{ .iterate = true }) catch |err| {
+                common.printError("{s}: {}", .{ dir_entry.path, err });
+                continue;
+            };
+            defer sub_dir.close();
+            
+            // Recurse using the shared implementation
+            listDirectoryImpl(sub_dir, dir_entry.path, writer, options, allocator, style) catch |err| {
+                common.printError("{s}: {}", .{ dir_entry.path, err });
+                // Continue with other directories even if one fails
+            };
+        }
     }
 }
 
@@ -563,7 +539,7 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
     }
     
     // Add padding between columns
-    const col_width = max_width + 2;
+    const col_width = max_width + COLUMN_PADDING;
     
     // Calculate number of columns that fit
     const num_cols = @max(@as(usize, 1), term_width / col_width);
@@ -623,80 +599,54 @@ const Entry = struct {
     kind: std.fs.File.Kind,
     stat: ?common.file.FileInfo = null,
     symlink_target: ?[]const u8 = null,
-
-    fn lessThan(_: void, a: Entry, b: Entry) bool {
-        return std.mem.order(u8, a.name, b.name) == .lt;
-    }
-    
-    fn lessThanTime(_: void, a: Entry, b: Entry) bool {
-        // If either stat is null, fall back to name sort
-        if (a.stat == null or b.stat == null) {
-            return lessThan({}, a, b);
-        }
-        
-        // Sort by modification time, newest first
-        if (a.stat.?.mtime != b.stat.?.mtime) {
-            return a.stat.?.mtime > b.stat.?.mtime;
-        }
-        
-        // If times are equal, sort by name
-        return lessThan({}, a, b);
-    }
-    
-    fn lessThanSize(_: void, a: Entry, b: Entry) bool {
-        // If either stat is null, fall back to name sort
-        if (a.stat == null or b.stat == null) {
-            return lessThan({}, a, b);
-        }
-        
-        // Sort by size, largest first
-        if (a.stat.?.size != b.stat.?.size) {
-            return a.stat.?.size > b.stat.?.size;
-        }
-        
-        // If sizes are equal, sort by name
-        return lessThan({}, a, b);
-    }
-    
-    fn lessThanDirFirst(_: void, a: Entry, b: Entry) bool {
-        const a_is_dir = a.kind == .directory;
-        const b_is_dir = b.kind == .directory;
-        
-        // If one is dir and other is not, dir comes first
-        if (a_is_dir != b_is_dir) {
-            return a_is_dir;
-        }
-        
-        // Both are same type, sort by name
-        return lessThan({}, a, b);
-    }
-    
-    fn lessThanTimeDirFirst(_: void, a: Entry, b: Entry) bool {
-        const a_is_dir = a.kind == .directory;
-        const b_is_dir = b.kind == .directory;
-        
-        // If one is dir and other is not, dir comes first
-        if (a_is_dir != b_is_dir) {
-            return a_is_dir;
-        }
-        
-        // Both are same type, sort by time
-        return lessThanTime({}, a, b);
-    }
-    
-    fn lessThanSizeDirFirst(_: void, a: Entry, b: Entry) bool {
-        const a_is_dir = a.kind == .directory;
-        const b_is_dir = b.kind == .directory;
-        
-        // If one is dir and other is not, dir comes first
-        if (a_is_dir != b_is_dir) {
-            return a_is_dir;
-        }
-        
-        // Both are same type, sort by size
-        return lessThanSize({}, a, b);
-    }
 };
+
+// Sort configuration
+const SortConfig = struct {
+    by_time: bool = false,
+    by_size: bool = false,
+    dirs_first: bool = false,
+    reverse: bool = false,
+};
+
+// Unified comparison function
+fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
+    // Handle directory grouping first
+    if (config.dirs_first) {
+        const a_is_dir = a.kind == .directory;
+        const b_is_dir = b.kind == .directory;
+        if (a_is_dir != b_is_dir) {
+            return if (config.reverse) b_is_dir else a_is_dir;
+        }
+    }
+    
+    // Primary sort criteria
+    var result: bool = undefined;
+    
+    if (config.by_time) {
+        // Sort by modification time
+        if (a.stat != null and b.stat != null and a.stat.?.mtime != b.stat.?.mtime) {
+            result = a.stat.?.mtime > b.stat.?.mtime; // Newest first by default
+        } else {
+            // Fall back to name sort
+            result = std.mem.order(u8, a.name, b.name) == .lt;
+        }
+    } else if (config.by_size) {
+        // Sort by size
+        if (a.stat != null and b.stat != null and a.stat.?.size != b.stat.?.size) {
+            result = a.stat.?.size > b.stat.?.size; // Largest first by default
+        } else {
+            // Fall back to name sort
+            result = std.mem.order(u8, a.name, b.name) == .lt;
+        }
+    } else {
+        // Default: sort by name
+        result = std.mem.order(u8, a.name, b.name) == .lt;
+    }
+    
+    // Apply reverse if needed (but not for directory grouping)
+    return if (config.reverse and !config.dirs_first) !result else result;
+}
 
 // Tests
 
@@ -713,8 +663,12 @@ test "ls lists files in current directory" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
+    // Open directory with iterate permissions
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    
     // List directory
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{}, testing.allocator);
+    try listDirectoryTest(test_dir, buffer.writer(), .{}, testing.allocator);
 
     // Should contain both files
     try testing.expect(std.mem.indexOf(u8, buffer.items, "file1.txt") != null);
@@ -733,9 +687,12 @@ test "ls ignores hidden files by default" {
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
+    
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
 
     // List without -a
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{}, testing.allocator);
+    try listDirectoryTest(test_dir, buffer.writer(), .{}, testing.allocator);
 
     // Should contain visible but not hidden
     try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
@@ -756,7 +713,9 @@ test "ls -a shows hidden files" {
     defer buffer.deinit();
 
     // List with -a
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .all = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .all = true }, testing.allocator);
 
     // Should contain both files
     try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
@@ -777,7 +736,9 @@ test "ls -1 lists one file per line" {
     defer buffer.deinit();
 
     // List with -1
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
 
     // Should be one file per line
     try testing.expectEqualStrings("aaa.txt\nbbb.txt\n", buffer.items);
@@ -799,7 +760,9 @@ test "ls sorts entries alphabetically" {
     defer buffer.deinit();
 
     // List with -1 to make output predictable
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
 
     // Should be sorted alphabetically
     try testing.expectEqualStrings("aaa.txt\nmmm.txt\nzzz.txt\n", buffer.items);
@@ -813,7 +776,9 @@ test "ls handles empty directory" {
     defer buffer.deinit();
 
     // List empty directory
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{}, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{}, testing.allocator);
 
     // Should be empty
     try testing.expectEqualStrings("", buffer.items);
@@ -832,7 +797,9 @@ test "ls with directories shows type indicator" {
     defer buffer.deinit();
 
     // List with -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
 
     // Both should be listed
     try testing.expectEqualStrings("file.txt\nsubdir\n", buffer.items);
@@ -851,7 +818,9 @@ test "ls -l shows long format" {
     defer buffer.deinit();
 
     // List with -l
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .long_format = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true }, testing.allocator);
 
     // Should contain test.txt with permissions and size
     try testing.expect(std.mem.indexOf(u8, buffer.items, "test.txt") != null);
@@ -875,7 +844,9 @@ test "ls -lh shows human readable sizes" {
     defer buffer.deinit();
 
     // List with -lh
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .long_format = true, .human_readable = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true, .human_readable = true }, testing.allocator);
 
     // Should show human readable size
     try testing.expect(std.mem.indexOf(u8, buffer.items, "2.0K") != null);
@@ -900,7 +871,9 @@ test "ls -lk shows kilobyte sizes" {
     defer buffer.deinit();
 
     // List with -lk
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .long_format = true, .kilobytes = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true, .kilobytes = true }, testing.allocator);
 
     // Should show sizes in kilobytes
     try testing.expect(std.mem.indexOf(u8, buffer.items, "small.txt") != null);
@@ -923,7 +896,9 @@ test "ls -A shows almost all files" {
     defer buffer.deinit();
 
     // List with -A (using -1 for predictable output)
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .almost_all = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .almost_all = true, .one_per_line = true }, testing.allocator);
 
     // Should contain both visible and hidden files
     try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
@@ -954,7 +929,9 @@ test "ls -t sorts by modification time, newest first" {
     defer buffer.deinit();
 
     // List with -t and -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .sort_by_time = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .sort_by_time = true, .one_per_line = true }, testing.allocator);
 
     // Should be sorted by time, newest first
     try testing.expectEqualStrings("newest.txt\nmiddle.txt\noldest.txt\n", buffer.items);
@@ -983,7 +960,9 @@ test "ls -S sorts by size, largest first" {
     defer buffer.deinit();
 
     // List with -S and -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .sort_by_size = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .sort_by_size = true, .one_per_line = true }, testing.allocator);
 
     // Should be sorted by size, largest first
     try testing.expectEqualStrings("large.txt\nmedium.txt\nsmall.txt\n", buffer.items);
@@ -1005,7 +984,9 @@ test "ls -r reverses sort order" {
     defer buffer.deinit();
 
     // List with -r and -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .reverse_sort = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .reverse_sort = true, .one_per_line = true }, testing.allocator);
 
     // Should be reverse alphabetical
     try testing.expectEqualStrings("ccc.txt\nbbb.txt\naaa.txt\n", buffer.items);
@@ -1033,7 +1014,9 @@ test "ls -tr combines time sort with reverse" {
     defer buffer.deinit();
 
     // List with -t -r and -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .sort_by_time = true, .reverse_sort = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .sort_by_time = true, .reverse_sort = true, .one_per_line = true }, testing.allocator);
 
     // Should be sorted by time, oldest first (reversed)
     try testing.expectEqualStrings("oldest.txt\nmiddle.txt\nnewest.txt\n", buffer.items);
@@ -1062,7 +1045,9 @@ test "ls -Sr combines size sort with reverse" {
     defer buffer.deinit();
 
     // List with -S -r and -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .sort_by_size = true, .reverse_sort = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .sort_by_size = true, .reverse_sort = true, .one_per_line = true }, testing.allocator);
 
     // Should be sorted by size, smallest first (reversed)
     try testing.expectEqualStrings("small.txt\nmedium.txt\nlarge.txt\n", buffer.items);
@@ -1092,7 +1077,9 @@ test "ls -F adds file type indicators" {
     defer buffer.deinit();
 
     // List with -F and -1 for predictable output
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .file_type_indicators = true, .one_per_line = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .file_type_indicators = true, .one_per_line = true }, testing.allocator);
 
     // Check for type indicators
     try testing.expect(std.mem.indexOf(u8, buffer.items, "directory/") != null);
@@ -1118,7 +1105,9 @@ test "ls -d lists directory itself, not contents" {
     defer buffer.deinit();
 
     // List with -d (should show "." only)
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .directory = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .directory = true }, testing.allocator);
 
     // Should only contain "." and not the files
     try testing.expectEqualStrings(".\n", buffer.items);
@@ -1147,7 +1136,9 @@ test "ls -l shows symlink targets" {
     defer buffer.deinit();
 
     // List with -l
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ .long_format = true }, testing.allocator);
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true }, testing.allocator);
 
     // Check that symlinks show their targets
     try testing.expect(std.mem.indexOf(u8, buffer.items, "link_to_file -> target.txt") != null);
@@ -1176,7 +1167,9 @@ test "ls color output for directories" {
     defer buffer.deinit();
 
     // List with color always
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ 
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ 
         .one_per_line = true,
         .color_mode = .always,
     }, testing.allocator);
@@ -1198,7 +1191,9 @@ test "ls color output disabled with never" {
     defer buffer.deinit();
 
     // List with color never
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ 
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ 
         .one_per_line = true,
         .color_mode = .never,
     }, testing.allocator);
@@ -1232,7 +1227,9 @@ test "ls color scheme for different file types" {
     defer buffer.deinit();
 
     // List with color always
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ 
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{ 
         .one_per_line = true,
         .color_mode = .always,
     }, testing.allocator);
@@ -1267,7 +1264,9 @@ test "ls --group-directories-first" {
     defer buffer.deinit();
 
     // List with directories first
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{
         .one_per_line = true,
         .group_directories_first = true,
     }, testing.allocator);
@@ -1296,45 +1295,7 @@ test "ls --group-directories-first" {
     try testing.expect(mid_file_pos < zzz_file_pos);
 }
 
-test "ls LS_COLORS parsing" {
-    // Test parsing LS_COLORS environment variable
-    const test_ls_colors = "di=1;34:ln=1;36:ex=1;32:*.txt=0;33:*.log=0;31";
-    
-    var colors = try parseLsColors(test_ls_colors, testing.allocator);
-    defer {
-        // Free all allocated memory
-        var iter = colors.iterator();
-        while (iter.next()) |entry| {
-            testing.allocator.free(entry.key_ptr.*);
-            testing.allocator.free(entry.value_ptr.*);
-        }
-        colors.deinit();
-    }
-    
-    // Check directory color
-    const dir_color = colors.get("di");
-    try testing.expect(dir_color != null);
-    try testing.expectEqualStrings("1;34", dir_color.?);
-    
-    // Check symlink color
-    const link_color = colors.get("ln");
-    try testing.expect(link_color != null);
-    try testing.expectEqualStrings("1;36", link_color.?);
-    
-    // Check executable color
-    const exec_color = colors.get("ex");
-    try testing.expect(exec_color != null);
-    try testing.expectEqualStrings("1;32", exec_color.?);
-    
-    // Check file extension colors
-    const txt_color = colors.get("*.txt");
-    try testing.expect(txt_color != null);
-    try testing.expectEqualStrings("0;33", txt_color.?);
-    
-    const log_color = colors.get("*.log");
-    try testing.expect(log_color != null);
-    try testing.expectEqualStrings("0;31", log_color.?);
-}
+// LS_COLORS parsing test removed - feature not implemented
 
 test "ls column width calculation" {
     // Test column width calculation
@@ -1350,8 +1311,58 @@ test "ls column width calculation" {
     }
     
     // Column width should be max length + padding
-    const col_width = max_width + 2;
+    const col_width = max_width + COLUMN_PADDING;
     try testing.expectEqual(@as(usize, 24), col_width); // 22 + 2
+}
+
+test "ls recursive listing" {
+    // Test that the recursive flag is recognized
+    // Full recursive implementation tested via integration tests
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create directory structure
+    try tmp_dir.dir.makeDir("dir1");
+    const file1 = try tmp_dir.dir.createFile("file1.txt", .{});
+    file1.close();
+
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // Create more nested directories for proper testing
+    var dir1 = try tmp_dir.dir.openDir("dir1", .{});
+    defer dir1.close();
+    try dir1.makeDir("subdir1");
+    const file2 = try dir1.createFile("file2.txt", .{});
+    file2.close();
+    var subdir1 = try dir1.openDir("subdir1", .{});
+    defer subdir1.close();
+    const file3 = try subdir1.createFile("file3.txt", .{});
+    file3.close();
+    
+    // Open the temp directory with iterate permissions
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    
+    // Use the recursive test helper function
+    try listDirectoryTestRecursive(test_dir, buffer.writer(), .{
+        .recursive = true,
+        .one_per_line = true, // For easier testing
+    }, testing.allocator, "");
+
+    const output = buffer.items;
+    
+    // Should show the top-level directory contents
+    try testing.expect(std.mem.indexOf(u8, output, "dir1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "file1.txt") != null);
+    
+    // Should show subdirectory headers
+    try testing.expect(std.mem.indexOf(u8, output, "dir1:") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "dir1/subdir1:") != null);
+    
+    // Should show files in subdirectories
+    try testing.expect(std.mem.indexOf(u8, output, "file2.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "file3.txt") != null);
 }
 
 test "ls multi-column output" {
@@ -1371,7 +1382,9 @@ test "ls multi-column output" {
     defer buffer.deinit();
 
     // List without -1 (should use columns)
-    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+    try listDirectoryTest(test_dir, buffer.writer(), .{
         .terminal_width = 40, // Force specific width for testing
     }, testing.allocator);
 
@@ -1387,232 +1400,23 @@ test "ls multi-column output" {
 }
 
 // Test helper that uses a Dir instead of path
+// Helper for recursive directory listing in tests
+fn listDirectoryTestRecursive(dir: std.fs.Dir, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, prefix: []const u8) !void {
+    const style = initStyle(writer, options.color_mode);
+    
+    // Use the shared implementation - this handles everything including recursion
+    try listDirectoryImpl(dir, prefix, writer, options, allocator, style);
+}
+
 fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
-    // Initialize style based on color mode
-    const StyleType = common.style.Style(@TypeOf(writer));
-    var style = StyleType.init(writer);
-    if (options.color_mode == .never) {
-        style.color_mode = .none;
-    } else if (options.color_mode == .always) {
-        // Keep the detected mode but ensure it's at least basic
-        if (style.color_mode == .none) {
-            style.color_mode = .basic;
-        }
-    }
+    const style = initStyle(writer, options.color_mode);
     
     // If -d is specified, just list the directory itself
     if (options.directory) {
-        if (options.one_per_line) {
-            try writer.print(".\n", .{});
-        } else {
-            try writer.print(".\n", .{});
-        }
+        try writer.print(".\n", .{});
         return;
     }
-
-    // Re-open the directory with iterate permissions
-    var iterable_dir = try dir.openDir(".", .{ .iterate = true });
-    defer iterable_dir.close();
-
-    var entries = std.ArrayList(Entry).init(allocator);
-    defer entries.deinit();
-
-    // Collect entries
-    var iter = iterable_dir.iterate();
-    while (try iter.next()) |entry| {
-        // Skip hidden files unless -a or -A is specified
-        if (!options.all and !options.almost_all and entry.name[0] == '.') {
-            continue;
-        }
-        
-        // Skip . and .. for -A
-        if (options.almost_all and !options.all) {
-            if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
-                continue;
-            }
-        }
-
-        var e = Entry{
-            .name = try allocator.dupe(u8, entry.name),
-            .kind = entry.kind,
-        };
-        
-        // Get stat info if needed for long format, sorting, file type indicators, or colors
-        if (options.long_format or options.sort_by_time or options.sort_by_size or 
-            (options.file_type_indicators and entry.kind == .file) or
-            options.color_mode != .never) {
-            e.stat = common.file.FileInfo.lstatDir(iterable_dir, entry.name) catch null;
-        }
-        
-        // Read symlink target if needed
-        if (options.long_format and entry.kind == .sym_link) {
-            var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (iterable_dir.readLink(entry.name, &target_buf)) |target| {
-                e.symlink_target = try allocator.dupe(u8, target);
-            } else |_| {
-                // Failed to read symlink, leave as null
-            }
-        }
-        
-        try entries.append(e);
-    }
-
-    // Sort entries based on options
-    if (options.group_directories_first) {
-        if (options.sort_by_time) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTimeDirFirst);
-        } else if (options.sort_by_size) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSizeDirFirst);
-        } else {
-            // Default: sort alphabetically with directories first
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanDirFirst);
-        }
-    } else {
-        if (options.sort_by_time) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanTime);
-        } else if (options.sort_by_size) {
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThanSize);
-        } else {
-            // Default: sort alphabetically
-            std.mem.sort(Entry, entries.items, {}, Entry.lessThan);
-        }
-    }
     
-    // Reverse order if requested
-    if (options.reverse_sort) {
-        std.mem.reverse(Entry, entries.items);
-    }
-    defer {
-        for (entries.items) |entry| {
-            allocator.free(entry.name);
-            if (entry.symlink_target) |target| {
-                allocator.free(target);
-            }
-        }
-    }
-
-    // Print entries
-    if (options.one_per_line) {
-        for (entries.items) |entry| {
-            // Apply color based on file type
-            const color = getFileColor(entry);
-            if (style.color_mode != .none) {
-                try style.setColor(color);
-            }
-            
-            try writer.print("{s}", .{entry.name});
-            
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-            try writer.writeByte('\n');
-        }
-    } else if (options.long_format) {
-        // Long format: permissions, links, user, group, size, date, name
-        var total_blocks: u64 = 0;
-        
-        // Calculate total blocks
-        for (entries.items) |entry| {
-            if (entry.stat) |stat| {
-                total_blocks += (stat.size + 511) / 512; // 512-byte blocks
-            }
-        }
-        
-        // Print total if we have entries
-        if (entries.items.len > 0) {
-            try writer.print("total {d}\n", .{total_blocks});
-        }
-        
-        // Print each entry
-        for (entries.items) |entry| {
-            // Permission string
-            var perm_buf: [10]u8 = undefined;
-            const perms = if (entry.stat) |stat|
-                try common.file.formatPermissions(stat.mode, stat.kind, &perm_buf)
-            else
-                "----------";
-            
-            try writer.writeAll(perms);
-            
-            // Number of links
-            if (entry.stat) |stat| {
-                try writer.print(" {d: >3} ", .{stat.nlink});
-            } else {
-                try writer.writeAll("   ? ");
-            }
-            
-            // User and group names
-            if (entry.stat) |stat| {
-                var user_buf: [32]u8 = undefined;
-                var group_buf: [32]u8 = undefined;
-                const user_name = try common.file.getUserName(stat.uid, &user_buf);
-                const group_name = try common.file.getGroupName(stat.gid, &group_buf);
-                try writer.print("{s: <8} {s: <8} ", .{ user_name, group_name });
-            } else {
-                try writer.writeAll("?        ?        ");
-            }
-            
-            // Size
-            if (entry.stat) |stat| {
-                var size_buf: [32]u8 = undefined;
-                const size_str = if (options.human_readable)
-                    try common.file.formatSizeHuman(stat.size, &size_buf)
-                else if (options.kilobytes)
-                    try common.file.formatSizeKilobytes(stat.size, &size_buf)
-                else
-                    try common.file.formatSize(stat.size, &size_buf);
-                
-                // Right-align size in 8 characters for regular, 5 for human
-                if (options.human_readable) {
-                    try writer.print("{s: >5} ", .{size_str});
-                } else {
-                    try writer.print("{s: >8} ", .{size_str});
-                }
-            } else {
-                try writer.writeAll("       ? ");
-            }
-            
-            // Date/time
-            if (entry.stat) |stat| {
-                var time_buf: [64]u8 = undefined;
-                const time_str = try common.file.formatTime(stat.mtime, &time_buf);
-                try writer.print("{s} ", .{time_str});
-            } else {
-                try writer.writeAll("??? ?? ??:?? ");
-            }
-            
-            // Name
-            // Apply color based on file type
-            const color = getFileColor(entry);
-            if (style.color_mode != .none) {
-                try style.setColor(color);
-            }
-            
-            try writer.print("{s}", .{entry.name});
-            
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-            // Show symlink target if available
-            if (entry.symlink_target) |target| {
-                try writer.print(" -> {s}", .{target});
-            }
-            try writer.writeByte('\n');
-        }
-    } else {
-        // Default format: multi-column layout
-        try printColumnar(entries.items, writer, options, style);
-    }
+    // Call the shared implementation with "." as the path
+    try listDirectoryImpl(dir, ".", writer, options, allocator, style);
 }

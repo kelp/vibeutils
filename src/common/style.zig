@@ -45,7 +45,6 @@ pub fn Style(comptime Writer: type) type {
     };
 
         color_mode: ColorMode,
-        use_icons: bool,
         writer: Writer,
 
     /// ANSI color codes
@@ -86,11 +85,9 @@ pub fn Style(comptime Writer: type) type {
         /// Initialize with auto-detection
         pub fn init(writer: Writer) Self {
         const color_mode = ColorMode.detect();
-        const use_icons = detectIconSupport();
 
         return .{
             .color_mode = color_mode,
-            .use_icons = use_icons,
             .writer = writer,
         };
     }
@@ -133,42 +130,6 @@ pub fn Style(comptime Writer: type) type {
         try self.reset();
     }
 
-        /// Print with icon
-        pub fn printWithIcon(self: Self, icon: []const u8, fallback: []const u8, text: []const u8, color: Color) !void {
-        const prefix = if (self.use_icons) icon else fallback;
-        try self.setColor(color);
-        try self.writer.print("{s} {s}", .{ prefix, text });
-        try self.reset();
-    }
-
-        /// File type styling
-        pub fn styleFileType(_: Self, file_type: std.fs.File.Kind) struct { icon: []const u8, color: Color } {
-        return switch (file_type) {
-            .directory => .{ .icon = "📁", .color = .bright_blue },
-            .sym_link => .{ .icon = "🔗", .color = .bright_cyan },
-            .block_device => .{ .icon = "💾", .color = .bright_yellow },
-            .character_device => .{ .icon = "🔌", .color = .bright_yellow },
-            .named_pipe => .{ .icon = "🚰", .color = .yellow },
-            .unix_domain_socket => .{ .icon = "🔌", .color = .magenta },
-            else => .{ .icon = "📄", .color = .default },
-        };
-    }
-
-    /// Detect if terminal likely supports Unicode icons
-    fn detectIconSupport() bool {
-        // Check LANG/LC_ALL for UTF-8
-        if (std.process.getEnvVarOwned(std.heap.page_allocator, "LANG")) |lang| {
-            defer std.heap.page_allocator.free(lang);
-            if (std.mem.indexOf(u8, lang, "UTF-8") != null or
-                std.mem.indexOf(u8, lang, "utf8") != null)
-            {
-                return true;
-            }
-        } else |_| {}
-
-        // Conservative default
-        return false;
-    }
 
     /// Convert RGB to nearest 256 color
     fn rgbTo256(r: u8, g: u8, b: u8) u8 {

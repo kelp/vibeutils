@@ -7,7 +7,7 @@ pub const file = @import("file.zig");
 pub const terminal = @import("terminal.zig");
 
 /// Version information
-pub const version = "0.2.1";
+pub const version = "0.3.1";
 pub const name = "zutils";
 
 /// Common error types

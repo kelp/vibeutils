@@ -11,7 +11,15 @@ pub fn getWidth() !u16 {
     // Unix-like systems: try ioctl first
     if (std.posix.isatty(std.io.getStdOut().handle)) {
         var ws: std.posix.winsize = undefined;
-        const result = std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws));
+        
+        // Use the appropriate ioctl based on the OS
+        const result = switch (builtin.os.tag) {
+            .linux => std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
+            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
+            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
+            else => @as(usize, 1), // Force fallback for unknown systems
+        };
+        
         if (result == 0) {
             return ws.col;
         }
@@ -37,7 +45,15 @@ pub fn getHeight() !u16 {
     // Unix-like systems: try ioctl first
     if (std.posix.isatty(std.io.getStdOut().handle)) {
         var ws: std.posix.winsize = undefined;
-        const result = std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws));
+        
+        // Use the appropriate ioctl based on the OS
+        const result = switch (builtin.os.tag) {
+            .linux => std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
+            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
+            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
+            else => @as(usize, 1), // Force fallback for unknown systems
+        };
+        
         if (result == 0) {
             return ws.row;
         }
