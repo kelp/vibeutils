@@ -252,9 +252,10 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
             .kind = entry.kind,
         };
         
-        // Get stat info if needed for long format, sorting, or file type indicators
+        // Get stat info if needed for long format, sorting, file type indicators, or colors
         if (options.long_format or options.sort_by_time or options.sort_by_size or 
-            (options.file_type_indicators and entry.kind == .file)) {
+            (options.file_type_indicators and entry.kind == .file) or
+            options.color_mode != .never) {
             e.stat = common.file.FileInfo.lstatDir(dir, entry.name) catch null;
         }
         
@@ -298,9 +299,9 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     if (options.one_per_line) {
         for (entries.items) |entry| {
             // Apply color based on file type
-            const file_style = style.styleFileType(entry.kind);
+            const color = getFileColor(entry);
             if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
+                try style.setColor(color);
             }
             
             try writer.print("{s}", .{entry.name});
@@ -392,9 +393,9 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
             
             // Name
             // Apply color based on file type
-            const file_style = style.styleFileType(entry.kind);
+            const color = getFileColor(entry);
             if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
+                try style.setColor(color);
             }
             
             try writer.print("{s}", .{entry.name});
@@ -441,6 +442,28 @@ fn getFileTypeIndicator(entry: Entry) u8 {
     }
 }
 
+fn getFileColor(entry: Entry) common.style.Style(std.fs.File.Writer).Color {
+    const Color = common.style.Style(std.fs.File.Writer).Color;
+    return switch (entry.kind) {
+        .directory => Color.bright_blue,
+        .sym_link => Color.bright_cyan,
+        .block_device => Color.bright_yellow,
+        .character_device => Color.bright_yellow,
+        .named_pipe => Color.yellow,
+        .unix_domain_socket => Color.magenta,
+        .file => blk: {
+            // Check if executable
+            if (entry.stat) |stat| {
+                if ((stat.mode & 0o111) != 0) {
+                    break :blk Color.bright_green;
+                }
+            }
+            break :blk Color.default;
+        },
+        else => Color.default,
+    };
+}
+
 fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
     
@@ -476,9 +499,9 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
             const entry = entries[idx];
             
             // Apply color
-            const file_style = style.styleFileType(entry.kind);
+            const color = getFileColor(entry);
             if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
+                try style.setColor(color);
             }
             
             // Print name
@@ -1101,7 +1124,8 @@ test "ls color scheme for different file types" {
     try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[96msymlink\x1b[0m") != null);
     // Regular files should use default color (39)
     try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[39mregular.txt\x1b[0m") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[39mexecutable\x1b[0m") != null);
+    // Executable files should be bright green (92)
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[92mexecutable\x1b[0m") != null);
 }
 
 test "ls column width calculation" {
@@ -1205,9 +1229,10 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
             .kind = entry.kind,
         };
         
-        // Get stat info if needed for long format, sorting, or file type indicators
+        // Get stat info if needed for long format, sorting, file type indicators, or colors
         if (options.long_format or options.sort_by_time or options.sort_by_size or 
-            (options.file_type_indicators and entry.kind == .file)) {
+            (options.file_type_indicators and entry.kind == .file) or
+            options.color_mode != .never) {
             e.stat = common.file.FileInfo.lstatDir(iterable_dir, entry.name) catch null;
         }
         
@@ -1251,9 +1276,9 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
     if (options.one_per_line) {
         for (entries.items) |entry| {
             // Apply color based on file type
-            const file_style = style.styleFileType(entry.kind);
+            const color = getFileColor(entry);
             if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
+                try style.setColor(color);
             }
             
             try writer.print("{s}", .{entry.name});
@@ -1345,9 +1370,9 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
             
             // Name
             // Apply color based on file type
-            const file_style = style.styleFileType(entry.kind);
+            const color = getFileColor(entry);
             if (style.color_mode != .none) {
-                try style.setColor(file_style.color);
+                try style.setColor(color);
             }
             
             try writer.print("{s}", .{entry.name});
