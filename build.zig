@@ -38,8 +38,8 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("common", common);
         exe.root_module.addImport("clap", clap.module("clap"));
         
-        // Link libc for ls to use user/group lookups
-        if (std.mem.eql(u8, util[0], "ls")) {
+        // Link libc for utilities that need it
+        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat")) {
             exe.linkLibC();
         }
         
@@ -71,8 +71,8 @@ pub fn build(b: *std.Build) void {
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("clap", clap.module("clap"));
         
-        // Link libc for ls tests
-        if (std.mem.eql(u8, util[0], "ls")) {
+        // Link libc for tests that need it
+        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat")) {
             util_tests.linkLibC();
         }
         

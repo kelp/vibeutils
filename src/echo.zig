@@ -1,33 +1,57 @@
 const std = @import("std");
-const testing = std.testing;
+const clap = @import("clap");
 const common = @import("common");
+const testing = std.testing;
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Define parameters using zig-clap
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help     Display this help and exit.
+        \\-V, --version  Output version information and exit.
+        \\-n             Do not output the trailing newline.
+        \\-e             Enable interpretation of backslash escapes.
+        \\-E             Disable interpretation of backslash escapes (default).
+        \\<str>...       Text to echo.
+        \\
+    );
+
+    // Parse arguments
+    var diag = clap.Diagnostic{};
+    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
+        .diagnostic = &diag,
+        .allocator = allocator,
+    }) catch |err| {
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+    defer res.deinit();
+
+    // Handle help
+    if (res.args.help != 0) {
+        try printHelp();
+        return;
+    }
+
+    // Handle version
+    if (res.args.version != 0) {
+        try printVersion();
+        return;
+    }
+
+    // Create options
+    const options = EchoOptions{
+        .suppress_newline = res.args.n != 0,
+        .interpret_escapes = res.args.e != 0,
+    };
+
     const stdout = std.io.getStdOut().writer();
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Check for help or version flags
-    if (args.len > 1) {
-        if (std.mem.eql(u8, args[1], "--help")) {
-            try printHelp();
-            return;
-        } else if (std.mem.eql(u8, args[1], "--version")) {
-            try printVersion();
-            return;
-        }
-    }
-
-    // Skip program name and pass rest to echo function
-    if (args.len > 1) {
-        try echo(args[1..], stdout);
-    } else {
-        try echo(&[_][]const u8{}, stdout);
-    }
+    const strings = res.positionals.@"0";
+    
+    try echoStrings(strings, stdout, options);
 }
 
 fn printHelp() !void {
@@ -59,6 +83,28 @@ fn printVersion() !void {
     try stdout.print("echo ({s}) {s}\n", .{ common.name, common.version });
 }
 
+const EchoOptions = struct {
+    suppress_newline: bool = false,
+    interpret_escapes: bool = false,
+};
+
+fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOptions) !void {
+    for (strings, 0..) |str, i| {
+        if (i > 0) try writer.writeAll(" ");
+        
+        if (options.interpret_escapes) {
+            try writeWithEscapes(str, writer);
+        } else {
+            try writer.writeAll(str);
+        }
+    }
+    
+    if (!options.suppress_newline) {
+        try writer.writeAll("\n");
+    }
+}
+
+// Test helper that parses flags manually for backward compatibility with tests
 fn echo(args: []const []const u8, writer: anytype) !void {
     var suppress_newline = false;
     var interpret_escapes = false;
@@ -88,19 +134,12 @@ fn echo(args: []const []const u8, writer: anytype) !void {
         }
     }
 
-    for (args[start_index..], 0..) |arg, i| {
-        if (i > 0) try writer.writeAll(" ");
-
-        if (interpret_escapes) {
-            try writeWithEscapes(arg, writer);
-        } else {
-            try writer.writeAll(arg);
-        }
-    }
-
-    if (!suppress_newline) {
-        try writer.writeAll("\n");
-    }
+    const options = EchoOptions{
+        .suppress_newline = suppress_newline,
+        .interpret_escapes = interpret_escapes,
+    };
+    
+    try echoStrings(args[start_index..], writer, options);
 }
 
 fn writeWithEscapes(s: []const u8, writer: anytype) !void {

@@ -149,13 +149,14 @@ pub fn formatPermissions(mode: std.fs.File.Mode, kind: std.fs.File.Kind, buf: []
     buf[9] = if (mode & 0o001 != 0) 'x' else '-';
 
     // Handle setuid, setgid, and sticky bits
-    if (mode & 0o4000 != 0) { // setuid
+    const constants = @import("constants.zig");
+    if (mode & constants.SETUID_BIT != 0) { // setuid
         buf[3] = if (buf[3] == 'x') 's' else 'S';
     }
-    if (mode & 0o2000 != 0) { // setgid
+    if (mode & constants.SETGID_BIT != 0) { // setgid
         buf[6] = if (buf[6] == 'x') 's' else 'S';
     }
-    if (mode & 0o1000 != 0) { // sticky
+    if (mode & constants.STICKY_BIT != 0) { // sticky
         buf[9] = if (buf[9] == 'x') 't' else 'T';
     }
 
@@ -201,7 +202,7 @@ pub fn formatSizeKilobytes(size: u64, buf: []u8) ![]const u8 {
 pub fn formatTime(mtime_ns: i128, buf: []u8) ![]const u8 {
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const now_s = std.time.timestamp();
-    const six_months_s = 6 * 30 * 24 * 60 * 60; // Approximate
+    const six_months_s = @import("constants.zig").SIX_MONTHS_SECONDS;
     
     // Convert to broken-down time
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_s) };

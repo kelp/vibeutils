@@ -14,22 +14,22 @@ pub fn Style(comptime Writer: type) type {
 
         /// Detect color mode from environment
         pub fn detect() ColorMode {
-            // Check NO_COLOR standard
-            if (std.process.getEnvVarOwned(std.heap.page_allocator, "NO_COLOR")) |_| {
+            // Check NO_COLOR standard (just check existence)
+            if (std.process.hasEnvVar(std.heap.c_allocator, "NO_COLOR") catch false) {
                 return .none;
-            } else |_| {}
+            }
 
             // Check TERM
-            if (std.process.getEnvVarOwned(std.heap.page_allocator, "TERM")) |term| {
-                defer std.heap.page_allocator.free(term);
+            if (std.process.getEnvVarOwned(std.heap.c_allocator, "TERM")) |term| {
+                defer std.heap.c_allocator.free(term);
 
                 if (std.mem.eql(u8, term, "dumb")) return .none;
                 if (std.mem.indexOf(u8, term, "256color") != null) return .extended;
                 if (std.mem.indexOf(u8, term, "truecolor") != null) return .truecolor;
 
                 // Check COLORTERM for true color
-                if (std.process.getEnvVarOwned(std.heap.page_allocator, "COLORTERM")) |colorterm| {
-                    defer std.heap.page_allocator.free(colorterm);
+                if (std.process.getEnvVarOwned(std.heap.c_allocator, "COLORTERM")) |colorterm| {
+                    defer std.heap.c_allocator.free(colorterm);
                     if (std.mem.eql(u8, colorterm, "truecolor") or
                         std.mem.eql(u8, colorterm, "24bit"))
                     {

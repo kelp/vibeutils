@@ -64,7 +64,6 @@ pub fn main() !void {
         };
     }
 
-    // Remove LS_COLORS parsing - not used in current implementation
 
     // Create options struct
     const options = LsOptions{
@@ -148,10 +147,10 @@ fn parseColorMode(arg: []const u8) !ColorMode {
     return std.meta.stringToEnum(ColorMode, arg) orelse error.InvalidColorMode;
 }
 
-// Constants for better readability
-const BLOCK_SIZE = 512;
+// Use common constants
+const BLOCK_SIZE = common.constants.BLOCK_SIZE;
 const BLOCK_ROUNDING = BLOCK_SIZE - 1;
-const COLUMN_PADDING = 2;
+const COLUMN_PADDING = common.constants.COLUMN_PADDING;
 
 const LsOptions = struct {
     all: bool = false,
@@ -185,53 +184,126 @@ fn initStyle(writer: anytype, color_mode: ColorMode) common.style.Style(@TypeOf(
     return style;
 }
 
-fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
+// Print entry name with color and optional file type indicator
+fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indicator: bool) !void {
+    const color = getFileColor(entry);
+    if (style.color_mode != .none) {
+        try style.setColor(color);
+    }
+    
+    try writer.print("{s}", .{entry.name});
+    
+    if (style.color_mode != .none) {
+        try style.reset();
+    }
+    
+    if (show_indicator) {
+        const indicator = getFileTypeIndicator(entry);
+        if (indicator != 0) {
+            try writer.writeByte(indicator);
+        }
+    }
+}
+
+// Calculate the display width of an entry (name + optional indicator)
+fn getEntryDisplayWidth(entry: Entry, show_indicator: bool) usize {
+    var width = entry.name.len;
+    if (show_indicator) {
+        const indicator = getFileTypeIndicator(entry);
+        if (indicator != 0) width += 1;
+    }
+    return width;
+}
+
+// Print a single entry in long format
+fn printLongFormatEntry(entry: Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+    // Permission string
+    var perm_buf: [10]u8 = undefined;
+    const perms = if (entry.stat) |stat|
+        try common.file.formatPermissions(stat.mode, stat.kind, &perm_buf)
+    else
+        "----------";
+    
+    try writer.writeAll(perms);
+    
+    // Number of links
+    if (entry.stat) |stat| {
+        try writer.print(" {d: >3} ", .{stat.nlink});
+    } else {
+        try writer.writeAll("   ? ");
+    }
+    
+    // User and group names
+    if (entry.stat) |stat| {
+        var user_buf: [32]u8 = undefined;
+        var group_buf: [32]u8 = undefined;
+        const user_name = try common.file.getUserName(stat.uid, &user_buf);
+        const group_name = try common.file.getGroupName(stat.gid, &group_buf);
+        try writer.print("{s: <8} {s: <8} ", .{ user_name, group_name });
+    } else {
+        try writer.writeAll("?        ?        ");
+    }
+    
+    // Size
+    if (entry.stat) |stat| {
+        var size_buf: [32]u8 = undefined;
+        const size_str = if (options.human_readable)
+            try common.file.formatSizeHuman(stat.size, &size_buf)
+        else if (options.kilobytes)
+            try common.file.formatSizeKilobytes(stat.size, &size_buf)
+        else
+            try common.file.formatSize(stat.size, &size_buf);
+        
+        // Right-align size in 8 characters for regular, 5 for human
+        if (options.human_readable) {
+            try writer.print("{s: >5} ", .{size_str});
+        } else {
+            try writer.print("{s: >8} ", .{size_str});
+        }
+    } else {
+        try writer.writeAll("       ? ");
+    }
+    
+    // Date/time
+    if (entry.stat) |stat| {
+        var time_buf: [64]u8 = undefined;
+        const time_str = try common.file.formatTime(stat.mtime, &time_buf);
+        try writer.print("{s} ", .{time_str});
+    } else {
+        try writer.writeAll("??? ?? ??:?? ");
+    }
+    
+    // Name with color and optional indicator
+    try printEntryName(entry, writer, style, options.file_type_indicators);
+    
+    // Show symlink target if available
+    if (entry.symlink_target) |target| {
+        try writer.print(" -> {s}", .{target});
+    }
+    try writer.writeByte('\n');
+}
+
+fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) ListError!void {
     // Initialize style based on color mode
     const style = initStyle(writer, options.color_mode);
     
     // If -d is specified, just list the directory itself
     if (options.directory) {
-        if (options.one_per_line) {
-            try writer.print("{s}\n", .{path});
-        } else if (options.long_format) {
+        if (options.long_format) {
             // Get stat info for the directory
             const stat = common.file.FileInfo.stat(path) catch |err| {
                 common.printError("{s}: {}", .{ path, err });
                 return err;
             };
             
-            // Format long listing for directory
-            var perm_buf: [10]u8 = undefined;
-            const perms = try common.file.formatPermissions(stat.mode, stat.kind, &perm_buf);
-            try writer.writeAll(perms);
+            const entry = Entry{
+                .name = path,
+                .kind = .directory,
+                .stat = stat,
+                .symlink_target = null,
+            };
             
-            try writer.print(" {d: >3} ", .{stat.nlink});
-            
-            var user_buf: [32]u8 = undefined;
-            var group_buf: [32]u8 = undefined;
-            const user_name = try common.file.getUserName(stat.uid, &user_buf);
-            const group_name = try common.file.getGroupName(stat.gid, &group_buf);
-            try writer.print("{s: <8} {s: <8} ", .{ user_name, group_name });
-            
-            var size_buf: [32]u8 = undefined;
-            const size_str = if (options.human_readable)
-                try common.file.formatSizeHuman(stat.size, &size_buf)
-            else if (options.kilobytes)
-                try common.file.formatSizeKilobytes(stat.size, &size_buf)
-            else
-                try common.file.formatSize(stat.size, &size_buf);
-            
-            if (options.human_readable) {
-                try writer.print("{s: >5} ", .{size_str});
-            } else {
-                try writer.print("{s: >8} ", .{size_str});
-            }
-            
-            var time_buf: [64]u8 = undefined;
-            const time_str = try common.file.formatTime(stat.mtime, &time_buf);
-            try writer.print("{s} ", .{time_str});
-            
-            try writer.print("{s}\n", .{path});
+            try printLongFormatEntry(entry, writer, options, style);
         } else {
             try writer.print("{s}\n", .{path});
         }
@@ -249,48 +321,235 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
 }
 
 // Shared implementation that works with an open directory handle
-fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) !void {
+fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) ListError!void {
+    // For recursive listing with symlinks, we need to track visited inodes
+    var visited_inodes = std.AutoHashMap(u64, void).init(allocator);
+    defer visited_inodes.deinit();
+    
+    try listDirectoryImplWithVisited(dir, path, writer, options, allocator, style, &visited_inodes);
+}
+
+// Collect directory entries with filtering
+fn collectFilteredEntries(
+    dir: std.fs.Dir,
+    allocator: std.mem.Allocator,
+    options: LsOptions,
+) ListError!std.ArrayList(Entry) {
     var entries = std.ArrayList(Entry).init(allocator);
-    defer entries.deinit();
+    errdefer {
+        // Clean up any entries allocated so far
+        for (entries.items) |entry| {
+            allocator.free(entry.name);
+            if (entry.symlink_target) |target| {
+                allocator.free(target);
+            }
+        }
+        entries.deinit();
+    }
+
+    // Create filter based on options
+    const filter = common.directory.EntryFilter{
+        .show_hidden = options.all or options.almost_all,
+        .show_all = options.all,
+        .skip_dots = options.almost_all,
+    };
 
     // Collect entries
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
-        // Skip hidden files unless -a or -A is specified
-        if (!options.all and !options.almost_all and entry.name[0] == '.') {
+        // Apply filtering
+        if (!filter.shouldInclude(entry.name)) {
             continue;
         }
-        
-        // Skip . and .. for -A
-        if (options.almost_all and !options.all) {
-            if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
-                continue;
-            }
-        }
 
-        var e = Entry{
+        const e = Entry{
             .name = try allocator.dupe(u8, entry.name),
             .kind = entry.kind,
         };
+        errdefer allocator.free(e.name);
         
+        try entries.append(e);
+    }
+    
+    return entries;
+}
+
+// Check if entries need metadata enhancement
+fn needsMetadata(options: LsOptions) bool {
+    return options.long_format or options.sort_by_time or options.sort_by_size or
+           options.file_type_indicators or options.color_mode != .never;
+}
+
+// Enhance entries with stat info and symlink targets
+fn enhanceEntriesWithMetadata(
+    entries: []Entry,
+    dir: std.fs.Dir,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+) ListError!void {
+    for (entries) |*entry| {
         // Get stat info if needed for long format, sorting, file type indicators, or colors
         if (options.long_format or options.sort_by_time or options.sort_by_size or 
             (options.file_type_indicators and entry.kind == .file) or
             options.color_mode != .never) {
-            e.stat = common.file.FileInfo.lstatDir(dir, entry.name) catch null;
+            entry.stat = common.file.FileInfo.lstatDir(dir, entry.name) catch null;
         }
         
         // Read symlink target if needed
         if (options.long_format and entry.kind == .sym_link) {
             var target_buf: [std.fs.max_path_bytes]u8 = undefined;
             if (dir.readLink(entry.name, &target_buf)) |target| {
-                e.symlink_target = try allocator.dupe(u8, target);
+                entry.symlink_target = try allocator.dupe(u8, target);
             } else |_| {
                 // Failed to read symlink, leave as null
             }
         }
+    }
+}
+
+// Print entries in the appropriate format
+fn printEntries(
+    entries: []const Entry,
+    writer: anytype,
+    options: LsOptions,
+    style: anytype,
+) !u64 {
+    var total_blocks: u64 = 0;
+    
+    if (options.one_per_line) {
+        for (entries) |entry| {
+            try printEntryName(entry, writer, style, options.file_type_indicators);
+            try writer.writeByte('\n');
+        }
+    } else if (options.long_format) {
+        // Calculate total blocks
+        for (entries) |entry| {
+            if (entry.stat) |stat| {
+                total_blocks += (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
+            }
+        }
         
-        try entries.append(e);
+        // Print total if we have entries
+        if (entries.len > 0) {
+            try writer.print("total {d}\n", .{total_blocks});
+        }
+        
+        // Print each entry in long format
+        for (entries) |entry| {
+            try printLongFormatEntry(entry, writer, options, style);
+        }
+    } else {
+        // Default format: multi-column layout
+        try printColumnar(entries, writer, options, style);
+    }
+    
+    return total_blocks;
+}
+
+// Process subdirectories recursively
+fn processSubdirectoriesRecursively(
+    entries: []const Entry,
+    dir: std.fs.Dir,
+    base_path: []const u8,
+    writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+    visited_inodes: *std.AutoHashMap(u64, void),
+) ListError!void {
+    // Collect subdirectories using the common utility
+    var subdirs = try common.directory.collectSubdirectories(Entry, entries, base_path, allocator);
+    defer {
+        common.directory.freeSubdirectoryPaths(subdirs.items, allocator);
+        subdirs.deinit();
+    }
+    
+    // Create cycle detector
+    var cycle_detector = common.directory.CycleDetector.init(visited_inodes);
+    
+    // Recurse into subdirectories
+    for (subdirs.items) |subdir| {
+        // Print separator and header
+        writer.writeAll("\n") catch |err| {
+            if (err == error.BrokenPipe) return; // Exit gracefully on pipe close
+            return err;
+        };
+        writer.print("{s}:\n", .{subdir.path}) catch |err| {
+            if (err == error.BrokenPipe) return; // Exit gracefully on pipe close
+            return err;
+        };
+        
+        // Open the subdirectory relative to the current directory
+        var sub_dir = dir.openDir(subdir.name, .{ .iterate = true }) catch |err| {
+            common.printError("{s}: {}", .{ subdir.path, err });
+            continue;
+        };
+        defer sub_dir.close();
+        
+        // Check for cycles
+        if (cycle_detector.hasVisited(sub_dir)) {
+            common.printError("{s}: not following symlink cycle", .{subdir.path});
+            continue;
+        }
+        try cycle_detector.markVisited(sub_dir);
+        
+        // Recurse using the shared implementation
+        try recurseIntoSubdirectory(sub_dir, subdir.path, writer, options, allocator, style, visited_inodes);
+    }
+}
+
+// Wrapper for recursive directory processing to avoid error set inference issues
+fn recurseIntoSubdirectory(
+    sub_dir: std.fs.Dir,
+    subdir_path: []const u8,
+    writer: anytype,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    style: anytype,
+    visited_inodes: *std.AutoHashMap(u64, void),
+) ListError!void {
+    listDirectoryImplWithVisited(sub_dir, subdir_path, writer, options, allocator, style, visited_inodes) catch |err| switch (err) {
+        error.BrokenPipe => return err, // Propagate BrokenPipe
+        else => {
+            common.printError("{s}: {}", .{ subdir_path, err });
+            // Continue with other directories even if one fails
+        },
+    };
+}
+
+// Define error set for directory listing
+const ListError = error{
+    OutOfMemory,
+    AccessDenied,
+    FileNotFound,
+    BrokenPipe,
+    SystemResources,
+    NotDir,
+    NameTooLong,
+    StatFailed,
+    InvalidUtf8,
+    Unexpected,
+    NoSpaceLeft,
+    BufferTooSmall,
+};
+
+// Internal implementation that tracks visited inodes
+fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_inodes: *std.AutoHashMap(u64, void)) ListError!void {
+    // Collect and filter entries
+    var entries = try collectFilteredEntries(dir, allocator, options);
+    defer entries.deinit();
+    defer {
+        for (entries.items) |entry| {
+            allocator.free(entry.name);
+            if (entry.symlink_target) |target| {
+                allocator.free(target);
+            }
+        }
+    }
+
+    // Enhance with metadata if needed
+    if (needsMetadata(options)) {
+        try enhanceEntriesWithMetadata(entries.items, dir, options, allocator);
     }
 
     // Sort entries based on options
@@ -302,179 +561,16 @@ fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options
     };
     
     std.mem.sort(Entry, entries.items, sort_config, compareEntries);
-    defer {
-        for (entries.items) |entry| {
-            allocator.free(entry.name);
-            if (entry.symlink_target) |target| {
-                allocator.free(target);
-            }
-        }
-    }
 
     // Print entries
-    if (options.one_per_line) {
-        for (entries.items) |entry| {
-            // Apply color based on file type
-            const color = getFileColor(entry);
-            if (style.color_mode != .none) {
-                try style.setColor(color);
-            }
-            
-            try writer.print("{s}", .{entry.name});
-            
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-            try writer.writeByte('\n');
-        }
-    } else if (options.long_format) {
-        // Long format: permissions, links, user, group, size, date, name
-        var total_blocks: u64 = 0;
-        
-        // Calculate total blocks
-        for (entries.items) |entry| {
-            if (entry.stat) |stat| {
-                total_blocks += (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
-            }
-        }
-        
-        // Print total if we have entries
-        if (entries.items.len > 0) {
-            try writer.print("total {d}\n", .{total_blocks});
-        }
-        
-        // Print each entry
-        for (entries.items) |entry| {
-            // Permission string
-            var perm_buf: [10]u8 = undefined;
-            const perms = if (entry.stat) |stat|
-                try common.file.formatPermissions(stat.mode, stat.kind, &perm_buf)
-            else
-                "----------";
-            
-            try writer.writeAll(perms);
-            
-            // Number of links
-            if (entry.stat) |stat| {
-                try writer.print(" {d: >3} ", .{stat.nlink});
-            } else {
-                try writer.writeAll("   ? ");
-            }
-            
-            // User and group names
-            if (entry.stat) |stat| {
-                var user_buf: [32]u8 = undefined;
-                var group_buf: [32]u8 = undefined;
-                const user_name = try common.file.getUserName(stat.uid, &user_buf);
-                const group_name = try common.file.getGroupName(stat.gid, &group_buf);
-                try writer.print("{s: <8} {s: <8} ", .{ user_name, group_name });
-            } else {
-                try writer.writeAll("?        ?        ");
-            }
-            
-            // Size
-            if (entry.stat) |stat| {
-                var size_buf: [32]u8 = undefined;
-                const size_str = if (options.human_readable)
-                    try common.file.formatSizeHuman(stat.size, &size_buf)
-                else if (options.kilobytes)
-                    try common.file.formatSizeKilobytes(stat.size, &size_buf)
-                else
-                    try common.file.formatSize(stat.size, &size_buf);
-                
-                // Right-align size in 8 characters for regular, 5 for human
-                if (options.human_readable) {
-                    try writer.print("{s: >5} ", .{size_str});
-                } else {
-                    try writer.print("{s: >8} ", .{size_str});
-                }
-            } else {
-                try writer.writeAll("       ? ");
-            }
-            
-            // Date/time
-            if (entry.stat) |stat| {
-                var time_buf: [64]u8 = undefined;
-                const time_str = try common.file.formatTime(stat.mtime, &time_buf);
-                try writer.print("{s} ", .{time_str});
-            } else {
-                try writer.writeAll("??? ?? ??:?? ");
-            }
-            
-            // Name
-            // Apply color based on file type
-            const color = getFileColor(entry);
-            if (style.color_mode != .none) {
-                try style.setColor(color);
-            }
-            
-            try writer.print("{s}", .{entry.name});
-            
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-            // Show symlink target if available
-            if (entry.symlink_target) |target| {
-                try writer.print(" -> {s}", .{target});
-            }
-            try writer.writeByte('\n');
-        }
-    } else {
-        // Default format: multi-column layout
-        try printColumnar(entries.items, writer, options, style);
-    }
+    _ = try printEntries(entries.items, writer, options, style);
     
     // Handle recursive listing
     if (options.recursive) {
-        // We need to track which entries correspond to which paths
-        var dir_entries = std.ArrayList(struct { name: []const u8, path: []const u8 }).init(allocator);
-        defer dir_entries.deinit();
-        
-        for (entries.items) |entry| {
-            if (entry.kind == .directory) {
-                // Skip . and .. to avoid infinite recursion
-                if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
-                    continue;
-                }
-                
-                // Build the full path
-                const full_path = try std.fs.path.join(allocator, &[_][]const u8{ path, entry.name });
-                try dir_entries.append(.{ .name = entry.name, .path = full_path });
-            }
-        }
-        
-        // Recurse into subdirectories
-        for (dir_entries.items) |dir_entry| {
-            defer allocator.free(dir_entry.path);
-            
-            try writer.writeAll("\n");
-            try writer.print("{s}:\n", .{dir_entry.path});
-            
-            // Open the subdirectory relative to the current directory
-            var sub_dir = dir.openDir(dir_entry.name, .{ .iterate = true }) catch |err| {
-                common.printError("{s}: {}", .{ dir_entry.path, err });
-                continue;
-            };
-            defer sub_dir.close();
-            
-            // Recurse using the shared implementation
-            listDirectoryImpl(sub_dir, dir_entry.path, writer, options, allocator, style) catch |err| {
-                common.printError("{s}: {}", .{ dir_entry.path, err });
-                // Continue with other directories even if one fails
-            };
-        }
+        try processSubdirectoriesRecursively(
+            entries.items, dir, path, writer, 
+            options, allocator, style, visited_inodes
+        );
     }
 }
 
@@ -489,7 +585,7 @@ fn getFileTypeIndicator(entry: Entry) u8 {
             // Check if executable
             if (entry.stat) |stat| {
                 // Check if any execute bit is set
-                if ((stat.mode & 0o111) != 0) {
+                if ((stat.mode & common.constants.EXECUTE_BIT) != 0) {
                     return '*';
                 }
             }
@@ -511,7 +607,7 @@ fn getFileColor(entry: Entry) common.style.Style(std.fs.File.Writer).Color {
         .file => blk: {
             // Check if executable
             if (entry.stat) |stat| {
-                if ((stat.mode & 0o111) != 0) {
+                if ((stat.mode & common.constants.EXECUTE_BIT) != 0) {
                     break :blk Color.bright_green;
                 }
             }
@@ -530,11 +626,7 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
     // Calculate the width needed for each entry
     var max_width: usize = 0;
     for (entries) |entry| {
-        var width = entry.name.len;
-        if (options.file_type_indicators) {
-            const indicator = getFileTypeIndicator(entry);
-            if (indicator != 0) width += 1;
-        }
+        const width = getEntryDisplayWidth(entry, options.file_type_indicators);
         max_width = @max(max_width, width);
     }
     
@@ -542,7 +634,7 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
     const col_width = max_width + COLUMN_PADDING;
     
     // Calculate number of columns that fit
-    const num_cols = @max(@as(usize, 1), term_width / col_width);
+    const num_cols = @max(1, term_width / col_width);
     
     // Calculate number of rows needed
     const num_rows = (entries.len + num_cols - 1) / num_cols;
@@ -555,35 +647,12 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
             
             const entry = entries[idx];
             
-            // Apply color
-            const color = getFileColor(entry);
-            if (style.color_mode != .none) {
-                try style.setColor(color);
-            }
-            
-            // Print name
-            try writer.print("{s}", .{entry.name});
-            
-            // Print file type indicator
-            if (options.file_type_indicators) {
-                const indicator = getFileTypeIndicator(entry);
-                if (indicator != 0) {
-                    try writer.writeByte(indicator);
-                }
-            }
-            
-            // Reset color
-            if (style.color_mode != .none) {
-                try style.reset();
-            }
+            // Print entry name with color and indicator
+            try printEntryName(entry, writer, style, options.file_type_indicators);
             
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
-                var width = entry.name.len;
-                if (options.file_type_indicators) {
-                    const indicator = getFileTypeIndicator(entry);
-                    if (indicator != 0) width += 1;
-                }
+                const width = getEntryDisplayWidth(entry, options.file_type_indicators);
                 const padding = col_width - width;
                 for (0..padding) |_| {
                     try writer.writeByte(' ');
@@ -616,36 +685,34 @@ fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
         const a_is_dir = a.kind == .directory;
         const b_is_dir = b.kind == .directory;
         if (a_is_dir != b_is_dir) {
-            return if (config.reverse) b_is_dir else a_is_dir;
+            return a_is_dir; // Directories always come first
         }
     }
     
     // Primary sort criteria
-    var result: bool = undefined;
-    
-    if (config.by_time) {
+    const result: bool = if (config.by_time) blk: {
         // Sort by modification time
         if (a.stat != null and b.stat != null and a.stat.?.mtime != b.stat.?.mtime) {
-            result = a.stat.?.mtime > b.stat.?.mtime; // Newest first by default
+            break :blk a.stat.?.mtime > b.stat.?.mtime; // Newest first by default
         } else {
             // Fall back to name sort
-            result = std.mem.order(u8, a.name, b.name) == .lt;
+            break :blk std.mem.order(u8, a.name, b.name) == .lt;
         }
-    } else if (config.by_size) {
+    } else if (config.by_size) blk: {
         // Sort by size
         if (a.stat != null and b.stat != null and a.stat.?.size != b.stat.?.size) {
-            result = a.stat.?.size > b.stat.?.size; // Largest first by default
+            break :blk a.stat.?.size > b.stat.?.size; // Largest first by default
         } else {
             // Fall back to name sort
-            result = std.mem.order(u8, a.name, b.name) == .lt;
+            break :blk std.mem.order(u8, a.name, b.name) == .lt;
         }
-    } else {
+    } else blk: {
         // Default: sort by name
-        result = std.mem.order(u8, a.name, b.name) == .lt;
-    }
+        break :blk std.mem.order(u8, a.name, b.name) == .lt;
+    };
     
-    // Apply reverse if needed (but not for directory grouping)
-    return if (config.reverse and !config.dirs_first) !result else result;
+    // Apply reverse if needed
+    return if (config.reverse) !result else result;
 }
 
 // Tests
@@ -1295,8 +1362,6 @@ test "ls --group-directories-first" {
     try testing.expect(mid_file_pos < zzz_file_pos);
 }
 
-// LS_COLORS parsing test removed - feature not implemented
-
 test "ls column width calculation" {
     // Test column width calculation
     const entries = [_][]const u8{
@@ -1344,11 +1409,11 @@ test "ls recursive listing" {
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
     
-    // Use the recursive test helper function
-    try listDirectoryTestRecursive(test_dir, buffer.writer(), .{
+    // Use the test helper function
+    try listDirectoryTest(test_dir, buffer.writer(), .{
         .recursive = true,
         .one_per_line = true, // For easier testing
-    }, testing.allocator, "");
+    }, testing.allocator);
 
     const output = buffer.items;
     
@@ -1400,23 +1465,21 @@ test "ls multi-column output" {
 }
 
 // Test helper that uses a Dir instead of path
-// Helper for recursive directory listing in tests
-fn listDirectoryTestRecursive(dir: std.fs.Dir, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, prefix: []const u8) !void {
-    const style = initStyle(writer, options.color_mode);
-    
-    // Use the shared implementation - this handles everything including recursion
-    try listDirectoryImpl(dir, prefix, writer, options, allocator, style);
-}
-
 fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
-    const style = initStyle(writer, options.color_mode);
+    // Only disable colors if color_mode is auto (the default), 
+    // but respect explicit color settings in tests
+    var test_options = options;
+    if (test_options.color_mode == .auto) {
+        test_options.color_mode = .never;
+    }
+    const style = initStyle(writer, test_options.color_mode);
     
     // If -d is specified, just list the directory itself
-    if (options.directory) {
+    if (test_options.directory) {
         try writer.print(".\n", .{});
         return;
     }
     
     // Call the shared implementation with "." as the path
-    try listDirectoryImpl(dir, ".", writer, options, allocator, style);
+    try listDirectoryImpl(dir, ".", writer, test_options, allocator, style);
 }

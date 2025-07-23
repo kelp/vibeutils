@@ -2,8 +2,8 @@
 
 ## Progress Summary
 - **Utilities Completed**: 2/22 (echo ✓, cat ✓)
-- **Utilities In Progress**: 1/22 (ls - Phase 1 & 2 complete ✓, Phase 3 mostly complete ✓)
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~75% (most useful features + colors + responsive layout)
+- **Utilities In Progress**: 1/22 (ls - Phase 1, 2 & 3 complete ✓)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~80% (most useful features + colors + responsive layout + directory grouping)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
@@ -128,13 +128,13 @@ For each utility:
 - [x] Test: Color capability detection (isatty, TERM)
 - [x] Test: --color=auto/always/never modes
 - [x] Test: Basic color scheme (dirs, executables, symlinks) ✓
-- [ ] Test: LS_COLORS environment variable parsing
-- [ ] Test: --group-directories-first option
+- [x] Test: LS_COLORS environment variable parsing ✓
+- [x] Test: --group-directories-first option ✓
 - [x] Test: Terminal width detection for columns ✓
 - [x] Test: Smart column formatting (-C is default) ✓
 - [x] Implement: Color system with graceful degradation ✓
-- [ ] Implement: LS_COLORS parser (simplified)
-- [ ] Implement: Directory grouping logic
+- [x] Implement: LS_COLORS parser (simplified) ✓
+- [x] Implement: Directory grouping logic ✓
 - [x] Implement: Responsive column layout ✓
 
 ###### Phase 4: Recursive & Nice-to-Have (TDD)

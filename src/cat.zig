@@ -138,7 +138,7 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
     var buf_reader = std.io.bufferedReader(reader);
     var input = buf_reader.reader();
 
-    var line_buf: [8192]u8 = undefined;
+    var line_buf: [common.constants.LINE_BUFFER_SIZE]u8 = undefined;
     while (true) {
         const maybe_line = try input.readUntilDelimiterOrEof(&line_buf, '\n');
         if (maybe_line) |line| {
@@ -204,24 +204,17 @@ fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions)
     }
 }
 
-// Test helper to create temporary files
-fn createTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll(content);
-}
 
 test "cat reads single file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Hello, World!\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, World!\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{"test.txt"};
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{});
 
     try testing.expectEqualStrings("Hello, World!\n", buffer.items);
 }
@@ -230,14 +223,15 @@ test "cat concatenates multiple files" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "file1.txt", "First file\n");
-    try createTestFile(tmp_dir.dir, "file2.txt", "Second file\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "file1.txt", "First file\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "file2.txt", "Second file\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "file1.txt", "file2.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    // Cat multiple files
+    try testCatFile(tmp_dir.dir, "file1.txt", buffer.writer(), .{});
+    try testCatFile(tmp_dir.dir, "file2.txt", buffer.writer(), .{});
 
     try testing.expectEqualStrings("First file\nSecond file\n", buffer.items);
 }
@@ -249,8 +243,7 @@ test "cat reads from stdin when no files" {
     const stdin_content = "Input from stdin\n";
     var stdin_stream = std.io.fixedBufferStream(stdin_content);
 
-    const args = [_][]const u8{};
-    try catWithStdin(&args, buffer.writer(), null, stdin_stream.reader());
+    try testCatStdin(stdin_stream.reader(), buffer.writer(), .{});
 
     try testing.expectEqualStrings("Input from stdin\n", buffer.items);
 }
@@ -259,13 +252,12 @@ test "cat with -n numbers all lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-n", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .number_lines = true });
 
     try testing.expectEqualStrings("     1\tLine 1\n     2\tLine 2\n     3\tLine 3\n", buffer.items);
 }
@@ -274,13 +266,12 @@ test "cat with -b numbers non-blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n\nLine 5\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n\nLine 5\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-b", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .number_nonblank = true });
 
     try testing.expectEqualStrings("     1\tLine 1\n\n     2\tLine 3\n\n     3\tLine 5\n", buffer.items);
 }
@@ -289,13 +280,12 @@ test "cat with -s squeezes blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n\n\nLine 3\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n\n\nLine 3\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-s", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .squeeze_blank = true });
 
     try testing.expectEqualStrings("Line 1\n\nLine 2\n\nLine 3\n", buffer.items);
 }
@@ -304,13 +294,12 @@ test "cat with -E shows ends" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-E", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .show_ends = true });
 
     try testing.expectEqualStrings("Line 1$\nLine 2$\n", buffer.items);
 }
@@ -319,13 +308,12 @@ test "cat with -T shows tabs" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-T", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .show_tabs = true });
 
     try testing.expectEqualStrings("Line^Iwith^Itabs\n", buffer.items);
 }
@@ -337,8 +325,7 @@ test "cat handles non-existent file" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{"nonexistent.txt"};
-    const result = cat(&args, buffer.writer(), tmp_dir.dir);
+    const result = testCatFile(tmp_dir.dir, "nonexistent.txt", buffer.writer(), .{});
 
     try testing.expectError(error.FileNotFound, result);
 }
@@ -350,8 +337,7 @@ test "cat with dash reads stdin" {
     const stdin_content = "From stdin\n";
     var stdin_stream = std.io.fixedBufferStream(stdin_content);
 
-    const args = [_][]const u8{"-"};
-    try catWithStdin(&args, buffer.writer(), null, stdin_stream.reader());
+    try testCatStdin(stdin_stream.reader(), buffer.writer(), .{});
 
     try testing.expectEqualStrings("From stdin\n", buffer.items);
 }
@@ -360,13 +346,16 @@ test "cat with -A shows all (equivalent to -vET)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line 1\t\nLine 2\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\t\nLine 2\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-A", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
+        .show_nonprinting = true,
+        .show_ends = true,
+        .show_tabs = true 
+    });
 
     try testing.expectEqualStrings("Line 1^I$\nLine 2$\n", buffer.items);
 }
@@ -375,13 +364,15 @@ test "cat with -e shows ends and non-printing (equivalent to -vE)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-e", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
+        .show_nonprinting = true,
+        .show_ends = true 
+    });
 
     try testing.expectEqualStrings("Line 1$\nLine 2$\n", buffer.items);
 }
@@ -390,13 +381,15 @@ test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-t", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
+        .show_nonprinting = true,
+        .show_tabs = true 
+    });
 
     try testing.expectEqualStrings("Line^Iwith^Itabs\n", buffer.items);
 }
@@ -405,13 +398,13 @@ test "cat with -u flag is ignored" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "test.txt", "Test content\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Test content\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-u", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    // -u is ignored, so just use default options
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{});
 
     // -u should be ignored, so output should be normal
     try testing.expectEqualStrings("Test content\n", buffer.items);
@@ -422,104 +415,30 @@ test "cat with -A and control characters" {
     defer tmp_dir.cleanup();
 
     // Create file with control character (^A = \x01)
-    try createTestFile(tmp_dir.dir, "test.txt", "Test\x01\tEnd\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Test\x01\tEnd\n");
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-A", "test.txt" };
-    try cat(&args, buffer.writer(), tmp_dir.dir);
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
+        .show_nonprinting = true,
+        .show_ends = true,
+        .show_tabs = true 
+    });
 
     try testing.expectEqualStrings("Test^A^IEnd$\n", buffer.items);
 }
 
-// Test implementation that mimics main() but for testing
-fn cat(args: []const []const u8, writer: anytype, dir: ?std.fs.Dir) !void {
-    var options = CatOptions{};
-    var files = std.ArrayList([]const u8).init(testing.allocator);
-    defer files.deinit();
-
-    // Parse args manually for tests
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
-        if (std.mem.eql(u8, arg, "-n")) {
-            options.number_lines = true;
-        } else if (std.mem.eql(u8, arg, "-b")) {
-            options.number_nonblank = true;
-        } else if (std.mem.eql(u8, arg, "-s")) {
-            options.squeeze_blank = true;
-        } else if (std.mem.eql(u8, arg, "-E")) {
-            options.show_ends = true;
-        } else if (std.mem.eql(u8, arg, "-T")) {
-            options.show_tabs = true;
-        } else if (std.mem.eql(u8, arg, "-v")) {
-            options.show_nonprinting = true;
-        } else if (std.mem.eql(u8, arg, "-A")) {
-            // -A is equivalent to -vET
-            options.show_nonprinting = true;
-            options.show_ends = true;
-            options.show_tabs = true;
-        } else if (std.mem.eql(u8, arg, "-e")) {
-            // -e is equivalent to -vE
-            options.show_nonprinting = true;
-            options.show_ends = true;
-        } else if (std.mem.eql(u8, arg, "-t")) {
-            // -t is equivalent to -vT
-            options.show_nonprinting = true;
-            options.show_tabs = true;
-        } else if (std.mem.eql(u8, arg, "-u")) {
-            // -u is ignored for POSIX compatibility
-        } else if (arg[0] != '-') {
-            try files.append(arg);
-        }
-    }
-
+// Test helper that processes a file directly
+fn testCatFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options: CatOptions) !void {
+    const file = try dir.openFile(filename, .{});
+    defer file.close();
     var line_state = LineNumberState{};
-
-    if (files.items.len == 0) {
-        // Would read from stdin in real implementation
-        return;
-    }
-
-    for (files.items) |file_path| {
-        const file = (dir orelse std.fs.cwd()).openFile(file_path, .{}) catch |err| {
-            if (err == error.FileNotFound) return error.FileNotFound;
-            return err;
-        };
-        defer file.close();
-        try processInput(file.reader(), writer, options, &line_state);
-    }
+    try processInput(file.reader(), writer, options, &line_state);
 }
 
-fn catWithStdin(args: []const []const u8, writer: anytype, dir: ?std.fs.Dir, stdin: anytype) !void {
-    var options = CatOptions{};
-    var has_files = false;
-
-    // Parse args
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "-n")) {
-            options.number_lines = true;
-        } else if (std.mem.eql(u8, arg, "-")) {
-            has_files = true;
-        } else if (arg[0] != '-') {
-            has_files = true;
-        }
-    }
-
+// Test helper for stdin input
+fn testCatStdin(reader: anytype, writer: anytype, options: CatOptions) !void {
     var line_state = LineNumberState{};
-
-    if (!has_files) {
-        try processInput(stdin, writer, options, &line_state);
-    } else {
-        // Check if any arg is "-"
-        for (args) |arg| {
-            if (std.mem.eql(u8, arg, "-")) {
-                try processInput(stdin, writer, options, &line_state);
-                break;
-            }
-        }
-    }
-
-    _ = dir;
+    try processInput(reader, writer, options, &line_state);
 }

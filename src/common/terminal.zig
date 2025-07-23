@@ -26,13 +26,13 @@ pub fn getWidth() !u16 {
     }
     
     // Fallback: check COLUMNS environment variable
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "COLUMNS")) |cols| {
-        defer std.heap.page_allocator.free(cols);
-        return std.fmt.parseInt(u16, cols, 10) catch 80;
+    if (std.process.getEnvVarOwned(std.heap.c_allocator, "COLUMNS")) |cols| {
+        defer std.heap.c_allocator.free(cols);
+        return std.fmt.parseInt(u16, cols, 10) catch @import("constants.zig").DEFAULT_TERMINAL_WIDTH;
     } else |_| {}
     
     // Default fallback
-    return 80;
+    return @import("constants.zig").DEFAULT_TERMINAL_WIDTH;
 }
 
 /// Get terminal height in rows
@@ -60,13 +60,13 @@ pub fn getHeight() !u16 {
     }
     
     // Fallback: check LINES environment variable
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "LINES")) |lines| {
-        defer std.heap.page_allocator.free(lines);
-        return std.fmt.parseInt(u16, lines, 10) catch 24;
+    if (std.process.getEnvVarOwned(std.heap.c_allocator, "LINES")) |lines| {
+        defer std.heap.c_allocator.free(lines);
+        return std.fmt.parseInt(u16, lines, 10) catch @import("constants.zig").DEFAULT_TERMINAL_HEIGHT;
     } else |_| {}
     
     // Default fallback
-    return 24;
+    return @import("constants.zig").DEFAULT_TERMINAL_HEIGHT;
 }
 
 test "terminal width detection" {
