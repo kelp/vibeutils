@@ -2,7 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// Terminal capability detection and styling
-pub const Style = struct {
+pub fn Style(comptime Writer: type) type {
+    return struct {
+        const Self = @This();
     /// Color capability of the terminal
     pub const ColorMode = enum {
         none, // NO_COLOR or dumb terminal
@@ -42,9 +44,9 @@ pub const Style = struct {
         }
     };
 
-    color_mode: ColorMode,
-    use_icons: bool,
-    writer: std.fs.File.Writer,
+        color_mode: ColorMode,
+        use_icons: bool,
+        writer: Writer,
 
     /// ANSI color codes
     pub const Color = enum(u8) {
@@ -81,8 +83,8 @@ pub const Style = struct {
         strikethrough = 9,
     };
 
-    /// Initialize with auto-detection
-    pub fn init(writer: std.fs.File.Writer) Style {
+        /// Initialize with auto-detection
+        pub fn init(writer: Writer) Self {
         const color_mode = ColorMode.detect();
         const use_icons = detectIconSupport();
 
@@ -93,26 +95,26 @@ pub const Style = struct {
         };
     }
 
-    /// Set foreground color
-    pub fn setColor(self: Style, color: Color) !void {
+        /// Set foreground color
+        pub fn setColor(self: Self, color: Color) !void {
         if (self.color_mode == .none) return;
         try self.writer.print("\x1b[{d}m", .{@intFromEnum(color)});
     }
 
-    /// Set text attribute
-    pub fn setAttribute(self: Style, attr: Attribute) !void {
+        /// Set text attribute
+        pub fn setAttribute(self: Self, attr: Attribute) !void {
         if (self.color_mode == .none) return;
         try self.writer.print("\x1b[{d}m", .{@intFromEnum(attr)});
     }
 
-    /// Reset all styling
-    pub fn reset(self: Style) !void {
+        /// Reset all styling
+        pub fn reset(self: Self) !void {
         if (self.color_mode == .none) return;
         try self.writer.writeAll("\x1b[0m");
     }
 
-    /// Set RGB color (true color mode only)
-    pub fn setRGB(self: Style, r: u8, g: u8, b: u8) !void {
+        /// Set RGB color (true color mode only)
+        pub fn setRGB(self: Self, r: u8, g: u8, b: u8) !void {
         if (self.color_mode != .truecolor) {
             // Fallback to nearest 256 color
             const color_256 = rgbTo256(r, g, b);
@@ -124,23 +126,23 @@ pub const Style = struct {
         try self.writer.print("\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
     }
 
-    /// Print styled text
-    pub fn print(self: Style, comptime fmt: []const u8, args: anytype, color: Color) !void {
+        /// Print styled text
+        pub fn print(self: Self, comptime fmt: []const u8, args: anytype, color: Color) !void {
         try self.setColor(color);
         try self.writer.print(fmt, args);
         try self.reset();
     }
 
-    /// Print with icon
-    pub fn printWithIcon(self: Style, icon: []const u8, fallback: []const u8, text: []const u8, color: Color) !void {
+        /// Print with icon
+        pub fn printWithIcon(self: Self, icon: []const u8, fallback: []const u8, text: []const u8, color: Color) !void {
         const prefix = if (self.use_icons) icon else fallback;
         try self.setColor(color);
         try self.writer.print("{s} {s}", .{ prefix, text });
         try self.reset();
     }
 
-    /// File type styling
-    pub fn styleFileType(_: Style, file_type: std.fs.File.Kind) struct { icon: []const u8, color: Color } {
+        /// File type styling
+        pub fn styleFileType(_: Self, file_type: std.fs.File.Kind) struct { icon: []const u8, color: Color } {
         return switch (file_type) {
             .directory => .{ .icon = "📁", .color = .bright_blue },
             .sym_link => .{ .icon = "🔗", .color = .bright_cyan },
@@ -176,17 +178,20 @@ pub const Style = struct {
         const b6 = @as(u16, b) * 5 / 255;
         return @intCast(16 + 36 * r6 + 6 * g6 + b6);
     }
-};
+    };
+}
 
 test "Style color detection" {
-    const mode = Style.ColorMode.detect();
+    const TestStyle = Style(std.io.Writer);
+    const mode = TestStyle.ColorMode.detect();
     try std.testing.expect(@intFromEnum(mode) >= 0);
 }
 
 test "Style RGB to 256 color conversion" {
-    const white = Style.rgbTo256(255, 255, 255);
+    const TestStyle = Style(std.io.Writer);
+    const white = TestStyle.rgbTo256(255, 255, 255);
     try std.testing.expect(white == 231); // Nearest white in 256 color palette
 
-    const black = Style.rgbTo256(0, 0, 0);
+    const black = TestStyle.rgbTo256(0, 0, 0);
     try std.testing.expect(black == 16); // Nearest black in 256 color palette
 }

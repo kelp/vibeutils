@@ -24,6 +24,7 @@ pub fn main() !void {
         \\-t                     Sort by modification time, newest first.
         \\-S                     Sort by file size, largest first.
         \\-r                     Reverse order while sorting.
+        \\    --color <str>      When to use colors (valid: always, auto, never).
         \\<str>...               Files and directories to list.
         \\
     );
@@ -52,6 +53,22 @@ pub fn main() !void {
         return;
     }
 
+    // Parse color mode
+    var color_mode = ColorMode.auto;
+    if (res.args.color) |color_arg| {
+        if (std.mem.eql(u8, color_arg, "always")) {
+            color_mode = .always;
+        } else if (std.mem.eql(u8, color_arg, "auto")) {
+            color_mode = .auto;
+        } else if (std.mem.eql(u8, color_arg, "never")) {
+            color_mode = .never;
+        } else {
+            try std.io.getStdErr().writer().print("ls: invalid argument '{s}' for '--color'\n", .{color_arg});
+            try std.io.getStdErr().writer().writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
+            return;
+        }
+    }
+
     // Create options struct
     const options = LsOptions{
         .all = res.args.all != 0,
@@ -66,6 +83,7 @@ pub fn main() !void {
         .sort_by_size = res.args.S != 0,
         .reverse_sort = res.args.r != 0,
         .file_type_indicators = res.args.F != 0,
+        .color_mode = color_mode,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -106,6 +124,8 @@ fn printHelp() !void {
         \\  -S                       sort by file size, largest first
         \\  -t                       sort by modification time, newest first
         \\  -1                       list one file per line
+        \\      --color=WHEN         colorize output; WHEN can be 'always' (default
+        \\                           if omitted), 'auto', or 'never'
         \\      --help               display this help and exit
         \\      --version            output version information and exit
         \\
@@ -117,6 +137,12 @@ fn printHelp() !void {
         \\
     );
 }
+
+const ColorMode = enum {
+    always,
+    auto,
+    never,
+};
 
 const LsOptions = struct {
     all: bool = false,
@@ -131,9 +157,22 @@ const LsOptions = struct {
     sort_by_size: bool = false,
     reverse_sort: bool = false,
     file_type_indicators: bool = false,
+    color_mode: ColorMode = .auto,
 };
 
 fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
+    // Initialize style based on color mode
+    const StyleType = common.style.Style(@TypeOf(writer));
+    var style = StyleType.init(writer);
+    if (options.color_mode == .never) {
+        style.color_mode = .none;
+    } else if (options.color_mode == .always) {
+        // Keep the detected mode but ensure it's at least basic
+        if (style.color_mode == .none) {
+            style.color_mode = .basic;
+        }
+    }
+    // For .auto, use the detected mode (which checks isatty)
     // If -d is specified, just list the directory itself
     if (options.directory) {
         if (options.one_per_line) {
@@ -257,7 +296,17 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     // Print entries
     if (options.one_per_line) {
         for (entries.items) |entry| {
+            // Apply color based on file type
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
             try writer.print("{s}", .{entry.name});
+            
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
             if (options.file_type_indicators) {
                 const indicator = getFileTypeIndicator(entry);
                 if (indicator != 0) {
@@ -341,7 +390,17 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
             }
             
             // Name
+            // Apply color based on file type
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
             try writer.print("{s}", .{entry.name});
+            
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
             if (options.file_type_indicators) {
                 const indicator = getFileTypeIndicator(entry);
                 if (indicator != 0) {
@@ -358,7 +417,19 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
         // Default format: entries separated by spaces/newlines
         for (entries.items, 0..) |entry, i| {
             if (i > 0) try writer.writeAll("  ");
+            
+            // Apply color based on file type
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
             try writer.writeAll(entry.name);
+            
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
+            
             if (options.file_type_indicators) {
                 const indicator = getFileTypeIndicator(entry);
                 if (indicator != 0) {
@@ -894,8 +965,109 @@ test "ls -l shows symlink targets" {
     try testing.expect(std.mem.indexOf(u8, buffer.items, "lrwx") != null);
 }
 
+test "ls --color mode parsing" {
+    // Test that ColorMode enum works
+    try testing.expectEqual(ColorMode.auto, ColorMode.auto);
+    try testing.expectEqual(ColorMode.always, ColorMode.always);
+    try testing.expectEqual(ColorMode.never, ColorMode.never);
+}
+
+test "ls color output for directories" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create test directory
+    try tmp_dir.dir.makeDir("test_dir");
+    
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // List with color always
+    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ 
+        .one_per_line = true,
+        .color_mode = .always,
+    }, testing.allocator);
+
+    // Directory name should have color codes
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "test_dir") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[0m") != null); // reset
+}
+
+test "ls color output disabled with never" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create test directory
+    try tmp_dir.dir.makeDir("test_dir");
+    
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // List with color never
+    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ 
+        .one_per_line = true,
+        .color_mode = .never,
+    }, testing.allocator);
+
+    // Should not have any color codes
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[") == null);
+    try testing.expectEqualStrings("test_dir\n", buffer.items);
+}
+
+test "ls color scheme for different file types" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create different file types
+    try tmp_dir.dir.makeDir("directory");
+    const file = try tmp_dir.dir.createFile("regular.txt", .{});
+    file.close();
+    const exe = try tmp_dir.dir.createFile("executable", .{});
+    exe.close();
+    // Make it executable
+    var exe_path_buf: [4096]u8 = undefined;
+    const exe_path = try tmp_dir.dir.realpath("executable", &exe_path_buf);
+    const exe_path_z = try testing.allocator.dupeZ(u8, exe_path);
+    defer testing.allocator.free(exe_path_z);
+    _ = std.c.chmod(exe_path_z, 0o755);
+    
+    // Create symlink
+    try tmp_dir.dir.symLink("regular.txt", "symlink", .{});
+    
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // List with color always
+    try listDirectoryTest(tmp_dir.dir, buffer.writer(), .{ 
+        .one_per_line = true,
+        .color_mode = .always,
+    }, testing.allocator);
+
+    // Check that different file types have different colors
+    // Directory should be bright blue (94)
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[94mdirectory\x1b[0m") != null);
+    // Symlink should be bright cyan (96)
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[96msymlink\x1b[0m") != null);
+    // Regular files should use default color (39)
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[39mregular.txt\x1b[0m") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "\x1b[39mexecutable\x1b[0m") != null);
+}
+
 // Test helper that uses a Dir instead of path
 fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) !void {
+    // Initialize style based on color mode
+    const StyleType = common.style.Style(@TypeOf(writer));
+    var style = StyleType.init(writer);
+    if (options.color_mode == .never) {
+        style.color_mode = .none;
+    } else if (options.color_mode == .always) {
+        // Keep the detected mode but ensure it's at least basic
+        if (style.color_mode == .none) {
+            style.color_mode = .basic;
+        }
+    }
+    
     // If -d is specified, just list the directory itself
     if (options.directory) {
         if (options.one_per_line) {
@@ -978,7 +1150,17 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
     // Print entries
     if (options.one_per_line) {
         for (entries.items) |entry| {
+            // Apply color based on file type
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
             try writer.print("{s}", .{entry.name});
+            
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
             if (options.file_type_indicators) {
                 const indicator = getFileTypeIndicator(entry);
                 if (indicator != 0) {
@@ -1062,7 +1244,17 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
             }
             
             // Name
+            // Apply color based on file type
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
             try writer.print("{s}", .{entry.name});
+            
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
             if (options.file_type_indicators) {
                 const indicator = getFileTypeIndicator(entry);
                 if (indicator != 0) {
@@ -1079,7 +1271,19 @@ fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, alloc
         // Default format: entries separated by spaces/newlines
         for (entries.items, 0..) |entry, i| {
             if (i > 0) try writer.writeAll("  ");
+            
+            // Apply color based on file type
+            const file_style = style.styleFileType(entry.kind);
+            if (style.color_mode != .none) {
+                try style.setColor(file_style.color);
+            }
+            
             try writer.writeAll(entry.name);
+            
+            if (style.color_mode != .none) {
+                try style.reset();
+            }
+            
             if (options.file_type_indicators) {
                 const indicator = getFileTypeIndicator(entry);
                 if (indicator != 0) {

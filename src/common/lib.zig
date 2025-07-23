@@ -6,7 +6,7 @@ pub const args = @import("args.zig");
 pub const file = @import("file.zig");
 
 /// Version information
-pub const version = "0.2.0";
+pub const version = "0.2.1";
 pub const name = "zutils";
 
 /// Common error types
@@ -43,7 +43,8 @@ pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Try to use color for errors
-    var s = style.Style.init(stderr);
+    const StyleType = style.Style(@TypeOf(stderr));
+    var s = StyleType.init(stderr);
     s.setColor(.bright_red) catch {};
     stderr.print("{s}: ", .{prog_name}) catch return;
     s.reset() catch {};
@@ -78,13 +79,13 @@ pub const Progress = struct {
     current: usize = 0,
     start_time: i64,
     last_update: i64 = 0,
-    style: style.Style,
+    style: style.Style(std.fs.File.Writer),
 
     pub fn init(total: usize) Progress {
         return .{
             .total = total,
             .start_time = std.time.milliTimestamp(),
-            .style = style.Style.init(std.io.getStdErr().writer()),
+            .style = style.Style(std.fs.File.Writer).init(std.io.getStdErr().writer()),
         };
     }
 
