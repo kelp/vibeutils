@@ -767,6 +767,28 @@ For each utility:
 - [ ] Null-separated output
 - [ ] Progress bars for long operations
 
+## Future Optimizations (Post-Implementation)
+
+### Parallel Filesystem Operations Framework
+- [ ] **Research Phase**: Study io_uring, kqueue, and thread pool alternatives
+- [ ] **Architecture Design**: Cross-platform abstraction for parallel filesystem operations  
+- [ ] **Core Interface**: Generic `ParallelFs.batchOperation()` supporting multiple operation types
+- [ ] **Linux Implementation**: io_uring-based parallel operations (statx, openat, read, etc.)
+- [ ] **BSD/macOS Implementation**: kqueue-based async or thread pool fallback
+- [ ] **High-Level Operations**: 
+  - `statMany()` - Parallel file stat operations
+  - `openMany()` - Parallel file opening  
+  - `readDirMany()` - Parallel directory reading
+  - `readMany()` - Parallel file reading
+- [ ] **Utility Integration**: Roll out to du, find, grep, cp, wc, and other I/O-heavy utilities
+- [ ] **Performance Benchmarking**: Measure improvements on large filesystems
+- [ ] **Error Handling**: Robust cross-platform error recovery and resource cleanup
+
+**Complexity**: High (🔥🔥🔥) - Cross-platform async I/O, resource management, testing
+**Impact**: Massive performance gains for `du`, `find`, `grep` on large directories
+**Timeline**: 2-3 weeks implementation, significant maintenance overhead
+**Decision**: Implement after core utilities are complete to avoid scope creep
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
