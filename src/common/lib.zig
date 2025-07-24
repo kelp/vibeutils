@@ -10,6 +10,7 @@ pub const constants = @import("constants.zig");
 pub const directory = @import("directory.zig");
 pub const icons = @import("icons.zig");
 pub const relative_date = @import("relative_date.zig");
+pub const git = @import("git.zig");
 
 /// Version information
 pub const version = "0.3.4";

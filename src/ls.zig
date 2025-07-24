@@ -32,6 +32,7 @@ pub fn main() !void {
         \\    --icons <str>               When to show icons (valid: always, auto, never).
         \\    --test-icons                Show sample icons to test Nerd Font support.
         \\    --time-style <str>          Time/date format (valid: relative, iso, long-iso).
+        \\    --git                       Show git status indicators for files.
         \\<str>...                        Files and directories to list.
         \\
     );
@@ -118,6 +119,7 @@ pub fn main() !void {
         .comma_format = res.args.m != 0,
         .icon_mode = icon_mode,
         .time_style = time_style,
+        .show_git_status = res.args.git != 0,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -331,6 +333,7 @@ const LsOptions = struct {
     comma_format: bool = false,
     icon_mode: common.icons.IconMode = .auto,
     time_style: TimeStyle = .relative,
+    show_git_status: bool = false,
 };
 
 fn initStyle(writer: anytype, color_mode: ColorMode) common.style.Style(@TypeOf(writer)) {
@@ -357,7 +360,18 @@ fn isExecutable(entry: Entry) bool {
 }
 
 // Print entry name with optional icon, color and file type indicator
-fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indicator: bool, show_icons: bool) !void {
+fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indicator: bool, show_icons: bool, show_git_status: bool) !void {
+    // Print Git status indicator if enabled
+    if (show_git_status and entry.git_status != .not_in_repo) {
+        const git_indicator = entry.git_status.getIndicator();
+        if (style.color_mode != .none and entry.git_status != .clean) {
+            const git_color = entry.git_status.getColor();
+            try writer.print("{s}{s}\x1b[0m ", .{ git_color, git_indicator });
+        } else {
+            try writer.print("{s} ", .{git_indicator});
+        }
+    }
+    
     // Print icon if enabled
     if (show_icons) {
         const theme = common.icons.IconTheme{};
@@ -385,8 +399,12 @@ fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indicator:
 }
 
 // Calculate the display width of an entry (name + optional icon + optional indicator)
-fn getEntryDisplayWidth(entry: Entry, show_indicator: bool, show_icons: bool) usize {
+fn getEntryDisplayWidth(entry: Entry, show_indicator: bool, show_icons: bool, show_git_status: bool) usize {
     var width = entry.name.len;
+    if (show_git_status and entry.git_status != .not_in_repo) {
+        // Git status indicator + space = 3 characters
+        width += 3;
+    }
     if (show_icons) {
         // Icon + space = 2 characters (assuming single-width display)
         width += 2;
@@ -463,7 +481,7 @@ fn printLongFormatEntry(entry: Entry, writer: anytype, options: LsOptions, style
     }
     
     // Name with color and optional indicator
-    try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+    try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
     
     // Show symlink target if available
     if (entry.symlink_target) |target| {
@@ -484,17 +502,27 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     
     // If it's a file (not a directory), just print the file entry
     if (stat.kind != .directory) {
-        const entry = Entry{
+        var entry = Entry{
             .name = std.fs.path.basename(path),
             .kind = stat.kind,
             .stat = stat,
             .symlink_target = null,
         };
         
+        // Get Git status for the file if requested
+        if (options.show_git_status) {
+            var git_repo = common.git.GitRepo.init(allocator, ".") catch null;
+            defer if (git_repo) |*repo| repo.deinit();
+            
+            if (git_repo != null) {
+                entry.git_status = git_repo.?.getFileStatus(entry.name);
+            }
+        }
+        
         if (options.long_format) {
             try printLongFormatEntry(entry, writer, options, style);
         } else {
-            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
         }
         try writer.writeAll("\n");
         return;
@@ -584,7 +612,8 @@ fn collectFilteredEntries(
 // Check if entries need metadata enhancement
 fn needsMetadata(options: LsOptions) bool {
     return options.long_format or options.sort_by_time or options.sort_by_size or
-           options.file_type_indicators or options.color_mode != .never or options.show_inodes;
+           options.file_type_indicators or options.color_mode != .never or options.show_inodes or
+           options.show_git_status;
 }
 
 // Enhance entries with stat info and symlink targets
@@ -594,6 +623,15 @@ fn enhanceEntriesWithMetadata(
     options: LsOptions,
     allocator: std.mem.Allocator,
 ) anyerror!void {
+    // Initialize Git repository if Git status is requested
+    var git_repo: ?common.git.GitRepo = null;
+    if (options.show_git_status) {
+        var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const dir_path = dir.realpath(".", &dir_path_buf) catch ".";
+        git_repo = common.git.GitRepo.init(allocator, dir_path) catch null;
+    }
+    defer if (git_repo) |*repo| repo.deinit();
+    
     for (entries) |*entry| {
         // Get stat info if needed for long format, sorting, file type indicators, colors, or inodes
         if (options.long_format or options.sort_by_time or options.sort_by_size or 
@@ -610,6 +648,11 @@ fn enhanceEntriesWithMetadata(
             } else |_| {
                 // Failed to read symlink, leave as null
             }
+        }
+        
+        // Get Git status if requested
+        if (options.show_git_status and git_repo != null) {
+            entry.git_status = git_repo.?.getFileStatus(entry.name);
         }
     }
 }
@@ -633,7 +676,7 @@ fn printEntries(
                     try writer.print("? ", .{});
                 }
             }
-            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
             try writer.writeByte('\n');
         }
     } else if (options.long_format) {
@@ -657,7 +700,7 @@ fn printEntries(
         // Comma-separated format
         for (entries, 0..) |entry, i| {
             if (i > 0) try writer.writeAll(", ");
-            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
         }
         if (entries.len > 0) try writer.writeByte('\n');
     } else {
@@ -837,7 +880,7 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
     // Calculate the width needed for each entry
     var max_width: usize = 0;
     for (entries) |entry| {
-        const width = getEntryDisplayWidth(entry, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+        const width = getEntryDisplayWidth(entry, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
         max_width = @max(max_width, width);
     }
     
@@ -859,11 +902,11 @@ fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, st
             const entry = entries[idx];
             
             // Print entry name with color and indicator
-            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
             
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
-                const width = getEntryDisplayWidth(entry, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+                const width = getEntryDisplayWidth(entry, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
                 const padding = col_width - width;
                 for (0..padding) |_| {
                     try writer.writeByte(' ');
@@ -879,6 +922,7 @@ const Entry = struct {
     kind: std.fs.File.Kind,
     stat: ?common.file.FileInfo = null,
     symlink_target: ?[]const u8 = null,
+    git_status: common.git.GitStatus = .not_in_repo,
 };
 
 // Sort configuration
