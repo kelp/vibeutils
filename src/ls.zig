@@ -31,6 +31,7 @@ pub fn main() !void {
         \\    --group-directories-first   Group directories before files.
         \\    --icons <str>               When to show icons (valid: always, auto, never).
         \\    --test-icons                Show sample icons to test Nerd Font support.
+        \\    --time-style <str>          Time/date format (valid: relative, iso, long-iso).
         \\<str>...                        Files and directories to list.
         \\
     );
@@ -85,6 +86,16 @@ pub fn main() !void {
         };
     }
 
+    // Parse time style
+    var time_style = TimeStyle.relative; // Default to relative
+    if (res.args.@"time-style") |time_style_arg| {
+        time_style = parseTimeStyle(time_style_arg) catch {
+            try std.io.getStdErr().writer().print("ls: invalid argument '{s}' for '--time-style'\n", .{time_style_arg});
+            try std.io.getStdErr().writer().writeAll("Valid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'\n");
+            return;
+        };
+    }
+
 
     // Create options struct
     const options = LsOptions{
@@ -106,6 +117,7 @@ pub fn main() !void {
         .numeric_ids = res.args.@"numeric-uid-gid" != 0,
         .comma_format = res.args.m != 0,
         .icon_mode = icon_mode,
+        .time_style = time_style,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -168,12 +180,74 @@ const ColorMode = enum {
     never,
 };
 
+const TimeStyle = enum {
+    relative,   // Smart relative dates like "2 hours ago"
+    iso,        // ISO format: 2024-01-15 15:30
+    @"long-iso", // Long ISO: 2024-01-15 15:30:45.123456789 +0000
+};
+
 fn parseColorMode(arg: []const u8) !ColorMode {
     return std.meta.stringToEnum(ColorMode, arg) orelse error.InvalidColorMode;
 }
 
 fn parseIconMode(arg: []const u8) !common.icons.IconMode {
     return std.meta.stringToEnum(common.icons.IconMode, arg) orelse error.InvalidIconMode;
+}
+
+fn parseTimeStyle(arg: []const u8) !TimeStyle {
+    return std.meta.stringToEnum(TimeStyle, arg) orelse error.InvalidTimeStyle;
+}
+
+/// Format timestamp according to the specified time style
+fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std.mem.Allocator, buf: []u8) ![]const u8 {
+    switch (time_style) {
+        .relative => {
+            // Use relative date formatting
+            const config = common.relative_date.defaultConfig();
+            const relative_str = try common.relative_date.formatRelativeDate(mtime_ns, config, allocator);
+            defer allocator.free(relative_str);
+            
+            // Copy to buffer since caller expects stack-allocated result
+            if (relative_str.len >= buf.len) return error.BufferTooSmall;
+            @memcpy(buf[0..relative_str.len], relative_str);
+            return buf[0..relative_str.len];
+        },
+        .iso => {
+            // ISO format: 2024-01-15 15:30
+            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_s) };
+            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+            const month_day = year_day.calculateMonthDay();
+            const day_seconds = epoch_seconds.getDaySeconds();
+            
+            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
+                year_day.year,
+                @intFromEnum(month_day.month),
+                month_day.day_index + 1,
+                day_seconds.getHoursIntoDay(),
+                day_seconds.getMinutesIntoHour(),
+            });
+        },
+        .@"long-iso" => {
+            // Long ISO format: 2024-01-15 15:30:45.123456789 +0000
+            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+            const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
+            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_s) };
+            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+            const month_day = year_day.calculateMonthDay();
+            const day_seconds = epoch_seconds.getDaySeconds();
+            
+            return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>9} +0000", .{
+                year_day.year,
+                @intFromEnum(month_day.month),
+                month_day.day_index + 1,
+                day_seconds.getHoursIntoDay(),
+                day_seconds.getMinutesIntoHour(),
+                day_seconds.getSecondsIntoMinute(),
+                @abs(nano_remainder),
+            });
+        },
+    }
 }
 
 /// Print icon test to help users verify Nerd Font support
@@ -256,6 +330,7 @@ const LsOptions = struct {
     numeric_ids: bool = false,
     comma_format: bool = false,
     icon_mode: common.icons.IconMode = .auto,
+    time_style: TimeStyle = .relative,
 };
 
 fn initStyle(writer: anytype, color_mode: ColorMode) common.style.Style(@TypeOf(writer)) {
@@ -380,8 +455,8 @@ fn printLongFormatEntry(entry: Entry, writer: anytype, options: LsOptions, style
     
     // Date/time
     if (entry.stat) |stat| {
-        var time_buf: [64]u8 = undefined;
-        const time_str = try common.file.formatTime(stat.mtime, &time_buf);
+        var time_buf: [128]u8 = undefined; // Larger buffer for long-iso format
+        const time_str = try formatTimeWithStyle(stat.mtime, options.time_style, std.heap.page_allocator, &time_buf);
         try writer.print("{s} ", .{time_str});
     } else {
         try writer.writeAll("??? ?? ??:?? ");
@@ -401,15 +476,33 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     // Initialize style based on color mode
     const style = initStyle(writer, options.color_mode);
     
+    // Get stat info to determine if it's a file or directory
+    const stat = common.file.FileInfo.stat(path) catch |err| {
+        common.printError("{s}: {}", .{ path, err });
+        return;
+    };
+    
+    // If it's a file (not a directory), just print the file entry
+    if (stat.kind != .directory) {
+        const entry = Entry{
+            .name = std.fs.path.basename(path),
+            .kind = stat.kind,
+            .stat = stat,
+            .symlink_target = null,
+        };
+        
+        if (options.long_format) {
+            try printLongFormatEntry(entry, writer, options, style);
+        } else {
+            try printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode));
+        }
+        try writer.writeAll("\n");
+        return;
+    }
+    
     // If -d is specified, just list the directory itself
     if (options.directory) {
         if (options.long_format) {
-            // Get stat info for the directory
-            const stat = common.file.FileInfo.stat(path) catch |err| {
-                common.printError("{s}: {}", .{ path, err });
-                return;
-            };
-            
             const entry = Entry{
                 .name = path,
                 .kind = .directory,

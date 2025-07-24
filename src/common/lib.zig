@@ -9,6 +9,7 @@ pub const test_utils = @import("test_utils.zig");
 pub const constants = @import("constants.zig");
 pub const directory = @import("directory.zig");
 pub const icons = @import("icons.zig");
+pub const relative_date = @import("relative_date.zig");
 
 /// Version information
 pub const version = "0.3.4";
