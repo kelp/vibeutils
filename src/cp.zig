@@ -319,7 +319,7 @@ test "cp: symbolic link handling - no dereference (-d)" {
     try test_dir.createFile("original.txt", "Original content");
     try test_dir.createSymlink("original.txt", "link.txt");
     
-    const link_path = try test_dir.getPath("link.txt");
+    const link_path = try test_dir.joinPath("link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied_link.txt");
     defer testing.allocator.free(dest_path);
@@ -346,7 +346,7 @@ test "cp: broken symlink handling" {
 
     try test_dir.createSymlink("nonexistent.txt", "broken_link.txt");
     
-    const link_path = try test_dir.getPath("broken_link.txt");
+    const link_path = try test_dir.joinPath("broken_link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied_broken.txt");
     defer testing.allocator.free(dest_path);

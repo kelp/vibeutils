@@ -42,7 +42,11 @@ pub const CopyContext = struct {
         try path_resolver.PathResolver.validatePath(dest);
         
         // Determine source type
-        const source_type = try path_resolver.PathResolver.getFileType(source);
+        // For no-dereference mode, check if it's a symlink first (even if broken)
+        const source_type = if (self.options.no_dereference and path_resolver.PathResolver.isSymlink(source))
+            path_resolver.FileType.symlink
+        else
+            try path_resolver.PathResolver.getFileType(source);
         
         // Resolve final destination path
         const final_dest_path = try path_resolver.PathResolver.resolveFinalDestination(

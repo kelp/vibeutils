@@ -143,13 +143,13 @@ pub fn Style(comptime Writer: type) type {
 }
 
 test "Style color detection" {
-    const TestStyle = Style(std.io.Writer);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
     const mode = TestStyle.ColorMode.detect();
     try std.testing.expect(@intFromEnum(mode) >= 0);
 }
 
 test "Style RGB to 256 color conversion" {
-    const TestStyle = Style(std.io.Writer);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
     const white = TestStyle.rgbTo256(255, 255, 255);
     try std.testing.expect(white == 231); // Nearest white in 256 color palette
 

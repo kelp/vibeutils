@@ -312,7 +312,7 @@ test "FileHandlers: copy symlink" {
     try test_dir.createFile("target.txt", "target content");
     try test_dir.createSymlink("target.txt", "link.txt");
     
-    const link_path = try test_dir.getPath("link.txt");
+    const link_path = try test_dir.joinPath("link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied_link.txt");
     defer testing.allocator.free(dest_path);

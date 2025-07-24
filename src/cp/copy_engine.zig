@@ -102,7 +102,13 @@ pub const CopyEngine = struct {
         try path_resolver.PathResolver.validatePath(operation.final_dest_path);
         
         // Check if source exists (should have been caught during planning, but double-check)
-        if (!path_resolver.PathResolver.exists(operation.source)) {
+        // For symlinks with no-dereference, check if the symlink itself exists rather than its target
+        const source_exists = if (self.ctx.options.no_dereference and path_resolver.PathResolver.isSymlink(operation.source))
+            path_resolver.PathResolver.isSymlink(operation.source)
+        else
+            path_resolver.PathResolver.exists(operation.source);
+            
+        if (!source_exists) {
             const context = errors.ErrorContext{
                 .operation = "validate source",
                 .source_path = operation.source,
@@ -233,7 +239,7 @@ test "CopyEngine: execute symlink copy with no-dereference" {
     try test_dir.createFile("target.txt", "target content");
     try test_dir.createSymlink("target.txt", "link.txt");
     
-    const link_path = try test_dir.getPath("link.txt");
+    const link_path = try test_dir.joinPath("link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied_link.txt");
     defer testing.allocator.free(dest_path);
