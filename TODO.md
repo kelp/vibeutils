@@ -1,9 +1,9 @@
 # Zutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 2/22 (echo ✓, cat ✓)
-- **Utilities In Progress**: 1/22 (ls - Phase 1, 2 & 3 complete ✓)
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~80% (most useful features + colors + responsive layout + directory grouping)
+- **Utilities Completed**: 3/46 (echo ✓, cat ✓, ls ✓)
+- **Utilities In Progress**: 0/46
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
@@ -78,7 +78,7 @@ For each utility:
 - [x] Implement: -u flag (no-op for POSIX)
 - [x] Implement: Long option support (--show-all already works)
 
-#### 3. ls - Phase 1 ✓, Phase 2 ✓
+#### 3. ls - Phase 1 ✓, Phase 2 ✓, Phase 3 ✓, Phase 4 ✓
 - [x] Test: Basic directory listing
 - [x] Test: Hidden files (-a)
 - [x] Test: One file per line (-1)
@@ -137,17 +137,17 @@ For each utility:
 - [x] Implement: Directory grouping logic ✓
 - [x] Implement: Responsive column layout ✓
 
-###### Phase 4: Recursive & Nice-to-Have (TDD)
-- [ ] Test: Recursive listing (-R) with proper formatting
-- [ ] Test: Recursive with cycle detection
-- [ ] Test: Inode display (-i) before filename
-- [ ] Test: Numeric user/group IDs (-n) 
-- [ ] Test: Comma-separated output (-m)
-- [ ] Test: Single column force (-1) ✓ already done
-- [ ] Implement: Recursive directory walker
-- [ ] Implement: Symlink cycle detection
-- [ ] Implement: Inode display formatting
-- [ ] Implement: Comma-separated formatter
+###### Phase 4: Recursive & Nice-to-Have (TDD) ✓
+- [x] Test: Recursive listing (-R) with proper formatting
+- [x] Test: Recursive with cycle detection
+- [x] Test: Inode display (-i) before filename
+- [x] Test: Numeric user/group IDs (-n) 
+- [x] Test: Comma-separated output (-m)
+- [x] Test: Single column force (-1) ✓ already done
+- [x] Implement: Recursive directory walker
+- [x] Implement: Symlink cycle detection
+- [x] Implement: Inode display formatting
+- [x] Implement: Comma-separated formatter
 
 ###### Phase 5: Modern Enhancements (Stretch Goals)
 - [ ] Test: Nerd font icon detection
@@ -254,9 +254,280 @@ For each utility:
 - [ ] Implement: Path resolution options
 - [ ] Man page: Write concise man page with examples
 
+#### 11. chmod
+- [ ] Test: Basic permission changes (numeric: 755, 644)
+- [ ] Test: Symbolic mode changes (u+x, g-w, o=r)
+- [ ] Test: Recursive mode (-R)
+- [ ] Test: Preserve root (-c, --changes)
+- [ ] Test: Error handling (permission denied)
+- [ ] Test: Special bits (setuid, setgid, sticky)
+- [ ] Implement: Numeric mode parser
+- [ ] Implement: Symbolic mode parser
+- [ ] Implement: Recursive directory walker
+- [ ] Man page: Write concise man page with examples
+
+#### 12. chown
+- [ ] Test: Basic ownership change (user:group)
+- [ ] Test: User only change
+- [ ] Test: Group only change (:group)
+- [ ] Test: Recursive mode (-R)
+- [ ] Test: Dereference/no-dereference (-h, -H, -L, -P)
+- [ ] Test: From reference file (--reference)
+- [ ] Implement: User/group parsing
+- [ ] Implement: Ownership change syscalls
+- [ ] Implement: Recursive walker with symlink handling
+- [ ] Man page: Write concise man page with examples
+
+#### 13. ln
+- [ ] Test: Create hard link
+- [ ] Test: Create symbolic link (-s)
+- [ ] Test: Force overwrite (-f)
+- [ ] Test: Interactive mode (-i)
+- [ ] Test: Create links in directory (-t)
+- [ ] Test: Relative symlinks (--relative)
+- [ ] Test: Error cases (cross-device hard link)
+- [ ] Implement: Hard link creation
+- [ ] Implement: Symbolic link creation
+- [ ] Implement: Path resolution for relative links
+- [ ] Man page: Write concise man page with examples
+
+#### 14. basename
+- [ ] Test: Strip directory from path
+- [ ] Test: Strip suffix (-s, --suffix)
+- [ ] Test: Multiple paths (-a, --multiple)
+- [ ] Test: Zero delimiter (-z, --zero)
+- [ ] Test: Edge cases (/, //, no slash)
+- [ ] Implement: Path parsing logic
+- [ ] Implement: Suffix stripping
+- [ ] Implement: Multiple file handling
+- [ ] Man page: Write concise man page with examples
+
+#### 15. dirname
+- [ ] Test: Extract directory from path
+- [ ] Test: Multiple paths
+- [ ] Test: Zero delimiter (-z, --zero)
+- [ ] Test: Edge cases (/, //, no slash, .)
+- [ ] Implement: Path parsing logic
+- [ ] Implement: Multiple path handling
+- [ ] Man page: Write concise man page with examples
+
+#### 16. sleep
+- [ ] Test: Sleep for seconds
+- [ ] Test: Sleep for decimal seconds (0.5)
+- [ ] Test: Sleep for minutes/hours/days suffix (5m, 2h, 1d)
+- [ ] Test: Multiple time arguments (sleep 1m 30s)
+- [ ] Test: Signal handling (interruptible)
+- [ ] Implement: Time parsing with units
+- [ ] Implement: High-precision sleep
+- [ ] Implement: Signal-safe sleep
+- [ ] Man page: Write concise man page with examples
+
+#### 17. true
+- [ ] Test: Always returns 0 exit code
+- [ ] Test: Ignores all arguments
+- [ ] Implement: Minimal implementation
+- [ ] Man page: Write concise man page
+
+#### 18. false
+- [ ] Test: Always returns 1 exit code
+- [ ] Test: Ignores all arguments
+- [ ] Implement: Minimal implementation
+- [ ] Man page: Write concise man page
+
+#### 19. test
+- [ ] Test: File existence checks (-e, -f, -d, -r, -w, -x)
+- [ ] Test: String comparisons (=, !=, -z, -n)
+- [ ] Test: Numeric comparisons (-eq, -ne, -lt, -le, -gt, -ge)
+- [ ] Test: Logical operators (-a, -o, !)
+- [ ] Test: Complex expressions with parentheses
+- [ ] Test: Exit codes (0 for true, 1 for false)
+- [ ] Implement: Expression parser
+- [ ] Implement: File test operations
+- [ ] Implement: Comparison operations
+- [ ] Man page: Write concise man page with examples
+
+#### 20. date
+- [ ] Test: Display current date/time
+- [ ] Test: Custom format string (+FORMAT)
+- [ ] Test: Set date/time (-s, --set)
+- [ ] Test: Display file's date (-r, --reference)
+- [ ] Test: UTC mode (-u, --utc)
+- [ ] Test: RFC formats (--rfc-3339, --rfc-email)
+- [ ] Test: Relative dates (-d "2 days ago")
+- [ ] Implement: Format string parser (strftime-like)
+- [ ] Implement: Date parsing for various formats
+- [ ] Implement: Relative date calculations
+- [ ] Man page: Write concise man page with examples
+
+#### 21. env
+- [ ] Test: Print current environment
+- [ ] Test: Run command with modified env (env VAR=value cmd)
+- [ ] Test: Clear environment (-i, --ignore-environment)
+- [ ] Test: Unset variables (-u, --unset)
+- [ ] Test: Change directory (-C, --chdir)
+- [ ] Test: Split string arguments (-S)
+- [ ] Implement: Environment manipulation
+- [ ] Implement: Command execution with env
+- [ ] Implement: Argument splitting parser
+- [ ] Man page: Write concise man page with examples
+
+#### 22. seq
+- [ ] Test: Generate sequence (seq 10)
+- [ ] Test: Start and end (seq 5 10)
+- [ ] Test: Start, increment, end (seq 1 2 10)
+- [ ] Test: Floating point sequences (seq 0.1 0.1 1.0)
+- [ ] Test: Format string (-f "%03g")
+- [ ] Test: Separator (-s ", ")
+- [ ] Test: Equal width (-w)
+- [ ] Implement: Number sequence generation
+- [ ] Implement: Format string support
+- [ ] Implement: Width calculation
+- [ ] Man page: Write concise man page with examples
+
+#### 23. tee
+- [ ] Test: Write to stdout and file
+- [ ] Test: Write to multiple files
+- [ ] Test: Append mode (-a, --append)
+- [ ] Test: Ignore interrupts (-i)
+- [ ] Test: Diagnose write errors (-p)
+- [ ] Test: Binary data handling
+- [ ] Implement: Multi-writer system
+- [ ] Implement: Signal handling
+- [ ] Implement: Error diagnosis
+- [ ] Man page: Write concise man page with examples
+
+#### 24. yes
+- [ ] Test: Repeat "y" infinitely
+- [ ] Test: Repeat custom string
+- [ ] Test: Multiple arguments joined with space
+- [ ] Test: Performance (must be fast)
+- [ ] Test: SIGPIPE handling
+- [ ] Implement: Efficient output loop
+- [ ] Implement: Buffer optimization
+- [ ] Implement: Signal handling
+- [ ] Man page: Write concise man page with examples
+
+#### 25. whoami
+- [ ] Test: Print effective username
+- [ ] Test: No options accepted
+- [ ] Test: Error when can't determine user
+- [ ] Implement: Get effective user ID
+- [ ] Implement: User lookup
+- [ ] Man page: Write concise man page with examples
+
+#### 26. id
+- [ ] Test: Print all IDs (default)
+- [ ] Test: User ID only (-u, --user)
+- [ ] Test: Group ID only (-g, --group)
+- [ ] Test: All group IDs (-G, --groups)
+- [ ] Test: Names instead of numbers (-n, --name)
+- [ ] Test: Real instead of effective (-r, --real)
+- [ ] Test: Different user (id username)
+- [ ] Implement: ID retrieval syscalls
+- [ ] Implement: User/group lookups
+- [ ] Implement: Format selection
+- [ ] Man page: Write concise man page with examples
+
+#### 27. printf
+- [ ] Test: Basic format strings (%s, %d, %f)
+- [ ] Test: Escape sequences (\n, \t, \x41)
+- [ ] Test: Width and precision (%.2f, %10s)
+- [ ] Test: Multiple arguments with reuse
+- [ ] Test: Octal/hex formats (%o, %x, %X)
+- [ ] Test: Error handling (type mismatches)
+- [ ] Implement: Format string parser
+- [ ] Implement: Type conversions
+- [ ] Implement: Escape sequence handling
+- [ ] Man page: Write concise man page with examples
+
 ### Phase 2: Text Processing Utilities
 
-#### 11. head
+#### 28. dd
+- [ ] Test: Basic copy (if=input of=output)
+- [ ] Test: Block size (bs=1M, ibs=512, obs=4096)
+- [ ] Test: Count limit (count=100)
+- [ ] Test: Seek/skip (seek=10, skip=5)
+- [ ] Test: Conversion (conv=ucase,lcase,notrunc,sync)
+- [ ] Test: Status output (status=progress)
+- [ ] Test: Direct I/O (iflag=direct, oflag=direct)
+- [ ] Implement: Block-based I/O
+- [ ] Implement: Conversion operations
+- [ ] Implement: Progress reporting
+- [ ] Man page: Write concise man page with examples
+
+#### 29. realpath
+- [ ] Test: Resolve to absolute path
+- [ ] Test: Canonicalize existing (-e, --canonicalize-existing)
+- [ ] Test: Canonicalize missing (-m, --canonicalize-missing)
+- [ ] Test: No symlinks (-s, --strip, --no-symlinks)
+- [ ] Test: Relative to directory (--relative-to)
+- [ ] Test: Relative base (--relative-base)
+- [ ] Implement: Path resolution
+- [ ] Implement: Symlink following
+- [ ] Implement: Relative path computation
+- [ ] Man page: Write concise man page with examples
+
+#### 30. readlink
+- [ ] Test: Print symlink target
+- [ ] Test: Canonicalize (-f, --canonicalize)
+- [ ] Test: Canonicalize existing (-e)
+- [ ] Test: Canonicalize missing (-m)
+- [ ] Test: No newline (-n, --no-newline)
+- [ ] Test: Error on non-symlink
+- [ ] Implement: Symlink reading
+- [ ] Implement: Path canonicalization
+- [ ] Man page: Write concise man page with examples
+
+#### 31. mktemp
+- [ ] Test: Create temporary file
+- [ ] Test: Create temporary directory (-d, --directory)
+- [ ] Test: Custom template (mktemp /tmp/test.XXX)
+- [ ] Test: Dry run (-u, --dry-run)
+- [ ] Test: Custom tmpdir (--tmpdir)
+- [ ] Test: Suffix (--suffix=.txt)
+- [ ] Implement: Secure random name generation
+- [ ] Implement: Atomic file creation
+- [ ] Implement: Template parsing
+- [ ] Man page: Write concise man page with examples
+
+#### 32. timeout
+- [ ] Test: Run command with timeout
+- [ ] Test: Exit status preservation (--preserve-status)
+- [ ] Test: Kill after timeout (-k, --kill-after)
+- [ ] Test: Foreground mode (--foreground)
+- [ ] Test: Different signals (-s TERM)
+- [ ] Test: Time units (5s, 2m, 1h)
+- [ ] Implement: Process spawning
+- [ ] Implement: Timer management
+- [ ] Implement: Signal handling
+- [ ] Man page: Write concise man page with examples
+
+#### 33. tac
+- [ ] Test: Reverse file lines
+- [ ] Test: Multiple files
+- [ ] Test: Custom separator (-s, --separator)
+- [ ] Test: Separator before line (-b, --before)
+- [ ] Test: Regex separator (-r, --regex)
+- [ ] Test: Large file handling
+- [ ] Implement: Reverse line reading
+- [ ] Implement: Memory-efficient algorithm
+- [ ] Implement: Separator handling
+- [ ] Man page: Write concise man page with examples
+
+#### 34. nl
+- [ ] Test: Number all lines (default)
+- [ ] Test: Number non-empty lines (-b a, -b t)
+- [ ] Test: Number format (-n ln, -n rn, -n rz)
+- [ ] Test: Starting number (-v 100)
+- [ ] Test: Increment (-i 2)
+- [ ] Test: Width (-w 4)
+- [ ] Test: Separator (-s ": ")
+- [ ] Implement: Line numbering logic
+- [ ] Implement: Format options
+- [ ] Implement: Section handling
+- [ ] Man page: Write concise man page with examples
+
+#### 35. head
 - [ ] Test: Default 10 lines
 - [ ] Test: Custom line count (-n)
 - [ ] Test: Byte count (-c)
@@ -268,7 +539,7 @@ For each utility:
 - [ ] Implement: Multi-file handling
 - [ ] Man page: Write concise man page with examples
 
-#### 12. tail
+#### 36. tail
 - [ ] Test: Default 10 lines
 - [ ] Test: Custom line count (-n)
 - [ ] Test: Follow mode (-f)
@@ -280,7 +551,7 @@ For each utility:
 - [ ] Implement: Ring buffer for performance
 - [ ] Man page: Write concise man page with examples
 
-#### 13. wc
+#### 37. wc
 - [ ] Test: Line count (-l)
 - [ ] Test: Word count (-w)
 - [ ] Test: Byte count (-c)
@@ -293,7 +564,7 @@ For each utility:
 - [ ] Implement: Parallel counting for large files
 - [ ] Man page: Write concise man page with examples
 
-#### 14. sort
+#### 38. sort
 - [ ] Test: Basic alphabetical sort
 - [ ] Test: Numeric sort (-n)
 - [ ] Test: Reverse sort (-r)
@@ -306,7 +577,7 @@ For each utility:
 - [ ] Implement: Key extraction
 - [ ] Man page: Write concise man page with examples
 
-#### 15. uniq
+#### 39. uniq
 - [ ] Test: Remove adjacent duplicates
 - [ ] Test: Count occurrences (-c)
 - [ ] Test: Only duplicates (-d)
@@ -318,7 +589,7 @@ For each utility:
 - [ ] Implement: Field skipping
 - [ ] Man page: Write concise man page with examples
 
-#### 16. cut
+#### 40. cut
 - [ ] Test: Byte selection (-b)
 - [ ] Test: Character selection (-c)
 - [ ] Test: Field selection (-f)
@@ -330,7 +601,7 @@ For each utility:
 - [ ] Implement: Field extraction
 - [ ] Man page: Write concise man page with examples
 
-#### 17. tr
+#### 41. tr
 - [ ] Test: Character translation
 - [ ] Test: Character deletion (-d)
 - [ ] Test: Squeeze repeats (-s)
@@ -344,7 +615,7 @@ For each utility:
 
 ### Phase 3: File Information Utilities
 
-#### 18. stat
+#### 42. stat
 - [ ] Test: File information display
 - [ ] Test: Custom format (-c)
 - [ ] Test: Filesystem info (-f)
@@ -355,7 +626,7 @@ For each utility:
 - [ ] Implement: Human-readable output
 - [ ] Man page: Write concise man page with examples
 
-#### 19. du
+#### 43. du
 - [ ] Test: Directory size calculation
 - [ ] Test: Human readable (-h)
 - [ ] Test: Summary only (-s)
@@ -367,7 +638,7 @@ For each utility:
 - [ ] Implement: Caching for performance
 - [ ] Man page: Write concise man page with examples
 
-#### 20. df
+#### 44. df
 - [ ] Test: Filesystem listing
 - [ ] Test: Human readable (-h)
 - [ ] Test: Filesystem type (-t)
@@ -380,7 +651,7 @@ For each utility:
 
 ### Phase 4: Advanced Utilities
 
-#### 21. find
+#### 45. find
 - [ ] Test: Name matching (-name)
 - [ ] Test: Type filtering (-type)
 - [ ] Test: Size filtering (-size)
@@ -393,7 +664,7 @@ For each utility:
 - [ ] Implement: Action execution
 - [ ] Man page: Write concise man page with examples
 
-#### 22. grep
+#### 46. grep
 - [ ] Test: Basic pattern matching
 - [ ] Test: Regular expressions (-E)
 - [ ] Test: Case insensitive (-i)

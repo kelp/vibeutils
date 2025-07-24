@@ -8,9 +8,10 @@ pub const terminal = @import("terminal.zig");
 pub const test_utils = @import("test_utils.zig");
 pub const constants = @import("constants.zig");
 pub const directory = @import("directory.zig");
+pub const icons = @import("icons.zig");
 
 /// Version information
-pub const version = "0.3.3";
+pub const version = "0.3.4";
 pub const name = "zutils";
 
 /// Common error types
