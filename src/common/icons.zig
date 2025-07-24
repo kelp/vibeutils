@@ -3,7 +3,8 @@ const testing = std.testing;
 
 /// Icon display modes
 pub const IconMode = enum {
-    never,  // Never show icons (default)
+    never,  // Never show icons
+    auto,   // Show icons when output is to a terminal (default)
     always, // Always show icons
 };
 
@@ -148,17 +149,25 @@ pub fn getIconModeFromEnv(allocator: std.mem.Allocator) IconMode {
         defer allocator.free(val);
         if (std.mem.eql(u8, val, "always")) return .always;
         if (std.mem.eql(u8, val, "never")) return .never;
+        if (std.mem.eql(u8, val, "auto")) return .auto;
     } else |_| {}
     
-    return .never; // Safe default
+    return .auto; // Default to auto mode
 }
 
-/// Determine if icons should be shown based on mode
+/// Determine if icons should be shown based on mode and terminal detection
 pub fn shouldShowIcons(mode: IconMode) bool {
     return switch (mode) {
         .always => true,
         .never => false,
+        .auto => isOutputToTerminal(),
     };
+}
+
+/// Check if stdout is connected to a terminal
+fn isOutputToTerminal() bool {
+    const stdout = std.io.getStdOut();
+    return stdout.isTty();
 }
 
 test "icon mode - never" {
@@ -169,10 +178,18 @@ test "icon mode - always" {
     try testing.expect(shouldShowIcons(.always));
 }
 
-test "environment variable parsing defaults to never" {
+test "icon mode - auto depends on terminal" {
+    // In test environment, this will depend on whether tests are run in a terminal
+    // The behavior is correct either way - this just tests that auto mode works
+    const result = shouldShowIcons(.auto);
+    // Result can be true or false, just ensure it doesn't crash
+    _ = result;
+}
+
+test "environment variable parsing defaults to auto" {
     const allocator = testing.allocator;
-    // In test environment, no LS_ICONS env var is set
-    try testing.expectEqual(IconMode.never, getIconModeFromEnv(allocator));
+    // In test environment, no LS_ICONS env var is set, should default to auto
+    try testing.expectEqual(IconMode.auto, getIconModeFromEnv(allocator));
 }
 
 test "get icon for directory" {
