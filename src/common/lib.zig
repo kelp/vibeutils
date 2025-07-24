@@ -71,7 +71,7 @@ pub const CommonOpts = struct {
     /// Print version
     pub fn printVersion() void {
         const stdout = std.io.getStdOut().writer();
-        const prog_name = std.fs.path.basename(std.os.argv[0]);
+        const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
         stdout.print("{s} ({s}) {s}\n", .{ prog_name, name, version }) catch return;
     }
 };

@@ -1,10 +1,10 @@
 # Zutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 3/46 (echo ✓, cat ✓, ls ✓)
+- **Utilities Completed**: 4/46 (echo ✓, cat ✓, ls ✓, cp ✓)
 - **Utilities In Progress**: 0/46
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements)
-- **Common Library**: Core functionality implemented (including user/group lookup, terminal utils)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~70% (basic copy + preserve + directory handling)
+- **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
 - **New Approach**: Balancing OpenBSD simplicity with GNU's most-used features + modern UX
@@ -78,7 +78,7 @@ For each utility:
 - [x] Implement: -u flag (no-op for POSIX)
 - [x] Implement: Long option support (--show-all already works)
 
-#### 3. ls - Phase 1 ✓, Phase 2 ✓, Phase 3 ✓, Phase 4 ✓
+#### 3. ls ✓ (Phases 1-5 complete)
 - [x] Test: Basic directory listing
 - [x] Test: Hidden files (-a)
 - [x] Test: One file per line (-1)
@@ -149,16 +149,16 @@ For each utility:
 - [x] Implement: Inode display formatting
 - [x] Implement: Comma-separated formatter
 
-###### Phase 5: Modern Enhancements (Stretch Goals)
-- [ ] Test: Nerd font icon detection
-- [ ] Test: Icon mapping for common file types
-- [ ] Test: Git status integration (modified/new files)
-- [ ] Test: Smart date formatting ("2 hours ago")
-- [ ] Test: Parallel stat() for performance
-- [ ] Implement: Optional icon system
-- [ ] Implement: Git repository detection
-- [ ] Implement: Human-friendly date formatting
-- [ ] Implement: Parallel I/O for large directories
+###### Phase 5: Modern Enhancements ✓
+- [x] Test: Nerd font icon detection
+- [x] Test: Icon mapping for common file types
+- [x] Test: Git status integration (modified/new files)
+- [x] Test: Smart date formatting ("2 hours ago")
+- [ ] Test: Parallel stat() for performance (deferred - see Future Optimizations)
+- [x] Implement: Optional icon system
+- [x] Implement: Git repository detection
+- [x] Implement: Human-friendly date formatting
+- [ ] Implement: Parallel I/O for large directories (deferred - see Future Optimizations)
 
 ##### ls - Features We're NOT Implementing
 - SELinux context (-Z, --context) - Too Linux-specific
@@ -170,20 +170,36 @@ For each utility:
 - All the --indicator-style variants - Just -F
 - Explicit --si flag - We use binary (1024) for -h
 
-#### 4. cp
-- [ ] Test: Single file copy
-- [ ] Test: Directory copy (-r)
-- [ ] Test: Preserve attributes (-p)
-- [ ] Test: Interactive mode (-i)
-- [ ] Test: Force overwrite (-f)
-- [ ] Test: Symbolic link handling
-- [ ] Test: Permission preservation
-- [ ] Test: Error cases (permission denied, disk full)
-- [ ] Implement: Basic file copying
-- [ ] Implement: Directory recursion
-- [ ] Implement: Attribute preservation
-- [ ] Implement: Symlink handling
-- [ ] Man page: Write concise man page with examples
+#### 4. cp ✓ (Basic implementation complete)
+- [x] Test: Single file copy
+- [x] Test: Copy to existing directory
+- [x] Test: Error on directory without recursive flag
+- [x] Test: Preserve attributes (-p)
+- [ ] Test: Directory copy (-r) - TODO
+- [ ] Test: Interactive mode (-i) - TODO
+- [ ] Test: Force overwrite (-f) - TODO
+- [ ] Test: Symbolic link handling - TODO
+- [ ] Test: Error cases (permission denied, disk full) - TODO
+- [x] Implement: Basic file copying
+- [x] Implement: Attribute preservation (mode, timestamps)
+- [x] Implement: Copy to directory detection
+- [ ] Implement: Directory recursion - TODO
+- [ ] Implement: Symlink handling - TODO
+- [ ] Man page: Write concise man page with examples - TODO
+
+##### cp - Features Implemented
+- Single file copy with automatic directory detection
+- Preserve mode (-p) for permissions and timestamps
+- Multiple source validation (destination must be directory)
+- Interactive mode scaffolding (-i)
+- Proper error messages and exit codes
+
+##### cp - Still TODO
+- Recursive directory copying (-r)
+- Force overwrite without prompting (-f)
+- Symbolic link handling (-d, --no-dereference)
+- Cross-filesystem support
+- Man page documentation
 
 #### 5. mv
 - [ ] Test: File rename in same directory
