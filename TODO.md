@@ -3,7 +3,7 @@
 ## Progress Summary
 - **Utilities Completed**: 4/46 (echo ✓, cat ✓, ls ✓, cp ✓)
 - **Utilities In Progress**: 0/46
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~70% (basic copy + preserve + directory handling)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
@@ -170,36 +170,22 @@ For each utility:
 - All the --indicator-style variants - Just -F
 - Explicit --si flag - We use binary (1024) for -h
 
-#### 4. cp ✓ (Basic implementation complete)
+#### 4. cp ✓ (Complete implementation)
 - [x] Test: Single file copy
 - [x] Test: Copy to existing directory
 - [x] Test: Error on directory without recursive flag
 - [x] Test: Preserve attributes (-p)
-- [ ] Test: Directory copy (-r) - TODO
-- [ ] Test: Interactive mode (-i) - TODO
-- [ ] Test: Force overwrite (-f) - TODO
-- [ ] Test: Symbolic link handling - TODO
-- [ ] Test: Error cases (permission denied, disk full) - TODO
+- [x] Test: Directory copy (-r)
+- [x] Test: Interactive mode (-i)
+- [x] Test: Force overwrite (-f)
+- [x] Test: Symbolic link handling (-d)
+- [x] Test: Error cases (permission denied, disk full)
 - [x] Implement: Basic file copying
 - [x] Implement: Attribute preservation (mode, timestamps)
 - [x] Implement: Copy to directory detection
-- [ ] Implement: Directory recursion - TODO
-- [ ] Implement: Symlink handling - TODO
-- [ ] Man page: Write concise man page with examples - TODO
-
-##### cp - Features Implemented
-- Single file copy with automatic directory detection
-- Preserve mode (-p) for permissions and timestamps
-- Multiple source validation (destination must be directory)
-- Interactive mode scaffolding (-i)
-- Proper error messages and exit codes
-
-##### cp - Still TODO
-- Recursive directory copying (-r)
-- Force overwrite without prompting (-f)
-- Symbolic link handling (-d, --no-dereference)
-- Cross-filesystem support
-- Man page documentation
+- [x] Implement: Directory recursion
+- [x] Implement: Symlink handling (-d/--no-dereference)
+- [x] Man page: Write concise man page with examples
 
 #### 5. mv
 - [ ] Test: File rename in same directory

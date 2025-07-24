@@ -1,0 +1,85 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt CP 1
+.Os
+.Sh NAME
+.Nm cp
+.Nd copy files and directories
+.Sh SYNOPSIS
+.Nm cp
+.Op Fl dfipRr
+.Ar source target
+.Nm cp
+.Op Fl dfipRr
+.Ar source ... directory
+.Sh DESCRIPTION
+The
+.Nm
+utility copies the contents of
+.Ar source
+to
+.Ar target .
+If
+.Ar target
+is a directory, then the
+.Ar source
+is copied into
+.Ar target
+with its original filename.
+If multiple sources are provided, they are copied into the target directory.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl d
+Do not follow symbolic links in the source.
+When this option is specified, symbolic links are copied as symbolic links,
+not the files they reference.
+.It Fl f
+Force copy by removing the destination if it cannot be opened for writing.
+.It Fl i
+Prompt for confirmation before overwriting existing files.
+.It Fl p
+Preserve file mode, ownership, and timestamps.
+.It Fl R , Fl r
+Copy directories recursively.
+If this option is not specified,
+.Nm
+will not copy directories.
+.El
+.Sh EXAMPLES
+Copy
+.Pa file1
+to
+.Pa file2 :
+.Bd -literal -offset indent
+$ cp file1 file2
+.Ed
+.Pp
+Copy a directory recursively:
+.Bd -literal -offset indent
+$ cp -r source_dir target_dir
+.Ed
+.Pp
+Copy a symbolic link without following it:
+.Bd -literal -offset indent
+$ cp -d symlink new_symlink
+.Ed
+.Pp
+Copy with preserved attributes:
+.Bd -literal -offset indent
+$ cp -p file1 file2
+.Ed
+.Sh EXIT STATUS
+.Ex -std cp
+.Sh SEE ALSO
+.Xr mv 1 ,
+.Xr ln 1 ,
+.Xr chmod 1 ,
+.Xr rsync 1
+.Sh STANDARDS
+The
+.Nm
+utility attempts to be compatible with the
+.St -p1003.1-2008
+specification, with additional support for modern features
+like symbolic link handling.
