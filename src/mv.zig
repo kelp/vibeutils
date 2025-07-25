@@ -320,7 +320,7 @@ test "mv: empty file" {
     // Create an empty file
     const source_name = try test_dir.createUniqueFile("empty", "");
     defer testing.allocator.free(source_name);
-    
+
     const dest_name = try test_utils.uniqueTestName(testing.allocator, "moved_empty");
     defer testing.allocator.free(dest_name);
 
@@ -328,7 +328,7 @@ test "mv: empty file" {
     defer testing.allocator.free(source_path);
     const base_path = try test_dir.getPath(".");
     defer testing.allocator.free(base_path);
-    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{base_path, dest_name});
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
     defer testing.allocator.free(dest_path);
 
     // Run mv
@@ -409,10 +409,10 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 }
 
 /// Helper function to remove a destination file or directory.
-/// 
+///
 /// Tries to remove as a file first, then as a directory tree if that fails.
 /// This handles the case where we don't know if the destination is a file or directory.
-/// 
+///
 /// @param dest Path to destination to remove
 fn removeDestination(dest: []const u8) !void {
     std.fs.cwd().deleteFile(dest) catch |del_err| {
