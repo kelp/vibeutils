@@ -13,11 +13,31 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Build options with version from build.zig.zon
+    const build_options = b.addOptions();
+    
+    // Read and parse version from build.zig.zon
+    const zon_content = std.fs.cwd().readFileAlloc(b.allocator, "build.zig.zon", 1024) catch |err| switch (err) {
+        error.FileNotFound => @panic("build.zig.zon not found"),
+        else => @panic("Could not read build.zig.zon"),
+    };
+    defer b.allocator.free(zon_content);
+    
+    // Simple string parsing to extract version
+    const version_prefix = ".version = \"";
+    const version_start_idx = std.mem.indexOf(u8, zon_content, version_prefix) orelse @panic("Could not find .version in build.zig.zon");
+    const version_value_start = version_start_idx + version_prefix.len;
+    const version_end_idx = std.mem.indexOfScalarPos(u8, zon_content, version_value_start, '"') orelse @panic("Could not find version end quote in build.zig.zon");
+    const version = zon_content[version_value_start..version_end_idx];
+    
+    build_options.addOption([]const u8, "version", version);
+    
     // Common library module
     const common = b.addModule("common", .{
         .root_source_file = b.path("src/common/lib.zig"),
         .imports = &.{
             .{ .name = "clap", .module = clap.module("clap") },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
@@ -39,6 +59,7 @@ pub fn build(b: *std.Build) void {
         });
         exe.root_module.addImport("common", common);
         exe.root_module.addImport("clap", clap.module("clap"));
+        exe.root_module.addImport("build_options", build_options.createModule());
         
         // Link libc for utilities that need it
         if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp") or std.mem.eql(u8, util[0], "mv")) {
@@ -72,6 +93,7 @@ pub fn build(b: *std.Build) void {
         });
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("clap", clap.module("clap"));
+        util_tests.root_module.addImport("build_options", build_options.createModule());
         
         // Link libc for tests that need it
         if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp") or std.mem.eql(u8, util[0], "mv")) {
@@ -96,6 +118,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    common_tests.root_module.addImport("build_options", build_options.createModule());
     
     const run_common_tests = b.addRunArtifact(common_tests);
     if (coverage) {

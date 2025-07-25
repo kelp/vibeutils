@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 
 /// Common functionality for all zutils
 pub const style = @import("style.zig");
@@ -12,8 +13,8 @@ pub const icons = @import("icons.zig");
 pub const relative_date = @import("relative_date.zig");
 pub const git = @import("git.zig");
 
-/// Version information
-pub const version = "0.3.4";
+/// Version information from build options
+pub const version = build_options.version;
 pub const name = "zutils";
 
 /// Common error types
@@ -75,7 +76,6 @@ pub const CommonOpts = struct {
         stdout.print("{s} ({s}) {s}\n", .{ prog_name, name, version }) catch return;
     }
 };
-
 
 test "common library basics" {
     // Test that we can import and use basic functionality
