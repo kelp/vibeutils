@@ -42,6 +42,15 @@ zig test src/echo.zig
 zig test src/common/lib.zig
 ```
 
+## Git Hooks
+
+The project includes a pre-commit hook that automatically:
+- Runs `make fmt` to format code before every commit
+- Adds any formatting changes to the commit
+- Runs tests to ensure code integrity
+
+The hook is located at `.git/hooks/pre-commit` and is automatically set up for this repository.
+
 ## Makefile Targets
 
 The project includes a comprehensive Makefile with the following targets:
