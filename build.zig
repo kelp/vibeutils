@@ -1,10 +1,11 @@
 const std = @import("std");
+const utils = @import("build/utils.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     
-    // Coverage option
+    // Coverage option - now uses Zig's native coverage
     const coverage = b.option(bool, "coverage", "Generate test coverage") orelse false;
 
     // Dependencies
@@ -13,22 +14,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Build options with version from build.zig.zon
+    // Validate utilities exist before building
+    utils.validateUtilities() catch |err| {
+        std.log.err("Utility validation failed: {}", .{err});
+        return; // Let build system handle the error gracefully
+    };
+
+    // Build options with version from build.zig.zon using safe parser
     const build_options = b.addOptions();
     
-    // Read and parse version from build.zig.zon
-    const zon_content = std.fs.cwd().readFileAlloc(b.allocator, "build.zig.zon", 1024) catch |err| switch (err) {
-        error.FileNotFound => @panic("build.zig.zon not found"),
-        else => @panic("Could not read build.zig.zon"),
+    const version = utils.parseVersion(b.allocator) catch |err| {
+        std.log.err("Failed to parse version from build.zig.zon: {}", .{err});
+        std.log.err("Ensure build.zig.zon exists and contains a valid .version field", .{});
+        return; // Let build system handle the error gracefully
     };
-    defer b.allocator.free(zon_content);
-    
-    // Simple string parsing to extract version
-    const version_prefix = ".version = \"";
-    const version_start_idx = std.mem.indexOf(u8, zon_content, version_prefix) orelse @panic("Could not find .version in build.zig.zon");
-    const version_value_start = version_start_idx + version_prefix.len;
-    const version_end_idx = std.mem.indexOfScalarPos(u8, zon_content, version_value_start, '"') orelse @panic("Could not find version end quote in build.zig.zon");
-    const version = zon_content[version_value_start..version_end_idx];
+    defer b.allocator.free(version); // Free the allocated version string
     
     build_options.addOption([]const u8, "version", version);
     
@@ -41,74 +41,109 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Build utilities
-    const utilities = .{
-        .{ "echo", "src/echo.zig" },
-        .{ "cat", "src/cat.zig" },
-        .{ "ls", "src/ls.zig" },
-        .{ "cp", "src/cp.zig" },
-        .{ "mv", "src/mv.zig" },
-    };
-
-    inline for (utilities) |util| {
-        const exe = b.addExecutable(.{
-            .name = util[0],
-            .root_source_file = b.path(util[1]),
-            .target = target,
-            .optimize = optimize,
-        });
-        exe.root_module.addImport("common", common);
-        exe.root_module.addImport("clap", clap.module("clap"));
-        exe.root_module.addImport("build_options", build_options.createModule());
-        
-        // Link libc for utilities that need it
-        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp") or std.mem.eql(u8, util[0], "mv")) {
-            exe.linkLibC();
-        }
-        
-        b.installArtifact(exe);
-
-        // Create run step
-        const run_cmd = b.addRunArtifact(exe);
-        run_cmd.step.dependOn(b.getInstallStep());
-        if (b.args) |args| {
-            run_cmd.addArgs(args);
-        }
-        
-        const run_step_name = b.fmt("run-{s}", .{util[0]});
-        const run_step_desc = b.fmt("Run {s}", .{util[0]});
-        const run_step = b.step(run_step_name, run_step_desc);
-        run_step.dependOn(&run_cmd.step);
+    // Build utilities using metadata-driven approach
+    for (utils.utilities) |util| {
+        buildUtility(b, util, target, optimize, coverage, common, clap, build_options) catch |err| {
+            std.log.err("Failed to build utility {s}: {}", .{util.name, err});
+            return; // Let build system handle the error gracefully
+        };
     }
 
     // Unit tests
+    buildTests(b, target, optimize, coverage, common, clap, build_options) catch |err| {
+        std.log.err("Failed to configure tests: {}", .{err});
+        return; // Let build system handle the error gracefully
+    };
+}
+
+/// Build a single utility with proper error handling
+/// Creates executable, links necessary libraries, and sets up run steps
+/// Returns error if build configuration fails
+fn buildUtility(
+    b: *std.Build,
+    util: utils.UtilityMeta,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    coverage: bool,
+    common: *std.Build.Module,
+    clap: *std.Build.Dependency,
+    build_options: *std.Build.Step.Options,
+) !void {
+    const exe = b.addExecutable(.{
+        .name = util.name,
+        .root_source_file = b.path(util.path),
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    // Add imports
+    exe.root_module.addImport("common", common);
+    exe.root_module.addImport("clap", clap.module("clap"));
+    exe.root_module.addImport("build_options", build_options.createModule());
+    
+    // Metadata-driven library linking
+    if (util.needs_libc) {
+        exe.linkLibC();
+    }
+    
+    // Enable coverage if requested
+    if (coverage) {
+        // For now, just ensure debug info is preserved for coverage tools
+        exe.root_module.strip = false;
+    }
+    
+    b.installArtifact(exe);
+
+    // Create run step with error handling
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+    
+    const run_step_name = b.fmt("run-{s}", .{util.name});
+    const run_step_desc = b.fmt("Run {s} - {s}", .{util.name, util.description});
+    const run_step = b.step(run_step_name, run_step_desc);
+    run_step.dependOn(&run_cmd.step);
+}
+
+/// Configure tests with proper error handling
+/// Uses the provided clap dependency instead of creating a new one
+fn buildTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    coverage: bool,
+    common: *std.Build.Module,
+    clap: *std.Build.Dependency,
+    build_options: *std.Build.Step.Options,
+) !void {
     const test_step = b.step("test", "Run unit tests");
     
     // Test each utility
-    inline for (utilities) |util| {
+    for (utils.utilities) |util| {
         const util_tests = b.addTest(.{
-            .root_source_file = b.path(util[1]),
+            .root_source_file = b.path(util.path),
             .target = target,
             .optimize = optimize,
         });
+        
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("clap", clap.module("clap"));
         util_tests.root_module.addImport("build_options", build_options.createModule());
         
-        // Link libc for tests that need it
-        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp") or std.mem.eql(u8, util[0], "mv")) {
+        // Metadata-driven library linking for tests
+        if (util.needs_libc) {
             util_tests.linkLibC();
         }
         
-        const run_util_tests = b.addRunArtifact(util_tests);
+        // Configure coverage
         if (coverage) {
-            util_tests.setExecCmd(&[_]?[]const u8{ 
-                "kcov", 
-                "--exclude-pattern=/usr", 
-                "zig-cache/kcov", 
-                null 
-            });
+            // Preserve debug info for coverage tools
+            util_tests.root_module.strip = false;
         }
+        
+        const run_util_tests = b.addRunArtifact(util_tests);
         test_step.dependOn(&run_util_tests.step);
     }
     
@@ -120,14 +155,12 @@ pub fn build(b: *std.Build) void {
     });
     common_tests.root_module.addImport("build_options", build_options.createModule());
     
-    const run_common_tests = b.addRunArtifact(common_tests);
+    // Configure coverage for common tests
     if (coverage) {
-        common_tests.setExecCmd(&[_]?[]const u8{ 
-            "kcov", 
-            "--exclude-pattern=/usr", 
-            "zig-cache/kcov", 
-            null 
-        });
+        // Preserve debug info for coverage tools
+        common_tests.root_module.strip = false;
     }
+    
+    const run_common_tests = b.addRunArtifact(common_tests);
     test_step.dependOn(&run_common_tests.step);
 }

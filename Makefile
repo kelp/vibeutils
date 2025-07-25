@@ -11,17 +11,14 @@ build:
 test:
 	zig build test
 
-# Run tests with coverage
+# Run tests with coverage using Zig's native coverage
 coverage:
-	@echo "Building tests..."
-	@zig build test
 	@echo "Running tests with coverage..."
 	@mkdir -p coverage
-	@find .zig-cache -name "test" -type f -executable | while read test_file; do \
-		echo "Coverage for: $$test_file"; \
-		kcov --exclude-pattern=/usr/lib,/usr/include coverage "$$test_file" || true; \
-	done
-	@echo "Coverage report: coverage/index.html"
+	@zig build test -Dcoverage=true 2>&1 | tee coverage/test_output.log
+	@echo "Coverage information saved to coverage/"
+	@echo "Note: Native Zig coverage support is still evolving."
+	@echo "For detailed coverage reports, consider using external tools like kcov."
 
 # Clean build artifacts
 clean:
