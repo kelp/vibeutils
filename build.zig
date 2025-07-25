@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
         .{ "cat", "src/cat.zig" },
         .{ "ls", "src/ls.zig" },
         .{ "cp", "src/cp.zig" },
+        .{ "mv", "src/mv.zig" },
     };
 
     inline for (utilities) |util| {
@@ -40,7 +41,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("clap", clap.module("clap"));
         
         // Link libc for utilities that need it
-        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp")) {
+        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp") or std.mem.eql(u8, util[0], "mv")) {
             exe.linkLibC();
         }
         
@@ -73,7 +74,7 @@ pub fn build(b: *std.Build) void {
         util_tests.root_module.addImport("clap", clap.module("clap"));
         
         // Link libc for tests that need it
-        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp")) {
+        if (std.mem.eql(u8, util[0], "ls") or std.mem.eql(u8, util[0], "cat") or std.mem.eql(u8, util[0], "cp") or std.mem.eql(u8, util[0], "mv")) {
             util_tests.linkLibC();
         }
         

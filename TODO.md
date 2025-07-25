@@ -1,9 +1,9 @@
 # Zutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 4/46 (echo ✓, cat ✓, ls ✓, cp ✓)
+- **Utilities Completed**: 5/46 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓)
 - **Utilities In Progress**: 0/46
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Basic structure with tests working
@@ -187,18 +187,18 @@ For each utility:
 - [x] Implement: Symlink handling (-d/--no-dereference)
 - [x] Man page: Write concise man page with examples
 
-#### 5. mv
-- [ ] Test: File rename in same directory
-- [ ] Test: Move to different directory
-- [ ] Test: Directory move
-- [ ] Test: Interactive mode (-i)
-- [ ] Test: Force mode (-f)
-- [ ] Test: Cross-filesystem move
-- [ ] Test: Atomic rename when possible
-- [ ] Implement: Basic move/rename
-- [ ] Implement: Cross-filesystem support
-- [ ] Implement: Directory handling
-- [ ] Man page: Write concise man page with examples
+#### 5. mv ✓
+- [x] Test: File rename in same directory
+- [x] Test: Move to different directory
+- [x] Test: Directory move
+- [x] Test: Interactive mode (-i)
+- [x] Test: Force mode (-f)
+- [x] Test: Cross-filesystem move
+- [x] Test: Atomic rename when possible
+- [x] Implement: Basic move/rename
+- [x] Implement: Cross-filesystem support
+- [x] Implement: Directory handling
+- [x] Man page: Write concise man page with examples
 
 #### 6. rm
 - [ ] Test: Single file removal

@@ -1,0 +1,83 @@
+.Dd July 24, 2025
+.Dt MV 1
+.Os
+.Sh NAME
+.Nm mv
+.Nd move (rename) files
+.Sh SYNOPSIS
+.Nm
+.Op Fl finv
+.Ar source target
+.Nm
+.Op Fl finv
+.Ar source ... directory
+.Sh DESCRIPTION
+The
+.Nm
+utility moves (renames) files and directories.
+In its first form, it renames
+.Ar source
+to
+.Ar target .
+In its second form, it moves each named
+.Ar source
+to the destination
+.Ar directory .
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl f , -force
+Do not prompt before overwriting existing files.
+.It Fl i , -interactive
+Prompt before overwriting existing files.
+.It Fl n , -no-clobber
+Do not overwrite existing files.
+.It Fl v , -verbose
+Explain what is being done.
+.It Fl h , -help
+Display help and exit.
+.It Fl V , -version
+Output version information and exit.
+.El
+.Pp
+If
+.Ar target
+does not exist, it is created.
+If
+.Ar target
+exists and is a directory, the file is moved into that directory.
+.Pp
+The
+.Nm
+utility attempts to use the
+.Xr rename 2
+system call for efficiency.
+If the source and destination are on different file systems,
+.Nm
+falls back to copying the file and then removing the original.
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Rename a file:
+.Pp
+.Dl $ mv oldname.txt newname.txt
+.Pp
+Move multiple files to a directory:
+.Pp
+.Dl $ mv file1.txt file2.txt documents/
+.Pp
+Move a directory and all its contents:
+.Pp
+.Dl $ mv old_project/ new_project/
+.Sh SEE ALSO
+.Xr cp 1 ,
+.Xr ln 1 ,
+.Xr rm 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Sh AUTHORS
+.An Travis Cole
