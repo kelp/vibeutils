@@ -50,7 +50,7 @@ pub fn main() !void {
 
     const stdout = std.io.getStdOut().writer();
     const strings = res.positionals.@"0";
-    
+
     try echoStrings(strings, stdout, options);
 }
 
@@ -91,14 +91,14 @@ const EchoOptions = struct {
 fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOptions) !void {
     for (strings, 0..) |str, i| {
         if (i > 0) try writer.writeAll(" ");
-        
+
         if (options.interpret_escapes) {
             try writeWithEscapes(str, writer);
         } else {
             try writer.writeAll(str);
         }
     }
-    
+
     if (!options.suppress_newline) {
         try writer.writeAll("\n");
     }
@@ -138,7 +138,7 @@ fn echo(args: []const []const u8, writer: anytype) !void {
         .suppress_newline = suppress_newline,
         .interpret_escapes = interpret_escapes,
     };
-    
+
     try echoStrings(args[start_index..], writer, options);
 }
 

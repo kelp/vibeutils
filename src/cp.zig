@@ -52,7 +52,7 @@ pub fn main() !void {
     }
 
     const args = res.positionals.@"0";
-    
+
     // Validate argument count
     if (args.len < 2) {
         if (args.len == 0) {
@@ -121,16 +121,16 @@ test "cp: single file copy" {
     defer testing.allocator.free(source_path);
     const dest_path = try test_dir.joinPath("dest.txt");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{};
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
 }
 
@@ -139,13 +139,13 @@ test "cp: basic argument validation" {
     const args_empty = [_][]const u8{};
     const args_one = [_][]const u8{"source"};
     const args_two = [_][]const u8{ "source", "dest" };
-    
+
     // Empty args should be invalid
     try testing.expect(args_empty.len < 2);
-    
-    // One arg should be invalid 
+
+    // One arg should be invalid
     try testing.expect(args_one.len < 2);
-    
+
     // Two args should be valid
     try testing.expect(args_two.len >= 2);
 }
@@ -158,7 +158,7 @@ test "cp: options structure" {
     try testing.expect(!options_default.force);
     try testing.expect(!options_default.preserve);
     try testing.expect(!options_default.no_dereference);
-    
+
     const options_recursive = types.CpOptions{ .recursive = true };
     try testing.expect(options_recursive.recursive);
     try testing.expect(!options_recursive.interactive);
@@ -175,16 +175,16 @@ test "cp: copy to existing directory" {
     defer testing.allocator.free(source_path);
     const dest_path = try test_dir.getPath("dest_dir");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{};
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
 }
 
@@ -193,19 +193,19 @@ test "cp: error on directory without recursive flag" {
     defer test_dir.deinit();
 
     try test_dir.createDir("source_dir");
-    
+
     const source_path = try test_dir.getPath("source_dir");
     defer testing.allocator.free(source_path);
     const dest_path = try test_dir.joinPath("dest_dir");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{ .recursive = false };
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try testing.expectError(errors.CopyError.RecursionNotAllowed, engine.executeCopy(operation));
 }
 
@@ -219,16 +219,16 @@ test "cp: preserve attributes" {
     defer testing.allocator.free(source_path);
     const dest_path = try test_dir.joinPath("dest.txt");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{ .preserve = true };
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
     try testing.expectEqual(source_stat.mode, dest_stat.mode);
@@ -243,21 +243,21 @@ test "cp: recursive directory copy" {
     try test_dir.createDir("source_dir/subdir");
     try test_dir.createFile("source_dir/file1.txt", "File 1 content");
     try test_dir.createFile("source_dir/subdir/file2.txt", "File 2 content");
-    
+
     const source_path = try test_dir.getPath("source_dir");
     defer testing.allocator.free(source_path);
     const dest_path = try test_dir.joinPath("dest_dir");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{ .recursive = true };
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
     try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
 }
@@ -268,21 +268,21 @@ test "cp: force mode overwrites" {
 
     try test_dir.createFile("source.txt", "New content");
     try test_dir.createFileWithMode("dest.txt", "Old content", 0o444);
-    
+
     const source_path = try test_dir.getPath("source.txt");
     defer testing.allocator.free(source_path);
     const dest_path = try test_dir.getPath("dest.txt");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{ .force = true };
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     try test_dir.expectFileContent("dest.txt", "New content");
 }
 
@@ -292,21 +292,21 @@ test "cp: symbolic link handling - follow by default" {
 
     try test_dir.createFile("original.txt", "Original content");
     try test_dir.createSymlink("original.txt", "link.txt");
-    
+
     const link_path = try test_dir.getPath("link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied.txt");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{};
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     // Should copy the file content, not create a symlink
     try test_dir.expectFileContent("copied.txt", "Original content");
     try testing.expect(!test_dir.isSymlink("copied.txt"));
@@ -318,21 +318,21 @@ test "cp: symbolic link handling - no dereference (-d)" {
 
     try test_dir.createFile("original.txt", "Original content");
     try test_dir.createSymlink("original.txt", "link.txt");
-    
+
     const link_path = try test_dir.joinPath("link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied_link.txt");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{ .no_dereference = true };
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     // Should create a symlink, not copy file content
     try testing.expect(test_dir.isSymlink("copied_link.txt"));
     const target = try test_dir.getSymlinkTarget("copied_link.txt");
@@ -345,24 +345,24 @@ test "cp: broken symlink handling" {
     defer test_dir.deinit();
 
     try test_dir.createSymlink("nonexistent.txt", "broken_link.txt");
-    
+
     const link_path = try test_dir.joinPath("broken_link.txt");
     defer testing.allocator.free(link_path);
     const dest_path = try test_dir.joinPath("copied_broken.txt");
     defer testing.allocator.free(dest_path);
-    
+
     const options = types.CpOptions{ .no_dereference = true };
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
-    
+
     try engine.executeCopy(operation);
-    
+
     // Should copy broken symlink as symlink
     try testing.expect(test_dir.isSymlink("copied_broken.txt"));
-    const target = try test_dir.getSymlinkTarget("copied_broken.txt");  
+    const target = try test_dir.getSymlinkTarget("copied_broken.txt");
     defer testing.allocator.free(target);
     try testing.expectEqualStrings("nonexistent.txt", target);
 }
@@ -370,24 +370,24 @@ test "cp: broken symlink handling" {
 test "cp: multiple sources to directory" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    
+
     try test_dir.createFile("file1.txt", "Content 1");
     try test_dir.createFile("file2.txt", "Content 2");
     try test_dir.createDir("dest_dir");
-    
+
     const file1_path = try test_dir.getPath("file1.txt");
     defer testing.allocator.free(file1_path);
     const file2_path = try test_dir.getPath("file2.txt");
     defer testing.allocator.free(file2_path);
     const dest_path = try test_dir.getPath("dest_dir");
     defer testing.allocator.free(dest_path);
-    
+
     const args = [_][]const u8{ file1_path, file2_path, dest_path };
-    
+
     const options = types.CpOptions{};
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
-    
+
     var operations = try engine.planOperations(&args);
     defer {
         for (operations.items) |*op| {
@@ -395,9 +395,9 @@ test "cp: multiple sources to directory" {
         }
         operations.deinit();
     }
-    
+
     try engine.executeCopyBatch(operations.items);
-    
+
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
     try test_dir.expectFileContent("dest_dir/file2.txt", "Content 2");
 }

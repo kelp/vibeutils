@@ -7,32 +7,32 @@ pub const CopyError = error{
     SourceNotFound,
     SourceNotReadable,
     SourceIsDirectory,
-    
+
     // Destination errors
     DestinationExists,
     DestinationNotWritable,
     DestinationIsNotDirectory,
     DestinationIsDirectory,
-    
+
     // Permission errors
     PermissionDenied,
     AccessDenied,
-    
+
     // File system errors
     CrossDevice,
     NoSpaceLeft,
     QuotaExceeded,
-    
+
     // Operation errors
     RecursionNotAllowed,
     UserCancelled,
     SameFile,
-    
+
     // Path errors
     EmptyPath,
     PathTooLong,
     InvalidPath,
-    
+
     // General errors
     UnsupportedFileType,
     OutOfMemory,
@@ -67,11 +67,11 @@ pub const ErrorHandler = struct {
             else => CopyError.Unexpected,
         };
     }
-    
+
     /// Report an error with context to stderr
     pub fn reportError(context: ErrorContext, copy_err: CopyError) void {
         const program_name = "cp";
-        
+
         switch (copy_err) {
             CopyError.SourceNotFound => {
                 if (context.source_path) |source| {
@@ -124,9 +124,7 @@ pub const ErrorHandler = struct {
             },
             CopyError.PermissionDenied, CopyError.AccessDenied => {
                 if (context.source_path != null and context.dest_path != null) {
-                    common.printError("{s}: cannot copy '{s}' to '{s}': Permission denied", .{ 
-                        program_name, context.source_path.?, context.dest_path.? 
-                    });
+                    common.printError("{s}: cannot copy '{s}' to '{s}': Permission denied", .{ program_name, context.source_path.?, context.dest_path.? });
                 } else {
                     common.printError("{s}: permission denied", .{program_name});
                 }
@@ -152,9 +150,7 @@ pub const ErrorHandler = struct {
             },
             CopyError.SameFile => {
                 if (context.source_path != null and context.dest_path != null) {
-                    common.printError("{s}: '{s}' and '{s}' are the same file", .{ 
-                        program_name, context.source_path.?, context.dest_path.? 
-                    });
+                    common.printError("{s}: '{s}' and '{s}' are the same file", .{ program_name, context.source_path.?, context.dest_path.? });
                 } else {
                     common.printError("{s}: source and destination are the same file", .{program_name});
                 }
@@ -187,21 +183,18 @@ pub const ErrorHandler = struct {
             },
         }
     }
-    
+
     /// Handle and report an error, then return appropriate exit code
     pub fn handleError(context: ErrorContext, copy_err: CopyError) common.ExitCode {
         reportError(context, copy_err);
-        
+
         return switch (copy_err) {
             CopyError.UserCancelled => common.ExitCode.success,
-            CopyError.SourceNotFound,
-            CopyError.EmptyPath,
-            CopyError.PathTooLong,
-            CopyError.InvalidPath => common.ExitCode.misuse,
+            CopyError.SourceNotFound, CopyError.EmptyPath, CopyError.PathTooLong, CopyError.InvalidPath => common.ExitCode.misuse,
             else => common.ExitCode.general_error,
         };
     }
-    
+
     /// Wrap a system operation and convert errors
     pub fn wrapSystemCall(
         comptime T: type,
@@ -277,7 +270,7 @@ test "ErrorHandler: error context" {
         .dest_path = "/dest/path",
         .system_error = error.AccessDenied,
     };
-    
+
     try testing.expectEqualStrings("copy file", context.operation);
     try testing.expectEqualStrings("/source/path", context.source_path.?);
     try testing.expectEqualStrings("/dest/path", context.dest_path.?);
@@ -286,7 +279,7 @@ test "ErrorHandler: error context" {
 
 test "ErrorHandler: handleError exit codes" {
     const context = ErrorContext{ .operation = "test" };
-    
+
     try testing.expectEqual(common.ExitCode.success, ErrorHandler.handleError(context, CopyError.UserCancelled));
     try testing.expectEqual(common.ExitCode.misuse, ErrorHandler.handleError(context, CopyError.SourceNotFound));
     try testing.expectEqual(common.ExitCode.general_error, ErrorHandler.handleError(context, CopyError.PermissionDenied));

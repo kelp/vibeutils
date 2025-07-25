@@ -204,7 +204,6 @@ fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions)
     }
 }
 
-
 test "cat reads single file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -351,11 +350,7 @@ test "cat with -A shows all (equivalent to -vET)" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
-        .show_nonprinting = true,
-        .show_ends = true,
-        .show_tabs = true 
-    });
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .show_nonprinting = true, .show_ends = true, .show_tabs = true });
 
     try testing.expectEqualStrings("Line 1^I$\nLine 2$\n", buffer.items);
 }
@@ -369,10 +364,7 @@ test "cat with -e shows ends and non-printing (equivalent to -vE)" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
-        .show_nonprinting = true,
-        .show_ends = true 
-    });
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .show_nonprinting = true, .show_ends = true });
 
     try testing.expectEqualStrings("Line 1$\nLine 2$\n", buffer.items);
 }
@@ -386,10 +378,7 @@ test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
-        .show_nonprinting = true,
-        .show_tabs = true 
-    });
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .show_nonprinting = true, .show_tabs = true });
 
     try testing.expectEqualStrings("Line^Iwith^Itabs\n", buffer.items);
 }
@@ -420,11 +409,7 @@ test "cat with -A and control characters" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ 
-        .show_nonprinting = true,
-        .show_ends = true,
-        .show_tabs = true 
-    });
+    try testCatFile(tmp_dir.dir, "test.txt", buffer.writer(), .{ .show_nonprinting = true, .show_ends = true, .show_tabs = true });
 
     try testing.expectEqualStrings("Test^A^IEnd$\n", buffer.items);
 }

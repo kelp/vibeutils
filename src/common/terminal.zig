@@ -7,11 +7,11 @@ pub fn getWidth() !u16 {
         // Windows implementation would use GetConsoleScreenBufferInfo
         return 80; // Default for now
     }
-    
+
     // Unix-like systems: try ioctl first
     if (std.posix.isatty(std.io.getStdOut().handle)) {
         var ws: std.posix.winsize = undefined;
-        
+
         // Use the appropriate ioctl based on the OS
         const result = switch (builtin.os.tag) {
             .linux => std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
@@ -19,18 +19,18 @@ pub fn getWidth() !u16 {
             .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
             else => @as(usize, 1), // Force fallback for unknown systems
         };
-        
+
         if (result == 0) {
             return ws.col;
         }
     }
-    
+
     // Fallback: check COLUMNS environment variable
     if (std.process.getEnvVarOwned(std.heap.c_allocator, "COLUMNS")) |cols| {
         defer std.heap.c_allocator.free(cols);
         return std.fmt.parseInt(u16, cols, 10) catch @import("constants.zig").DEFAULT_TERMINAL_WIDTH;
     } else |_| {}
-    
+
     // Default fallback
     return @import("constants.zig").DEFAULT_TERMINAL_WIDTH;
 }
@@ -41,11 +41,11 @@ pub fn getHeight() !u16 {
         // Windows implementation would use GetConsoleScreenBufferInfo
         return 24; // Default for now
     }
-    
+
     // Unix-like systems: try ioctl first
     if (std.posix.isatty(std.io.getStdOut().handle)) {
         var ws: std.posix.winsize = undefined;
-        
+
         // Use the appropriate ioctl based on the OS
         const result = switch (builtin.os.tag) {
             .linux => std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
@@ -53,18 +53,18 @@ pub fn getHeight() !u16 {
             .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
             else => @as(usize, 1), // Force fallback for unknown systems
         };
-        
+
         if (result == 0) {
             return ws.row;
         }
     }
-    
+
     // Fallback: check LINES environment variable
     if (std.process.getEnvVarOwned(std.heap.c_allocator, "LINES")) |lines| {
         defer std.heap.c_allocator.free(lines);
         return std.fmt.parseInt(u16, lines, 10) catch @import("constants.zig").DEFAULT_TERMINAL_HEIGHT;
     } else |_| {}
-    
+
     // Default fallback
     return @import("constants.zig").DEFAULT_TERMINAL_HEIGHT;
 }

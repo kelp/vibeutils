@@ -39,7 +39,7 @@ pub const FileInfo = struct {
         if (result != 0) {
             return error.StatFailed;
         }
-        
+
         // Convert C stat to our FileInfo
         const kind: std.fs.File.Kind = switch (stat_buf.mode & std.c.S.IFMT) {
             std.c.S.IFREG => .file,
@@ -51,7 +51,7 @@ pub const FileInfo = struct {
             std.c.S.IFSOCK => .unix_domain_socket,
             else => .unknown,
         };
-        
+
         return FileInfo{
             .size = @intCast(stat_buf.size),
             .mode = @intCast(stat_buf.mode),
@@ -64,19 +64,19 @@ pub const FileInfo = struct {
             .nlink = @intCast(stat_buf.nlink),
         };
     }
-    
+
     pub fn statDir(dir: std.fs.Dir, name: []const u8) !FileInfo {
         const file = try dir.openFile(name, .{});
         defer file.close();
         return try statFile(file);
     }
-    
+
     pub fn lstatDir(dir: std.fs.Dir, name: []const u8) !FileInfo {
         // Use lstat to get info about the link itself, not the target
         const allocator = std.heap.c_allocator;
         const name_z = try allocator.dupeZ(u8, name);
         defer allocator.free(name_z);
-        
+
         var stat_buf: std.c.Stat = undefined;
         const result = std.c.fstatat(dir.fd, name_z, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
         if (result != 0) {
@@ -90,7 +90,7 @@ pub const FileInfo = struct {
                 else => error.SystemResources,
             };
         }
-        
+
         // Convert stat to FileInfo
         const kind = switch (stat_buf.mode & std.c.S.IFMT) {
             std.c.S.IFREG => std.fs.File.Kind.file,
@@ -102,7 +102,7 @@ pub const FileInfo = struct {
             std.c.S.IFSOCK => .unix_domain_socket,
             else => .unknown,
         };
-        
+
         return FileInfo{
             .size = @intCast(stat_buf.size),
             .mode = @intCast(stat_buf.mode),
@@ -203,35 +203,28 @@ pub fn formatTime(mtime_ns: i128, buf: []u8) ![]const u8 {
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
     const now_s = std.time.timestamp();
     const six_months_s = @import("constants.zig").SIX_MONTHS_SECONDS;
-    
+
     // Convert to broken-down time
     const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_s) };
     const year_day = epoch_seconds.getEpochDay().calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const day_seconds = epoch_seconds.getDaySeconds();
-    
-    const months = [_][]const u8{
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    };
-    
+
+    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
     const month = months[@intFromEnum(month_day.month) - 1];
     const day = month_day.day_index + 1;
     const year = year_day.year;
     const hour = day_seconds.getHoursIntoDay();
     const minute = day_seconds.getMinutesIntoHour();
-    
+
     // Format based on age
     if (now_s - mtime_s < six_months_s) {
         // Recent: "MMM DD HH:MM"
-        return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{
-            month, day, hour, minute
-        });
+        return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{ month, day, hour, minute });
     } else {
         // Old: "MMM DD  YYYY"
-        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{
-            month, day, year
-        });
+        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month, day, year });
     }
 }
 
@@ -279,7 +272,7 @@ pub fn getGroupName(gid: u32, buf: []u8) ![]const u8 {
 
 test "formatPermissions regular file" {
     var buf: [10]u8 = undefined;
-    
+
     // Regular file, mode 0644 (-rw-r--r--)
     const result = try formatPermissions(0o644, .file, &buf);
     try testing.expectEqualStrings("-rw-r--r--", result);
@@ -287,7 +280,7 @@ test "formatPermissions regular file" {
 
 test "formatPermissions directory" {
     var buf: [10]u8 = undefined;
-    
+
     // Directory, mode 0755 (drwxr-xr-x)
     const result = try formatPermissions(0o755, .directory, &buf);
     try testing.expectEqualStrings("drwxr-xr-x", result);
@@ -295,7 +288,7 @@ test "formatPermissions directory" {
 
 test "formatPermissions symlink" {
     var buf: [10]u8 = undefined;
-    
+
     // Symlink, mode 0777 (lrwxrwxrwx)
     const result = try formatPermissions(0o777, .sym_link, &buf);
     try testing.expectEqualStrings("lrwxrwxrwx", result);
@@ -303,7 +296,7 @@ test "formatPermissions symlink" {
 
 test "formatPermissions executable" {
     var buf: [10]u8 = undefined;
-    
+
     // Executable file, mode 0755 (-rwxr-xr-x)
     const result = try formatPermissions(0o755, .file, &buf);
     try testing.expectEqualStrings("-rwxr-xr-x", result);
@@ -311,15 +304,15 @@ test "formatPermissions executable" {
 
 test "formatPermissions setuid setgid sticky" {
     var buf: [10]u8 = undefined;
-    
+
     // File with setuid bit (4755)
     var result = try formatPermissions(0o4755, .file, &buf);
     try testing.expectEqualStrings("-rwsr-xr-x", result);
-    
+
     // Directory with setgid bit (2755)
     result = try formatPermissions(0o2755, .directory, &buf);
     try testing.expectEqualStrings("drwxr-sr-x", result);
-    
+
     // Directory with sticky bit (1755)
     result = try formatPermissions(0o1755, .directory, &buf);
     try testing.expectEqualStrings("drwxr-xr-t", result);
@@ -327,44 +320,44 @@ test "formatPermissions setuid setgid sticky" {
 
 test "formatSize basic" {
     var buf: [32]u8 = undefined;
-    
+
     var result = try formatSize(0, &buf);
     try testing.expectEqualStrings("0", result);
-    
+
     result = try formatSize(1234, &buf);
     try testing.expectEqualStrings("1234", result);
-    
+
     result = try formatSize(1234567890, &buf);
     try testing.expectEqualStrings("1234567890", result);
 }
 
 test "formatSizeHuman basic" {
     var buf: [32]u8 = undefined;
-    
+
     // Bytes
     var result = try formatSizeHuman(0, &buf);
     try testing.expectEqualStrings("0", result);
-    
+
     result = try formatSizeHuman(1023, &buf);
     try testing.expectEqualStrings("1023", result);
-    
+
     // Kilobytes
     result = try formatSizeHuman(1024, &buf);
     try testing.expectEqualStrings("1.0K", result);
-    
+
     result = try formatSizeHuman(1536, &buf);
     try testing.expectEqualStrings("1.5K", result);
-    
+
     result = try formatSizeHuman(10240, &buf);
     try testing.expectEqualStrings("10K", result);
-    
+
     // Megabytes
     result = try formatSizeHuman(1048576, &buf);
     try testing.expectEqualStrings("1.0M", result);
-    
+
     result = try formatSizeHuman(5242880, &buf);
     try testing.expectEqualStrings("5.0M", result);
-    
+
     // Gigabytes
     result = try formatSizeHuman(1073741824, &buf);
     try testing.expectEqualStrings("1.0G", result);
@@ -372,19 +365,19 @@ test "formatSizeHuman basic" {
 
 test "formatSizeKilobytes basic" {
     var buf: [32]u8 = undefined;
-    
+
     var result = try formatSizeKilobytes(0, &buf);
     try testing.expectEqualStrings("0", result);
-    
+
     result = try formatSizeKilobytes(1, &buf);
     try testing.expectEqualStrings("1", result); // Rounds up
-    
+
     result = try formatSizeKilobytes(1024, &buf);
     try testing.expectEqualStrings("1", result);
-    
+
     result = try formatSizeKilobytes(2048, &buf);
     try testing.expectEqualStrings("2", result);
-    
+
     result = try formatSizeKilobytes(1536, &buf);
     try testing.expectEqualStrings("2", result); // Rounds up
 }
@@ -393,18 +386,18 @@ test "FileInfo.stat basic" {
     // Create a temporary file
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    
+
     const file = try tmp_dir.dir.createFile("test.txt", .{});
     try file.writeAll("Hello, World!");
     file.close();
-    
+
     // Get the path
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try tmp_dir.dir.realpath("test.txt", &path_buf);
-    
+
     // Stat the file
     const info = try FileInfo.stat(path);
-    
+
     // Check basic properties
     try testing.expectEqual(@as(u64, 13), info.size); // "Hello, World!" is 13 bytes
     try testing.expectEqual(std.fs.File.Kind.file, info.kind);
@@ -413,13 +406,13 @@ test "FileInfo.stat basic" {
 
 test "formatTime recent file" {
     var buf: [64]u8 = undefined;
-    
+
     // Current time in nanoseconds
     const now_ns = std.time.nanoTimestamp();
-    
+
     // Test with current time (recent file)
     const result = try formatTime(now_ns, &buf);
-    
+
     // Should contain current month and time format HH:MM
     // Can't test exact output due to current time, but check format
     try testing.expect(result.len >= 12); // "MMM DD HH:MM" is at least 12 chars
@@ -428,13 +421,13 @@ test "formatTime recent file" {
 
 test "formatTime old file" {
     var buf: [64]u8 = undefined;
-    
+
     // Time from 2020 (old file)
     const old_time_s: i64 = 1577836800; // Jan 1, 2020
     const old_time_ns = old_time_s * std.time.ns_per_s;
-    
+
     const result = try formatTime(old_time_ns, &buf);
-    
+
     // Should show year instead of time
     try testing.expect(std.mem.indexOf(u8, result, "2020") != null);
     try testing.expect(std.mem.indexOf(u8, result, ":") == null); // Should not have time
