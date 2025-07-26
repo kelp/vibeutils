@@ -124,6 +124,26 @@ The styling system (`src/common/style.zig`) automatically detects:
 5. Create man page in `man/man1/<utility>.1` (OpenBSD style)
 6. Update TODO.md to mark tasks complete
 
+### Referencing Man Pages
+
+When implementing a new command, always consult both OpenBSD and GNU coreutils man pages to determine the most useful set of flags to support:
+
+1. **OpenBSD man pages**: Access online at `https://man.openbsd.org/<command>`
+   - Example: `https://man.openbsd.org/mkdir` for the mkdir command
+   - Focus on security, simplicity, and correctness
+   - Often have cleaner, more focused flag sets
+
+2. **GNU coreutils man pages**: Available locally via `man <command> | cat`
+   - Example: `man mkdir | cat` for the mkdir command
+   - More extensive feature set with many flags
+   - Required for GNU compatibility
+
+3. **Implementation strategy**:
+   - Start with the core flags that appear in both implementations
+   - Add GNU-specific flags that are commonly used in scripts
+   - Include OpenBSD security/safety features where applicable
+   - Document any intentional differences in behavior
+
 ### Testing Patterns
 
 ```zig
