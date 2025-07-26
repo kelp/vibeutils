@@ -1,9 +1,9 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 9/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓)
+- **Utilities Completed**: 10/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, chown ✓)
 - **Utilities In Progress**: 0/47
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), chown ~95% (full ownership control + name resolution + symlink handling)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Production-ready with comprehensive security fixes, modular architecture, and automated formatting
@@ -335,16 +335,16 @@ For each utility:
 - [ ] Implement: Recursive directory walker
 - [ ] Man page: Write concise man page with examples
 
-#### 12. chown
-- [ ] Test: Basic ownership change (user:group)
-- [ ] Test: User only change
-- [ ] Test: Group only change (:group)
-- [ ] Test: Recursive mode (-R)
-- [ ] Test: Dereference/no-dereference (-h, -H, -L, -P)
-- [ ] Test: From reference file (--reference)
-- [ ] Implement: User/group parsing
-- [ ] Implement: Ownership change syscalls
-- [ ] Implement: Recursive walker with symlink handling
+#### 12. chown ✓
+- [x] Test: Basic ownership change (user:group)
+- [x] Test: User only change
+- [x] Test: Group only change (:group)
+- [x] Test: Recursive mode (-R)
+- [x] Test: Dereference/no-dereference (-h, -H, -L, -P)
+- [x] Test: From reference file (--reference)
+- [x] Implement: User/group parsing
+- [x] Implement: Ownership change syscalls
+- [x] Implement: Recursive walker with symlink handling
 - [ ] Man page: Write concise man page with examples
 
 #### 13. ln
