@@ -1,7 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-/// Common functionality for all zutils
+/// Common functionality for all vibeutils
 pub const style = @import("style.zig");
 pub const args = @import("args.zig");
 pub const file = @import("file.zig");
@@ -15,7 +15,7 @@ pub const git = @import("git.zig");
 
 /// Version information from build options
 pub const version = build_options.version;
-pub const name = "zutils";
+pub const name = "vibeutils";
 
 /// Common error types
 pub const Error = error{

@@ -1,4 +1,4 @@
-# Zutils - GNU Coreutils in Zig
+# vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
 - **Utilities Completed**: 9/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓)

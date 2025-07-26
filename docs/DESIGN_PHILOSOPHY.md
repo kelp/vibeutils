@@ -1,4 +1,4 @@
-# Zutils Design Philosophy
+# vibeutils Design Philosophy
 
 ## Core Principles
 
@@ -75,7 +75,7 @@ const ColorScheme = enum {
 - Respect XDG base directories
 - Environment variables for preferences
 - NO_COLOR standard compliance
-- Optional config file (~/.config/zutils/config.toml)
+- Optional config file (~/.config/vibeutils/config.toml)
 
 ### Compatibility
 - Full GNU coreutils compatibility for scripts

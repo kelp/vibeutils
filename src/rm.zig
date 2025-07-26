@@ -106,7 +106,7 @@ fn printHelp() !void {
 
 fn printVersion() !void {
     const build_options = @import("build_options");
-    try std.io.getStdOut().writer().print("rm (zutils) {s}\n", .{build_options.version});
+    try std.io.getStdOut().writer().print("rm (vibeutils) {s}\n", .{build_options.version});
 }
 
 const RmOptions = struct {

@@ -1,4 +1,4 @@
-# Zig Patterns for Zutils
+# Zig Patterns for vibeutils
 
 This document contains Zig 0.14.1 patterns and idioms commonly used in this
 codebase. It serves as a quick reference for implementing GNU coreutils in Zig.

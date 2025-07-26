@@ -47,7 +47,7 @@ fmt:
 
 # Show help
 help:
-	@echo "Zutils Makefile targets:"
+	@echo "vibeutils Makefile targets:"
 	@echo "  make build     - Build all utilities (default)"
 	@echo "  make test      - Run all tests"
 	@echo "  make coverage  - Run tests with coverage report"

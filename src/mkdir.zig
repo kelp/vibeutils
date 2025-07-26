@@ -101,7 +101,7 @@ fn printHelp() !void {
 
 fn printVersion() !void {
     const stdout = std.io.getStdOut().writer();
-    try stdout.print("mkdir (zutils) 0.1.0\n", .{});
+    try stdout.print("mkdir (vibeutils) 0.1.0\n", .{});
 }
 
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
