@@ -1,9 +1,9 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 9/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓)
+- **Utilities Completed**: 10/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, chmod ✓)
 - **Utilities In Progress**: 0/47
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), chmod ~95% (full numeric/symbolic modes + special permissions + reference mode)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Production-ready with comprehensive security fixes, modular architecture, and automated formatting
@@ -323,16 +323,16 @@ For each utility:
 - [ ] Implement: Path resolution options
 - [ ] Man page: Write concise man page with examples
 
-#### 11. chmod
-- [ ] Test: Basic permission changes (numeric: 755, 644)
-- [ ] Test: Symbolic mode changes (u+x, g-w, o=r)
-- [ ] Test: Recursive mode (-R)
-- [ ] Test: Preserve root (-c, --changes)
-- [ ] Test: Error handling (permission denied)
-- [ ] Test: Special bits (setuid, setgid, sticky)
-- [ ] Implement: Numeric mode parser
-- [ ] Implement: Symbolic mode parser
-- [ ] Implement: Recursive directory walker
+#### 11. chmod ✓
+- [x] Test: Basic permission changes (numeric: 755, 644)
+- [x] Test: Symbolic mode changes (u+x, g-w, o=r)
+- [x] Test: Recursive mode (-R)
+- [x] Test: Preserve root (-c, --changes)
+- [x] Test: Error handling (permission denied)
+- [x] Test: Special bits (setuid, setgid, sticky)
+- [x] Implement: Numeric mode parser
+- [x] Implement: Symbolic mode parser
+- [x] Implement: Recursive directory walker
 - [ ] Man page: Write concise man page with examples
 
 #### 12. chown
