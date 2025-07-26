@@ -1,9 +1,9 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 12/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, pwd ✓, chmod ✓, chown ✓)
+- **Utilities Completed**: 13/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, pwd ✓, chmod ✓, chown ✓, ln ✓)
 - **Utilities In Progress**: 0/47
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), pwd 100% (full GNU/POSIX compliance with secure PWD validation), chmod ~95% (full numeric/symbolic modes + special permissions + reference mode), chown ~95% (full ownership control + name resolution + symlink handling)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), pwd 100% (full GNU/POSIX compliance with secure PWD validation), chmod ~95% (full numeric/symbolic modes + special permissions + reference mode), chown ~95% (full ownership control + name resolution + symlink handling), ln ~95% (hard links + symbolic links + relative paths + security validation)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Production-ready with comprehensive security fixes, modular architecture, and automated formatting
@@ -354,18 +354,19 @@ For each utility:
 - [x] Implement: Recursive walker with symlink handling
 - [ ] Man page: Write concise man page with examples
 
-#### 13. ln
-- [ ] Test: Create hard link
-- [ ] Test: Create symbolic link (-s)
-- [ ] Test: Force overwrite (-f)
-- [ ] Test: Interactive mode (-i)
-- [ ] Test: Create links in directory (-t)
-- [ ] Test: Relative symlinks (--relative)
-- [ ] Test: Error cases (cross-device hard link)
-- [ ] Implement: Hard link creation
-- [ ] Implement: Symbolic link creation
-- [ ] Implement: Path resolution for relative links
-- [ ] Man page: Write concise man page with examples
+#### 13. ln ✓
+- [x] Test: Create hard link
+- [x] Test: Create symbolic link (-s)
+- [x] Test: Force overwrite (-f)
+- [x] Test: Interactive mode (-i)
+- [x] Test: Create links in directory (-t)
+- [x] Test: Relative symlinks (--relative)
+- [x] Test: Error cases (cross-device hard link)
+- [x] Implement: Hard link creation
+- [x] Implement: Symbolic link creation
+- [x] Implement: Path resolution for relative links
+- [x] Implement: Path security validation
+- [x] Man page: Write concise man page with examples
 
 #### 14. basename
 - [ ] Test: Strip directory from path

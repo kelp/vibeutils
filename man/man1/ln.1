@@ -1,0 +1,116 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt LN 1
+.Os
+.Sh NAME
+.Nm ln
+.Nd create hard and symbolic links
+.Sh SYNOPSIS
+.Nm ln
+.Op Fl finsv
+.Ar target link_name
+.Nm ln
+.Op Fl finsv
+.Ar target
+.Nm ln
+.Op Fl finsv
+.Ar target ... directory
+.Nm ln
+.Op Fl finsv
+.Fl t Ar directory
+.Ar target ...
+.Sh DESCRIPTION
+The
+.Nm
+utility creates a link named
+.Ar link_name
+which references
+.Ar target .
+By default,
+.Nm
+creates hard links.
+.Pp
+In the second form,
+.Nm
+creates a link to
+.Ar target
+in the current directory.
+.Pp
+In the third and fourth forms,
+.Nm
+creates links to each
+.Ar target
+in the specified
+.Ar directory .
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl f
+Remove existing destination files.
+.It Fl i
+Prompt before removing existing destination files.
+.It Fl n
+Do not follow symbolic links when determining if the destination is a directory.
+.It Fl r
+With
+.Fl s ,
+create symbolic links relative to the link's location.
+.It Fl s
+Create symbolic links instead of hard links.
+Symbolic links can reference files that do not exist.
+.It Fl t Ar directory
+Create links in the specified directory.
+.It Fl v
+Print the name of each file as it is linked.
+.El
+.Pp
+Hard links cannot span file systems and cannot reference directories.
+Symbolic links can reference any file or directory and are resolved at the time of access.
+.Sh EXAMPLES
+Create a hard link:
+.Bd -literal -offset indent
+$ ln file.txt hardlink.txt
+.Ed
+.Pp
+Create a symbolic link:
+.Bd -literal -offset indent
+$ ln -s /usr/bin/vim vi
+.Ed
+.Pp
+Create multiple links in a directory:
+.Bd -literal -offset indent
+$ ln -s file1.txt file2.txt links/
+.Ed
+.Pp
+Create a relative symbolic link:
+.Bd -literal -offset indent
+$ ln -sr /home/user/file.txt /home/user/docs/link
+$ ls -l /home/user/docs/link
+lrwxrwxrwx 1 user user 11 Jul 26 08:45 link -> ../file.txt
+.Ed
+.Sh EXIT STATUS
+.Ex -std ln
+.Sh DIAGNOSTICS
+.Bl -diag
+.It "cross-device link"
+Hard links cannot span file systems.
+Use symbolic links instead.
+.It "file exists"
+The destination file already exists.
+Use
+.Fl f
+to overwrite.
+.It "is a directory"
+Hard links cannot reference directories.
+.El
+.Sh SEE ALSO
+.Xr link 2 ,
+.Xr symlink 2 ,
+.Xr rm 1 ,
+.Xr readlink 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.

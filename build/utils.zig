@@ -23,6 +23,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "pwd", .path = "src/pwd.zig", .needs_libc = true, .description = "Print working directory" },
     .{ .name = "chmod", .path = "src/chmod.zig", .needs_libc = true, .description = "Change file mode bits" },
     .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" },
+    .{ .name = "ln", .path = "src/ln.zig", .needs_libc = true, .description = "Create hard and symbolic links" },
 };
 
 /// Parse version from ZON content string
