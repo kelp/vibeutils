@@ -35,7 +35,7 @@ pub fn main() !void {
 
     // Handle help
     if (res.args.help != 0) {
-        common.CommonOpts.printHelp("[OPTION]...", "Print the full filename of the current working directory.\n\n  -L, --logical   use PWD from environment, even if it contains symlinks\n  -P, --physical  resolve all symbolic links (default)\n  -h, --help      display this help and exit\n  -V, --version   output version information and exit\n\nNOTE: your shell may have its own version of pwd, which usually supersedes\nthe version described here. Please refer to your shell's documentation\nfor details about the options it supports.\n\nExamples:\n  pwd             Print current directory (resolving symlinks)\n  pwd -L          Use PWD environment variable if valid\n  pwd -P          Explicitly resolve all symlinks");
+        try printHelp();
         return;
     }
 
@@ -70,6 +70,29 @@ pub fn main() !void {
         common.printError("write failed: {s}", .{@errorName(err)});
         std.process.exit(@intFromEnum(common.ExitCode.general_error));
     };
+}
+
+fn printHelp() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.writeAll(
+        \\Usage: pwd [OPTION]...
+        \\Print the full filename of the current working directory.
+        \\
+        \\  -L, --logical   use PWD from environment, even if it contains symlinks
+        \\  -P, --physical  resolve all symbolic links (default)
+        \\  -h, --help      display this help and exit
+        \\  -V, --version   output version information and exit
+        \\
+        \\NOTE: your shell may have its own version of pwd, which usually supersedes
+        \\the version described here. Please refer to your shell's documentation
+        \\for details about the options it supports.
+        \\
+        \\Examples:
+        \\  pwd             Print current directory (resolving symlinks)
+        \\  pwd -L          Use PWD environment variable if valid
+        \\  pwd -P          Explicitly resolve all symlinks
+        \\
+    );
 }
 
 /// Get the current working directory based on options
