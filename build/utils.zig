@@ -21,6 +21,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "rmdir", .path = "src/rmdir.zig", .needs_libc = true, .description = "Remove empty directories" },
     .{ .name = "touch", .path = "src/touch.zig", .needs_libc = true, .description = "Update file timestamps" },
     .{ .name = "pwd", .path = "src/pwd.zig", .needs_libc = true, .description = "Print working directory" },
+    .{ .name = "chmod", .path = "src/chmod.zig", .needs_libc = true, .description = "Change file mode bits" },
 };
 
 /// Parse version from ZON content string
