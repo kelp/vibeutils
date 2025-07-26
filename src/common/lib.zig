@@ -63,7 +63,7 @@ pub const CommonOpts = struct {
     /// Print help message
     pub fn printHelp(comptime usage: []const u8, comptime description: []const u8) void {
         const stdout = std.io.getStdOut().writer();
-        const prog_name = std.fs.path.basename(std.os.argv[0]);
+        const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
         stdout.print("Usage: {s} {s}\n\n", .{ prog_name, usage }) catch return;
         stdout.print("{s}\n", .{description}) catch return;

@@ -1,0 +1,87 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt PWD 1
+.Os
+.Sh NAME
+.Nm pwd
+.Nd return working directory name
+.Sh SYNOPSIS
+.Nm pwd
+.Op Fl LP
+.Sh DESCRIPTION
+The
+.Nm
+utility prints the absolute pathname of the current working directory
+to standard output.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl L , Fl Fl logical
+Use the value of the
+.Ev PWD
+environment variable if it contains an absolute name of the current
+working directory and does not contain any
+.Dq .\&
+or
+.Dq ..\&
+components.
+.It Fl P , Fl Fl physical
+Print the physical working directory, with all symbolic links resolved
+(default).
+.El
+.Pp
+If both
+.Fl L
+and
+.Fl P
+are specified, the last one takes precedence.
+.Sh ENVIRONMENT
+.Bl -tag -width PWD
+.It Ev PWD
+If
+.Fl L
+is specified, the value of this variable is used if it contains
+an absolute pathname of the current directory with no
+.Dq .\&
+or
+.Dq ..\&
+components and refers to the same directory as the physical
+working directory.
+.El
+.Sh EXAMPLES
+Print the current working directory:
+.Bd -literal -offset indent
+$ pwd
+/home/user/project
+.Ed
+.Pp
+Use the logical path from PWD environment variable:
+.Bd -literal -offset indent
+$ pwd -L
+/home/user/project
+.Ed
+.Pp
+Force resolution of all symbolic links:
+.Bd -literal -offset indent
+$ pwd -P
+/usr/local/src/project
+.Ed
+.Sh EXIT STATUS
+.Ex -std pwd
+.Sh SEE ALSO
+.Xr cd 1 ,
+.Xr csh 1 ,
+.Xr sh 1 ,
+.Xr getcwd 3
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The
+.Fl Fl logical
+and
+.Fl Fl physical
+long options are extensions to that specification.
