@@ -19,6 +19,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "rm", .path = "src/rm.zig", .needs_libc = true, .description = "Remove files and directories" },
     .{ .name = "mkdir", .path = "src/mkdir.zig", .needs_libc = true, .description = "Create directories" },
     .{ .name = "rmdir", .path = "src/rmdir.zig", .needs_libc = true, .description = "Remove empty directories" },
+    .{ .name = "touch", .path = "src/touch.zig", .needs_libc = true, .description = "Update file timestamps" },
 };
 
 /// Parse version from ZON content string
