@@ -1,0 +1,160 @@
+.\" touch(1) manual page
+.\" This is part of the zutils project
+.Dd December 31, 2023
+.Dt TOUCH 1
+.Os
+.Sh NAME
+.Nm touch
+.Nd change file access and modification times
+.Sh SYNOPSIS
+.Nm touch
+.Op Fl achm
+.Op Fl r Ar file
+.Op Fl t Ar [[CC]YY]MMDDhhmm[.ss]
+.Op Fl d Ar time
+.Op Fl -time Ns = Ns Ar word
+.Ar
+.Sh DESCRIPTION
+The
+.Nm
+utility sets the access and modification times of files.
+If any file does not exist, it is created with default permissions.
+.Pp
+By default, the
+.Nm
+utility changes both the access and modification times.
+The
+.Fl a
+and
+.Fl m
+flags may be used to select the access time or the modification time
+individually.
+Selecting both is equivalent to the default.
+.Pp
+The following options are available:
+.Bl -tag -width "-r reference-file"
+.It Fl a
+Change the access time of the file.
+The modification time of the file is not changed unless the
+.Fl m
+flag is also specified.
+.It Fl c , Fl -no-create
+Do not create the file if it does not exist.
+The
+.Nm
+utility does not treat this as an error.
+No error messages are displayed and the exit value is not affected.
+.It Fl d , Fl -date Ns = Ns Ar time
+Parse the provided human-readable
+.Ar time
+and use it instead of the current time.
+(Not yet implemented in zutils)
+.It Fl h , Fl -help
+Display help information and exit.
+.It Fl m
+Change the modification time of the file.
+The access time of the file is not changed unless the
+.Fl a
+flag is also specified.
+.It Fl r , Fl -reference Ns = Ns Ar file
+Use the access and modification times from the specified
+.Ar file
+instead of the current time.
+.It Fl t Ar [[CC]YY]MMDDhhmm[.ss]
+Change the access and modification times to the specified time instead
+of the current time.
+The argument is of the form
+.Dq [[CC]YY]MMDDhhmm[.ss]
+where each pair of letters represents the following:
+.Pp
+.Bl -tag -width Ds -compact -offset indent
+.It Ar CC
+The first two digits of the year (the century).
+.It Ar YY
+The second two digits of the year.
+If
+.Dq YY
+is specified, but
+.Dq CC
+is not, a value for
+.Dq YY
+between 69 and 99 results in a
+.Dq CC
+value of 19.
+Otherwise, a
+.Dq CC
+value of 20 is used.
+.It Ar MM
+The month of the year, from 01 to 12.
+.It Ar DD
+The day of the month, from 01 to 31.
+.It Ar hh
+The hour of the day, from 00 to 23.
+.It Ar mm
+The minute of the hour, from 00 to 59.
+.It Ar ss
+The second of the minute, from 00 to 59.
+.El
+.It Fl -time Ns = Ns Ar word
+Change the specified time:
+.Ar word
+is one of
+.Cm access ,
+.Cm atime ,
+.Cm use
+(equivalent to
+.Fl a ) ;
+.Cm modify
+or
+.Cm mtime
+(equivalent to
+.Fl m ) .
+.It Fl V , Fl -version
+Display version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std touch
+.Sh EXAMPLES
+Create or update a file with the current timestamp:
+.Bd -literal -offset indent
+$ touch file.txt
+.Ed
+.Pp
+Update multiple files without creating them if they don't exist:
+.Bd -literal -offset indent
+$ touch -c file1.txt file2.txt file3.txt
+.Ed
+.Pp
+Set specific timestamps for a file:
+.Bd -literal -offset indent
+$ touch -t 202312251200.00 christmas.txt
+.Ed
+.Pp
+Copy timestamps from one file to another:
+.Bd -literal -offset indent
+$ touch -r source.txt target.txt
+.Ed
+.Pp
+Update only the access time:
+.Bd -literal -offset indent
+$ touch -a accessed.txt
+.Ed
+.Sh SEE ALSO
+.Xr chmod 1 ,
+.Xr stat 1 ,
+.Xr utimensat 2
+.Sh STANDARDS
+The
+.Nm
+utility is expected to be
+.St -p1003.2
+compatible.
+.Sh HISTORY
+A
+.Nm
+utility appeared in
+.At v7 .
+.Sh AUTHORS
+This implementation of
+.Nm
+for zutils was written by Claude.
