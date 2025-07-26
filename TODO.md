@@ -793,6 +793,112 @@ For each utility:
 - Branch coverage: 85%+
 - Error path coverage: 100%
 
+### Custom Argument Parser Implementation
+
+#### Replace zig-clap Dependency (TDD)
+**Goal**: Replace zig-clap's 3,000 lines with focused ~400-line library supporting 95% of real usage patterns
+
+**Design Philosophy**:
+- API-first design with type-safe interfaces
+- Zero allocations for flag parsing (positionals may allocate)
+- Compile-time validation where possible
+- Self-documenting through struct field names
+- OpenBSD-inspired simplicity with GNU compatibility
+
+##### Phase 1: Core Parsing Engine (TDD)
+- [ ] Test: Boolean flag parsing (-h, --help, -v, --verbose)
+- [ ] Test: Combined short flags (-abc = -a -b -c)
+- [ ] Test: Unknown flag error handling
+- [ ] Test: Flag mapping generation from struct reflection
+- [ ] Test: Memory management (no leaks)
+- [ ] Implement: Core `Args.parse()` function with generic struct support
+- [ ] Implement: Comptime flag mapping using `@typeInfo()`
+- [ ] Implement: Boolean flag state management
+- [ ] Implement: ParseResult with proper cleanup
+- [ ] Implement: Error types (InvalidArgument, UnknownFlag, MissingValue)
+
+##### Phase 2: String Options and Positionals (TDD)
+- [ ] Test: String option parsing (--color=auto, --output file)
+- [ ] Test: Both `--option=value` and `--option value` syntax
+- [ ] Test: Missing value error for string options
+- [ ] Test: Positional argument collection
+- [ ] Test: GNU `--` separator handling
+- [ ] Test: Single `-` as positional (stdin convention)
+- [ ] Implement: String option value extraction
+- [ ] Implement: Two-pass parsing (flags first, then values)
+- [ ] Implement: Positional argument allocation and management
+- [ ] Implement: State machine for parsing stages
+
+##### Phase 3: Help Generation System (TDD)
+- [ ] Test: Help text parsing from struct `help_text` field
+- [ ] Test: Automatic help formatting matching GNU style
+- [ ] Test: Usage line generation with positional indicators
+- [ ] Test: Option description alignment and formatting
+- [ ] Test: Integration with existing --help flag patterns
+- [ ] Implement: `Args.printHelp()` function
+- [ ] Implement: Help text parser for embedded descriptions
+- [ ] Implement: GNU-style help formatting
+- [ ] Implement: Usage line generation based on struct analysis
+
+##### Phase 4: GNU Compatibility and Edge Cases (TDD)
+- [ ] Test: POSIX compliance for argument ordering
+- [ ] Test: Error message format matching GNU conventions
+- [ ] Test: Complex combined flags with string options
+- [ ] Test: Edge cases (empty args, only positionals, only flags)
+- [ ] Test: Integration with all existing utility patterns
+- [ ] Implement: Full GNU argument parsing compatibility
+- [ ] Implement: Comprehensive error reporting
+- [ ] Implement: Performance optimization (comptime where possible)
+
+##### Migration Plan (Utility-by-Utility)
+- [ ] **echo**: Migrate simplest case (boolean flags only)
+- [ ] **cat**: Multiple boolean flags, combination flags (-A, -e, -t)
+- [ ] **ls**: Complex case with string options (--color, --time-style)
+- [ ] **cp/mv/rm**: Interactive flags and mixed option types
+- [ ] **mkdir/rmdir/touch**: Mode settings and timestamp options
+- [ ] **Remaining utilities**: Complete migration for all 9 implemented utilities
+
+##### Integration and Cleanup
+- [ ] Test: Drop-in compatibility with existing utility code
+- [ ] Test: Performance benchmarks vs zig-clap
+- [ ] Test: Binary size comparison
+- [ ] Test: Compile time comparison
+- [ ] Update: build.zig to remove zig-clap dependency
+- [ ] Update: build.zig.zon to remove clap entry
+- [ ] Verify: All existing tests pass with new parser
+- [ ] Document: Migration guide and API documentation
+
+**Success Criteria**:
+- Library under 500 lines total (vs 3,000 for zig-clap)
+- 95%+ test coverage with embedded tests
+- All existing utilities work unchanged
+- Argument parsing <1ms for complex cases
+- Zero regressions in functionality
+- Binary size comparable or smaller than zig-clap
+
+**API Design Pattern**:
+```zig
+const EchoArgs = struct {
+    help: bool = false,        // -h, --help
+    version: bool = false,     // -V, --version
+    suppress_newline: bool = false, // -n
+    positionals: []const []const u8,
+    
+    pub const help_text = 
+        \\-h, --help     Display this help and exit.
+        \\-V, --version  Output version information and exit.
+        \\-n             Do not output the trailing newline.
+        \\<str>...       Text to echo.
+    ;
+};
+
+const args = Args.parse(EchoArgs, allocator) catch |err| switch (err) {
+    error.InvalidArgument => return usage_error(),
+    else => return err,
+};
+defer args.deinit(allocator);
+```
+
 ## Architecture Decisions
 
 ### Design Philosophy for ls

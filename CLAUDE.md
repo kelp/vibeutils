@@ -133,8 +133,8 @@ When implementing a new command, always consult both OpenBSD and GNU coreutils m
    - Focus on security, simplicity, and correctness
    - Often have cleaner, more focused flag sets
 
-2. **GNU coreutils man pages**: Available locally via `man <command> | cat`
-   - Example: `man mkdir | cat` for the mkdir command
+2. **GNU coreutils man pages**: Available locally via `man -c <command>`
+   - Example: `man -c mkdir` for the mkdir command
    - More extensive feature set with many flags
    - Required for GNU compatibility
 
@@ -186,6 +186,10 @@ return common.ExitCode.Failure;
 - Always use provided allocator (usually from args)
 - Use `defer` for cleanup immediately after allocation
 - Test with `testing.allocator` to detect leaks
+- For application code, prefer `std.heap.SmpAllocator` over `GeneralPurposeAllocator`
+  - GeneralPurposeAllocator is now just an alias for DebugAllocator and has known flaws
+  - SmpAllocator is the recommended general-purpose allocator in Zig 0.14.0+
+  - Still use `testing.allocator` for tests to detect memory leaks
 
 ### Argument Parsing
 - Use zig-clap for consistent GNU-style argument parsing
