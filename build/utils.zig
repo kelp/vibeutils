@@ -20,6 +20,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "mkdir", .path = "src/mkdir.zig", .needs_libc = true, .description = "Create directories" },
     .{ .name = "rmdir", .path = "src/rmdir.zig", .needs_libc = true, .description = "Remove empty directories" },
     .{ .name = "touch", .path = "src/touch.zig", .needs_libc = true, .description = "Update file timestamps" },
+    .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" },
 };
 
 /// Parse version from ZON content string
