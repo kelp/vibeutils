@@ -32,25 +32,28 @@ pub fn build(b: *std.Build) void {
     
     build_options.addOption([]const u8, "version", version);
     
+    // Create build_options module once and reuse it
+    const build_options_module = build_options.createModule();
+    
     // Common library module
     const common = b.addModule("common", .{
         .root_source_file = b.path("src/common/lib.zig"),
         .imports = &.{
             .{ .name = "clap", .module = clap.module("clap") },
-            .{ .name = "build_options", .module = build_options.createModule() },
+            .{ .name = "build_options", .module = build_options_module },
         },
     });
 
     // Build utilities using metadata-driven approach
     for (utils.utilities) |util| {
-        buildUtility(b, util, target, optimize, coverage, common, clap, build_options) catch |err| {
+        buildUtility(b, util, target, optimize, coverage, common, clap, build_options_module) catch |err| {
             std.log.err("Failed to build utility {s}: {}", .{util.name, err});
             return; // Let build system handle the error gracefully
         };
     }
 
     // Unit tests
-    buildTests(b, target, optimize, coverage, common, clap, build_options) catch |err| {
+    buildTests(b, target, optimize, coverage, common, clap, build_options_module) catch |err| {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Let build system handle the error gracefully
     };
@@ -67,7 +70,7 @@ fn buildUtility(
     coverage: bool,
     common: *std.Build.Module,
     clap: *std.Build.Dependency,
-    build_options: *std.Build.Step.Options,
+    build_options_module: *std.Build.Module,
 ) !void {
     const exe = b.addExecutable(.{
         .name = util.name,
@@ -79,7 +82,7 @@ fn buildUtility(
     // Add imports
     exe.root_module.addImport("common", common);
     exe.root_module.addImport("clap", clap.module("clap"));
-    exe.root_module.addImport("build_options", build_options.createModule());
+    exe.root_module.addImport("build_options", build_options_module);
     
     // Metadata-driven library linking
     if (util.needs_libc) {
@@ -116,7 +119,7 @@ fn buildTests(
     coverage: bool,
     common: *std.Build.Module,
     clap: *std.Build.Dependency,
-    build_options: *std.Build.Step.Options,
+    build_options_module: *std.Build.Module,
 ) !void {
     const test_step = b.step("test", "Run unit tests");
     
@@ -130,7 +133,7 @@ fn buildTests(
         
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("clap", clap.module("clap"));
-        util_tests.root_module.addImport("build_options", build_options.createModule());
+        util_tests.root_module.addImport("build_options", build_options_module);
         
         // Metadata-driven library linking for tests
         if (util.needs_libc) {
@@ -153,7 +156,7 @@ fn buildTests(
         .target = target,
         .optimize = optimize,
     });
-    common_tests.root_module.addImport("build_options", build_options.createModule());
+    common_tests.root_module.addImport("build_options", build_options_module);
     
     // Configure coverage for common tests
     if (coverage) {

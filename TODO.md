@@ -1,9 +1,9 @@
 # Zutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 5/46 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓)
-- **Utilities In Progress**: 0/46
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support)
+- **Utilities Completed**: 6/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓)
+- **Utilities In Progress**: 0/47
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Production-ready with comprehensive security fixes, modular architecture, and automated formatting
@@ -200,18 +200,60 @@ For each utility:
 - [x] Implement: Directory handling
 - [x] Man page: Write concise man page with examples
 
-#### 6. rm
-- [ ] Test: Single file removal
-- [ ] Test: Multiple files
-- [ ] Test: Directory removal (-r)
-- [ ] Test: Force mode (-f)
-- [ ] Test: Interactive mode (-i)
-- [ ] Test: Write-protected file handling
-- [ ] Test: Non-existent file behavior
-- [ ] Implement: Basic removal
-- [ ] Implement: Recursive removal
-- [ ] Implement: Safety checks
-- [ ] Man page: Write concise man page with examples
+#### 6. rm ✓
+- [x] Test: Single file removal
+- [x] Test: Multiple files
+- [x] Test: Directory removal (-r)
+- [x] Test: Force mode (-f)
+- [x] Test: Interactive mode (-i)
+- [x] Test: Write-protected file handling
+- [x] Test: Non-existent file behavior
+- [x] Implement: Basic removal
+- [x] Implement: Recursive removal
+- [x] Implement: Safety checks
+- [x] Man page: Write concise man page with examples
+
+##### rm - Advanced Implementation (TDD) ✓
+**Phase 1: Basic File Removal**
+- [x] Test: Basic file removal
+- [x] Test: Non-existent file with force
+- [x] Test: Multiple file removal
+- [x] Test: Directory without recursive flag
+- [x] Test: Verbose output
+- [x] Implement: Core removal logic
+- [x] Implement: Force mode handling
+- [x] Implement: Error reporting
+
+**Phase 2: Safety and Interaction**
+- [x] Test: Interactive mode prompts
+- [x] Test: Force mode bypasses prompts
+- [x] Test: Root directory protection
+- [x] Test: Same-file detection (hard links)
+- [x] Test: Empty path handling
+- [x] Test: Path traversal attack prevention
+- [x] Implement: User interaction system
+- [x] Implement: Write-protected file prompts
+- [x] Implement: Interactive once mode (-I)
+- [x] Implement: Critical system path protection
+
+**Phase 3: Recursive Directory Operations**
+- [x] Test: Recursive directory removal
+- [x] Test: Deep nested directories
+- [x] Test: Symlink handling (don't follow)
+- [x] Test: Permission handling with force
+- [x] Implement: Depth-first directory traversal
+- [x] Implement: Symlink detection
+- [x] Implement: Permission modification for force mode
+- [x] Implement: Inode tracking for cycles
+
+**Phase 4: Advanced Safety Features**
+- [x] Test: Symlink cycle detection
+- [x] Test: Cross-filesystem boundary handling
+- [x] Test: Race condition protection
+- [x] Implement: Complex symlink cycle detection
+- [x] Implement: Device ID tracking for filesystem boundaries
+- [x] Implement: Atomic operations using *at() syscalls
+- [x] Implement: File descriptor-based removal for TOCTOU protection
 
 #### 7. mkdir
 - [ ] Test: Single directory creation
@@ -442,9 +484,29 @@ For each utility:
 - [ ] Implement: Escape sequence handling
 - [ ] Man page: Write concise man page with examples
 
+#### 28. free
+- [ ] Test: Basic memory information display (total, used, free, available)
+- [ ] Test: Human readable format (-h) with K/M/G/T units
+- [ ] Test: Show swap information (default)
+- [ ] Test: Hide swap information (-s, --no-swap)
+- [ ] Test: Continuous monitoring (-c, --count with interval)
+- [ ] Test: Wide format (-w) for better readability
+- [ ] Test: Color-coded memory usage levels (green/yellow/red)
+- [ ] Test: Cross-platform support (Linux /proc/meminfo, macOS vm_stat)
+- [ ] Test: Memory pressure indicators and warnings
+- [ ] Test: Unicode glyphs and progress bars for visual appeal
+- [ ] Implement: Linux memory parsing (/proc/meminfo)
+- [ ] Implement: macOS memory info via syscalls (host_statistics64)
+- [ ] Implement: Human-readable size formatting
+- [ ] Implement: Color-coded output with terminal detection
+- [ ] Implement: Progress bar visualization for memory usage
+- [ ] Implement: Modern glyphs and icons for memory types
+- [ ] Implement: Continuous monitoring with refresh
+- [ ] Man page: Write concise man page with examples
+
 ### Phase 2: Text Processing Utilities
 
-#### 28. dd
+#### 29. dd
 - [ ] Test: Basic copy (if=input of=output)
 - [ ] Test: Block size (bs=1M, ibs=512, obs=4096)
 - [ ] Test: Count limit (count=100)
@@ -457,7 +519,7 @@ For each utility:
 - [ ] Implement: Progress reporting
 - [ ] Man page: Write concise man page with examples
 
-#### 29. realpath
+#### 30. realpath
 - [ ] Test: Resolve to absolute path
 - [ ] Test: Canonicalize existing (-e, --canonicalize-existing)
 - [ ] Test: Canonicalize missing (-m, --canonicalize-missing)
@@ -469,7 +531,7 @@ For each utility:
 - [ ] Implement: Relative path computation
 - [ ] Man page: Write concise man page with examples
 
-#### 30. readlink
+#### 31. readlink
 - [ ] Test: Print symlink target
 - [ ] Test: Canonicalize (-f, --canonicalize)
 - [ ] Test: Canonicalize existing (-e)
@@ -480,7 +542,7 @@ For each utility:
 - [ ] Implement: Path canonicalization
 - [ ] Man page: Write concise man page with examples
 
-#### 31. mktemp
+#### 32. mktemp
 - [ ] Test: Create temporary file
 - [ ] Test: Create temporary directory (-d, --directory)
 - [ ] Test: Custom template (mktemp /tmp/test.XXX)
@@ -492,7 +554,7 @@ For each utility:
 - [ ] Implement: Template parsing
 - [ ] Man page: Write concise man page with examples
 
-#### 32. timeout
+#### 33. timeout
 - [ ] Test: Run command with timeout
 - [ ] Test: Exit status preservation (--preserve-status)
 - [ ] Test: Kill after timeout (-k, --kill-after)
@@ -504,7 +566,7 @@ For each utility:
 - [ ] Implement: Signal handling
 - [ ] Man page: Write concise man page with examples
 
-#### 33. tac
+#### 34. tac
 - [ ] Test: Reverse file lines
 - [ ] Test: Multiple files
 - [ ] Test: Custom separator (-s, --separator)
@@ -516,7 +578,7 @@ For each utility:
 - [ ] Implement: Separator handling
 - [ ] Man page: Write concise man page with examples
 
-#### 34. nl
+#### 35. nl
 - [ ] Test: Number all lines (default)
 - [ ] Test: Number non-empty lines (-b a, -b t)
 - [ ] Test: Number format (-n ln, -n rn, -n rz)
@@ -529,7 +591,7 @@ For each utility:
 - [ ] Implement: Section handling
 - [ ] Man page: Write concise man page with examples
 
-#### 35. head
+#### 36. head
 - [ ] Test: Default 10 lines
 - [ ] Test: Custom line count (-n)
 - [ ] Test: Byte count (-c)
@@ -541,7 +603,7 @@ For each utility:
 - [ ] Implement: Multi-file handling
 - [ ] Man page: Write concise man page with examples
 
-#### 36. tail
+#### 37. tail
 - [ ] Test: Default 10 lines
 - [ ] Test: Custom line count (-n)
 - [ ] Test: Follow mode (-f)
@@ -553,7 +615,7 @@ For each utility:
 - [ ] Implement: Ring buffer for performance
 - [ ] Man page: Write concise man page with examples
 
-#### 37. wc
+#### 38. wc
 - [ ] Test: Line count (-l)
 - [ ] Test: Word count (-w)
 - [ ] Test: Byte count (-c)
@@ -566,7 +628,7 @@ For each utility:
 - [ ] Implement: Parallel counting for large files
 - [ ] Man page: Write concise man page with examples
 
-#### 38. sort
+#### 39. sort
 - [ ] Test: Basic alphabetical sort
 - [ ] Test: Numeric sort (-n)
 - [ ] Test: Reverse sort (-r)
@@ -579,7 +641,7 @@ For each utility:
 - [ ] Implement: Key extraction
 - [ ] Man page: Write concise man page with examples
 
-#### 39. uniq
+#### 40. uniq
 - [ ] Test: Remove adjacent duplicates
 - [ ] Test: Count occurrences (-c)
 - [ ] Test: Only duplicates (-d)
@@ -591,7 +653,7 @@ For each utility:
 - [ ] Implement: Field skipping
 - [ ] Man page: Write concise man page with examples
 
-#### 40. cut
+#### 41. cut
 - [ ] Test: Byte selection (-b)
 - [ ] Test: Character selection (-c)
 - [ ] Test: Field selection (-f)
@@ -603,7 +665,7 @@ For each utility:
 - [ ] Implement: Field extraction
 - [ ] Man page: Write concise man page with examples
 
-#### 41. tr
+#### 42. tr
 - [ ] Test: Character translation
 - [ ] Test: Character deletion (-d)
 - [ ] Test: Squeeze repeats (-s)
@@ -617,7 +679,7 @@ For each utility:
 
 ### Phase 3: File Information Utilities
 
-#### 42. stat
+#### 43. stat
 - [ ] Test: File information display
 - [ ] Test: Custom format (-c)
 - [ ] Test: Filesystem info (-f)
@@ -628,7 +690,7 @@ For each utility:
 - [ ] Implement: Human-readable output
 - [ ] Man page: Write concise man page with examples
 
-#### 43. du
+#### 44. du
 - [ ] Test: Directory size calculation
 - [ ] Test: Human readable (-h)
 - [ ] Test: Summary only (-s)
@@ -640,7 +702,7 @@ For each utility:
 - [ ] Implement: Caching for performance
 - [ ] Man page: Write concise man page with examples
 
-#### 44. df
+#### 45. df
 - [ ] Test: Filesystem listing
 - [ ] Test: Human readable (-h)
 - [ ] Test: Filesystem type (-t)
@@ -653,7 +715,7 @@ For each utility:
 
 ### Phase 4: Advanced Utilities
 
-#### 45. find
+#### 46. find
 - [ ] Test: Name matching (-name)
 - [ ] Test: Type filtering (-type)
 - [ ] Test: Size filtering (-size)
@@ -666,7 +728,7 @@ For each utility:
 - [ ] Implement: Action execution
 - [ ] Man page: Write concise man page with examples
 
-#### 46. grep
+#### 47. grep
 - [ ] Test: Basic pattern matching
 - [ ] Test: Regular expressions (-E)
 - [ ] Test: Case insensitive (-i)

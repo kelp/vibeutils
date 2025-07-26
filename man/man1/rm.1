@@ -1,0 +1,98 @@
+.Dd January 25, 2025
+.Dt RM 1
+.Os
+.Sh NAME
+.Nm rm
+.Nd remove files or directories
+.Sh SYNOPSIS
+.Nm rm
+.Op Fl fIirRv
+.Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility removes the file or directory entries specified.
+.Pp
+By default,
+.Nm
+does not remove directories.
+Use the
+.Fl r
+or
+.Fl R
+option to remove directories and their contents recursively.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl f , Fl Fl force
+Ignore nonexistent files and arguments, never prompt.
+.It Fl i
+Prompt before every removal.
+.It Fl I
+Prompt once before removing more than three files, or when removing
+recursively.
+Less intrusive than
+.Fl i
+while still giving protection against most mistakes.
+.It Fl r , Fl R , Fl Fl recursive
+Remove directories and their contents recursively.
+.It Fl v , Fl Fl verbose
+Explain what is being done.
+.It Fl Fl help
+Display help and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Sh EXAMPLES
+Remove a single file:
+.Bd -literal -offset indent
+$ rm file.txt
+.Ed
+.Pp
+Remove multiple files with confirmation:
+.Bd -literal -offset indent
+$ rm -i *.log
+rm: remove regular file 'error.log'? y
+rm: remove regular file 'access.log'? n
+.Ed
+.Pp
+Remove a directory and all its contents:
+.Bd -literal -offset indent
+$ rm -rf old_project/
+.Ed
+.Sh SAFETY FEATURES
+The
+.Nm
+utility includes advanced safety features:
+.Bl -bullet
+.It
+Protection against removing critical system directories
+.It
+Detection of symlink cycles to prevent infinite loops
+.It
+Atomic operations using file descriptors to prevent race conditions
+.It
+Cross-filesystem boundary detection
+.It
+Same-file detection for hard links
+.El
+.Sh DIAGNOSTICS
+The
+.Nm
+utility exits 0 on success, and >0 if an error occurs.
+.Sh SEE ALSO
+.Xr rmdir 1 ,
+.Xr unlink 2
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2017
+specification.
+.Pp
+The flags
+.Op Fl I
+and
+.Op Fl v
+are extensions to that specification.
+.Sh AUTHORS
+.An Travis Cole
