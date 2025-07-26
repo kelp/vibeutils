@@ -892,9 +892,88 @@ For each utility:
 **Timeline**: 2-3 weeks implementation, significant maintenance overhead
 **Decision**: Implement after core utilities are complete to avoid scope creep
 
+## Privileged Testing Strategy
+
+### Overview
+Comprehensive cross-platform testing for commands that require elevated privileges (chmod, chown, etc.) across Linux, macOS, OpenBSD, FreeBSD, and NetBSD in GitHub Actions.
+
+### Platform-Specific Approaches
+
+#### Linux (Best Support)
+- **Tools**: fakeroot, unshare (user namespaces), podman (rootless containers)
+- **Strategy**: Full privilege simulation without actual root
+- **Coverage**: 100% of privilege-related tests
+
+#### macOS (Limited Options)
+- **Tools**: Real sudo (GitHub Actions allows), limited fakeroot
+- **Strategy**: Focus on error paths, use sudo for critical tests
+- **Coverage**: ~70% through error simulation + real sudo tests
+
+#### BSD Systems (VM-Based)
+- **FreeBSD**: fakeroot available in ports
+- **OpenBSD**: Use doas for privilege testing
+- **NetBSD**: Basic permission testing
+- **Strategy**: Run in VMs via vmactions/* GitHub Actions
+
+### Commands Requiring Privileged Testing
+
+#### Currently Implemented
+- **rm**: chmod operations on write-protected files
+- **mkdir**: Setting custom permissions with -m flag
+- **cp**: Preserving permissions/ownership with -p
+- **ls**: Displaying special permission bits
+- **chmod**: Permission modification (setuid/setgid/sticky)
+- **chown**: Ownership changes
+
+#### Planned Commands
+- **ln**: Hard link permission requirements
+- **stat**: Ownership/permission display
+- **find**: Permission-denied scenarios
+- **du/df**: Restricted directory access
+
+### Implementation Plan
+
+#### 1. Test Infrastructure
+- [ ] Create src/common/privilege_test.zig module
+- [ ] Add platform detection (fakeroot, unshare, etc.)
+- [ ] Implement test skip annotations for unprivileged environments
+- [ ] Add mock system calls for unit testing
+
+#### 2. GitHub Actions Workflow
+- [ ] Linux: Test with fakeroot, unshare, and podman in parallel
+- [ ] macOS: Use Docker containers + limited sudo testing
+- [ ] BSD: Set up VM-based testing with vmactions
+- [ ] Add privileged test matrix to CI pipeline
+
+#### 3. Test Categories
+- [ ] **Permission Simulation**: Test actual permission changes
+- [ ] **Error Paths**: Test permission-denied handling
+- [ ] **Integration Tests**: Real operations in permitted locations
+- [ ] **Mock Tests**: Unit tests with injected syscalls
+
+#### 4. Makefile Targets
+- [ ] test-privileged: Cross-platform privileged test runner
+- [ ] test-privileged-linux: Linux-specific with fakeroot
+- [ ] test-privileged-macos: macOS with Docker fallback
+- [ ] test-privileged-bsd: BSD VMs with available tools
+
+### Fallback Strategies
+When privileged testing isn't possible:
+1. Test error paths (permission denied scenarios)
+2. Use dependency injection for mockable syscalls
+3. Focus on logic testing without actual privilege operations
+4. Document which tests require privileges
+
+### Success Metrics
+- [ ] All privilege-related tests pass on Linux with fakeroot
+- [ ] Core functionality works without privileges
+- [ ] Clear test output indicating skipped privileged tests
+- [ ] CI passes on all 5 target platforms
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
 - [ ] 90%+ test coverage
 - [ ] Clean cppcheck/valgrind reports
 - [ ] Successful fuzzing campaigns
+- [ ] Privileged operations tested on all platforms
