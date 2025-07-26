@@ -13,7 +13,7 @@ pub const UtilityMeta = struct {
 pub const utilities = [_]UtilityMeta{
     .{ .name = "echo", .path = "src/echo.zig", .needs_libc = true, .description = "Display text" },
     .{ .name = "cat", .path = "src/cat.zig", .needs_libc = true, .description = "Concatenate and display files" },
-    .{ .name = "ls", .path = "src/ls.zig", .needs_libc = true, .description = "List directory contents" },
+    .{ .name = "ls", .path = "src/ls/main.zig", .needs_libc = true, .description = "List directory contents" },
     .{ .name = "cp", .path = "src/cp.zig", .needs_libc = true, .description = "Copy files and directories" },
     .{ .name = "mv", .path = "src/mv.zig", .needs_libc = true, .description = "Move files and directories" },
     .{ .name = "rm", .path = "src/rm.zig", .needs_libc = true, .description = "Remove files and directories" },
