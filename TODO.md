@@ -359,7 +359,7 @@ For each utility:
 - [x] Implement: Symbolic link creation
 - [x] Implement: Path resolution for relative links
 - [x] Implement: Path security validation
-- [ ] Man page: Write concise man page with examples
+- [x] Man page: Write concise man page with examples
 
 #### 14. basename
 - [ ] Test: Strip directory from path
