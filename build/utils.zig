@@ -17,6 +17,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "cp", .path = "src/cp.zig", .needs_libc = true, .description = "Copy files and directories" },
     .{ .name = "mv", .path = "src/mv.zig", .needs_libc = true, .description = "Move files and directories" },
     .{ .name = "rm", .path = "src/rm.zig", .needs_libc = true, .description = "Remove files and directories" },
+    .{ .name = "mkdir", .path = "src/mkdir.zig", .needs_libc = true, .description = "Create directories" },
 };
 
 /// Parse version from ZON content string

@@ -1,7 +1,7 @@
 # Zutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 6/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓)
+- **Utilities Completed**: 7/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓)
 - **Utilities In Progress**: 0/47
 - **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
@@ -255,17 +255,17 @@ For each utility:
 - [x] Implement: Atomic operations using *at() syscalls
 - [x] Implement: File descriptor-based removal for TOCTOU protection
 
-#### 7. mkdir
-- [ ] Test: Single directory creation
-- [ ] Test: Parent creation (-p)
-- [ ] Test: Mode setting (-m)
-- [ ] Test: Multiple directories
-- [ ] Test: Already exists error
-- [ ] Test: Permission denied
-- [ ] Implement: Basic mkdir
-- [ ] Implement: Parent directory creation
-- [ ] Implement: Permission setting
-- [ ] Man page: Write concise man page with examples
+#### 7. mkdir ✓
+- [x] Test: Single directory creation
+- [x] Test: Parent creation (-p)
+- [x] Test: Mode setting (-m)
+- [x] Test: Multiple directories
+- [x] Test: Already exists error
+- [x] Test: Permission denied
+- [x] Implement: Basic mkdir
+- [x] Implement: Parent directory creation
+- [x] Implement: Permission setting (partial - chmod TODO)
+- [x] Man page: Write concise man page with examples
 
 #### 8. rmdir
 - [ ] Test: Empty directory removal
