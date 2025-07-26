@@ -1,0 +1,129 @@
+.\" Manual page for rmdir
+.Dd July 25, 2024
+.Dt RMDIR 1
+.Os
+.Sh NAME
+.Nm rmdir
+.Nd remove empty directories
+.Sh SYNOPSIS
+.Nm
+.Op Fl pv
+.Op Fl \-help
+.Op Fl \-version
+.Op Fl \-ignore-fail-on-non-empty
+.Op Fl \-parents
+.Op Fl \-verbose
+.Ar directory ...
+.Sh DESCRIPTION
+The
+.Nm
+utility removes the directory entry specified by each
+.Ar directory
+argument, provided it is empty.
+.Pp
+Arguments are processed in the order given.
+In order to remove both a parent directory and a subdirectory
+of that parent, the subdirectory
+must be specified first so the parent directory
+is empty when
+.Nm
+tries to remove it.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl h , Fl \-help
+Display help information and exit.
+.It Fl V , Fl \-version
+Display version information and exit.
+.It Fl p , Fl \-parents
+Remove
+.Ar directory
+and its ancestors.
+For example,
+.Ql rmdir -p a/b/c
+is similar to
+.Ql rmdir a/b/c a/b a .
+The specified directories are removed in order, from leaf to root.
+If any removal fails, processing stops at that point.
+.It Fl v , Fl \-verbose
+Be verbose, showing directories as they are processed.
+.It Fl \-ignore-fail-on-non-empty
+Each failure to remove a directory because it is non-empty is ignored.
+Without this option,
+.Nm
+will print an error message and continue processing remaining directories.
+.El
+.Sh EXIT STATUS
+.Ex -std
+The
+.Nm
+utility exits with one of the following values:
+.Bl -tag -width Ds -compact
+.It Li 0
+Each directory entry specified by a
+.Ar directory
+operand was removed successfully.
+.It Li >0
+An error occurred.
+.El
+.Sh EXAMPLES
+Remove the directory
+.Pa foobar ,
+if it is empty:
+.Bd -literal -offset indent
+$ rmdir foobar
+.Ed
+.Pp
+Remove all directories up to and including
+.Pa cow ,
+stopping at the first non-empty directory (if any):
+.Bd -literal -offset indent
+$ rmdir -p cow/horse/monkey
+.Ed
+.Pp
+Remove multiple empty directories with verbose output:
+.Bd -literal -offset indent
+$ rmdir -v dir1 dir2 dir3
+rmdir: removing directory, 'dir1'
+rmdir: removing directory, 'dir2'
+rmdir: removing directory, 'dir3'
+.Ed
+.Pp
+Clean up empty directory tree, ignoring non-empty directories:
+.Bd -literal -offset indent
+$ rmdir --ignore-fail-on-non-empty -p project/build/temp
+.Ed
+.Sh DIAGNOSTICS
+The
+.Nm
+utility will print an error message if:
+.Bl -bullet
+.It
+A specified directory does not exist.
+.It
+A specified directory is not empty (unless
+.Fl \-ignore-fail-on-non-empty
+is used).
+.It
+The user does not have permission to remove a directory.
+.It
+A specified path is not a directory.
+.El
+.Sh SEE ALSO
+.Xr mkdir 1 ,
+.Xr rm 1
+.Sh STANDARDS
+The
+.Nm
+utility is expected to be
+.St -p1003.2
+compatible.
+.Sh HISTORY
+An
+.Nm
+command appeared in
+.At v1 .
+.Sh AUTHORS
+This implementation of
+.Nm
+was written for zutils, a modern reimplementation of classic Unix utilities.

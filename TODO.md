@@ -1,9 +1,9 @@
 # Zutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 6/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓)
+- **Utilities Completed**: 7/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, rmdir ✓)
 - **Utilities In Progress**: 0/47
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), rmdir 100% (all GNU features implemented)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration)
 - **Documentation**: Design philosophy, Zig patterns, man page style established
 - **Build System**: Production-ready with comprehensive security fixes, modular architecture, and automated formatting
@@ -267,15 +267,30 @@ For each utility:
 - [ ] Implement: Permission setting
 - [ ] Man page: Write concise man page with examples
 
-#### 8. rmdir
-- [ ] Test: Empty directory removal
-- [ ] Test: Non-empty directory error
-- [ ] Test: Parent removal (-p)
-- [ ] Test: Multiple directories
-- [ ] Test: Non-existent directory
-- [ ] Implement: Basic removal
-- [ ] Implement: Parent cleanup
-- [ ] Man page: Write concise man page with examples
+#### 8. rmdir ✓
+- [x] Test: Empty directory removal
+- [x] Test: Non-empty directory error
+- [x] Test: Parent removal (-p)
+- [x] Test: Multiple directories
+- [x] Test: Non-existent directory
+- [x] Test: File instead of directory error
+- [x] Test: Verbose output (-v)
+- [x] Test: Ignore fail on non-empty (--ignore-fail-on-non-empty)
+- [x] Test: Parent removal stops on error
+- [x] Test: Path traversal protection
+- [x] Test: Symbolic link detection
+- [x] Test: Unicode path handling
+- [x] Test: Long path support
+- [x] Test: Memory management (no leaks)
+- [x] Test: Progress indicators
+- [x] Implement: Basic removal with atomic operations
+- [x] Implement: Parent cleanup with ParentIterator (memory-safe)
+- [x] Implement: Verbose output with colors
+- [x] Implement: --ignore-fail-on-non-empty flag
+- [x] Implement: Path validation (traversal, symlinks, system paths)
+- [x] Implement: Atomic removal with unlinkat syscall
+- [x] Implement: Progress indicators for bulk operations
+- [x] Man page: Write concise man page with examples
 
 #### 9. touch
 - [ ] Test: Create new file
