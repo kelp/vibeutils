@@ -1,0 +1,103 @@
+.Dd July 26, 2025
+.Dt MKDIR 1
+.Os
+.Sh NAME
+.Nm mkdir
+.Nd make directories
+.Sh SYNOPSIS
+.Nm mkdir
+.Op Fl pv
+.Op Fl m Ar mode
+.Ar directory ...
+.Sh DESCRIPTION
+The
+.Nm
+utility creates the directories named as operands, in the order specified,
+using mode
+.Li rwxrwxrwx
+(0777) as modified by the current
+.Xr umask 2 .
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl m Ar mode
+Set the file permission bits of the final created directory to
+the specified mode.
+The mode argument can be in any of the formats specified to the
+.Xr chmod 1
+command.
+If a symbolic mode is specified, the operation characters
+.Dq +
+and
+.Dq -
+are interpreted relative to an initial mode of
+.Dq a=rwx .
+.It Fl p , Fl Fl parents
+Create intermediate directories as required.
+If this option is not specified, the full path prefix of each
+operand must already exist.
+On the other hand, with this option specified, no error will be
+reported if a directory given as an operand already exists.
+Intermediate directories are created with permission bits of
+.Li rwxrwxrwx
+(0777) as modified by the current umask, plus write and search
+permission for the owner.
+.It Fl v , Fl Fl verbose
+Be verbose when creating directories, listing them as they are created.
+.It Fl h , Fl Fl help
+Display help message and exit.
+.It Fl V , Fl Fl version
+Display version information and exit.
+.El
+.Pp
+The user must have write permission in the parent directory.
+.Sh EXIT STATUS
+The
+.Nm
+utility exits 0 on success, and >0 if an error occurs.
+.Sh EXAMPLES
+Create a directory named
+.Pa foobar :
+.Pp
+.Dl $ mkdir foobar
+.Pp
+Create a directory named
+.Pa foobar
+if it doesn't already exist:
+.Pp
+.Dl $ mkdir -p foobar
+.Pp
+Create multiple directories:
+.Pp
+.Dl $ mkdir dir1 dir2 dir3
+.Pp
+Create nested directory structure, creating any missing parent directories:
+.Pp
+.Dl $ mkdir -p /tmp/a/deep/directory/structure
+.Pp
+Create a directory with specific permissions (700 = read, write, execute for owner only):
+.Pp
+.Dl $ mkdir -m 700 private_dir
+.Pp
+Create multiple directories verbosely, showing each as it's created:
+.Pp
+.Dl $ mkdir -pv project/{src,tests,docs}
+.Sh SEE ALSO
+.Xr chmod 1 ,
+.Xr rmdir 1 ,
+.Xr umask 2
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The
+.Fl v
+option is an extension to that specification.
+.Sh HISTORY
+A
+.Nm
+command appeared in
+.At v1 .
