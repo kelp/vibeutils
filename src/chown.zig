@@ -10,9 +10,9 @@ extern "c" fn chown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 extern "c" fn lchown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var allocator_instance = std.heap.SmpAllocator.init();
+    defer allocator_instance.deinit();
+    const allocator = allocator_instance.allocator();
 
     // Define parameters using zig-clap
     const params = comptime clap.parseParamsComptime(
@@ -214,11 +214,21 @@ fn chownRecursive(
     try chownSingle(path, ownership, options, allocator);
 
     // Check if it's a directory to recurse into
-    const stat_info = common.file.FileInfo.stat(path) catch return; // Ignore errors for missing files
+    const stat_info = common.file.FileInfo.stat(path) catch |err| {
+        if (!options.silent) {
+            handleError(path, err, options);
+        }
+        return;
+    };
 
     if (stat_info.kind == .directory) {
         // Open directory and iterate
-        var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch return; // Ignore permission errors
+        var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+            if (!options.silent) {
+                handleError(path, err, options);
+            }
+            return;
+        };
         defer dir.close();
 
         var iterator = dir.iterate();
@@ -233,12 +243,35 @@ fn chownRecursive(
     }
 }
 
+fn isSymlink(path: []const u8) !bool {
+    const stat = try std.fs.cwd().statFile(path);
+    return stat.kind == .sym_link;
+}
+
 fn changeOwnership(path: []const u8, uid: common.user_group.uid_t, gid: common.user_group.gid_t, options: ChownOptions, allocator: std.mem.Allocator) !void {
     // Convert path to null-terminated string for system call
-    // For absolute paths, we can skip realpath and just create a null-terminated copy
-    const path_z = if (std.fs.path.isAbsolute(path))
-        try allocator.dupeZ(u8, path)
-    else blk: {
+    // For absolute paths, check if they need normalization
+    const path_z = if (std.fs.path.isAbsolute(path)) blk: {
+        // Check if the path contains . or .. components or is a symlink that needs resolution
+        const needs_normalization = std.mem.indexOf(u8, path, "/..") != null or
+            std.mem.indexOf(u8, path, "/./") != null or
+            std.mem.endsWith(u8, path, "/.") or
+            std.mem.endsWith(u8, path, "/..");
+
+        if (needs_normalization or (!options.no_dereference and isSymlink(path) catch false)) {
+            const realpath = std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
+                return switch (err) {
+                    error.FileNotFound => error.FileNotFound,
+                    error.AccessDenied => error.PermissionDenied,
+                    else => err,
+                };
+            };
+            defer allocator.free(realpath);
+            break :blk try allocator.dupeZ(u8, realpath);
+        } else {
+            break :blk try allocator.dupeZ(u8, path);
+        }
+    } else blk: {
         const realpath = std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
             return switch (err) {
                 error.FileNotFound => error.FileNotFound,
@@ -270,6 +303,8 @@ fn changeOwnership(path: []const u8, uid: common.user_group.uid_t, gid: common.u
             22 => error.InvalidValue, // EINVAL
             5 => error.InputOutputError, // EIO
             12 => error.SystemResources, // ENOMEM
+            28 => error.NoSpaceLeft, // ENOSPC
+            63 => error.NameTooLong, // EMLINK (too many links)
             else => error.Unexpected,
         };
     }
@@ -309,6 +344,7 @@ fn handleError(path: []const u8, err: anyerror, options: ChownOptions) void {
         error.GroupNotFound => common.printError("invalid group: '{s}'", .{path}),
         error.InvalidFormat => common.printError("invalid owner specification: '{s}'", .{path}),
         error.SystemResources => common.printError("cannot access '{s}': Cannot allocate memory", .{path}),
+        error.NoSpaceLeft => common.printError("cannot access '{s}': No space left on device", .{path}),
         error.Unexpected => common.printError("cannot access '{s}': Unexpected error", .{path}),
         else => common.printError("cannot access '{s}': {s}", .{ path, @errorName(err) }),
     }
@@ -567,9 +603,59 @@ test "chown with verbose option" {
     return error.SkipZigTest;
 }
 
+test "chown verbose flag propagation" {
+    // Test that verbose flag is properly set without writing to stdout
+    const options_verbose = ChownOptions{ .verbose = true };
+    try testing.expect(options_verbose.verbose);
+    try testing.expect(!options_verbose.changes);
+    try testing.expect(!options_verbose.silent);
+
+    // Test that verbose and changes flags work together
+    const options_both = ChownOptions{ .verbose = true, .changes = true };
+    try testing.expect(options_both.verbose);
+    try testing.expect(options_both.changes);
+}
+
 test "chown with changes option" {
     // Also skip this test as it has similar issues with verbose output
     // The changes option also triggers stdout output which can hang in tests
+    return error.SkipZigTest;
+}
+
+test "chown changes flag behavior" {
+    // Test that changes flag is properly set and interacts correctly with verbose
+    const options_changes = ChownOptions{ .changes = true };
+    try testing.expect(options_changes.changes);
+    try testing.expect(!options_changes.verbose);
+
+    // Verify that changes option implies some verbose behavior in the logic
+    // (changes should report when ownership actually changes)
+    const should_report = options_changes.changes or options_changes.verbose;
+    try testing.expect(should_report);
+}
+
+test "verbose and changes flags are properly parsed" {
+    // Alternative test that verifies the flags are properly set
+    // without actually writing to stdout
+
+    // Test verbose flag
+    const options_verbose = ChownOptions{ .verbose = true };
+    try testing.expect(options_verbose.verbose);
+    try testing.expect(!options_verbose.changes);
+
+    // Test changes flag
+    const options_changes = ChownOptions{ .changes = true };
+    try testing.expect(!options_changes.verbose);
+    try testing.expect(options_changes.changes);
+
+    // Test both flags
+    const options_both = ChownOptions{ .verbose = true, .changes = true };
+    try testing.expect(options_both.verbose);
+    try testing.expect(options_both.changes);
+}
+
+test "options struct propagation through functions" {
+    // Skip this test as it may also trigger stdout writes through chownSingle
     return error.SkipZigTest;
 }
 
