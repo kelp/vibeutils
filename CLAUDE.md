@@ -171,6 +171,42 @@ Each utility requires:
 - Man page with 2-3 practical examples
 - Modern enhancements (colors, progress, parallel processing where applicable)
 
+## Zig Documentation Tools
+
+### zig-docs MCP Tool
+
+The `zig-docs` MCP (Model Context Protocol) tool provides instant access to comprehensive Zig documentation directly within Claude Code. **Always use this tool when looking up Zig standard library functions, builtin functions, or implementation details** instead of guessing or searching the web.
+
+Available commands:
+- `mcp__zig-docs__list_builtin_functions` - List all Zig builtin functions (prefixed with '@')
+- `mcp__zig-docs__get_builtin_function` - Get detailed documentation for builtin functions
+- `mcp__zig-docs__search_std_lib` - Search the Zig standard library for functions, types, and declarations
+- `mcp__zig-docs__get_std_lib_item` - Get comprehensive documentation for a specific standard library item
+
+#### Example Usage
+
+When implementing file operations:
+```zig
+// Look up file copying functions:
+// Use: mcp__zig-docs__search_std_lib with query "copy file"
+// Then: mcp__zig-docs__get_std_lib_item with name "std.fs.copyFileAbsolute"
+
+// Look up memory allocation:
+// Use: mcp__zig-docs__search_std_lib with query "allocator"
+// Then: mcp__zig-docs__get_std_lib_item with name "std.mem.Allocator"
+
+// Look up builtin functions:
+// Use: mcp__zig-docs__get_builtin_function with function_name "addWithOverflow"
+```
+
+**Important**: Always consult zig-docs when:
+- Implementing new functionality that requires standard library calls
+- Unsure about function signatures, parameters, or error sets
+- Looking for the idiomatic Zig way to accomplish a task
+- Needing to understand builtin functions and their compile-time requirements
+
+This ensures code correctness and prevents outdated or incorrect API usage.
+
 ## Code Style and Conventions
 
 ### Error Handling
