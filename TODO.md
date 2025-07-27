@@ -937,7 +937,7 @@ defer args.deinit(allocator);
 - [x] **Coverage system**: Integrate Zig's native coverage support
 - [ ] Set up CI/CD pipeline with GitHub Actions
 - [ ] Add install targets for man pages
-- [ ] Add benchmarking infrastructure
+- [ ] Add benchmarking infrastructure (see Benchmarking System section)
 
 ### Documentation
 - [x] Man page style guide (OpenBSD-inspired):
@@ -1076,6 +1076,93 @@ When privileged testing isn't possible:
 - [ ] Clear test output indicating skipped privileged tests
 - [ ] CI passes on all 5 target platforms
 
+## Benchmarking System
+
+### Overview
+Comprehensive performance tracking system to monitor improvements and regressions across all utilities.
+
+### Infrastructure Components
+
+#### 1. Benchmark Framework
+- [ ] Add zBench dependency for Zig-native benchmarking
+- [ ] Create benchmark directory structure (micro/utilities/comparative/scenarios)
+- [ ] Implement BenchmarkResult and BenchmarkContext structs
+- [ ] Add memory tracking allocator for detailed analysis
+- [ ] Create benchmark runner with statistical analysis
+
+#### 2. Benchmark Types
+
+##### Micro-benchmarks (Function Level)
+- [ ] Terminal style detection and color output
+- [ ] Argument parsing performance
+- [ ] File stat operations
+- [ ] Directory traversal algorithms
+- [ ] String formatting and allocation patterns
+
+##### Utility Benchmarks (Command Level)
+- [ ] Standard scenarios for each utility:
+  - Empty inputs (baseline overhead)
+  - Small inputs (typical usage)
+  - Large inputs (stress testing)
+  - Edge cases (pathological inputs)
+- [ ] Memory usage profiling
+- [ ] Syscall counting and analysis
+
+##### Comparative Benchmarks
+- [ ] Hyperfine integration for vibeutils vs GNU coreutils
+- [ ] Automated comparison scripts
+- [ ] Performance ratio tracking
+
+##### Real-world Scenarios
+- [ ] Large file processing (1GB, 10GB files)
+- [ ] Many files handling (10k, 100k files)
+- [ ] Deep directory trees (1000+ levels)
+- [ ] Parallel operation benefits
+
+#### 3. Metrics Collection
+- [ ] Execution time (wall clock, CPU time)
+- [ ] Memory usage (allocated, peak, leaked)
+- [ ] System metrics (syscalls, cache misses, I/O operations)
+- [ ] CPU metrics (instructions, cycles, branch predictions)
+
+#### 4. CI/CD Integration
+- [ ] GitHub Actions workflow for automated benchmarking
+- [ ] Benchmark on: PRs, main commits, weekly schedule
+- [ ] Performance regression detection (>10% threshold)
+- [ ] Benchmark result storage in git branch
+- [ ] GitHub Pages dashboard for visualization
+
+#### 5. Build System Integration
+- [ ] Add `zig build bench` target
+- [ ] Makefile targets:
+  - `make benchmark` - Run all benchmarks
+  - `make bench-micro` - Micro-benchmarks only  
+  - `make bench-utilities` - Utility benchmarks only
+  - `make bench-compare` - GNU comparison
+  - `make bench-report` - Generate HTML report
+
+#### 6. Reporting and Visualization
+- [ ] JSON output format for automation
+- [ ] Historical trend graphs
+- [ ] Regression alerts on PRs
+- [ ] Performance comparison matrix
+- [ ] Memory usage evolution charts
+
+### Implementation Timeline
+- **Week 1-2**: Infrastructure setup, zBench integration
+- **Week 3-4**: Micro-benchmarks for common library
+- **Week 5-6**: Utility benchmarks (echo, cat, ls)
+- **Week 7-8**: Remaining utilities and comparative benchmarks
+- **Week 9-10**: CI/CD integration and dashboard
+- **Week 11-12**: Documentation and optimization based on findings
+
+### Success Metrics
+- [ ] All utilities benchmarked with 3+ scenarios each
+- [ ] Performance within 10% of GNU coreutils
+- [ ] Memory usage equal or better than GNU
+- [ ] <5% false positive rate for regression detection
+- [ ] 6+ months of historical data tracked
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
@@ -1083,3 +1170,4 @@ When privileged testing isn't possible:
 - [ ] Clean cppcheck/valgrind reports
 - [ ] Successful fuzzing campaigns
 - [ ] Privileged operations tested on all platforms
+- [ ] Comprehensive benchmarking system operational
