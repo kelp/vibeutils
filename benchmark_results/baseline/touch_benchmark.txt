@@ -1,0 +1,29 @@
+Benchmarking touch
+===================
+Date: Sun Jul 27 03:16:14 PM PDT 2025
+Iterations: 1000
+
+Binary size: 3354048 bytes (3.2M)
+Parser: zig-clap
+
+Timing common operations (1000 iterations):
+------------------------------------------------
+Help flag (--help): 4.05 seconds total
+./benchmark_single_utility.sh: line 47: bc: command not found
+  Per iteration:  μs
+Version flag (--version): 2.12 seconds total
+./benchmark_single_utility.sh: line 55: bc: command not found
+  Per iteration:  μs
+Invalid flag (--invalid): 96.24 seconds total
+./benchmark_single_utility.sh: line 63: bc: command not found
+  Per iteration:  μs
+
+Utility-specific tests:
+----------------------
+No specific tests for touch
+
+Memory usage (RSS):
+------------------
+Maximum RSS:  KB
+
+Complete!

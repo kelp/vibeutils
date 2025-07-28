@@ -1,0 +1,29 @@
+Benchmarking chown
+===================
+Date: Sun Jul 27 03:20:19 PM PDT 2025
+Iterations: 1000
+
+Binary size: 3358528 bytes (3.3M)
+Parser: zig-clap
+
+Timing common operations (1000 iterations):
+------------------------------------------------
+Help flag (--help): 2.48 seconds total
+./benchmark_single_utility.sh: line 47: bc: command not found
+  Per iteration:  μs
+Version flag (--version): 1.72 seconds total
+./benchmark_single_utility.sh: line 55: bc: command not found
+  Per iteration:  μs
+Invalid flag (--invalid): 99.99 seconds total
+./benchmark_single_utility.sh: line 63: bc: command not found
+  Per iteration:  μs
+
+Utility-specific tests:
+----------------------
+No specific tests for chown
+
+Memory usage (RSS):
+------------------
+Maximum RSS:  KB
+
+Complete!

@@ -1,83 +1,88 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
+
+const CatArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    show_all: bool = false,
+    number_nonblank: bool = false,
+    e: bool = false,
+    show_ends: bool = false,
+    number: bool = false,
+    squeeze_blank: bool = false,
+    t: bool = false,
+    show_tabs: bool = false,
+    u: bool = false,
+    show_nonprinting: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .show_all = .{ .short = 'A', .desc = "Equivalent to -vET" },
+        .number_nonblank = .{ .short = 'b', .desc = "Number non-empty output lines, overrides -n" },
+        .e = .{ .short = 'e', .desc = "Equivalent to -vE" },
+        .show_ends = .{ .short = 'E', .desc = "Display $ at end of each line" },
+        .number = .{ .short = 'n', .desc = "Number all output lines" },
+        .squeeze_blank = .{ .short = 's', .desc = "Suppress repeated empty output lines" },
+        .t = .{ .short = 't', .desc = "Equivalent to -vT" },
+        .show_tabs = .{ .short = 'T', .desc = "Display TAB characters as ^I" },
+        .u = .{ .short = 'u', .desc = "(ignored)" },
+        .show_nonprinting = .{ .short = 'v', .desc = "Use ^ and M- notation, except for LFD and TAB" },
+    };
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help             Display this help and exit.
-        \\-V, --version          Output version information and exit.
-        \\-A, --show-all         Equivalent to -vET.
-        \\-b, --number-nonblank  Number non-empty output lines, overrides -n.
-        \\-e                     Equivalent to -vE.
-        \\-E, --show-ends        Display $ at end of each line.
-        \\-n, --number           Number all output lines.
-        \\-s, --squeeze-blank    Suppress repeated empty output lines.
-        \\-t                     Equivalent to -vT.
-        \\-T, --show-tabs        Display TAB characters as ^I.
-        \\-u                     (ignored)
-        \\-v, --show-nonprinting Use ^ and M- notation, except for LFD and TAB.
-        \\<str>...               Files to concatenate.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(CatArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         const stdout = std.io.getStdOut().writer();
         try stdout.print("cat ({s}) {s}\n", .{ common.name, common.version });
         return;
     }
 
     // Create options struct
-    // Handle combination flags first
-    const show_all = res.args.@"show-all" != 0;
-    const e_flag = res.args.e != 0;
-    const t_flag = res.args.t != 0;
-
+    // Handle combination flags
     const options = CatOptions{
-        .number_lines = res.args.number != 0,
-        .number_nonblank = res.args.@"number-nonblank" != 0,
-        .squeeze_blank = res.args.@"squeeze-blank" != 0,
-        .show_ends = res.args.@"show-ends" != 0 or show_all or e_flag,
-        .show_tabs = res.args.@"show-tabs" != 0 or show_all or t_flag,
-        .show_nonprinting = res.args.@"show-nonprinting" != 0 or show_all or e_flag or t_flag,
+        .number_lines = args.number,
+        .number_nonblank = args.number_nonblank,
+        .squeeze_blank = args.squeeze_blank,
+        .show_ends = args.show_ends or args.show_all or args.e,
+        .show_tabs = args.show_tabs or args.show_all or args.t,
+        .show_nonprinting = args.show_nonprinting or args.show_all or args.e or args.t,
     };
 
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
 
-    // Access positionals - it's a tuple, so we need to access field 0
-    const files = res.positionals.@"0";
-
     var line_state = LineNumberState{};
 
-    if (files.len == 0) {
+    if (args.positionals.len == 0) {
         // No files specified, read from stdin
         try processInput(stdin, stdout, options, &line_state);
     } else {
-        for (files) |file_path| {
+        for (args.positionals) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 try processInput(stdin, stdout, options, &line_state);
             } else {

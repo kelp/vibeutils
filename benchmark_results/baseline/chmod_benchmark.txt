@@ -1,0 +1,29 @@
+Benchmarking chmod
+===================
+Date: Sun Jul 27 03:18:03 PM PDT 2025
+Iterations: 1000
+
+Binary size: 3304504 bytes (3.2M)
+Parser: zig-clap
+
+Timing common operations (1000 iterations):
+------------------------------------------------
+Help flag (--help): 2.41 seconds total
+./benchmark_single_utility.sh: line 47: bc: command not found
+  Per iteration:  μs
+Version flag (--version): 1.62 seconds total
+./benchmark_single_utility.sh: line 55: bc: command not found
+  Per iteration:  μs
+Invalid flag (--invalid): 105.36 seconds total
+./benchmark_single_utility.sh: line 63: bc: command not found
+  Per iteration:  μs
+
+Utility-specific tests:
+----------------------
+No specific tests for chmod
+
+Memory usage (RSS):
+------------------
+Maximum RSS:  KB
+
+Complete!

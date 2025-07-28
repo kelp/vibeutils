@@ -1,0 +1,29 @@
+Benchmarking rmdir
+===================
+Date: Sun Jul 27 03:03:36 PM PDT 2025
+Iterations: 1000
+
+Binary size: 3268960 bytes (3.2M)
+Parser: zig-clap
+
+Timing common operations (1000 iterations):
+------------------------------------------------
+Help flag (--help): 1.94 seconds total
+./benchmark_single_utility.sh: line 47: bc: command not found
+  Per iteration:  μs
+Version flag (--version): 1.87 seconds total
+./benchmark_single_utility.sh: line 55: bc: command not found
+  Per iteration:  μs
+Invalid flag (--invalid): 87.10 seconds total
+./benchmark_single_utility.sh: line 63: bc: command not found
+  Per iteration:  μs
+
+Utility-specific tests:
+----------------------
+No specific tests for rmdir
+
+Memory usage (RSS):
+------------------
+Maximum RSS:  KB
+
+Complete!

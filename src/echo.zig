@@ -1,57 +1,60 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
+
+const EchoArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    n: bool = false,
+    e: bool = false,
+    E: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .n = .{ .short = 'n', .desc = "Do not output the trailing newline" },
+        .e = .{ .short = 'e', .desc = "Enable interpretation of backslash escapes" },
+        .E = .{ .short = 'E', .desc = "Disable interpretation of backslash escapes (default)" },
+    };
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help     Display this help and exit.
-        \\-V, --version  Output version information and exit.
-        \\-n             Do not output the trailing newline.
-        \\-e             Enable interpretation of backslash escapes.
-        \\-E             Disable interpretation of backslash escapes (default).
-        \\<str>...       Text to echo.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(EchoArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         try printVersion();
         return;
     }
 
-    // Create options
+    // Create options (handle -E flag which disables -e)
     const options = EchoOptions{
-        .suppress_newline = res.args.n != 0,
-        .interpret_escapes = res.args.e != 0,
+        .suppress_newline = args.n,
+        .interpret_escapes = args.e and !args.E,
     };
 
     const stdout = std.io.getStdOut().writer();
-    const strings = res.positionals.@"0";
-
-    try echoStrings(strings, stdout, options);
+    try echoStrings(args.positionals, stdout, options);
 }
 
 fn printHelp() !void {

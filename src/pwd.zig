@@ -1,7 +1,21 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
+
+const PwdArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    logical: bool = false,
+    physical: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .logical = .{ .short = 'L', .desc = "Use PWD from environment, even if it contains symlinks" },
+        .physical = .{ .short = 'P', .desc = "Resolve all symbolic links (default)" },
+    };
+};
 
 const PwdOptions = struct {
     logical: bool = false, // -L flag: use PWD environment variable if valid
@@ -13,34 +27,25 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help      Display this help and exit.
-        \\-V, --version   Output version information and exit.
-        \\-L, --logical   Use PWD from environment, even if it contains symlinks.
-        \\-P, --physical  Resolve all symbolic links (default).
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        std.process.exit(@intFromEnum(common.ExitCode.misuse));
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(PwdArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         common.CommonOpts.printVersion();
         return;
     }
@@ -48,12 +53,12 @@ pub fn main() !void {
     // Create options - when both flags are given, last one wins
     var options = PwdOptions{};
 
-    // Process flags in order to let last one win
-    if (res.args.logical != 0) {
+    // Process flags - default is physical unless logical is specified
+    if (args.logical) {
         options.logical = true;
         options.physical = false;
     }
-    if (res.args.physical != 0) {
+    if (args.physical) {
         options.logical = false;
         options.physical = true;
     }
