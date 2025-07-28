@@ -899,6 +899,76 @@ const args = Args.parse(EchoArgs, allocator) catch |err| switch (err) {
 defer args.deinit(allocator);
 ```
 
+## Stdout Testing Infrastructure
+
+### Overview
+Implement idiomatic Zig writer pattern to enable comprehensive testing of stdout/stderr output without hangs or skipped tests.
+
+### Design Principles
+- Pass writers as parameters (idiomatic Zig pattern)
+- Enable full output testing without process-level complexity
+- Maintain production behavior while improving testability
+- Zero allocation overhead for production code
+
+### Implementation Plan (TDD Approach)
+
+#### Phase 1: Core Infrastructure
+- [ ] Create src/common/io_capture.zig module
+- [ ] Test: CaptureWriter union type for real/captured output
+- [ ] Test: TestContext for capturing stdout/stderr
+- [ ] Test: ProductionContext for real output
+- [ ] Test: Memory management and cleanup
+- [ ] Implement: Writer abstraction layer
+- [ ] Implement: Test helper functions
+
+#### Phase 2: High Priority Utilities (Direct stdout writes)
+- [ ] **chown** - Refactor reportChange/reportNoChange (4 skipped tests)
+  - [ ] Test: Verbose output capture
+  - [ ] Test: Changes output capture
+  - [ ] Implement: Thread writers through call chain
+  - [ ] Enable all previously skipped tests
+- [ ] **ls** - Refactor heavy stdout usage
+  - [ ] Test: File listing output
+  - [ ] Test: Icon showcase output
+  - [ ] Implement: Writer parameters for all output
+- [ ] **common/lib.zig** - Update printError and fatal
+  - [ ] Test: Error message capture
+  - [ ] Implement: Writer-based error functions
+
+#### Phase 3: Interactive/Verbose Utilities
+- [ ] **rm** - Interactive prompts
+  - [ ] Test: Confirmation prompt capture
+  - [ ] Implement: Writer-based prompts
+- [ ] **mv** - Verbose and interactive output
+  - [ ] Test: Progress messages
+  - [ ] Test: Overwrite prompts
+- [ ] **cp** - Progress reporting (user_interaction.zig)
+  - [ ] Test: Progress bar output
+  - [ ] Test: Interactive prompts
+- [ ] **mkdir** - Verbose directory creation
+  - [ ] Test: Creation messages
+- [ ] **ln** - Verbose output
+- [ ] **chmod** - Version output
+- [ ] **pwd** - Main output
+- [ ] **touch** - Help/version output
+- [ ] **rmdir** - Version output
+
+#### Phase 4: Consistency Updates
+- [ ] **echo** - Already uses buffers, update for consistency
+- [ ] **cat** - Already uses buffers, update for consistency
+
+#### Phase 5: Documentation and Cleanup
+- [ ] Document writer pattern in CLAUDE.md
+- [ ] Create migration guide for new utilities
+- [ ] Update test writing guidelines
+
+### Success Criteria
+- [ ] Zero skipped tests due to stdout issues
+- [ ] All utilities use consistent writer pattern
+- [ ] Full test coverage for output functionality
+- [ ] No performance regression in production
+- [ ] Clear documentation and examples
+
 ## Architecture Decisions
 
 ### Design Philosophy for ls
