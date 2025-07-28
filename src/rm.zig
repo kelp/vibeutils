@@ -1,8 +1,31 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
+
+// Argument structure for rm command
+const RmArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    force: bool = false,
+    i: bool = false, // interactive
+    I: bool = false, // interactive once
+    recursive: bool = false,
+    R: bool = false, // Same as recursive
+    verbose: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .force = .{ .short = 'f', .desc = "Ignore nonexistent files and arguments, never prompt" },
+        .i = .{ .short = 'i', .desc = "Prompt before every removal" },
+        .I = .{ .short = 'I', .desc = "Prompt once before removing more than three files, or when removing recursively" },
+        .recursive = .{ .short = 'r', .desc = "Remove directories and their contents recursively" },
+        .R = .{ .short = 'R', .desc = "Remove directories and their contents recursively (same as -r)" },
+        .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
+    };
+};
 
 // Custom error types
 const RmError = error{
@@ -14,56 +37,42 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help       Display this help and exit.
-        \\-V, --version    Output version information and exit.
-        \\-f, --force      Ignore nonexistent files and arguments, never prompt.
-        \\-i               Prompt before every removal.
-        \\-I               Prompt once before removing more than three files, or when removing recursively.
-        \\-r, --recursive  Remove directories and their contents recursively.
-        \\-R               Remove directories and their contents recursively (same as -r).
-        \\-v, --verbose    Explain what is being done.
-        \\<str>...         Files or directories to remove.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using custom parser
+    const args = common.argparse.ArgParser.parseProcess(RmArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         try printVersion();
         return;
     }
 
-    const files = res.positionals.@"0";
+    const files = args.positionals;
     if (files.len == 0) {
         common.printError("missing operand", .{});
         std.process.exit(@intFromEnum(common.ExitCode.general_error));
     }
 
-    // Create options
+    // Create options, merging -r and -R flags
     const options = RmOptions{
-        .force = res.args.force != 0,
-        .interactive = res.args.i != 0,
-        .interactive_once = res.args.I != 0,
-        .recursive = res.args.recursive != 0 or res.args.R != 0,
-        .verbose = res.args.verbose != 0,
+        .force = args.force,
+        .interactive = args.i,
+        .interactive_once = args.I,
+        .recursive = args.recursive or args.R,
+        .verbose = args.verbose,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -470,8 +479,8 @@ fn removeDirectoryRecursiveWithContext(
     }
 
     // Check for symlink cycles
-    const real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = std.fs.realpath(dir_path, @constCast(&real_path_buf)) catch dir_path;
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = std.fs.realpath(dir_path, &real_path_buf) catch dir_path;
 
     if (symlink_tracker.contains(real_path)) {
         // Detected a cycle
