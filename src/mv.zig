@@ -1,8 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
 const clap = @import("clap");
-const common = @import("common/lib.zig");
-const test_utils = @import("common/test_utils.zig");
+const common = @import("common");
+const test_utils = common.test_utils;
 
 const params = clap.parseParamsComptime(
     \\-h, --help              Display this help and exit.

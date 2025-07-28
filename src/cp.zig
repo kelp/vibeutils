@@ -1,6 +1,5 @@
 const std = @import("std");
-const common = @import("common/lib.zig");
-const clap = @import("clap");
+const common = @import("common");
 
 // Import our new modular architecture
 const types = @import("cp/types.zig");
@@ -8,68 +7,91 @@ const errors = @import("cp/errors.zig");
 const copy_engine = @import("cp/copy_engine.zig");
 const user_interaction = @import("cp/user_interaction.zig");
 
-const params = clap.parseParamsComptime(
-    \\-h, --help              Display this help and exit.
-    \\-V, --version           Output version information and exit.
-    \\-r, --recursive         Copy directories recursively.
-    \\-R                      Copy directories recursively (same as -r).
-    \\-i, --interactive       Prompt before overwrite.
-    \\-f, --force             Force overwrite without prompting.
-    \\-p, --preserve          Preserve mode, ownership, timestamps.
-    \\-d, --no-dereference    Never follow symbolic links in SOURCE.
-    \\<str>...                Source and destination paths.
-    \\
-);
+const CpArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    r: bool = false,
+    recursive: bool = false,
+    R: bool = false,
+    i: bool = false,
+    interactive: bool = false,
+    f: bool = false,
+    force: bool = false,
+    p: bool = false,
+    preserve: bool = false,
+    d: bool = false,
+    no_dereference: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .r = .{ .desc = "Copy directories recursively" },
+        .recursive = .{ .short = 0, .desc = "Copy directories recursively" },
+        .R = .{ .desc = "Copy directories recursively (same as -r)" },
+        .i = .{ .desc = "Prompt before overwrite" },
+        .interactive = .{ .short = 0, .desc = "Prompt before overwrite" },
+        .f = .{ .desc = "Force overwrite without prompting" },
+        .force = .{ .short = 0, .desc = "Force overwrite without prompting" },
+        .p = .{ .desc = "Preserve mode, ownership, timestamps" },
+        .preserve = .{ .short = 0, .desc = "Preserve mode, ownership, timestamps" },
+        .d = .{ .desc = "Never follow symbolic links in SOURCE" },
+        .no_dereference = .{ .short = 0, .desc = "Never follow symbolic links in SOURCE" },
+    };
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const parsers = comptime .{
-        .str = clap.parsers.string,
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(CpArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag => {
+                common.printError("unrecognized option", .{});
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Try 'cp --help' for more information.\n", .{}) catch {};
+                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            },
+            error.MissingValue => {
+                common.printError("option requires an argument", .{});
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Try 'cp --help' for more information.\n", .{}) catch {};
+                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            },
+            else => return err,
+        }
     };
+    defer allocator.free(args.positionals);
 
-    var diag = clap.Diagnostic{};
-    const res = clap.parse(clap.Help, &params, parsers, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| switch (err) {
-        error.InvalidArgument => {
-            diag.report(std.io.getStdErr().writer(), err) catch {};
-            std.process.exit(@intFromEnum(common.ExitCode.misuse));
-        },
-        else => return err,
-    };
-    defer res.deinit();
-
-    if (res.args.help != 0) {
-        return clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{});
+    if (args.help) {
+        try printHelp();
+        return;
     }
-    if (res.args.version != 0) {
-        common.CommonOpts.printVersion();
+    if (args.version) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.print("cp ({s}) {s}\n", .{ common.name, common.version });
         return;
     }
 
-    const args = res.positionals.@"0";
-
     // Validate argument count
-    if (args.len < 2) {
-        if (args.len == 0) {
+    if (args.positionals.len < 2) {
+        if (args.positionals.len == 0) {
             common.printError("missing file operand", .{});
         } else {
-            common.printError("missing destination file operand after '{s}'", .{args[0]});
+            common.printError("missing destination file operand after '{s}'", .{args.positionals[0]});
         }
         std.process.exit(@intFromEnum(common.ExitCode.misuse));
     }
 
-    // Create options from parsed arguments
+    // Create options from parsed arguments - merge -r, -R and --recursive
     const options = types.CpOptions{
-        .recursive = res.args.recursive != 0 or res.args.R != 0,
-        .interactive = res.args.interactive != 0,
-        .force = res.args.force != 0,
-        .preserve = res.args.preserve != 0,
-        .no_dereference = res.args.@"no-dereference" != 0,
+        .recursive = args.r or args.R or args.recursive,
+        .interactive = args.i or args.interactive,
+        .force = args.f or args.force,
+        .preserve = args.p or args.preserve,
+        .no_dereference = args.d or args.no_dereference,
     };
 
     // Create copy context and engine
@@ -77,7 +99,7 @@ pub fn main() !void {
     var engine = copy_engine.CopyEngine.init(context);
 
     // Plan all operations upfront
-    var operations = engine.planOperations(args) catch |err| {
+    var operations = engine.planOperations(args.positionals) catch |err| {
         const exit_code = switch (err) {
             error.InsufficientArguments => common.ExitCode.misuse,
             errors.CopyError.DestinationIsNotDirectory => common.ExitCode.general_error,
@@ -102,6 +124,32 @@ pub fn main() !void {
     if (stats.errors_encountered > 0) {
         std.process.exit(@intFromEnum(common.ExitCode.general_error));
     }
+}
+
+fn printHelp() !void {
+    const stdout = std.io.getStdOut().writer();
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+    try stdout.print(
+        \\Usage: {s} [OPTION]... [-T] SOURCE DEST
+        \\   or: {s} [OPTION]... SOURCE... DIRECTORY
+        \\   or: {s} [OPTION]... -t DIRECTORY SOURCE...
+        \\Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
+        \\
+        \\Options:
+        \\  -d, --no-dereference     never follow symbolic links in SOURCE
+        \\  -f, --force              force overwrite without prompting
+        \\  -h, --help               display this help and exit
+        \\  -i, --interactive        prompt before overwrite
+        \\  -p, --preserve           preserve mode, ownership, timestamps
+        \\  -r, -R, --recursive      copy directories recursively
+        \\  -V, --version            output version information and exit
+        \\
+        \\Examples:
+        \\  {s} foo.txt bar.txt    Copy foo.txt to bar.txt
+        \\  {s} -r dir1 dir2       Copy dir1 and its contents to dir2
+        \\  {s} file1 file2 dir/   Copy multiple files into dir/
+        \\
+    , .{ prog_name, prog_name, prog_name, prog_name, prog_name, prog_name });
 }
 
 // =============================================================================
