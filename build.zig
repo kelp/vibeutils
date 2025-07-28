@@ -166,4 +166,40 @@ fn buildTests(
     
     const run_common_tests = b.addRunArtifact(common_tests);
     test_step.dependOn(&run_common_tests.step);
+    
+    // Create a separate privileged test step
+    const privileged_test_step = b.step("test-privileged", "Run tests that require privilege simulation (run under fakeroot)");
+    
+    // Run privileged tests only - filter for tests starting with "privileged:"
+    for (utils.utilities) |util| {
+        const util_tests = b.addTest(.{
+            .root_source_file = b.path(util.path),
+            .target = target,
+            .optimize = optimize,
+            .filters = &.{"privileged:"},  // Only run tests starting with "privileged:"
+        });
+        
+        util_tests.root_module.addImport("common", common);
+        util_tests.root_module.addImport("clap", clap.module("clap"));
+        util_tests.root_module.addImport("build_options", build_options_module);
+        
+        if (util.needs_libc) {
+            util_tests.linkLibC();
+        }
+        
+        const run_util_tests = b.addRunArtifact(util_tests);
+        privileged_test_step.dependOn(&run_util_tests.step);
+    }
+    
+    // Also add common library privileged tests if any
+    const common_tests_priv = b.addTest(.{
+        .root_source_file = b.path("src/common/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .filters = &.{"privileged:"},  // Only run tests starting with "privileged:"
+    });
+    common_tests_priv.root_module.addImport("build_options", build_options_module);
+    
+    const run_common_tests_priv = b.addRunArtifact(common_tests_priv);
+    privileged_test_step.dependOn(&run_common_tests_priv.step);
 }

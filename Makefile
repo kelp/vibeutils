@@ -1,4 +1,4 @@
-.PHONY: all build test clean install coverage help
+.PHONY: all build test test-privileged test-privileged-local clean install coverage help
 
 # Default target
 all: build
@@ -10,6 +10,22 @@ build:
 # Run tests
 test:
 	zig build test
+
+# Run tests with privilege simulation (requires fakeroot)
+test-privileged:
+	@if ! command -v fakeroot >/dev/null 2>&1; then \
+		echo "Error: fakeroot is required but not installed"; \
+		echo "Install with: sudo apt-get install fakeroot (Debian/Ubuntu)"; \
+		echo "           or: brew install fakeroot (macOS - may not work)"; \
+		exit 1; \
+	fi
+	@echo "Running privileged tests with fakeroot..."
+	@fakeroot zig build test-privileged
+
+# Run privileged tests with available tools (graceful fallback)
+test-privileged-local:
+	@echo "Running privileged tests with best available method..."
+	@scripts/run-privileged-tests.sh
 
 # Run tests with coverage using Zig's native coverage
 coverage:
@@ -48,12 +64,14 @@ fmt:
 # Show help
 help:
 	@echo "vibeutils Makefile targets:"
-	@echo "  make build     - Build all utilities (default)"
-	@echo "  make test      - Run all tests"
-	@echo "  make coverage  - Run tests with coverage report"
-	@echo "  make clean     - Remove build artifacts"
-	@echo "  make install   - Build optimized binaries"
-	@echo "  make run-echo  - Run echo utility (ARGS='arguments')"
-	@echo "  make debug     - Build with debug info"
-	@echo "  make release   - Build optimized for size"
-	@echo "  make fmt       - Format source code"
+	@echo "  make build               - Build all utilities (default)"
+	@echo "  make test                - Run all tests"
+	@echo "  make test-privileged     - Run privileged tests (requires fakeroot)"
+	@echo "  make test-privileged-local - Run privileged tests with fallback"
+	@echo "  make coverage            - Run tests with coverage report"
+	@echo "  make clean               - Remove build artifacts"
+	@echo "  make install             - Build optimized binaries"
+	@echo "  make run-echo            - Run echo utility (ARGS='arguments')"
+	@echo "  make debug               - Build with debug info"
+	@echo "  make release             - Build optimized for size"
+	@echo "  make fmt                 - Format source code"
