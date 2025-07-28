@@ -41,15 +41,16 @@ const ChownArgs = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(ChownArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printError("invalid argument", .{});
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("invalid argument", .{});
             },
             else => return err,
         }
@@ -88,15 +89,13 @@ pub fn main() !void {
     const owner_spec: []const u8 = if (args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
-            common.printError("missing file operand", .{});
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("missing file operand", .{});
         }
         break :blk ""; // Empty owner spec when using reference
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
-            common.printError("missing operand", .{});
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("missing operand", .{});
         }
         break :blk positionals[0];
     };

@@ -42,23 +42,19 @@ const CpArgs = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(CpArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printError("unrecognized option", .{});
-                const stderr = std.io.getStdErr().writer();
-                stderr.print("Try 'cp --help' for more information.\n", .{}) catch {};
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("unrecognized option\nTry 'cp --help' for more information.", .{});
             },
             error.MissingValue => {
-                common.printError("option requires an argument", .{});
-                const stderr = std.io.getStdErr().writer();
-                stderr.print("Try 'cp --help' for more information.\n", .{}) catch {};
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("option requires an argument\nTry 'cp --help' for more information.", .{});
             },
             else => return err,
         }
@@ -78,11 +74,10 @@ pub fn main() !void {
     // Validate argument count
     if (args.positionals.len < 2) {
         if (args.positionals.len == 0) {
-            common.printError("missing file operand", .{});
+            common.fatal("missing file operand", .{});
         } else {
-            common.printError("missing destination file operand after '{s}'", .{args.positionals[0]});
+            common.fatal("missing destination file operand after '{s}'", .{args.positionals[0]});
         }
-        std.process.exit(@intFromEnum(common.ExitCode.misuse));
     }
 
     // Create options from parsed arguments - merge -r, -R and --recursive
@@ -100,12 +95,11 @@ pub fn main() !void {
 
     // Plan all operations upfront
     var operations = engine.planOperations(args.positionals) catch |err| {
-        const exit_code = switch (err) {
-            error.InsufficientArguments => common.ExitCode.misuse,
-            errors.CopyError.DestinationIsNotDirectory => common.ExitCode.general_error,
-            else => common.ExitCode.general_error,
-        };
-        std.process.exit(@intFromEnum(exit_code));
+        switch (err) {
+            error.InsufficientArguments => common.fatal("insufficient arguments", .{}),
+            errors.CopyError.DestinationIsNotDirectory => common.fatal("destination is not a directory", .{}),
+            else => common.fatal("error planning operations: {}", .{err}),
+        }
     };
     defer {
         for (operations.items) |*op| {
@@ -116,13 +110,13 @@ pub fn main() !void {
 
     // Execute all operations
     engine.executeCopyBatch(operations.items) catch {
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        return; // Error already reported by engine
     };
 
     // Check final statistics for any errors
     const stats = engine.getStats();
     if (stats.errors_encountered > 0) {
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        return; // Errors already reported during operation
     }
 }
 

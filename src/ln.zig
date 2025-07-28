@@ -165,15 +165,16 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(LnArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printError("invalid argument", .{});
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("invalid argument", .{});
             },
             else => return err,
         }
@@ -277,6 +278,28 @@ const LinkOptions = struct {
 fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions) !void {
     if (options.target_directory) |target_dir| {
         // Form 4: ln [OPTION]... -t DIRECTORY TARGET...
+        // Validate the target directory path
+        validatePath(target_dir) catch |err| {
+            common.printError("invalid target directory '{s}': {}", .{ target_dir, err });
+            return err;
+        };
+
+        // Check that target directory exists and is a directory
+        const stat = std.fs.cwd().statFile(target_dir) catch |err| {
+            switch (err) {
+                error.FileNotFound => {
+                    common.printError("target '{s}' is not a directory", .{target_dir});
+                    return common.Error.ArgumentError;
+                },
+                else => return err,
+            }
+        };
+
+        if (stat.kind != .directory) {
+            common.printError("target '{s}' is not a directory", .{target_dir});
+            return common.Error.ArgumentError;
+        }
+
         for (files) |target| {
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ target_dir, link_name });

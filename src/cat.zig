@@ -87,8 +87,7 @@ pub fn main() !void {
                 try processInput(stdin, stdout, options, &line_state);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printError("{s}: {}", .{ file_path, err });
-                    std.process.exit(1);
+                    common.fatal("{s}: {}", .{ file_path, err });
                 };
                 defer file.close();
                 try processInput(file.reader(), stdout, options, &line_state);

@@ -39,23 +39,19 @@ const TouchArgs = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(TouchArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printError("unrecognized option", .{});
-                const stderr = std.io.getStdErr().writer();
-                stderr.print("Try 'touch --help' for more information.\n", .{}) catch {};
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("unrecognized option\nTry 'touch --help' for more information.", .{});
             },
             error.MissingValue => {
-                common.printError("option requires an argument", .{});
-                const stderr = std.io.getStdErr().writer();
-                stderr.print("Try 'touch --help' for more information.\n", .{}) catch {};
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("option requires an argument\nTry 'touch --help' for more information.", .{});
             },
             else => return err,
         }
@@ -97,10 +93,7 @@ pub fn main() !void {
     const files = args.positionals;
 
     if (files.len == 0) {
-        common.printError("missing file operand", .{});
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("Try 'touch --help' for more information.\n", .{}) catch {};
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        common.fatal("missing file operand\nTry 'touch --help' for more information.", .{});
     }
 
     // Process files

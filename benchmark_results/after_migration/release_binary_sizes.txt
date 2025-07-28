@@ -1,0 +1,16 @@
+total 824
+drwxr-xr-x 1 tcole tcole     90 Jul 28 13:58 .
+drwxr-xr-x 1 tcole tcole      6 Jul 28 13:58 ..
+-rwxr-xr-x 1 tcole tcole  31960 Jul 28 13:58 cat
+-rwxr-xr-x 1 tcole tcole  42560 Jul 28 13:58 chmod
+-rwxr-xr-x 1 tcole tcole  43968 Jul 28 13:58 chown
+-rwxr-xr-x 1 tcole tcole 105680 Jul 28 13:58 cp
+-rwxr-xr-x 1 tcole tcole  26376 Jul 28 13:58 echo
+-rwxr-xr-x 1 tcole tcole  45512 Jul 28 13:58 ln
+-rwxr-xr-x 1 tcole tcole 167632 Jul 28 13:58 ls
+-rwxr-xr-x 1 tcole tcole  39576 Jul 28 13:58 mkdir
+-rwxr-xr-x 1 tcole tcole 111080 Jul 28 13:58 mv
+-rwxr-xr-x 1 tcole tcole  30224 Jul 28 13:58 pwd
+-rwxr-xr-x 1 tcole tcole  50520 Jul 28 13:58 rm
+-rwxr-xr-x 1 tcole tcole  33904 Jul 28 13:58 rmdir
+-rwxr-xr-x 1 tcole tcole  87400 Jul 28 13:58 touch

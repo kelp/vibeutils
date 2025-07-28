@@ -69,15 +69,16 @@ const LsArgs = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printError("invalid argument", .{});
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("invalid argument", .{});
             },
             else => return err,
         }
@@ -107,10 +108,7 @@ pub fn main() !void {
     var color_mode = ColorMode.auto;
     if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
-            common.printError("invalid argument '{s}' for '--color'", .{color_arg});
-            const stderr = std.io.getStdErr().writer();
-            try stderr.writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
         };
     }
 
@@ -118,10 +116,7 @@ pub fn main() !void {
     var icon_mode = common.icons.getIconModeFromEnv(allocator);
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            common.printError("invalid argument '{s}' for '--icons'", .{icons_arg});
-            const stderr = std.io.getStdErr().writer();
-            try stderr.writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
         };
     }
 
@@ -129,10 +124,7 @@ pub fn main() !void {
     var time_style = TimeStyle.relative; // Default to relative
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            common.printError("invalid argument '{s}' for '--time-style'", .{time_style_arg});
-            const stderr = std.io.getStdErr().writer();
-            try stderr.writeAll("Valid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
         };
     }
 

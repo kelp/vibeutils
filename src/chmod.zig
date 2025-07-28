@@ -26,16 +26,16 @@ const ChmodArgs = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(ChmodArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printError("invalid argument", .{});
-                try std.io.getStdErr().writer().writeAll("Try 'chmod --help' for more information.\n");
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("invalid argument\nTry 'chmod --help' for more information.", .{});
             },
             else => return err,
         }
@@ -60,15 +60,11 @@ pub fn main() !void {
     const using_reference = args.reference != null;
     if (using_reference) {
         if (positionals.len < 1) {
-            common.printError("missing file operand", .{});
-            try std.io.getStdErr().writer().writeAll("Try 'chmod --help' for more information.\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("missing file operand\nTry 'chmod --help' for more information.", .{});
         }
     } else {
         if (positionals.len < 2) {
-            common.printError("missing operand", .{});
-            try std.io.getStdErr().writer().writeAll("Try 'chmod --help' for more information.\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("missing operand\nTry 'chmod --help' for more information.", .{});
         }
     }
 

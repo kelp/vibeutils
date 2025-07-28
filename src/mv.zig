@@ -572,23 +572,19 @@ fn printHelp() !void {
 ///   mv file*.txt backup/       # Move all matching files to backup/
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(MvArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printError("unrecognized option", .{});
-                const stderr = std.io.getStdErr().writer();
-                stderr.print("Try 'mv --help' for more information.\n", .{}) catch {};
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("unrecognized option\nTry 'mv --help' for more information.", .{});
             },
             error.MissingValue => {
-                common.printError("option requires an argument", .{});
-                const stderr = std.io.getStdErr().writer();
-                stderr.print("Try 'mv --help' for more information.\n", .{}) catch {};
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("option requires an argument\nTry 'mv --help' for more information.", .{});
             },
             else => return err,
         }
@@ -610,9 +606,7 @@ pub fn main() !void {
 
     const files = args.positionals;
     if (files.len < 2) {
-        common.printError("missing file operand", .{});
-        common.printError("Try 'mv --help' for more information.", .{});
-        std.process.exit(@intFromEnum(common.ExitCode.misuse));
+        common.fatal("missing file operand\nTry 'mv --help' for more information.", .{});
     }
 
     const options = MoveOptions{
@@ -628,15 +622,13 @@ pub fn main() !void {
         const dest = files[files.len - 1];
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printError("target '{s}' is not a directory", .{dest});
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("target '{s}' is not a directory", .{dest});
             },
             else => return err,
         };
 
         if (dest_stat.kind != .directory) {
-            common.printError("target '{s}' is not a directory", .{dest});
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("target '{s}' is not a directory", .{dest});
         }
 
         // Move each source to destination directory
@@ -649,8 +641,7 @@ pub fn main() !void {
             defer allocator.free(full_dest);
 
             moveFile(allocator, source, full_dest, options) catch |err| {
-                common.printError("cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
             };
 
             if (options.verbose) {
@@ -664,8 +655,7 @@ pub fn main() !void {
         const dest = files[1];
 
         moveFile(allocator, source, dest, options) catch |err| {
-            common.printError("cannot move '{s}' to '{s}': {}", .{ source, dest, err });
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("cannot move '{s}' to '{s}': {}", .{ source, dest, err });
         };
 
         if (options.verbose) {

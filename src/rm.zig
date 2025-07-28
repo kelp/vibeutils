@@ -34,7 +34,9 @@ const RmError = error{
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using custom parser
@@ -62,8 +64,7 @@ pub fn main() !void {
 
     const files = args.positionals;
     if (files.len == 0) {
-        common.printError("missing operand", .{});
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        common.fatal("missing operand", .{});
     }
 
     // Create options, merging -r and -R flags

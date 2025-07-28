@@ -24,7 +24,9 @@ const PwdOptions = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     // Parse arguments using new parser
@@ -66,14 +68,12 @@ pub fn main() !void {
     // Get and print the working directory
     const stdout = std.io.getStdOut().writer();
     const cwd = getWorkingDirectory(allocator, options) catch |err| {
-        common.printError("failed to get current directory: {s}", .{@errorName(err)});
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        common.fatal("failed to get current directory: {s}", .{@errorName(err)});
     };
     defer allocator.free(cwd);
 
     stdout.print("{s}\n", .{cwd}) catch |err| {
-        common.printError("write failed: {s}", .{@errorName(err)});
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        common.fatal("write failed: {s}", .{@errorName(err)});
     };
 }
 
