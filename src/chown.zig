@@ -10,9 +10,9 @@ extern "c" fn chown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 extern "c" fn lchown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 
 pub fn main() !void {
-    var allocator_instance = std.heap.SmpAllocator.init();
-    defer allocator_instance.deinit();
-    const allocator = allocator_instance.allocator();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
     // Define parameters using zig-clap
     const params = comptime clap.parseParamsComptime(

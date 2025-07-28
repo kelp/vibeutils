@@ -27,10 +27,9 @@ const MkdirOptions = struct {
 };
 
 pub fn main() !void {
-    // Use SmpAllocator as recommended for Zig 0.14.0+
-    var smp = std.heap.SmpAllocator.init();
-    defer smp.deinit();
-    const allocator = smp.allocator();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(MkdirArgs, allocator) catch |err| {
