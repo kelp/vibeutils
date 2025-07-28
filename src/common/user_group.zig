@@ -25,6 +25,8 @@ extern "c" fn getpwnam(name: [*:0]const u8) ?*c_passwd;
 extern "c" fn getgrnam(name: [*:0]const u8) ?*c_group;
 extern "c" fn getpwuid(uid: c.uid_t) ?*c_passwd;
 extern "c" fn getgrgid(gid: c.gid_t) ?*c_group;
+extern "c" fn getuid() c.uid_t;
+extern "c" fn getgid() c.gid_t;
 
 /// User and group ID types
 pub const uid_t = std.posix.uid_t;
@@ -162,12 +164,12 @@ pub fn getGroupById(gid: gid_t) Error!GroupInfo {
 
 /// Get current user's UID
 pub fn getCurrentUserId() uid_t {
-    return std.os.linux.getuid();
+    return @intCast(getuid());
 }
 
 /// Get current user's GID
 pub fn getCurrentGroupId() gid_t {
-    return std.os.linux.getgid();
+    return @intCast(getgid());
 }
 
 // ==================== TESTS ====================

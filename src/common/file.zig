@@ -52,11 +52,22 @@ pub const FileInfo = struct {
             else => .unknown,
         };
 
+        // Handle platform differences in timespec field names
+        const atime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.atimespec.sec * std.time.ns_per_s + stat_buf.atimespec.nsec
+        else
+            stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec;
+
+        const mtime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.mtimespec.sec * std.time.ns_per_s + stat_buf.mtimespec.nsec
+        else
+            stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec;
+
         return FileInfo{
             .size = @intCast(stat_buf.size),
             .mode = @intCast(stat_buf.mode),
-            .atime = stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec,
-            .mtime = stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec,
+            .atime = atime_ns,
+            .mtime = mtime_ns,
             .kind = kind,
             .inode = stat_buf.ino,
             .uid = @intCast(stat_buf.uid),
@@ -103,11 +114,22 @@ pub const FileInfo = struct {
             else => .unknown,
         };
 
+        // Handle platform differences in timespec field names
+        const atime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.atimespec.sec * std.time.ns_per_s + stat_buf.atimespec.nsec
+        else
+            stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec;
+
+        const mtime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.mtimespec.sec * std.time.ns_per_s + stat_buf.mtimespec.nsec
+        else
+            stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec;
+
         return FileInfo{
             .size = @intCast(stat_buf.size),
             .mode = @intCast(stat_buf.mode),
-            .atime = stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec,
-            .mtime = stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec,
+            .atime = atime_ns,
+            .mtime = mtime_ns,
             .kind = kind,
             .inode = stat_buf.ino,
             .uid = @intCast(stat_buf.uid),

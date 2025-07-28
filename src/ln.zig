@@ -74,6 +74,7 @@ fn validatePath(path: []const u8) !void {
     const critical_paths = [_][]const u8{
         "/bin",  "/boot", "/dev",  "/etc", "/lib", "/lib32", "/lib64",
         "/proc", "/root", "/sbin", "/sys", "/usr", "/var",
+        "/private", // macOS: /etc, /var, etc. are symlinks to /private/*
     };
 
     // Normalize the path for checking
@@ -90,15 +91,16 @@ fn validatePath(path: []const u8) !void {
 
     // Check if it's a critical system path
     for (critical_paths) |critical| {
-        if (std.mem.eql(u8, normalized, critical)) {
-            return error.SystemPathProtected;
-        }
-        // Check if path starts with critical path followed by /
-        if (normalized.len > critical.len and
-            normalized[critical.len] == '/' and
-            std.mem.startsWith(u8, normalized, critical))
-        {
-            return error.SystemPathProtected;
+        // Check if path matches or starts with critical path
+        if (std.mem.startsWith(u8, normalized, critical)) {
+            // It's protected if:
+            // 1. It's an exact match (e.g., "/etc" == "/etc")
+            // 2. It's a subpath (e.g., "/etc/passwd" starts with "/etc/")
+            if (normalized.len == critical.len or
+                (normalized.len > critical.len and normalized[critical.len] == '/'))
+            {
+                return error.SystemPathProtected;
+            }
         }
     }
 }
