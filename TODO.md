@@ -900,6 +900,76 @@ const args = Args.parse(EchoArgs, allocator) catch |err| switch (err) {
 defer args.deinit(allocator);
 ```
 
+## Stdout Testing Infrastructure
+
+### Overview
+Implement idiomatic Zig writer pattern to enable comprehensive testing of stdout/stderr output without hangs or skipped tests.
+
+### Design Principles
+- Pass writers as parameters (idiomatic Zig pattern)
+- Enable full output testing without process-level complexity
+- Maintain production behavior while improving testability
+- Zero allocation overhead for production code
+
+### Implementation Plan (TDD Approach)
+
+#### Phase 1: Core Infrastructure
+- [ ] Create src/common/io_capture.zig module
+- [ ] Test: CaptureWriter union type for real/captured output
+- [ ] Test: TestContext for capturing stdout/stderr
+- [ ] Test: ProductionContext for real output
+- [ ] Test: Memory management and cleanup
+- [ ] Implement: Writer abstraction layer
+- [ ] Implement: Test helper functions
+
+#### Phase 2: High Priority Utilities (Direct stdout writes)
+- [ ] **chown** - Refactor reportChange/reportNoChange (4 skipped tests)
+  - [ ] Test: Verbose output capture
+  - [ ] Test: Changes output capture
+  - [ ] Implement: Thread writers through call chain
+  - [ ] Enable all previously skipped tests
+- [ ] **ls** - Refactor heavy stdout usage
+  - [ ] Test: File listing output
+  - [ ] Test: Icon showcase output
+  - [ ] Implement: Writer parameters for all output
+- [ ] **common/lib.zig** - Update printError and fatal
+  - [ ] Test: Error message capture
+  - [ ] Implement: Writer-based error functions
+
+#### Phase 3: Interactive/Verbose Utilities
+- [ ] **rm** - Interactive prompts
+  - [ ] Test: Confirmation prompt capture
+  - [ ] Implement: Writer-based prompts
+- [ ] **mv** - Verbose and interactive output
+  - [ ] Test: Progress messages
+  - [ ] Test: Overwrite prompts
+- [ ] **cp** - Progress reporting (user_interaction.zig)
+  - [ ] Test: Progress bar output
+  - [ ] Test: Interactive prompts
+- [ ] **mkdir** - Verbose directory creation
+  - [ ] Test: Creation messages
+- [ ] **ln** - Verbose output
+- [ ] **chmod** - Version output
+- [ ] **pwd** - Main output
+- [ ] **touch** - Help/version output
+- [ ] **rmdir** - Version output
+
+#### Phase 4: Consistency Updates
+- [ ] **echo** - Already uses buffers, update for consistency
+- [ ] **cat** - Already uses buffers, update for consistency
+
+#### Phase 5: Documentation and Cleanup
+- [ ] Document writer pattern in CLAUDE.md
+- [ ] Create migration guide for new utilities
+- [ ] Update test writing guidelines
+
+### Success Criteria
+- [ ] Zero skipped tests due to stdout issues
+- [ ] All utilities use consistent writer pattern
+- [ ] Full test coverage for output functionality
+- [ ] No performance regression in production
+- [ ] Clear documentation and examples
+
 ## Architecture Decisions
 
 ### Design Philosophy for ls
@@ -938,7 +1008,7 @@ defer args.deinit(allocator);
 - [x] **Coverage system**: Integrate Zig's native coverage support
 - [ ] Set up CI/CD pipeline with GitHub Actions
 - [ ] Add install targets for man pages
-- [ ] Add benchmarking infrastructure
+- [ ] Add benchmarking infrastructure (see Benchmarking System section)
 
 ### Documentation
 - [x] Man page style guide (OpenBSD-inspired):
@@ -1077,6 +1147,93 @@ When privileged testing isn't possible:
 - [x] Clear test output indicating skipped privileged tests
 - [ ] CI passes on all 5 target platforms
 
+## Benchmarking System
+
+### Overview
+Comprehensive performance tracking system to monitor improvements and regressions across all utilities.
+
+### Infrastructure Components
+
+#### 1. Benchmark Framework
+- [ ] Add zBench dependency for Zig-native benchmarking
+- [ ] Create benchmark directory structure (micro/utilities/comparative/scenarios)
+- [ ] Implement BenchmarkResult and BenchmarkContext structs
+- [ ] Add memory tracking allocator for detailed analysis
+- [ ] Create benchmark runner with statistical analysis
+
+#### 2. Benchmark Types
+
+##### Micro-benchmarks (Function Level)
+- [ ] Terminal style detection and color output
+- [ ] Argument parsing performance
+- [ ] File stat operations
+- [ ] Directory traversal algorithms
+- [ ] String formatting and allocation patterns
+
+##### Utility Benchmarks (Command Level)
+- [ ] Standard scenarios for each utility:
+  - Empty inputs (baseline overhead)
+  - Small inputs (typical usage)
+  - Large inputs (stress testing)
+  - Edge cases (pathological inputs)
+- [ ] Memory usage profiling
+- [ ] Syscall counting and analysis
+
+##### Comparative Benchmarks
+- [ ] Hyperfine integration for vibeutils vs GNU coreutils
+- [ ] Automated comparison scripts
+- [ ] Performance ratio tracking
+
+##### Real-world Scenarios
+- [ ] Large file processing (1GB, 10GB files)
+- [ ] Many files handling (10k, 100k files)
+- [ ] Deep directory trees (1000+ levels)
+- [ ] Parallel operation benefits
+
+#### 3. Metrics Collection
+- [ ] Execution time (wall clock, CPU time)
+- [ ] Memory usage (allocated, peak, leaked)
+- [ ] System metrics (syscalls, cache misses, I/O operations)
+- [ ] CPU metrics (instructions, cycles, branch predictions)
+
+#### 4. CI/CD Integration
+- [ ] GitHub Actions workflow for automated benchmarking
+- [ ] Benchmark on: PRs, main commits, weekly schedule
+- [ ] Performance regression detection (>10% threshold)
+- [ ] Benchmark result storage in git branch
+- [ ] GitHub Pages dashboard for visualization
+
+#### 5. Build System Integration
+- [ ] Add `zig build bench` target
+- [ ] Makefile targets:
+  - `make benchmark` - Run all benchmarks
+  - `make bench-micro` - Micro-benchmarks only  
+  - `make bench-utilities` - Utility benchmarks only
+  - `make bench-compare` - GNU comparison
+  - `make bench-report` - Generate HTML report
+
+#### 6. Reporting and Visualization
+- [ ] JSON output format for automation
+- [ ] Historical trend graphs
+- [ ] Regression alerts on PRs
+- [ ] Performance comparison matrix
+- [ ] Memory usage evolution charts
+
+### Implementation Timeline
+- **Week 1-2**: Infrastructure setup, zBench integration
+- **Week 3-4**: Micro-benchmarks for common library
+- **Week 5-6**: Utility benchmarks (echo, cat, ls)
+- **Week 7-8**: Remaining utilities and comparative benchmarks
+- **Week 9-10**: CI/CD integration and dashboard
+- **Week 11-12**: Documentation and optimization based on findings
+
+### Success Metrics
+- [ ] All utilities benchmarked with 3+ scenarios each
+- [ ] Performance within 10% of GNU coreutils
+- [ ] Memory usage equal or better than GNU
+- [ ] <5% false positive rate for regression detection
+- [ ] 6+ months of historical data tracked
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
@@ -1084,3 +1241,4 @@ When privileged testing isn't possible:
 - [ ] Clean cppcheck/valgrind reports
 - [ ] Successful fuzzing campaigns
 - [ ] Privileged operations tested on all platforms
+- [ ] Comprehensive benchmarking system operational
