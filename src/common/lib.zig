@@ -14,6 +14,8 @@ pub const relative_date = @import("relative_date.zig");
 pub const git = @import("git.zig");
 pub const user_group = @import("user_group.zig");
 pub const argparse = @import("argparse.zig");
+pub const privilege_test = @import("privilege_test.zig");
+pub const test_utils_privilege = @import("test_utils_privilege.zig");
 
 /// Version information from build options
 pub const version = build_options.version;

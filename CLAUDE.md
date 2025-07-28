@@ -17,6 +17,11 @@ make test
 make coverage
 # Coverage report: coverage/index.html
 
+# Run privileged tests (requires fakeroot)
+./scripts/run-privileged-tests.sh
+# Or manually:
+fakeroot zig build test-privileged
+
 # Build and run specific utility
 zig build run-echo -- hello world
 make run-echo ARGS="hello world"
@@ -75,6 +80,14 @@ The project has **74 tests** covering:
 - **common modules**: 21 tests (utilities, file operations, styling)
 
 Coverage reports are generated using `kcov` and can be viewed at `coverage/index.html` after running `make coverage`.
+
+### Privileged Tests
+
+Tests requiring file permission changes or other privileged operations are:
+- Named with `"privileged: "` prefix
+- Automatically skipped during regular `zig build test`
+- Run separately with `./scripts/run-privileged-tests.sh` or `fakeroot zig build test-privileged`
+- Use `privilege_test.requiresPrivilege()` or `privilege_test.withFakeroot()` to check for fakeroot environment
 
 ## Architecture Overview
 
@@ -278,3 +291,69 @@ return common.ExitCode.Failure;
 - Use buffered I/O for file operations
 - Pre-allocate buffers when size is known
 - Consider parallel processing for independent operations (e.g., multiple files)
+
+## Privileged Testing Infrastructure
+
+The project includes infrastructure for testing operations that require elevated privileges (like chmod, chown) using fakeroot and other privilege simulation tools.
+
+### Key Components
+
+1. **src/common/privilege_test.zig** - Core privilege testing module
+   - Platform detection (Linux, macOS, BSD)
+   - FakerootContext for managing privilege simulation
+   - Helper functions for privilege-aware tests
+   - Automatic detection of available tools (fakeroot, unshare)
+
+2. **scripts/run-privileged-tests.sh** - Smart test runner
+   - Auto-detects available privilege simulation tools
+   - Falls back gracefully: fakeroot → unshare → skip
+   - Provides clear reporting of what was tested
+
+3. **Build System Integration**
+   - `zig build test-privileged` - Run with privilege simulation
+   - `make test-privileged` - Requires fakeroot (fails if unavailable)
+   - `make test-privileged-local` - Uses best available method
+
+### Writing Privileged Tests
+
+```zig
+const common = @import("common");
+const privilege_test = common.privilege_test;
+
+test "operation requiring privileges" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
+    
+    // Test will only run under fakeroot or similar
+    // Perform privileged operations here
+}
+
+test "conditional privileged operation" {
+    if (privilege_test.FakerootContext.isUnderFakeroot()) {
+        // This code only runs under fakeroot
+        // Note: Not all syscalls work through fakeroot with Zig's APIs
+    }
+}
+```
+
+### Running Privileged Tests
+
+```bash
+# Run with specific method
+scripts/run-privileged-tests.sh -m fakeroot
+
+# Run only specific tests
+scripts/run-privileged-tests.sh -f "chmod"
+
+# Use Makefile targets
+make test-privileged      # Fails if fakeroot not available
+make test-privileged-local # Graceful fallback
+```
+
+### Platform Notes
+
+- **Linux**: Full support with fakeroot and unshare
+- **macOS**: Limited support (fakeroot may not be available)
+- **BSD**: Limited support (may require doas/sudo)
+
+The infrastructure gracefully handles missing tools and provides clear error messages when privilege simulation is not available.

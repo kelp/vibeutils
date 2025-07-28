@@ -2,6 +2,7 @@ const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
+const privilege_test = common.privilege_test;
 
 const ChmodArgs = struct {
     help: bool = false,
@@ -719,73 +720,97 @@ test "modeToString converts correctly" {
     try testing.expectEqualStrings("-wx-wx-wx", &modeToString(0o333));
 }
 
+// ============================================================================
+// PRIVILEGED TESTS
+// These tests require privilege simulation (fakeroot) to run properly.
+// They are named with "privileged:" prefix and are excluded from regular tests.
+// Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged under fakeroot
+// ============================================================================
+
 // File operation tests require actual file system operations, which we'll test with temporary files
-test "applyModeToFile basic functionality" {
-    // Create a temporary file for testing
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: applyModeToFile basic functionality" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    const test_file_path = "test_file.txt";
-    const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
-    defer test_file.close();
+    // Run test under privilege simulation
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            // Create a temporary file for testing
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
 
-    // Test applying mode 644
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+            const test_file_path = "test_file.txt";
+            const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
+            defer test_file.close();
 
-    const mode = Mode.fromOctal(0o644);
-    const options = ChmodOptions{ .verbose = true };
+            // Test applying mode 644
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
 
-    // Use absolute path to avoid directory changes
-    const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
-    defer testing.allocator.free(abs_path);
+            const mode = Mode.fromOctal(0o644);
+            const options = ChmodOptions{ .verbose = true };
 
-    try applyModeToFile(abs_path, mode, buffer.writer(), options);
+            // Use absolute path to avoid directory changes
+            const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
+            defer testing.allocator.free(abs_path);
 
-    // Verify the file mode changed
-    const stat = try std.fs.cwd().statFile(abs_path);
-    try testing.expectEqual(@as(u32, 0o644), @as(u32, @intCast(stat.mode & 0o777)));
+            try applyModeToFile(abs_path, mode, buffer.writer(), options);
 
-    // Verify verbose output
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "mode of") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "test_file.txt") != null);
+            // Verify the file mode changed
+            const stat = try std.fs.cwd().statFile(abs_path);
+            try testing.expectEqual(@as(u32, 0o644), @as(u32, @intCast(stat.mode & 0o777)));
+
+            // Verify verbose output
+            try testing.expect(std.mem.indexOf(u8, buffer.items, "mode of") != null);
+            try testing.expect(std.mem.indexOf(u8, buffer.items, "test_file.txt") != null);
+        }
+    }.testFn);
 }
 
-test "chmodFiles handles multiple files" {
-    // Create temporary files for testing
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: chmodFiles handles multiple files" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    const test_files_rel = [_][]const u8{ "file1.txt", "file2.txt" };
-    var test_files_abs = std.ArrayList([]u8).init(testing.allocator);
-    defer {
-        for (test_files_abs.items) |path| {
-            testing.allocator.free(path);
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            // Create temporary files for testing
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            const test_files_rel = [_][]const u8{ "file1.txt", "file2.txt" };
+            var test_files_abs = std.ArrayList([]u8).init(testing.allocator);
+            defer {
+                for (test_files_abs.items) |path| {
+                    testing.allocator.free(path);
+                }
+                test_files_abs.deinit();
+            }
+
+            // Create files and get absolute paths
+            for (test_files_rel) |filename| {
+                const file = try tmp_dir.dir.createFile(filename, .{});
+                file.close();
+
+                const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, filename);
+                try test_files_abs.append(abs_path);
+            }
+
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
+
+            const options = ChmodOptions{ .changes_only = true };
+
+            try chmodFiles(testing.allocator, "755", test_files_abs.items, buffer.writer(), options);
+
+            // Verify both files were processed
+            for (test_files_abs.items) |abs_path| {
+                const stat = try std.fs.cwd().statFile(abs_path);
+                try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(stat.mode & 0o777)));
+            }
         }
-        test_files_abs.deinit();
-    }
-
-    // Create files and get absolute paths
-    for (test_files_rel) |filename| {
-        const file = try tmp_dir.dir.createFile(filename, .{});
-        file.close();
-
-        const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, filename);
-        try test_files_abs.append(abs_path);
-    }
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    const options = ChmodOptions{ .changes_only = true };
-
-    try chmodFiles(testing.allocator, "755", test_files_abs.items, buffer.writer(), options);
-
-    // Verify both files were processed
-    for (test_files_abs.items) |abs_path| {
-        const stat = try std.fs.cwd().statFile(abs_path);
-        try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(stat.mode & 0o777)));
-    }
+    }.testFn);
 }
 
 test "chmodFiles handles nonexistent files gracefully" {
@@ -804,27 +829,35 @@ test "chmodFiles handles nonexistent files gracefully" {
 }
 
 // Integration test using the chmod helper function
-test "chmod integration test with octal mode" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: chmod integration test with octal mode" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    const test_file_path = "integration_test.txt";
-    const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
-    defer test_file.close();
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+            const test_file_path = "integration_test.txt";
+            const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
+            defer test_file.close();
 
-    // Get absolute path
-    const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
-    defer testing.allocator.free(abs_path);
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
 
-    const args = [_][]const u8{ "755", abs_path };
-    try chmod(testing.allocator, &args, buffer.writer());
+            // Get absolute path
+            const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
+            defer testing.allocator.free(abs_path);
 
-    // Verify the mode was applied
-    const stat = try std.fs.cwd().statFile(abs_path);
-    try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(stat.mode & 0o777)));
+            const args = [_][]const u8{ "755", abs_path };
+            try chmod(testing.allocator, &args, buffer.writer());
+
+            // Verify the mode was applied
+            const stat = try std.fs.cwd().statFile(abs_path);
+            try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(stat.mode & 0o777)));
+        }
+    }.testFn);
 }
 
 test "chmod handles invalid mode strings" {
@@ -1024,124 +1057,156 @@ test "parseSymbolicMode complex combinations" {
 // TESTS - Phase 3: Recursive operations
 // ============================================================================
 
-test "recursive chmod on directory structure" {
-    // Create a temporary directory structure for testing
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: recursive chmod on directory structure" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    // Create nested directory structure
-    try tmp_dir.dir.makeDir("subdir");
-    try tmp_dir.dir.makeDir("subdir/deeper");
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            // Create a temporary directory structure for testing
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
 
-    // Create files at different levels
-    const test_file1 = try tmp_dir.dir.createFile("file1.txt", .{});
-    defer test_file1.close();
+            // Create nested directory structure
+            try tmp_dir.dir.makeDir("subdir");
+            try tmp_dir.dir.makeDir("subdir/deeper");
 
-    const test_file2 = try tmp_dir.dir.createFile("subdir/file2.txt", .{});
-    defer test_file2.close();
+            // Create files at different levels
+            const test_file1 = try tmp_dir.dir.createFile("file1.txt", .{});
+            defer test_file1.close();
 
-    const test_file3 = try tmp_dir.dir.createFile("subdir/deeper/file3.txt", .{});
-    defer test_file3.close();
+            const test_file2 = try tmp_dir.dir.createFile("subdir/file2.txt", .{});
+            defer test_file2.close();
 
-    // Get absolute paths
-    const abs_root = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
-    defer testing.allocator.free(abs_root);
+            const test_file3 = try tmp_dir.dir.createFile("subdir/deeper/file3.txt", .{});
+            defer test_file3.close();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+            // Get absolute paths
+            const abs_root = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+            defer testing.allocator.free(abs_root);
 
-    const options = ChmodOptions{ .recursive = true, .verbose = true };
-    const files = [_][]const u8{abs_root};
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
 
-    // Apply recursive chmod
-    try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            const options = ChmodOptions{ .recursive = true, .verbose = true };
+            const files = [_][]const u8{abs_root};
 
-    // Verify that all files and directories were processed
-    // Note: This is a basic test - full verification would check each file's permissions
-    try testing.expect(buffer.items.len > 0); // Should have verbose output
+            // Apply recursive chmod
+            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+
+            // Verify that all files and directories were processed
+            // Note: This is a basic test - full verification would check each file's permissions
+            try testing.expect(buffer.items.len > 0); // Should have verbose output
+        }
+    }.testFn);
 }
 
-test "recursive flag processes files and directories" {
-    // Create a simple directory structure
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: recursive flag processes files and directories" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    try tmp_dir.dir.makeDir("testdir");
-    const test_file = try tmp_dir.dir.createFile("testdir/test.txt", .{});
-    defer test_file.close();
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            // Create a simple directory structure
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
 
-    // Get absolute path to the directory
-    const abs_dir = try tmp_dir.dir.realpathAlloc(testing.allocator, "testdir");
-    defer testing.allocator.free(abs_dir);
+            try tmp_dir.dir.makeDir("testdir");
+            const test_file = try tmp_dir.dir.createFile("testdir/test.txt", .{});
+            defer test_file.close();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+            // Get absolute path to the directory
+            const abs_dir = try tmp_dir.dir.realpathAlloc(testing.allocator, "testdir");
+            defer testing.allocator.free(abs_dir);
 
-    const options = ChmodOptions{ .recursive = true, .changes_only = true };
-    const files = [_][]const u8{abs_dir};
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
 
-    // Apply recursive chmod - should not error
-    try chmodFiles(testing.allocator, "644", &files, buffer.writer(), options);
+            const options = ChmodOptions{ .recursive = true, .changes_only = true };
+            const files = [_][]const u8{abs_dir};
 
-    // The test passes if no errors are thrown
+            // Apply recursive chmod - should not error
+            try chmodFiles(testing.allocator, "644", &files, buffer.writer(), options);
+
+            // The test passes if no errors are thrown
+        }
+    }.testFn);
 }
 
 // ============================================================================
 // TESTS - Phase 4: Verbose, changes, and silent flags
 // ============================================================================
 
-test "verbose flag outputs changes" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: verbose flag outputs changes" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    const test_file = try tmp_dir.dir.createFile("test_verbose.txt", .{});
-    defer test_file.close();
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
 
-    const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_verbose.txt");
-    defer testing.allocator.free(abs_path);
+            const test_file = try tmp_dir.dir.createFile("test_verbose.txt", .{});
+            defer test_file.close();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+            const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_verbose.txt");
+            defer testing.allocator.free(abs_path);
 
-    const options = ChmodOptions{ .verbose = true };
-    const files = [_][]const u8{abs_path};
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
 
-    try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            const options = ChmodOptions{ .verbose = true };
+            const files = [_][]const u8{abs_path};
 
-    // Should have verbose output
-    try testing.expect(buffer.items.len > 0);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "mode of") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "changed from") != null);
+            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+
+            // Should have verbose output
+            try testing.expect(buffer.items.len > 0);
+            try testing.expect(std.mem.indexOf(u8, buffer.items, "mode of") != null);
+            try testing.expect(std.mem.indexOf(u8, buffer.items, "changed from") != null);
+        }
+    }.testFn);
 }
 
-test "changes flag only outputs when mode changes" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "privileged: changes flag only outputs when mode changes" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
 
-    const test_file = try tmp_dir.dir.createFile("test_changes.txt", .{});
-    defer test_file.close();
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            _ = allocator;
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
 
-    const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_changes.txt");
-    defer testing.allocator.free(abs_path);
+            const test_file = try tmp_dir.dir.createFile("test_changes.txt", .{});
+            defer test_file.close();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+            const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_changes.txt");
+            defer testing.allocator.free(abs_path);
 
-    const options = ChmodOptions{ .changes_only = true };
-    const files = [_][]const u8{abs_path};
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
 
-    // Apply mode that differs from current
-    try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            const options = ChmodOptions{ .changes_only = true };
+            const files = [_][]const u8{abs_path};
 
-    // Should have output when mode changes
-    try testing.expect(buffer.items.len > 0);
+            // Apply mode that differs from current
+            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
 
-    // Clear buffer and apply same mode again
-    buffer.clearRetainingCapacity();
-    try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            // Should have output when mode changes
+            try testing.expect(buffer.items.len > 0);
 
-    // Should have no output when mode doesn't change
-    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+            // Clear buffer and apply same mode again
+            buffer.clearRetainingCapacity();
+            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+
+            // Should have no output when mode doesn't change
+            try testing.expectEqual(@as(usize, 0), buffer.items.len);
+        }
+    }.testFn);
 }
 
 test "quiet flag suppresses error messages" {
