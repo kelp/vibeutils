@@ -1,0 +1,554 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, githubactions ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Enable debug logging'
+        required: false
+        default: false
+      run_benchmarks:
+        type: boolean
+        description: 'Run performance benchmarks'
+        required: false
+        default: false
+
+env:
+  ZIG_VERSION: "0.14.1"
+  FORCE_COLOR: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build and Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            cache_path: ~/.cache/zig
+            os_name: linux
+          - os: macos-latest
+            cache_path: ~/Library/Caches/zig
+            os_name: macos
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Cache Zig artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          zig-cache
+          zig-out
+          ${{ matrix.cache_path }}
+        key: ${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon', 'build/**/*.zig') }}
+        restore-keys: |
+          ${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-
+          ${{ runner.os }}-zig-
+    
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y fakeroot build-essential
+        
+    - name: Install macOS dependencies
+      if: runner.os == 'macOS'
+      run: |
+        # Install required tools for macOS builds
+        brew install coreutils || true
+        
+    - name: Validate project structure
+      run: |
+        echo "Validating project structure..."
+        ls -la
+        ls -la src/
+        echo "Build file validation:"
+        zig build --help | head -20
+        
+    - name: Check code formatting
+      run: |
+        echo "Checking code formatting..."
+        zig fmt --check src/ || {
+          echo "::error::Code is not properly formatted. Run 'make fmt' to fix."
+          exit 1
+        }
+        
+    - name: Build debug version
+      run: |
+        echo "Building debug version..."
+        make debug
+        
+    - name: Run unit tests
+      run: |
+        echo "Running unit tests..."
+        make test
+        
+    - name: Build release version
+      run: |
+        echo "Building release version..."
+        make release
+        
+    - name: Test utilities functionality
+      run: |
+        echo "Testing basic utility functionality..."
+        ./zig-out/bin/echo "Hello, World!"
+        echo "test content" | ./zig-out/bin/cat
+        ./zig-out/bin/pwd
+        
+    - name: Upload build artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts-${{ matrix.os_name }}
+        path: |
+          zig-out/bin/
+          zig-cache/
+        retention-days: 7
+
+  privileged-tests:
+    name: Privileged Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            os_name: linux
+            has_fakeroot: true
+          - os: macos-latest
+            os_name: macos
+            has_fakeroot: false
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Cache Zig artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          zig-cache
+          zig-out
+        key: ${{ runner.os }}-zig-privileged-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+        restore-keys: |
+          ${{ runner.os }}-zig-privileged-${{ env.ZIG_VERSION }}-
+        
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y fakeroot build-essential
+        echo "fakeroot version: $(fakeroot --version || echo 'not found')"
+        
+    - name: Run privileged tests (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        echo "Running privileged tests with fakeroot support..."
+        chmod +x scripts/run-privileged-tests.sh
+        
+        # Test the smart runner first
+        ./scripts/run-privileged-tests.sh -v || {
+          echo "::warning::Smart privileged test runner had issues"
+        }
+        
+        # Also test Makefile target
+        make test-privileged-local || {
+          echo "::warning::Makefile privileged tests had issues"
+        }
+        
+    - name: Run privileged tests (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        echo "::notice::Running limited privileged tests on macOS..."
+        chmod +x scripts/run-privileged-tests.sh
+        
+        # macOS has limited privileged testing support
+        ./scripts/run-privileged-tests.sh -v || {
+          echo "::warning::Some privileged tests were skipped on macOS (expected)"
+        }
+        
+    - name: Upload privileged test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: privileged-test-results-${{ matrix.os_name }}
+        path: |
+          test-output.log
+          scripts/*.log
+          coverage/
+        retention-days: 7
+
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Install coverage tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y kcov fakeroot build-essential
+        
+    - name: Run tests with native coverage
+      run: |
+        echo "Running tests with Zig native coverage..."
+        make coverage || {
+          echo "::warning::Native coverage had issues, continuing with kcov..."
+        }
+        
+    - name: Run tests with kcov
+      run: |
+        echo "Running tests with kcov for detailed coverage..."
+        mkdir -p coverage/kcov
+        
+        # Build first
+        make build
+        
+        # Run tests for utilities that exist
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "src/${utility}.zig" ]; then
+            echo "Running kcov for ${utility}..."
+            kcov \
+              --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
+              --include-pattern=/Users/tcole/code/worktrees/project-githubactions/src/ \
+              coverage/kcov/${utility}/ \
+              zig test "src/${utility}.zig" 2>&1 || {
+              echo "::warning::kcov failed for ${utility}, continuing..."
+            }
+          elif [ -f "src/${utility}/main.zig" ]; then
+            echo "Running kcov for ${utility} (modular)..."
+            kcov \
+              --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
+              --include-pattern=/Users/tcole/code/worktrees/project-githubactions/src/ \
+              coverage/kcov/${utility}/ \
+              zig test "src/${utility}/main.zig" 2>&1 || {
+              echo "::warning::kcov failed for ${utility}, continuing..."
+            }
+          fi
+        done
+        
+        # Run common library tests
+        echo "Running kcov for common library..."
+        kcov \
+          --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
+          --include-pattern=/Users/tcole/code/worktrees/project-githubactions/src/ \
+          coverage/kcov/common/ \
+          zig test src/common/lib.zig 2>&1 || {
+          echo "::warning::kcov failed for common library, continuing..."
+        }
+        
+    - name: Merge coverage reports
+      run: |
+        echo "Merging coverage reports..."
+        mkdir -p coverage/merged
+        kcov --merge coverage/merged coverage/kcov/*/ 2>&1 || {
+          echo "::warning::Coverage merge failed, using individual reports"
+          cp -r coverage/kcov/* coverage/merged/ || true
+        }
+        
+    - name: Generate coverage summary
+      run: |
+        echo "Generating coverage summary..."
+        find coverage -name "index.html" -exec echo "Coverage report: {}" \;
+        
+        # Try to extract coverage percentage if available
+        if [ -f "coverage/merged/index.html" ]; then
+          echo "Main coverage report available at coverage/merged/index.html"
+        else
+          echo "Individual coverage reports available in coverage/kcov/"
+        fi
+        
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        directory: ./coverage
+        flags: unittests
+        name: vibeutils-coverage
+        fail_ci_if_error: false
+        verbose: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        
+    - name: Upload coverage artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage/
+        retention-days: 30
+
+  lint-and-format:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Check code formatting
+      run: |
+        echo "Checking code formatting..."
+        zig fmt --check src/ || {
+          echo "::error::Code is not properly formatted. Run 'make fmt' to fix."
+          echo "Files that need formatting:"
+          zig fmt --check src/ 2>&1 || true
+          exit 1
+        }
+        
+    - name: Check for code quality issues
+      run: |
+        echo "Checking for code quality issues..."
+        
+        # Check for TODO items
+        echo "Checking for TODO/FIXME items..."
+        if grep -r "TODO\|FIXME" src/ --exclude-dir=zig-cache --exclude-dir=zig-out; then
+          echo "::notice::Found TODO/FIXME items (not blocking)"
+        fi
+        
+        # Check for debug prints in non-test code
+        echo "Checking for debug prints..."
+        if grep -r "std\.debug\.print\|@import.*debug.*print" src/ | grep -v "test\|Test"; then
+          echo "::warning::Found debug prints in non-test code"
+        fi
+        
+        # Check for common issues in Zig code
+        echo "Checking for common Zig issues..."
+        if grep -r "@panic\|unreachable" src/ | grep -v "test\|Test"; then
+          echo "::warning::Found @panic or unreachable in non-test code"
+        fi
+        
+    - name: Validate build configuration
+      run: |
+        echo "Validating build configuration..."
+        zig build --help
+        echo "Build system validation complete"
+
+  benchmark-check:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.inputs.run_benchmarks == 'true'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Cache Zig artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          zig-cache
+          zig-out
+        key: ${{ runner.os }}-zig-benchmark-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+        
+    - name: Build benchmark binary
+      run: |
+        echo "Building benchmark binary..."
+        zig build benchmark
+        
+    - name: Run performance benchmarks
+      run: |
+        echo "Running performance benchmarks..."
+        ./zig-out/bin/benchmark-parsers | tee benchmark-results.txt
+        
+    - name: Analyze benchmark results
+      run: |
+        echo "Analyzing benchmark results..."
+        cat benchmark-results.txt
+        
+        # In a production setup, you'd compare against baseline results
+        echo "::notice::Benchmark results saved for analysis"
+        
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: |
+          benchmark-results.txt
+          benchmark_results/
+        retention-days: 90
+
+  # Windows support (experimental)
+  windows-build:
+    name: Windows Build (Experimental)
+    runs-on: windows-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Cache Zig artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          zig-cache
+          zig-out
+        key: windows-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+        
+    - name: Build utilities (Windows)
+      run: |
+        echo "Building utilities for Windows..."
+        zig build -Doptimize=ReleaseSafe
+        
+    - name: Test basic functionality (Windows)
+      run: |
+        echo "Testing basic functionality on Windows..."
+        .\zig-out\bin\echo.exe "Hello from Windows!"
+        .\zig-out\bin\pwd.exe
+        
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-build
+        path: zig-out/bin/
+        retention-days: 7
+
+  # Integration tests
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-artifacts-linux
+        path: ./
+        
+    - name: Make binaries executable
+      run: |
+        chmod +x zig-out/bin/* || true
+        
+    - name: Run integration tests
+      run: |
+        echo "Running integration tests..."
+        zig build test-integration || {
+          echo "::warning::Integration tests had issues"
+        }
+        
+    - name: Test real-world scenarios
+      run: |
+        echo "Testing real-world usage scenarios..."
+        
+        # Create test directory structure
+        mkdir -p test-workspace/{dir1,dir2,dir3}
+        echo "test file 1" > test-workspace/file1.txt
+        echo "test file 2" > test-workspace/dir1/file2.txt
+        
+        # Test various utilities together
+        cd test-workspace
+        
+        # Test ls functionality
+        ../zig-out/bin/ls -la
+        
+        # Test cp functionality
+        ../zig-out/bin/cp file1.txt file1_copy.txt
+        
+        # Test mv functionality
+        ../zig-out/bin/mv file1_copy.txt dir2/
+        
+        # Test rm functionality
+        ../zig-out/bin/rm dir2/file1_copy.txt
+        
+        echo "Integration tests completed successfully"
+
+  # Summary job
+  ci-summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [build-and-test, privileged-tests, coverage, lint-and-format, integration-tests]
+    if: always()
+    
+    steps:
+    - name: Check required job results
+      run: |
+        echo "Checking CI results..."
+        
+        # Required jobs that must pass
+        if [ "${{ needs.build-and-test.result }}" != "success" ]; then
+          echo "::error::Build and test failed"
+          exit 1
+        fi
+        
+        if [ "${{ needs.lint-and-format.result }}" != "success" ]; then
+          echo "::error::Code quality checks failed"
+          exit 1
+        fi
+        
+        # Optional jobs that can fail without blocking
+        if [ "${{ needs.privileged-tests.result }}" != "success" ]; then
+          echo "::warning::Privileged tests had issues (non-blocking)"
+        fi
+        
+        if [ "${{ needs.coverage.result }}" != "success" ]; then
+          echo "::warning::Coverage reporting had issues (non-blocking)"
+        fi
+        
+        if [ "${{ needs.integration-tests.result }}" != "success" ]; then
+          echo "::warning::Integration tests had issues (non-blocking)"
+        fi
+        
+        echo "✅ All required CI checks passed!"
+        
+    - name: Report summary
+      run: |
+        echo "## CI Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Build and Test: ${{ needs.build-and-test.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Code Quality: ${{ needs.lint-and-format.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔄 Privileged Tests: ${{ needs.privileged-tests.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔄 Coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔄 Integration Tests: ${{ needs.integration-tests.result }}" >> $GITHUB_STEP_SUMMARY

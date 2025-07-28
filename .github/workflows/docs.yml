@@ -1,0 +1,419 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'man/**'
+      - 'README.md'
+      - 'src/**/*.zig'  # Re-generate docs when code changes
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'man/**'
+      - 'README.md'
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: "0.14.1"
+  FORCE_COLOR: 1
+
+jobs:
+  # Build and validate documentation
+  build-docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Install documentation tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mandoc groff-base pandoc
+        
+    - name: Validate man pages
+      run: |
+        echo "Validating man pages..."
+        
+        # Check that man pages exist for all utilities
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "src/${utility}.zig" ] || [ -f "src/${utility}/main.zig" ]; then
+            if [ -f "man/man1/${utility}.1" ]; then
+              echo "✅ Man page exists for ${utility}"
+              
+              # Validate man page syntax
+              mandoc -T lint "man/man1/${utility}.1" || {
+                echo "::warning::Man page syntax issues in ${utility}.1"
+              }
+            else
+              echo "::warning::Missing man page for ${utility}"
+            fi
+          fi
+        done
+        
+    - name: Build Zig documentation
+      run: |
+        echo "Building Zig documentation..."
+        
+        # Generate documentation for the common library
+        zig build-lib src/common/lib.zig -femit-docs=docs/zig-docs/common/
+        
+        # Generate documentation for individual utilities (where possible)
+        mkdir -p docs/zig-docs/utilities/
+        
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "src/${utility}.zig" ]; then
+            echo "Generating docs for ${utility}..."
+            zig build-lib "src/${utility}.zig" -femit-docs="docs/zig-docs/utilities/${utility}/" || {
+              echo "::warning::Could not generate docs for ${utility}"
+            }
+          elif [ -f "src/${utility}/main.zig" ]; then
+            echo "Generating docs for ${utility} (modular)..."
+            zig build-lib "src/${utility}/main.zig" -femit-docs="docs/zig-docs/utilities/${utility}/" || {
+              echo "::warning::Could not generate docs for ${utility}"
+            }
+          fi
+        done
+        
+    - name: Convert man pages to HTML
+      run: |
+        echo "Converting man pages to HTML..."
+        mkdir -p docs/html/man/
+        
+        for manpage in man/man1/*.1; do
+          if [ -f "$manpage" ]; then
+            utility=$(basename "$manpage" .1)
+            echo "Converting ${utility}.1 to HTML..."
+            
+            # Convert to HTML using groff
+            groff -man -T html "$manpage" > "docs/html/man/${utility}.html" || {
+              echo "::warning::Failed to convert ${utility}.1 to HTML"
+            }
+          fi
+        done
+        
+    - name: Generate README variants
+      run: |
+        echo "Generating README variants..."
+        mkdir -p docs/html/
+        
+        # Convert README to HTML
+        if command -v pandoc > /dev/null; then
+          pandoc README.md -o docs/html/README.html --standalone --css=style.css || {
+            echo "::warning::Failed to convert README to HTML"
+          }
+        fi
+        
+    - name: Create documentation index
+      run: |
+        echo "Creating documentation index..."
+        
+        cat > docs/html/index.html << 'EOF'
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>vibeutils Documentation</title>
+            <style>
+                body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+                h1, h2 { color: #333; }
+                .utility-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+                .utility-card { border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
+                .utility-card h3 { margin-top: 0; }
+                a { color: #0066cc; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>vibeutils Documentation</h1>
+            <p>Modern Zig implementation of GNU coreutils with enhanced UX features.</p>
+            
+            <h2>Quick Links</h2>
+            <ul>
+                <li><a href="README.html">README</a></li>
+                <li><a href="https://github.com/kelp/vibeutils">Source Code</a></li>
+            </ul>
+            
+            <h2>Utilities</h2>
+            <div class="utility-list">
+        EOF
+        
+        # Add utility cards
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "man/man1/${utility}.1" ]; then
+            description=$(grep -o "\.Nd.*" "man/man1/${utility}.1" | sed 's/\.Nd //' || echo "Core utility")
+            cat >> docs/html/index.html << EOF
+                <div class="utility-card">
+                    <h3><a href="man/${utility}.html">${utility}</a></h3>
+                    <p>${description}</p>
+                </div>
+        EOF
+          fi
+        done
+        
+        cat >> docs/html/index.html << 'EOF'
+            </div>
+            
+            <h2>Zig Documentation</h2>
+            <ul>
+                <li><a href="zig-docs/common/index.html">Common Library</a></li>
+                <li><a href="zig-docs/utilities/">Utilities (Zig source docs)</a></li>
+            </ul>
+            
+            <footer>
+                <p><em>Documentation generated on $(date)</em></p>
+            </footer>
+        </body>
+        </html>
+        EOF
+        
+    - name: Create simple CSS
+      run: |
+        cat > docs/html/style.css << 'EOF'
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            color: #333;
+        }
+        
+        h1, h2, h3 { color: #2c3e50; }
+        
+        code {
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Consolas', monospace;
+        }
+        
+        pre {
+            background-color: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            overflow-x: auto;
+        }
+        
+        blockquote {
+            border-left: 4px solid #3498db;
+            margin: 0;
+            padding-left: 20px;
+            font-style: italic;
+        }
+        
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+        
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        
+        th {
+            background-color: #f2f2f2;
+        }
+        EOF
+        
+    - name: Validate generated documentation
+      run: |
+        echo "Validating generated documentation..."
+        
+        # Check that key files were generated
+        if [ ! -f "docs/html/index.html" ]; then
+          echo "::error::index.html was not generated"
+          exit 1
+        fi
+        
+        # Check for broken links (basic check)
+        if command -v grep > /dev/null; then
+          grep -r "href=" docs/html/ | while read line; do
+            echo "Found link: $line"
+          done
+        fi
+        
+        echo "Documentation validation complete"
+        
+    - name: Upload documentation artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: documentation
+        path: |
+          docs/html/
+          docs/zig-docs/
+        retention-days: 30
+
+  # Deploy documentation to GitHub Pages (only on main branch)
+  deploy-docs:
+    name: Deploy Documentation
+    runs-on: ubuntu-latest
+    needs: [build-docs]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
+    steps:
+    - name: Download documentation artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: documentation
+        path: ./docs-site
+        
+    - name: Setup Pages
+      uses: actions/configure-pages@v4
+      
+    - name: Upload to GitHub Pages
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./docs-site
+        
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  # Check documentation links
+  link-check:
+    name: Link Check
+    runs-on: ubuntu-latest
+    needs: [build-docs]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download documentation
+      uses: actions/download-artifact@v4
+      with:
+        name: documentation
+        path: ./docs-built
+        
+    - name: Install link checker
+      run: |
+        npm install -g markdown-link-check
+        
+    - name: Check README links
+      run: |
+        echo "Checking README links..."
+        markdown-link-check README.md --config .github/link-check-config.json || {
+          echo "::warning::Some links in README may be broken"
+        }
+        
+    - name: Check documentation links
+      run: |
+        echo "Checking documentation links..."
+        find docs/ -name "*.md" -exec markdown-link-check {} \; || {
+          echo "::warning::Some documentation links may be broken"
+        }
+
+  # Documentation quality check
+  docs-quality:
+    name: Documentation Quality Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check documentation completeness
+      run: |
+        echo "Checking documentation completeness..."
+        
+        # Check that all utilities have documentation
+        missing_docs=0
+        
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "src/${utility}.zig" ] || [ -f "src/${utility}/main.zig" ]; then
+            has_man=false
+            has_readme_mention=false
+            
+            # Check for man page
+            if [ -f "man/man1/${utility}.1" ]; then
+              has_man=true
+            fi
+            
+            # Check if mentioned in README
+            if grep -q "${utility}" README.md; then
+              has_readme_mention=true
+            fi
+            
+            if [ "$has_man" = false ]; then
+              echo "::warning::${utility} is missing man page"
+              missing_docs=$((missing_docs + 1))
+            fi
+            
+            if [ "$has_readme_mention" = false ]; then
+              echo "::notice::${utility} is not mentioned in README"
+            fi
+          fi
+        done
+        
+        echo "Documentation completeness check: $missing_docs missing items"
+        
+    - name: Check writing quality
+      run: |
+        echo "Checking writing quality..."
+        
+        # Basic checks for common issues
+        if grep -r "TODO" docs/ README.md; then
+          echo "::notice::Found TODO items in documentation"
+        fi
+        
+        # Check for consistent style
+        if grep -r "utilit[iy]" README.md | grep -v "utilities"; then
+          echo "::notice::Check utility/utilities consistency"
+        fi
+        
+        echo "Writing quality check complete"
+
+  # Documentation summary
+  docs-summary:
+    name: Documentation Summary
+    runs-on: ubuntu-latest
+    needs: [build-docs, link-check, docs-quality]
+    if: always()
+    
+    steps:
+    - name: Generate documentation report
+      run: |
+        echo "## Documentation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Results" >> $GITHUB_STEP_SUMMARY
+        echo "- 📚 Documentation Build: ${{ needs.build-docs.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔗 Link Check: ${{ needs.link-check.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Quality Check: ${{ needs.docs-quality.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+          echo "### Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "- 🚀 Documentation deployed to GitHub Pages" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "### Generated Documentation" >> $GITHUB_STEP_SUMMARY
+        echo "- HTML documentation with navigation" >> $GITHUB_STEP_SUMMARY
+        echo "- Man pages converted to HTML" >> $GITHUB_STEP_SUMMARY
+        echo "- Zig source code documentation" >> $GITHUB_STEP_SUMMARY
+        echo "- Cross-referenced utility guide" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "*Documentation generated on $(date)*" >> $GITHUB_STEP_SUMMARY

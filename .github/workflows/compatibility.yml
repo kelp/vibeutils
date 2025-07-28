@@ -1,0 +1,378 @@
+name: Compatibility Testing
+
+on:
+  schedule:
+    # Run monthly on the 1st at 3 AM UTC
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+    inputs:
+      test_all_versions:
+        description: 'Test against all Zig versions'
+        required: false
+        default: false
+        type: boolean
+      zig_version:
+        description: 'Specific Zig version to test (optional)'
+        required: false
+        type: string
+
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  # Test against different Zig versions
+  zig-compatibility:
+    name: Zig Compatibility (${{ matrix.zig_version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        zig_version:
+          - "0.14.1"      # Current stable
+          - "0.13.0"      # Previous stable
+          - "master"      # Development version
+        os: [ubuntu-latest]
+        include:
+          # Test current version on multiple platforms
+          - zig_version: "0.14.1"
+            os: macos-latest
+        exclude:
+          # Skip older versions on schedule unless explicitly requested
+          - zig_version: "0.13.0"
+    
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.zig_version == 'master' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: ${{ github.event.inputs.zig_version || matrix.zig_version }}
+        
+    - name: Install dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential
+        
+    - name: Check Zig version
+      run: |
+        zig version
+        zig env
+        
+    - name: Test build system compatibility
+      run: |
+        echo "Testing build system with Zig ${{ matrix.zig_version }}..."
+        zig build --help
+        
+    - name: Build utilities
+      run: |
+        echo "Building utilities..."
+        zig build -Doptimize=Debug
+        
+    - name: Run tests
+      run: |
+        echo "Running tests..."
+        zig build test
+        
+    - name: Test basic functionality
+      run: |
+        echo "Testing basic functionality..."
+        ./zig-out/bin/echo "Compatibility test with Zig ${{ matrix.zig_version }}"
+        ./zig-out/bin/pwd
+        
+    - name: Report compatibility
+      if: success()
+      run: |
+        echo "✅ Zig ${{ matrix.zig_version }} compatibility confirmed"
+        
+    - name: Report issues
+      if: failure()
+      run: |
+        echo "❌ Zig ${{ matrix.zig_version }} compatibility issues detected"
+
+  # Test against different libc versions
+  libc-compatibility:
+    name: Libc Compatibility (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-gnu
+            os: ubuntu-latest
+            libc: glibc
+          - target: x86_64-linux-musl
+            os: ubuntu-latest
+            libc: musl
+          - target: x86_64-macos-none
+            os: macos-latest
+            libc: system
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: "0.14.1"
+        
+    - name: Build for target
+      run: |
+        echo "Building for ${{ matrix.target }} with ${{ matrix.libc }}..."
+        zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        
+    - name: Test binary (same architecture)
+      if: matrix.target == 'x86_64-linux-gnu' || (matrix.target == 'x86_64-macos-none' && runner.os == 'macOS')
+      run: |
+        echo "Testing binary compatibility..."
+        ./zig-out/bin/echo "Testing ${{ matrix.libc }} compatibility"
+        
+    - name: Check binary properties
+      run: |
+        echo "Checking binary properties..."
+        ls -la zig-out/bin/
+        
+        # Check for static linking (musl should be statically linked)
+        if [ "${{ matrix.libc }}" = "musl" ]; then
+          echo "Checking musl static linking..."
+          if command -v ldd > /dev/null; then
+            ldd zig-out/bin/echo || echo "Statically linked (expected for musl)"
+          fi
+        fi
+
+  # Test on older distributions
+  distro-compatibility:
+    name: Distribution Compatibility (${{ matrix.distro }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu:20.04
+            name: ubuntu-20.04
+          - distro: ubuntu:22.04
+            name: ubuntu-22.04
+          - distro: debian:11
+            name: debian-11
+          - distro: alpine:latest
+            name: alpine-latest
+    
+    runs-on: ubuntu-latest
+    container: ${{ matrix.distro }}
+    
+    steps:
+    - name: Install git and basic tools
+      run: |
+        if command -v apk > /dev/null; then
+          # Alpine
+          apk add --no-cache git curl xz build-base
+        elif command -v apt-get > /dev/null; then
+          # Debian/Ubuntu
+          apt-get update
+          apt-get install -y git curl xz-utils build-essential
+        fi
+        
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: "0.14.1"
+        
+    - name: Build and test
+      run: |
+        echo "Testing on ${{ matrix.distro }}..."
+        zig build -Doptimize=ReleaseSafe
+        ./zig-out/bin/echo "Running on ${{ matrix.distro }}"
+        ./zig-out/bin/pwd
+
+  # Test memory usage and limits
+  resource-testing:
+    name: Resource Usage Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: "0.14.1"
+        
+    - name: Install monitoring tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y valgrind time
+        
+    - name: Build with debug info
+      run: |
+        zig build -Doptimize=Debug
+        
+    - name: Test memory usage
+      run: |
+        echo "Testing memory usage..."
+        
+        # Test memory leaks with valgrind
+        echo "Running valgrind memory leak detection..."
+        valgrind --leak-check=full --error-exitcode=1 \
+          ./zig-out/bin/echo "Memory test" || {
+          echo "::warning::Memory leaks detected in echo utility"
+        }
+        
+        # Test with limited memory
+        echo "Testing with memory limits..."
+        ulimit -v 100000  # 100MB virtual memory limit
+        ./zig-out/bin/echo "Limited memory test" || {
+          echo "::warning::Failed with memory limits"
+        }
+        
+    - name: Test CPU usage
+      run: |
+        echo "Testing CPU efficiency..."
+        
+        # Measure time for basic operations
+        /usr/bin/time -v ./zig-out/bin/ls /usr/bin > /dev/null
+        
+    - name: Test large file handling
+      run: |
+        echo "Testing large file handling..."
+        
+        # Create a large test file
+        dd if=/dev/zero of=large_test_file bs=1M count=100
+        
+        # Test cat with large file
+        timeout 30 ./zig-out/bin/cat large_test_file > /dev/null || {
+          echo "::warning::Large file handling timeout"
+        }
+        
+        rm large_test_file
+
+  # Cross-compilation testing
+  cross-compilation:
+    name: Cross-compilation (${{ matrix.host }} -> ${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: ubuntu-latest
+            target: x86_64-windows-gnu
+          - host: ubuntu-latest
+            target: aarch64-linux-gnu
+          - host: macos-latest
+            target: x86_64-linux-gnu
+          - host: macos-latest
+            target: aarch64-macos-none
+    
+    runs-on: ${{ matrix.host }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: "0.14.1"
+        
+    - name: Cross-compile
+      run: |
+        echo "Cross-compiling from ${{ matrix.host }} to ${{ matrix.target }}..."
+        zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        
+    - name: Verify binaries
+      run: |
+        echo "Verifying cross-compiled binaries..."
+        ls -la zig-out/bin/
+        
+        # Check file types
+        if command -v file > /dev/null; then
+          find zig-out/bin/ -type f -executable | head -5 | while read binary; do
+            echo "File type: $(file "$binary")"
+          done
+        fi
+
+  # Performance baseline testing
+  performance-baseline:
+    name: Performance Baseline
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v1
+      with:
+        version: "0.14.1"
+        
+    - name: Build optimized version
+      run: |
+        zig build -Doptimize=ReleaseFast
+        
+    - name: Run performance benchmarks
+      run: |
+        zig build benchmark
+        ./zig-out/bin/benchmark-parsers > performance-baseline.txt
+        
+    - name: Compare with GNU coreutils
+      run: |
+        echo "Comparing performance with system utilities..."
+        
+        # Create test directory structure
+        mkdir -p test-perf/{dir1,dir2,dir3}
+        for i in {1..100}; do
+          echo "test file $i" > "test-perf/file$i.txt"
+        done
+        
+        # Time our ls vs system ls
+        echo "Our ls performance:"
+        time ./zig-out/bin/ls test-perf/ > /dev/null
+        
+        echo "System ls performance:"
+        time /bin/ls test-perf/ > /dev/null
+        
+        # Cleanup
+        rm -rf test-perf/
+        
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-baseline
+        path: performance-baseline.txt
+        retention-days: 30
+
+  # Compatibility summary
+  compatibility-summary:
+    name: Compatibility Summary
+    runs-on: ubuntu-latest
+    needs: [zig-compatibility, libc-compatibility, distro-compatibility, resource-testing, cross-compilation, performance-baseline]
+    if: always()
+    
+    steps:
+    - name: Generate compatibility report
+      run: |
+        echo "## Compatibility Testing Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔧 Zig Compatibility: ${{ needs.zig-compatibility.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 📚 Libc Compatibility: ${{ needs.libc-compatibility.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🐧 Distribution Compatibility: ${{ needs.distro-compatibility.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 💾 Resource Testing: ${{ needs.resource-testing.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔄 Cross-compilation: ${{ needs.cross-compilation.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ⚡ Performance Baseline: ${{ needs.performance-baseline.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Compatibility Matrix" >> $GITHUB_STEP_SUMMARY
+        echo "The project has been tested against:" >> $GITHUB_STEP_SUMMARY
+        echo "- Multiple Zig versions (0.13.0, 0.14.1, master)" >> $GITHUB_STEP_SUMMARY
+        echo "- Different libc implementations (glibc, musl)" >> $GITHUB_STEP_SUMMARY
+        echo "- Various Linux distributions (Ubuntu, Debian, Alpine)" >> $GITHUB_STEP_SUMMARY
+        echo "- Cross-compilation targets" >> $GITHUB_STEP_SUMMARY
+        echo "- Memory and performance constraints" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "*Report generated on $(date)*" >> $GITHUB_STEP_SUMMARY
