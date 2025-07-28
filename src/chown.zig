@@ -1,5 +1,4 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
 const fs = std.fs;
@@ -9,79 +8,103 @@ const c = std.c;
 extern "c" fn chown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 extern "c" fn lchown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 
+const ChownArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    changes: bool = false,
+    silent: bool = false,
+    quiet: bool = false,
+    verbose: bool = false,
+    no_dereference: bool = false,
+    H: bool = false,
+    L: bool = false,
+    P: bool = false,
+    recursive: bool = false,
+    reference: ?[]const u8 = null,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 0, .desc = "Display this help and exit" }, // Disable short flag for help
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .changes = .{ .short = 'c', .desc = "Like verbose but report only when a change is made" },
+        .silent = .{ .short = 'f', .desc = "Suppress most error messages" },
+        .quiet = .{ .desc = "Suppress most error messages" },
+        .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
+        .no_dereference = .{ .short = 'h', .desc = "Affect symbolic links instead of any referenced file" },
+        .H = .{ .short = 'H', .desc = "If a command line argument is a symbolic link to a directory, traverse it" },
+        .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
+        .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
+        .recursive = .{ .short = 'R', .desc = "Operate on files and directories recursively" },
+        .reference = .{ .desc = "Use RFILE's owner and group rather than specifying values", .value_name = "RFILE" },
+    };
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\--help                 Display this help and exit.
-        \\-V, --version          Output version information and exit.
-        \\-c, --changes          Like verbose but report only when a change is made.
-        \\-f, --silent           Suppress most error messages.
-        \\--quiet                Suppress most error messages.
-        \\-v, --verbose          Output a diagnostic for every file processed.
-        \\-h, --no-dereference   Affect symbolic links instead of any referenced file.
-        \\-H                     If a command line argument is a symbolic link to a directory, traverse it.
-        \\-L                     Traverse every symbolic link to a directory encountered.
-        \\-P                     Do not traverse any symbolic links (default).
-        \\-R, --recursive        Operate on files and directories recursively.
-        \\--reference <str>      Use RFILE's owner and group rather than specifying values.
-        \\<str>...               OWNER FILES... Change ownership of FILES to OWNER.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(ChownArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.printError("invalid argument", .{});
+                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("chown ({s}) {s}\n", .{ common.name, common.version });
+    if (args.version) {
+        try printVersion();
         return;
     }
 
     // Get positional arguments
-    const positionals = res.positionals.@"0";
-
-    if (positionals.len < 2) {
-        common.printError("missing operand", .{});
-        const stderr = std.io.getStdErr().writer();
-        stderr.print("Try 'chown --help' for more information.\n", .{}) catch {};
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
-    }
+    const positionals = args.positionals;
 
     // Create options struct
     const options = ChownOptions{
-        .changes = res.args.changes != 0,
-        .silent = res.args.silent != 0 or res.args.quiet != 0,
-        .verbose = res.args.verbose != 0,
-        .no_dereference = res.args.@"no-dereference" != 0,
-        .traverse_command_line_symlinks = res.args.H != 0,
-        .traverse_all_symlinks = res.args.L != 0,
-        .no_traverse_symlinks = res.args.P != 0,
-        .recursive = res.args.recursive != 0,
-        .reference_file = res.args.reference,
+        .changes = args.changes,
+        .silent = args.silent or args.quiet,
+        .verbose = args.verbose,
+        .no_dereference = args.no_dereference,
+        .traverse_command_line_symlinks = args.H,
+        .traverse_all_symlinks = args.L,
+        .no_traverse_symlinks = args.P,
+        .recursive = args.recursive,
+        .reference_file = args.reference,
     };
 
-    // Parse owner specification
-    const owner_spec = positionals[0];
-    const files = positionals[1..];
+    // Check arguments based on whether we have a reference file
+    const owner_spec: []const u8 = if (args.reference != null) blk: {
+        // With --reference, we only need files (no owner spec)
+        if (positionals.len < 1) {
+            common.printError("missing file operand", .{});
+            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        }
+        break :blk ""; // Empty owner spec when using reference
+    } else blk: {
+        // Without --reference, we need owner spec + files
+        if (positionals.len < 2) {
+            common.printError("missing operand", .{});
+            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        }
+        break :blk positionals[0];
+    };
+
+    const files: []const []const u8 = if (args.reference != null)
+        positionals
+    else
+        positionals[1..];
 
     // Process files
     var exit_code: u8 = 0;
@@ -109,8 +132,7 @@ fn printHelp() !void {
         \\  -c, --changes          like verbose but report only when a change is made
         \\  -f, --silent, --quiet  suppress most error messages
         \\  -v, --verbose          output a diagnostic for every file processed
-        \\      --no-preserve-root do not treat '/' specially (the default)
-        \\      --preserve-root    fail to operate recursively on '/'
+        \\  -h, --no-dereference   affect symbolic links instead of any referenced file
         \\      --reference=RFILE  use RFILE's owner and group rather than
         \\                         specifying OWNER:GROUP values
         \\  -R, --recursive        operate on files and directories recursively
@@ -134,10 +156,15 @@ fn printHelp() !void {
         \\  {s} root:staff /u  Change the owner of /u to "root" and the group to "staff".
         \\  {s} -hR root /u    Change the owner of /u and subfiles to "root".
         \\
-        \\  --help     display this help and exit
+        \\      --help     display this help and exit
         \\  -V, --version  output version information and exit
         \\
     , .{ prog_name, prog_name, prog_name, prog_name, prog_name });
+}
+
+fn printVersion() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print("chown ({s}) {s}\n", .{ common.name, common.version });
 }
 
 const ChownOptions = struct {
