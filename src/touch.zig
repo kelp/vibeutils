@@ -1,70 +1,100 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
 const fs = std.fs;
 const c = std.c;
+
+const TouchArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    a: bool = false,
+    c: bool = false,
+    no_create: bool = false,
+    date: ?[]const u8 = null,
+    f: bool = false,
+    h: bool = false,
+    no_dereference: bool = false,
+    m: bool = false,
+    reference: ?[]const u8 = null,
+    t: ?[]const u8 = null,
+    time: ?[]const u8 = null,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 0, .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .a = .{ .desc = "Change only the access time" },
+        .c = .{ .desc = "Do not create any files" },
+        .no_create = .{ .short = 0, .desc = "Do not create any files" },
+        .date = .{ .short = 'd', .desc = "Parse string and use it instead of current time", .value_name = "STRING" },
+        .f = .{ .desc = "(ignored)" },
+        .h = .{ .desc = "Affect symbolic link instead of any referenced file" },
+        .no_dereference = .{ .short = 0, .desc = "Affect symbolic link instead of any referenced file" },
+        .m = .{ .desc = "Change only the modification time" },
+        .reference = .{ .short = 'r', .desc = "Use this file's times instead of current time", .value_name = "FILE" },
+        .t = .{ .desc = "Use [[CC]YY]MMDDhhmm[.ss] instead of current time", .value_name = "STAMP" },
+        .time = .{ .short = 0, .desc = "Change the specified time: \"access\", \"atime\", \"use\", \"modify\", \"mtime\"", .value_name = "WORD" },
+    };
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\--help              Display this help and exit.
-        \\-V, --version       Output version information and exit.
-        \\-a                  Change only the access time.
-        \\-c, --no-create     Do not create any files.
-        \\-d, --date <str>    Parse string and use it instead of current time.
-        \\-f                  (ignored)
-        \\-h, --no-dereference Affect symbolic link instead of any referenced file.
-        \\-m                  Change only the modification time.
-        \\-r, --reference <str> Use this file's times instead of current time.
-        \\-t <str>            Use [[CC]YY]MMDDhhmm[.ss] instead of current time.
-        \\--time <str>        Change the specified time: "access", "atime", "use", "modify", "mtime".
-        \\<str>...            Files to touch.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(TouchArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag => {
+                common.printError("unrecognized option", .{});
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Try 'touch --help' for more information.\n", .{}) catch {};
+                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            },
+            error.MissingValue => {
+                common.printError("option requires an argument", .{});
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Try 'touch --help' for more information.\n", .{}) catch {};
+                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         const stdout = std.io.getStdOut().writer();
         try stdout.print("touch ({s}) {s}\n", .{ common.name, common.version });
         return;
     }
 
+    // Map long form aliases to short form
+    const access_only = args.a;
+    const modify_only = args.m;
+    const no_create = args.c or args.no_create;
+    const no_dereference = args.h or args.no_dereference;
+
     // Create options struct
     const options = TouchOptions{
-        .access_only = res.args.a != 0,
-        .modify_only = res.args.m != 0,
-        .no_create = res.args.@"no-create" != 0,
-        .no_dereference = res.args.@"no-dereference" != 0,
-        .reference_file = res.args.reference,
-        .timestamp_str = res.args.t,
-        .date_str = res.args.date,
-        .time_arg = res.args.time,
+        .access_only = access_only,
+        .modify_only = modify_only,
+        .no_create = no_create,
+        .no_dereference = no_dereference,
+        .reference_file = args.reference,
+        .timestamp_str = args.t,
+        .date_str = args.date,
+        .time_arg = args.time,
     };
 
     // Access positionals
-    const files = res.positionals.@"0";
+    const files = args.positionals;
 
     if (files.len == 0) {
         common.printError("missing file operand", .{});
@@ -151,11 +181,6 @@ const TouchOptions = struct {
 };
 
 fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator) !void {
-    // Note: allocator is currently unused but will be needed for:
-    // - Date parsing when -d option is implemented
-    // - Dynamic path buffer allocation
-    // No memory is currently allocated, so there are no leaks
-    _ = allocator;
 
     // Get the timestamps to use
     var times: [2]c.timespec = undefined;
@@ -197,18 +222,18 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
             std.mem.eql(u8, time_type, "use"))
         {
             // Same as -a
-            return touchFileWithTimes(path, options, times, true, false);
+            return touchFileWithTimes(path, options, times, true, false, allocator);
         } else if (std.mem.eql(u8, time_type, "modify") or
             std.mem.eql(u8, time_type, "mtime"))
         {
             // Same as -m
-            return touchFileWithTimes(path, options, times, false, true);
+            return touchFileWithTimes(path, options, times, false, true, allocator);
         } else {
             return error.InvalidTimeType;
         }
     }
 
-    return touchFileWithTimes(path, options, times, options.access_only, options.modify_only);
+    return touchFileWithTimes(path, options, times, options.access_only, options.modify_only, allocator);
 }
 
 fn touchFileWithTimes(
@@ -217,9 +242,10 @@ fn touchFileWithTimes(
     times: [2]c.timespec,
     access_only: bool,
     modify_only: bool,
+    allocator: std.mem.Allocator,
 ) !void {
     // Try to update the file times first
-    updateFileTimes(path, times, access_only, modify_only, options.no_dereference) catch |err| {
+    updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator) catch |err| {
         if (err == error.FileNotFound) {
             // File doesn't exist
             if (options.no_create) {
@@ -231,7 +257,7 @@ fn touchFileWithTimes(
             new_file.close();
 
             // Now update times on the newly created file
-            try updateFileTimes(path, times, access_only, modify_only, options.no_dereference);
+            try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator);
         } else {
             // Some other error occurred
             return err;
@@ -245,6 +271,7 @@ fn updateFileTimes(
     access_only: bool,
     modify_only: bool,
     no_dereference: bool,
+    allocator: std.mem.Allocator,
 ) !void {
     var actual_times: [2]c.timespec = times;
 
@@ -272,8 +299,8 @@ fn updateFileTimes(
     const flags: u32 = if (no_dereference) c.AT.SYMLINK_NOFOLLOW else 0;
 
     // Allocate path buffer dynamically
-    const path_z = try std.mem.Allocator.dupeZ(std.heap.c_allocator, u8, path);
-    defer std.heap.c_allocator.free(path_z);
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
     const result = c.utimensat(dirfd, path_z, &actual_times, flags);
     if (result != 0) {
         const err = std.posix.errno(result);
