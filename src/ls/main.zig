@@ -1,5 +1,4 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 
 // Import our modules
@@ -15,128 +14,156 @@ const Entry = types.Entry;
 const ColorMode = types.ColorMode;
 const TimeStyle = types.TimeStyle;
 
+const LsArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    all: bool = false,
+    almost_all: bool = false,
+    long_format: bool = false,
+    human_readable: bool = false,
+    kilobytes: bool = false,
+    one_per_line: bool = false,
+    directory: bool = false,
+    file_type_indicators: bool = false,
+    show_inodes: bool = false,
+    comma_format: bool = false,
+    numeric_ids: bool = false,
+    recursive: bool = false,
+    sort_by_time: bool = false,
+    sort_by_size: bool = false,
+    reverse_sort: bool = false,
+    color: ?[]const u8 = null,
+    group_directories_first: bool = false,
+    icons: ?[]const u8 = null,
+    test_icons: bool = false,
+    time_style: ?[]const u8 = null,
+    git: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 0, .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .all = .{ .short = 'a', .desc = "Do not ignore entries starting with ." },
+        .almost_all = .{ .short = 'A', .desc = "Do not list implied . and .." },
+        .long_format = .{ .short = 'l', .desc = "Use a long listing format" },
+        .human_readable = .{ .short = 'h', .desc = "With -l, print sizes in human readable format" },
+        .kilobytes = .{ .short = 'k', .desc = "With -l, print sizes in kilobytes" },
+        .one_per_line = .{ .short = '1', .desc = "List one file per line" },
+        .directory = .{ .short = 'd', .desc = "List directories themselves, not their contents" },
+        .file_type_indicators = .{ .short = 'F', .desc = "Append indicator (one of */=>@|) to entries" },
+        .show_inodes = .{ .short = 'i', .desc = "Print the index number of each file" },
+        .comma_format = .{ .short = 'm', .desc = "Fill width with a comma separated list of entries" },
+        .numeric_ids = .{ .short = 'n', .desc = "With -l, show numeric user and group IDs" },
+        .recursive = .{ .short = 'R', .desc = "List subdirectories recursively" },
+        .sort_by_time = .{ .short = 't', .desc = "Sort by modification time, newest first" },
+        .sort_by_size = .{ .short = 'S', .desc = "Sort by file size, largest first" },
+        .reverse_sort = .{ .short = 'r', .desc = "Reverse order while sorting" },
+        .color = .{ .short = 0, .desc = "When to use colors (valid: always, auto, never)", .value_name = "WHEN" },
+        .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
+        .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
+        .test_icons = .{ .short = 0, .desc = "Show sample icons to test Nerd Font support" },
+        .time_style = .{ .short = 0, .desc = "Time/date format (valid: relative, iso, long-iso)", .value_name = "STYLE" },
+        .git = .{ .short = 0, .desc = "Show git status indicators for files" },
+    };
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\    --help                      Display this help and exit.
-        \\-V, --version                   Output version information and exit.
-        \\-a, --all                       Do not ignore entries starting with .
-        \\-A, --almost-all                Do not list implied . and ..
-        \\-l                              Use a long listing format.
-        \\-h, --human-readable            With -l, print sizes in human readable format.
-        \\-k                              With -l, print sizes in kilobytes.
-        \\-1                              List one file per line.
-        \\-d, --directory                 List directories themselves, not their contents.
-        \\-F                              Append indicator (one of */=>@|) to entries.
-        \\-i, --inode                     Print the index number of each file.
-        \\-m                              Fill width with a comma separated list of entries.
-        \\-n, --numeric-uid-gid           With -l, show numeric user and group IDs.
-        \\-R, --recursive                 List subdirectories recursively.
-        \\-t                              Sort by modification time, newest first.
-        \\-S                              Sort by file size, largest first.
-        \\-r                              Reverse order while sorting.
-        \\    --color <str>               When to use colors (valid: always, auto, never).
-        \\    --group-directories-first   Group directories before files.
-        \\    --icons <str>               When to show icons (valid: always, auto, never).
-        \\    --test-icons                Show sample icons to test Nerd Font support.
-        \\    --time-style <str>          Time/date format (valid: relative, iso, long-iso).
-        \\    --git                       Show git status indicators for files.
-        \\<str>...                        Files and directories to list.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.printError("invalid argument", .{});
+                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         const stdout = std.io.getStdOut().writer();
         try stdout.print("ls ({s}) {s}\n", .{ common.name, common.version });
         return;
     }
 
     // Handle test-icons
-    if (res.args.@"test-icons" != 0) {
+    if (args.test_icons) {
         try printIconTest();
         return;
     }
 
     // Parse color mode
     var color_mode = ColorMode.auto;
-    if (res.args.color) |color_arg| {
+    if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
-            try std.io.getStdErr().writer().print("ls: invalid argument '{s}' for '--color'\n", .{color_arg});
-            try std.io.getStdErr().writer().writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
-            return;
+            common.printError("invalid argument '{s}' for '--color'", .{color_arg});
+            const stderr = std.io.getStdErr().writer();
+            try stderr.writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
+            std.process.exit(@intFromEnum(common.ExitCode.general_error));
         };
     }
 
     // Parse icon mode
     var icon_mode = common.icons.getIconModeFromEnv(allocator);
-    if (res.args.icons) |icons_arg| {
+    if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            try std.io.getStdErr().writer().print("ls: invalid argument '{s}' for '--icons'\n", .{icons_arg});
-            try std.io.getStdErr().writer().writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
-            return;
+            common.printError("invalid argument '{s}' for '--icons'", .{icons_arg});
+            const stderr = std.io.getStdErr().writer();
+            try stderr.writeAll("Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'\n");
+            std.process.exit(@intFromEnum(common.ExitCode.general_error));
         };
     }
 
     // Parse time style
     var time_style = TimeStyle.relative; // Default to relative
-    if (res.args.@"time-style") |time_style_arg| {
+    if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            try std.io.getStdErr().writer().print("ls: invalid argument '{s}' for '--time-style'\n", .{time_style_arg});
-            try std.io.getStdErr().writer().writeAll("Valid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'\n");
-            return;
+            common.printError("invalid argument '{s}' for '--time-style'", .{time_style_arg});
+            const stderr = std.io.getStdErr().writer();
+            try stderr.writeAll("Valid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'\n");
+            std.process.exit(@intFromEnum(common.ExitCode.general_error));
         };
     }
 
     // Create options struct
     const options = LsOptions{
-        .all = res.args.all != 0,
-        .almost_all = res.args.@"almost-all" != 0,
-        .long_format = res.args.l != 0,
-        .human_readable = res.args.@"human-readable" != 0,
-        .kilobytes = res.args.k != 0,
-        .one_per_line = res.args.@"1" != 0,
-        .directory = res.args.directory != 0,
-        .recursive = res.args.recursive != 0,
-        .sort_by_time = res.args.t != 0,
-        .sort_by_size = res.args.S != 0,
-        .reverse_sort = res.args.r != 0,
-        .file_type_indicators = res.args.F != 0,
+        .all = args.all,
+        .almost_all = args.almost_all,
+        .long_format = args.long_format,
+        .human_readable = args.human_readable,
+        .kilobytes = args.kilobytes,
+        .one_per_line = args.one_per_line,
+        .directory = args.directory,
+        .recursive = args.recursive,
+        .sort_by_time = args.sort_by_time,
+        .sort_by_size = args.sort_by_size,
+        .reverse_sort = args.reverse_sort,
+        .file_type_indicators = args.file_type_indicators,
         .color_mode = color_mode,
-        .group_directories_first = res.args.@"group-directories-first" != 0,
-        .show_inodes = res.args.inode != 0,
-        .numeric_ids = res.args.@"numeric-uid-gid" != 0,
-        .comma_format = res.args.m != 0,
+        .group_directories_first = args.group_directories_first,
+        .show_inodes = args.show_inodes,
+        .numeric_ids = args.numeric_ids,
+        .comma_format = args.comma_format,
         .icon_mode = icon_mode,
         .time_style = time_style,
-        .show_git_status = res.args.git != 0,
+        .show_git_status = args.git,
     };
 
     const stdout = std.io.getStdOut().writer();
 
     // Access positionals
-    const paths = res.positionals.@"0";
+    const paths = args.positionals;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
@@ -153,36 +180,23 @@ pub fn main() !void {
 }
 
 fn printHelp() !void {
+    // Use auto-generated help from ArgParser
+    try common.argparse.ArgParser.printHelp(LsArgs, "ls", std.io.getStdOut().writer());
+
+    // Add custom examples section
     const stdout = std.io.getStdOut().writer();
     try stdout.writeAll(
-        \\Usage: ls [OPTION]... [FILE]...
+        \\
         \\List information about the FILEs (the current directory by default).
         \\Sort entries alphabetically by default.
-        \\
-        \\  -a, --all                do not ignore entries starting with .
-        \\  -A, --almost-all         do not list implied . and ..
-        \\  -d, --directory          list directories themselves, not their contents
-        \\  -F                       append indicator (one of */=>@|) to entries
-        \\  -h, --human-readable     with -l, print sizes in human readable format
-        \\  -k                       with -l, print sizes in kilobytes
-        \\  -l                       use a long listing format
-        \\  -r                       reverse order while sorting
-        \\  -R, --recursive          list subdirectories recursively
-        \\  -S                       sort by file size, largest first
-        \\  -t                       sort by modification time, newest first
-        \\  -1                       list one file per line
-        \\      --color=WHEN         colorize output; WHEN can be 'always' (default
-        \\                           if omitted), 'auto', or 'never'
-        \\      --group-directories-first
-        \\                           group directories before files
-        \\      --help               display this help and exit
-        \\      --version            output version information and exit
         \\
         \\Examples:
         \\  ls           List files in the current directory
         \\  ls -la       List all files in long format
         \\  ls -lh       List files with human-readable sizes
         \\  ls -t        List files sorted by modification time
+        \\  ls --icons=always --color=always  List with colors and icons
+        \\  ls --git     Show git status for files
         \\
     );
 }
