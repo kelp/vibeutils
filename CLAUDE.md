@@ -207,6 +207,48 @@ When implementing file operations:
 
 This ensures code correctness and prevents outdated or incorrect API usage.
 
+## Claude Code Agent Usage
+
+When working with Claude Code, use specialized agents for different tasks to get the best results:
+
+### architect agent
+Use the architect agent for:
+- System design and architectural decisions
+- Planning the structure of new utilities or features
+- Evaluating design trade-offs and architectural patterns
+- Creating high-level implementation strategies
+
+Example: "Use the architect agent to design how the cp utility should handle recursive copying with progress indication"
+
+### programmer agent
+Use the programmer agent for:
+- Writing new code implementations
+- Refactoring existing code for better maintainability
+- Implementing features with focus on clean architecture
+- Following SOLID principles and best practices
+
+Example: "Use the programmer agent to implement the mkdir utility with all GNU-compatible flags"
+
+### reviewer agent
+Use the reviewer agent for:
+- Code quality reviews after implementing features
+- Security and vulnerability analysis
+- Identifying potential bugs or edge cases
+- Suggesting improvements for maintainability
+
+Example: "Use the reviewer agent to check the ls implementation for security issues and code quality"
+
+### optimizer agent
+Use the optimizer agent for:
+- Analyzing performance bottlenecks
+- Optimizing memory usage and allocations
+- Improving algorithm efficiency
+- Reducing binary size for release builds
+
+Example: "Use the optimizer agent to improve the performance of sorting large directories in ls"
+
+**Best Practice**: Use these agents in sequence - architect for design, programmer for implementation, reviewer for quality checks, and optimizer for performance improvements.
+
 ## Code Style and Conventions
 
 ### Error Handling
