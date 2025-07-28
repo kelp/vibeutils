@@ -47,7 +47,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ github.event.inputs.zig_version || matrix.zig_version }}
         
@@ -117,7 +117,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: "0.14.1"
         
@@ -180,7 +180,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: "0.14.1"
         
@@ -201,7 +201,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: "0.14.1"
         
@@ -276,7 +276,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: "0.14.1"
         
@@ -307,7 +307,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: "0.14.1"
         

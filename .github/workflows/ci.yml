@@ -45,7 +45,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
@@ -142,7 +142,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
@@ -210,7 +210,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
@@ -240,7 +240,7 @@ jobs:
             echo "Running kcov for ${utility}..."
             kcov \
               --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
-              --include-pattern=/Users/tcole/code/worktrees/project-githubactions/src/ \
+              --include-pattern=$(pwd)/src/ \
               coverage/kcov/${utility}/ \
               zig test "src/${utility}.zig" 2>&1 || {
               echo "::warning::kcov failed for ${utility}, continuing..."
@@ -249,7 +249,7 @@ jobs:
             echo "Running kcov for ${utility} (modular)..."
             kcov \
               --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
-              --include-pattern=/Users/tcole/code/worktrees/project-githubactions/src/ \
+              --include-pattern=$(pwd)/src/ \
               coverage/kcov/${utility}/ \
               zig test "src/${utility}/main.zig" 2>&1 || {
               echo "::warning::kcov failed for ${utility}, continuing..."
@@ -261,7 +261,7 @@ jobs:
         echo "Running kcov for common library..."
         kcov \
           --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
-          --include-pattern=/Users/tcole/code/worktrees/project-githubactions/src/ \
+          --include-pattern=$(pwd)/src/ \
           coverage/kcov/common/ \
           zig test src/common/lib.zig 2>&1 || {
           echo "::warning::kcov failed for common library, continuing..."
@@ -315,7 +315,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
@@ -367,7 +367,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
@@ -418,7 +418,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
@@ -459,7 +459,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Setup Zig
-      uses: mlugg/setup-zig@v1
+      uses: goto-bus-stop/setup-zig@v2
       with:
         version: ${{ env.ZIG_VERSION }}
         
