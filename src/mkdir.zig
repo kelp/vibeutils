@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const clap = @import("clap");
 const common = @import("common");
+const privilege_test = common.privilege_test;
 const testing = std.testing;
 
 const MkdirOptions = struct {
@@ -370,8 +371,7 @@ test "create directory with mode" {
     const stat = try tmp.dir.statFile(test_dir);
     try testing.expect(stat.kind == .directory);
 
-    // Note: Actual mode testing would require platform-specific code
-    // and permissions that may not be available in test environment
+    // Note: Actual mode verification is tested in privileged tests
 }
 
 test "empty path handling" {
@@ -432,8 +432,7 @@ test "mode setting verification" {
     const stat = try tmp.dir.statFile(test_dir);
     try testing.expect(stat.kind == .directory);
 
-    // Note: Actual chmod functionality is tested through integration tests
-    // since std.fs.Dir.chmod behavior varies by platform
+    // Note: Actual chmod functionality is tested in privileged tests
 }
 
 test "parent permission errors" {
@@ -464,7 +463,201 @@ test "intermediate directories get default permissions" {
     const stat_final = try tmp.dir.statFile("a/b/c/final");
     try testing.expect(stat_final.kind == .directory);
 
-    // Note: In the real implementation with -p -m flags,
-    // intermediate directories get default permissions (respecting umask)
-    // while only the final directory gets the mode specified with -m
+    // Note: Actual testing of -p and -m flag interaction is in privileged tests
+}
+
+// ============================================================================
+// Privileged Tests (require fakeroot or similar privilege simulation)
+// ============================================================================
+// These tests require privilege simulation (fakeroot) to run properly.
+// They are named with "privileged:" prefix and are excluded from regular tests.
+// Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged under fakeroot
+// ============================================================================
+
+test "privileged: create single directory with mode setting" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
+
+    // Run test under privilege simulation
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            var tmp = testing.tmpDir(.{});
+            defer tmp.cleanup();
+
+            const test_dir = "mode_test_755";
+            const options = MkdirOptions{ .mode = 0o755 };
+
+            // Get the absolute path for the test directory
+            const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+            defer allocator.free(abs_path);
+
+            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_path, test_dir });
+            defer allocator.free(full_path);
+
+            // Create directory with mode
+            try createSingleDirectory(full_path, options);
+
+            // Verify directory exists and has correct permissions
+            try privilege_test.assertPermissions(full_path, 0o755, null, null);
+        }
+    }.testFn);
+}
+
+test "privileged: create directory with parents - only final gets mode" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
+
+    // Run test under privilege simulation
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            var tmp = testing.tmpDir(.{});
+            defer tmp.cleanup();
+
+            const nested_path = "parent/child/final";
+            const options = MkdirOptions{ .mode = 0o750, .parents = true };
+
+            // Get the absolute path for the nested structure
+            const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+            defer allocator.free(abs_path);
+
+            const full_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ abs_path, nested_path });
+            defer testing.allocator.free(full_path);
+
+            // Create directory structure with parents
+            try createDirectoryWithParents(full_path, options, allocator);
+
+            // Verify all directories exist
+            const parent_path = try std.fmt.allocPrint(testing.allocator, "{s}/parent", .{abs_path});
+            defer testing.allocator.free(parent_path);
+            const child_path = try std.fmt.allocPrint(testing.allocator, "{s}/parent/child", .{abs_path});
+            defer testing.allocator.free(child_path);
+
+            const stat_parent = try std.fs.cwd().statFile(parent_path);
+            try testing.expect(stat_parent.kind == .directory);
+
+            const stat_child = try std.fs.cwd().statFile(child_path);
+            try testing.expect(stat_child.kind == .directory);
+
+            // Verify only the final directory has the specified mode
+            try privilege_test.assertPermissions(full_path, 0o750, null, null);
+
+            // Intermediate directories should have different permissions
+            // (they get default permissions respecting umask)
+            const parent_mode = stat_parent.mode & 0o777;
+            const child_mode = stat_child.mode & 0o777;
+
+            // These should NOT be 0o750 (unless umask happens to produce that)
+            // We just verify they exist and are directories
+            try testing.expect(parent_mode != 0 and child_mode != 0);
+        }
+    }.testFn);
+}
+
+test "privileged: verbose output with mode setting" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
+
+    // Run test under privilege simulation
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            var tmp = testing.tmpDir(.{});
+            defer tmp.cleanup();
+
+            const test_dir = "verbose_mode_test";
+            const options = MkdirOptions{ .mode = 0o644, .verbose = true };
+
+            // Get the absolute path for the test directory
+            const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+            defer allocator.free(abs_path);
+
+            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_path, test_dir });
+            defer allocator.free(full_path);
+
+            // Capture stdout to verify verbose output
+            // Note: In the actual implementation, this would write to stdout
+            // For testing, we verify the directory was created with correct mode
+            try createSingleDirectory(full_path, options);
+
+            // Verify directory exists and has correct permissions
+            try privilege_test.assertPermissions(full_path, 0o644, null, null);
+
+            // The verbose output would contain something like:
+            // "mkdir: created directory 'verbose_mode_test'"
+            // We can't easily capture stdout in this test framework,
+            // but we verify the core functionality works
+        }
+    }.testFn);
+}
+
+test "privileged: mode setting with various octal values" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
+
+    // Run test under privilege simulation
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            var tmp = testing.tmpDir(.{});
+            defer tmp.cleanup();
+
+            // Test various mode values
+            const test_cases = [_]struct {
+                dir_name: []const u8,
+                mode: std.fs.File.Mode,
+            }{
+                .{ .dir_name = "test_700", .mode = 0o700 },
+                .{ .dir_name = "test_755", .mode = 0o755 },
+                .{ .dir_name = "test_644", .mode = 0o644 },
+                .{ .dir_name = "test_777", .mode = 0o777 },
+                .{ .dir_name = "test_600", .mode = 0o600 },
+            };
+
+            // Get base path
+            const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+            defer allocator.free(abs_path);
+
+            for (test_cases) |case| {
+                const options = MkdirOptions{ .mode = case.mode };
+                const full_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ abs_path, case.dir_name });
+                defer testing.allocator.free(full_path);
+
+                // Create directory with specific mode
+                try createSingleDirectory(full_path, options);
+
+                // Verify directory has correct permissions
+                try privilege_test.assertPermissions(full_path, case.mode, null, null);
+            }
+        }
+    }.testFn);
+}
+
+test "privileged: multiple directories creation with mode" {
+    // Skip test if no privilege simulation available
+    try privilege_test.requiresPrivilege();
+
+    // Run test under privilege simulation
+    try privilege_test.withFakeroot(testing.allocator, struct {
+        fn testFn(allocator: std.mem.Allocator) !void {
+            var tmp = testing.tmpDir(.{});
+            defer tmp.cleanup();
+
+            const dirs = [_][]const u8{ "dir1", "dir2", "dir3" };
+            const mode = 0o751;
+            const options = MkdirOptions{ .mode = mode, .verbose = true };
+
+            // Get base path
+            const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+            defer allocator.free(abs_path);
+
+            // Create all directories with the same mode
+            for (dirs) |dir| {
+                const full_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ abs_path, dir });
+                defer testing.allocator.free(full_path);
+
+                try createSingleDirectory(full_path, options);
+
+                // Verify each directory has correct permissions
+                try privilege_test.assertPermissions(full_path, mode, null, null);
+            }
+        }
+    }.testFn);
 }

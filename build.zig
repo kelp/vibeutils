@@ -202,4 +202,68 @@ fn buildTests(
     
     const run_common_tests_priv = b.addRunArtifact(common_tests_priv);
     privileged_test_step.dependOn(&run_common_tests_priv.step);
+    
+    // Integration tests
+    buildIntegrationTests(b, target, optimize, coverage, common, clap, build_options_module) catch |err| {
+        std.log.err("Failed to configure integration tests: {}", .{err});
+        return;
+    };
+}
+
+/// Configure integration tests for the privilege framework
+fn buildIntegrationTests(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    coverage: bool,
+    common: *std.Build.Module,
+    _: *std.Build.Dependency,  // clap - not used but kept for API consistency
+    build_options_module: *std.Build.Module,
+) !void {
+    const integration_test_step = b.step("test-integration", "Run privilege framework integration tests");
+    
+    // Core infrastructure integration tests
+    const core_integration_tests = b.addTest(.{
+        .root_source_file = b.path("src/common/privilege_test_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    core_integration_tests.root_module.addImport("build_options", build_options_module);
+    
+    if (coverage) {
+        core_integration_tests.root_module.strip = false;
+    }
+    
+    const run_core_integration = b.addRunArtifact(core_integration_tests);
+    integration_test_step.dependOn(&run_core_integration.step);
+    
+    // Workflow integration tests
+    const workflow_tests = b.addTest(.{
+        .root_source_file = b.path("tests/privilege_integration/workflow_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    workflow_tests.root_module.addImport("common", common);
+    
+    if (coverage) {
+        workflow_tests.root_module.strip = false;
+    }
+    
+    const run_workflow_tests = b.addRunArtifact(workflow_tests);
+    integration_test_step.dependOn(&run_workflow_tests.step);
+    
+    // File operations integration tests
+    const file_ops_tests = b.addTest(.{
+        .root_source_file = b.path("tests/privilege_integration/file_ops_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    file_ops_tests.root_module.addImport("common", common);
+    
+    if (coverage) {
+        file_ops_tests.root_module.strip = false;
+    }
+    
+    const run_file_ops_tests = b.addRunArtifact(file_ops_tests);
+    integration_test_step.dependOn(&run_file_ops_tests.step);
 }
