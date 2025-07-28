@@ -588,17 +588,39 @@ For each utility:
 - [ ] Implement: Template parsing
 - [ ] Man page: Write concise man page with examples
 
-#### 33. timeout
-- [ ] Test: Run command with timeout
+#### 33. timeout (Priority: High - Missing on macOS)
+- [ ] Test: Basic timeout with seconds (timeout 5 sleep 10)
+- [ ] Test: Command succeeds before timeout (exit status 0)
+- [ ] Test: Command killed on timeout (exit status 124)
+- [ ] Test: Floating point durations (timeout 2.5 sleep 3)
+- [ ] Test: Time units (5s, 2m, 1h, 0.5d)
+- [ ] Test: Zero timeout disables (timeout 0 sleep 1)
 - [ ] Test: Exit status preservation (--preserve-status)
-- [ ] Test: Kill after timeout (-k, --kill-after)
-- [ ] Test: Foreground mode (--foreground)
-- [ ] Test: Different signals (-s TERM)
-- [ ] Test: Time units (5s, 2m, 1h)
-- [ ] Implement: Process spawning
-- [ ] Implement: Timer management
-- [ ] Implement: Signal handling
+- [ ] Test: Kill after timeout (-k 2s kills if TERM ignored)
+- [ ] Test: Custom signals (-s INT, -s KILL, -s 15)
+- [ ] Test: Foreground mode (-f) for interactive commands
+- [ ] Test: Verbose mode (-v) diagnostic output
+- [ ] Test: Command not found (exit 127)
+- [ ] Test: Command not executable (exit 126)
+- [ ] Test: Signal handling (SIGTERM, SIGKILL propagation)
+- [ ] Test: Child process handling
+- [ ] Test: Error cases (invalid duration, invalid signal)
+- [ ] Implement: Duration parser (float + units)
+- [ ] Implement: Process spawning with exec
+- [ ] Implement: Timer using setitimer or timerfd
+- [ ] Implement: Signal management and propagation
+- [ ] Implement: Foreground TTY handling
+- [ ] Implement: Exit status handling
+- [ ] Implement: Verbose diagnostic messages
 - [ ] Man page: Write concise man page with examples
+
+##### timeout - Implementation Notes
+**Why Priority**: macOS lacks timeout, causing issues in scripts/CI
+**Key Features**: Must support both simple (timeout 5 cmd) and complex (timeout -k 2s -s INT 10s cmd) usage
+**Platform Considerations**: 
+- Linux: Use timerfd_create for precise timing
+- macOS/BSD: Use setitimer or kqueue timers
+- Signal handling must be robust across platforms
 
 #### 34. tac
 - [ ] Test: Reverse file lines

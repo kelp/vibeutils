@@ -146,8 +146,11 @@ When implementing a new command, always consult both OpenBSD and GNU coreutils m
    - Focus on security, simplicity, and correctness
    - Often have cleaner, more focused flag sets
 
-2. **GNU coreutils man pages**: Available locally via `man -c <command>`
-   - Example: `man -c mkdir` for the mkdir command
+2. **GNU coreutils man pages**: 
+   - **On Linux**: Available locally via `man <command>`
+   - **On macOS**: Access online at `https://www.gnu.org/software/coreutils/manual/html_node/index.html`
+     - Example: `https://www.gnu.org/software/coreutils/manual/html_node/mkdir-invocation.html`
+     - Note: macOS ships with BSD versions, not GNU coreutils
    - More extensive feature set with many flags
    - Required for GNU compatibility
 
@@ -186,39 +189,63 @@ Each utility requires:
 
 ## Zig Documentation Tools
 
-### zig-docs MCP Tool
+### context7 MCP Tool
 
-The `zig-docs` MCP (Model Context Protocol) tool provides instant access to comprehensive Zig documentation directly within Claude Code. **Always use this tool when looking up Zig standard library functions, builtin functions, or implementation details** instead of guessing or searching the web.
+The `context7` MCP (Model Context Protocol) tool provides instant access to up-to-date documentation for any library, including Zig. **Always use context7 when looking up Zig standard library functions, language features, or implementation details** instead of guessing or searching the web.
 
 Available commands:
-- `mcp__zig-docs__list_builtin_functions` - List all Zig builtin functions (prefixed with '@')
-- `mcp__zig-docs__get_builtin_function` - Get detailed documentation for builtin functions
-- `mcp__zig-docs__search_std_lib` - Search the Zig standard library for functions, types, and declarations
-- `mcp__zig-docs__get_std_lib_item` - Get comprehensive documentation for a specific standard library item
+- `mcp__context7__resolve-library-id` - Search for and get the Context7-compatible library ID
+- `mcp__context7__get-library-docs` - Fetch comprehensive documentation with code examples
+
+#### Project Zig Version
+
+This project requires **Zig 0.14.1** (as specified in `build.zig.zon`). When looking up documentation, ensure compatibility with this version.
+
+#### Recommended Zig Documentation Sources
+
+When working with Zig, use the following library IDs for best results:
+- `/jedisct1/zig-mcp-doc` - MCP-friendly Zig documentation (9054 code snippets, trust score 9.7)
+- `/context7/ziglang` - General Zig documentation (5449 code snippets, trust score 7.5)
+- `/jedisct1/zig-for-mcp` - Alternative MCP-friendly docs (8836 code snippets, trust score 9.7)
+- `/ziglang/zig` - Official Zig documentation (279 code snippets, version 0.14.1 available)
+
+For version-specific documentation:
+- Some libraries support version queries (e.g., `/ziglang/zig/0.14.1`)
+- When in doubt, check the documentation source to ensure it covers Zig 0.14.1 features
 
 #### Example Usage
 
 When implementing file operations:
 ```zig
-// Look up file copying functions:
-// Use: mcp__zig-docs__search_std_lib with query "copy file"
-// Then: mcp__zig-docs__get_std_lib_item with name "std.fs.copyFileAbsolute"
+// Step 1: Get documentation for file system operations
+// Use: mcp__context7__get-library-docs with:
+//   - context7CompatibleLibraryID: "/jedisct1/zig-mcp-doc"
+//   - topic: "std.fs"  // For file system operations
+//   - tokens: 5000     // Adjust based on how much context you need
 
-// Look up memory allocation:
-// Use: mcp__zig-docs__search_std_lib with query "allocator"
-// Then: mcp__zig-docs__get_std_lib_item with name "std.mem.Allocator"
+// For version-specific documentation (when available):
+// Use: mcp__context7__get-library-docs with:
+//   - context7CompatibleLibraryID: "/ziglang/zig/0.14.1"
+//   - topic: "std.fs"
 
-// Look up builtin functions:
-// Use: mcp__zig-docs__get_builtin_function with function_name "addWithOverflow"
+// For memory management:
+// Use same command but with topic: "allocator" or "std.mem"
+
+// For specific modules:
+// - topic: "std.process" for process operations
+// - topic: "std.io" for I/O operations
+// - topic: "builtin" for builtin functions
+// - topic: "std.heap" for heap allocators (note: SmpAllocator is recommended in 0.14.1)
 ```
 
-**Important**: Always consult zig-docs when:
+**Important**: Always consult context7 when:
 - Implementing new functionality that requires standard library calls
 - Unsure about function signatures, parameters, or error sets
 - Looking for the idiomatic Zig way to accomplish a task
-- Needing to understand builtin functions and their compile-time requirements
+- Needing code examples and usage patterns
+- Working with any Zig version (context7 has up-to-date documentation)
 
-This ensures code correctness and prevents outdated or incorrect API usage.
+The tool returns actual code snippets from real Zig projects, making it more reliable than generic documentation.
 
 ## Claude Code Agent Usage
 
