@@ -1,0 +1,29 @@
+Benchmarking cp
+===================
+Date: Sun Jul 27 04:01:26 PM PDT 2025
+Iterations: 1000
+
+Binary size: 3612936 bytes (3.5M)
+Parser: zig-clap
+
+Timing common operations (1000 iterations):
+------------------------------------------------
+Help flag (--help): 3.48 seconds total
+./benchmark_single_utility.sh: line 47: bc: command not found
+  Per iteration:  μs
+Version flag (--version): 4.61 seconds total
+./benchmark_single_utility.sh: line 55: bc: command not found
+  Per iteration:  μs
+Invalid flag (--invalid): 4.05 seconds total
+./benchmark_single_utility.sh: line 63: bc: command not found
+  Per iteration:  μs
+
+Utility-specific tests:
+----------------------
+No specific tests for cp
+
+Memory usage (RSS):
+------------------
+Maximum RSS:  KB
+
+Complete!

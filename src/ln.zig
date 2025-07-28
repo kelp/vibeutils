@@ -1,7 +1,37 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
+
+const LnArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    force: bool = false,
+    interactive: bool = false,
+    logical: bool = false,
+    no_dereference: bool = false,
+    physical: bool = false,
+    relative: bool = false,
+    symbolic: bool = false,
+    target_directory: ?[]const u8 = null,
+    no_target_directory: bool = false,
+    verbose: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .force = .{ .short = 'f', .desc = "Remove existing destination files" },
+        .interactive = .{ .short = 'i', .desc = "Prompt whether to remove destinations" },
+        .logical = .{ .short = 'L', .desc = "Dereference TARGETs that are symbolic links" },
+        .no_dereference = .{ .short = 'n', .desc = "Treat LINK_NAME as a normal file if it is a symbolic link to a directory" },
+        .physical = .{ .short = 'P', .desc = "Make hard links directly to symbolic links" },
+        .relative = .{ .short = 'r', .desc = "With -s, create links relative to link location" },
+        .symbolic = .{ .short = 's', .desc = "Make symbolic links instead of hard links" },
+        .target_directory = .{ .short = 't', .desc = "Specify the DIRECTORY in which to create the links", .value_name = "DIRECTORY" },
+        .no_target_directory = .{ .short = 'T', .desc = "Treat LINK_NAME as a normal file always" },
+        .verbose = .{ .short = 'v', .desc = "Print name of each linked file" },
+    };
+};
 
 // Test helper function to create test files (standalone version)
 fn createTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
@@ -135,65 +165,49 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help        Display this help and exit.
-        \\-V, --version     Output version information and exit.
-        \\-f, --force       Remove existing destination files.
-        \\-i, --interactive Prompt whether to remove destinations.
-        \\-L, --logical     Dereference TARGETs that are symbolic links.
-        \\-n, --no-dereference Treat LINK_NAME as a normal file if it is a symbolic link to a directory.
-        \\-P, --physical    Make hard links directly to symbolic links.
-        \\-r, --relative    With -s, create links relative to link location.
-        \\-s, --symbolic    Make symbolic links instead of hard links.
-        \\-t, --target-directory <str> Specify the DIRECTORY in which to create the links.
-        \\-T, --no-target-directory Treat LINK_NAME as a normal file always.
-        \\-v, --verbose     Print name of each linked file.
-        \\<str>...          Files to link.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(LnArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         try printVersion();
         return;
     }
 
     // Create options
     const options = LinkOptions{
-        .force = res.args.force != 0,
-        .interactive = res.args.interactive != 0,
-        .logical = res.args.logical != 0,
-        .no_dereference = res.args.@"no-dereference" != 0,
-        .physical = res.args.physical != 0,
-        .relative = res.args.relative != 0,
-        .symbolic = res.args.symbolic != 0,
-        .target_directory = res.args.@"target-directory",
-        .no_target_directory = res.args.@"no-target-directory" != 0,
-        .verbose = res.args.verbose != 0,
+        .force = args.force,
+        .interactive = args.interactive,
+        .logical = args.logical,
+        .no_dereference = args.no_dereference,
+        .physical = args.physical,
+        .relative = args.relative,
+        .symbolic = args.symbolic,
+        .target_directory = args.target_directory,
+        .no_target_directory = args.no_target_directory,
+        .verbose = args.verbose,
     };
 
-    const files = res.positionals.@"0";
+    const files = args.positionals;
 
     if (files.len == 0) {
         common.printError("missing file operand", .{});
@@ -264,6 +278,28 @@ const LinkOptions = struct {
 fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions) !void {
     if (options.target_directory) |target_dir| {
         // Form 4: ln [OPTION]... -t DIRECTORY TARGET...
+        // Validate the target directory path
+        validatePath(target_dir) catch |err| {
+            common.printError("invalid target directory '{s}': {}", .{ target_dir, err });
+            return err;
+        };
+
+        // Check that target directory exists and is a directory
+        const stat = std.fs.cwd().statFile(target_dir) catch |err| {
+            switch (err) {
+                error.FileNotFound => {
+                    common.printError("target '{s}' is not a directory", .{target_dir});
+                    return common.Error.ArgumentError;
+                },
+                else => return err,
+            }
+        };
+
+        if (stat.kind != .directory) {
+            common.printError("target '{s}' is not a directory", .{target_dir});
+            return common.Error.ArgumentError;
+        }
+
         for (files) |target| {
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ target_dir, link_name });

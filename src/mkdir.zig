@@ -1,9 +1,25 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const clap = @import("clap");
 const common = @import("common");
 const privilege_test = common.privilege_test;
 const testing = std.testing;
+
+const MkdirArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    mode: ?[]const u8 = null,
+    parents: bool = false,
+    verbose: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .mode = .{ .short = 'm', .desc = "Set file mode (as in chmod)", .value_name = "MODE" },
+        .parents = .{ .short = 'p', .desc = "Make parent directories as needed, no error if existing" },
+        .verbose = .{ .short = 'v', .desc = "Print a message for each created directory" },
+    };
+};
 
 const MkdirOptions = struct {
     mode: ?std.fs.File.Mode = null, // -m flag
@@ -13,58 +29,48 @@ const MkdirOptions = struct {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help     Display this help and exit.
-        \\-V, --version  Output version information and exit.
-        \\-m, --mode <str>  Set file mode (as in chmod).
-        \\-p, --parents  Make parent directories as needed, no error if existing.
-        \\-v, --verbose  Print a message for each created directory.
-        \\<str>...       Directory names to create.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(MkdirArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         try printVersion();
         return;
     }
 
     // Check if we have directories to create
-    const dirs = res.positionals.@"0";
+    const dirs = args.positionals;
     if (dirs.len == 0) {
-        common.printError("missing operand", .{});
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        common.fatal("missing operand", .{});
     }
 
     // Create options
     var options = MkdirOptions{
-        .parents = res.args.parents != 0,
-        .verbose = res.args.verbose != 0,
+        .parents = args.parents,
+        .verbose = args.verbose,
     };
 
     // Parse mode if provided
-    if (res.args.mode) |mode_str| {
+    if (args.mode) |mode_str| {
         options.mode = try parseMode(mode_str);
     }
 
@@ -105,6 +111,33 @@ fn printVersion() !void {
     try stdout.print("mkdir (vibeutils) 0.1.0\n", .{});
 }
 
+/// Set the mode (permissions) on a directory.
+/// On Windows, prints a warning that mode setting is not supported.
+///
+/// Parameters:
+/// - path: The directory path
+/// - mode: The desired file mode
+/// - allocator: Memory allocator for temporary allocations
+fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag == .windows) {
+        // Print warning on Windows
+        const stderr = std.io.getStdErr().writer();
+        try stderr.print("mkdir: warning: mode flag (-m) is not supported on Windows\n", .{});
+        return;
+    }
+
+    // Use C chmod function for directories on POSIX systems
+    const path_z = try std.fmt.allocPrintZ(allocator, "{s}", .{path});
+    defer allocator.free(path_z);
+
+    const result = std.c.chmod(path_z, mode);
+    if (result != 0) {
+        const err = std.posix.errno(result);
+        common.printError("cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
+        return error.ChmodFailed;
+    }
+}
+
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     // For now, support only octal modes
     // TODO: Support symbolic modes like u+rwx
@@ -140,11 +173,11 @@ fn createDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.A
     if (options.parents) {
         try createDirectoryWithParents(normalized_path, options, allocator);
     } else {
-        try createSingleDirectory(normalized_path, options);
+        try createSingleDirectory(normalized_path, options, allocator);
     }
 }
 
-fn createSingleDirectory(path: []const u8, options: MkdirOptions) !void {
+fn createSingleDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
     // Create directory
     std.fs.cwd().makeDir(path) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -165,20 +198,9 @@ fn createSingleDirectory(path: []const u8, options: MkdirOptions) !void {
         },
     };
 
-    // Set mode if specified (only on POSIX systems)
+    // Set mode if specified
     if (options.mode) |mode| {
-        if (builtin.os.tag != .windows) {
-            // Use C chmod function for directories
-            const path_z = try std.fmt.allocPrintZ(std.heap.c_allocator, "{s}", .{path});
-            defer std.heap.c_allocator.free(path_z);
-
-            const result = std.c.chmod(path_z, mode);
-            if (result != 0) {
-                const err = std.posix.errno(result);
-                common.printError("cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
-                return error.ChmodFailed;
-            }
-        }
+        try setDirectoryMode(path, mode, allocator);
     }
 
     if (options.verbose) {
@@ -235,20 +257,9 @@ fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, allocator
             },
         };
 
-        // Set mode only on the final directory if specified (only on POSIX systems)
+        // Set mode only on the final directory if specified
         if (is_last and options.mode != null) {
-            if (builtin.os.tag != .windows) {
-                // Use C chmod function for directories
-                const path_z = try std.fmt.allocPrintZ(arena_allocator, "{s}", .{current_path.items});
-                defer arena_allocator.free(path_z);
-
-                const result = std.c.chmod(path_z, options.mode.?);
-                if (result != 0) {
-                    const err = std.posix.errno(result);
-                    common.printError("cannot set mode on '{s}': {s}", .{ current_path.items, @tagName(err) });
-                    return error.ChmodFailed;
-                }
-            }
+            try setDirectoryMode(current_path.items, options.mode.?, arena_allocator);
         }
 
         if (options.verbose) {
@@ -495,7 +506,7 @@ test "privileged: create single directory with mode setting" {
             defer allocator.free(full_path);
 
             // Create directory with mode
-            try createSingleDirectory(full_path, options);
+            try createSingleDirectory(full_path, options, testing.allocator);
 
             // Verify directory exists and has correct permissions
             try privilege_test.assertPermissions(full_path, 0o755, null, null);
@@ -576,7 +587,7 @@ test "privileged: verbose output with mode setting" {
             // Capture stdout to verify verbose output
             // Note: In the actual implementation, this would write to stdout
             // For testing, we verify the directory was created with correct mode
-            try createSingleDirectory(full_path, options);
+            try createSingleDirectory(full_path, options, testing.allocator);
 
             // Verify directory exists and has correct permissions
             try privilege_test.assertPermissions(full_path, 0o644, null, null);
@@ -621,7 +632,7 @@ test "privileged: mode setting with various octal values" {
                 defer testing.allocator.free(full_path);
 
                 // Create directory with specific mode
-                try createSingleDirectory(full_path, options);
+                try createSingleDirectory(full_path, options, testing.allocator);
 
                 // Verify directory has correct permissions
                 try privilege_test.assertPermissions(full_path, case.mode, null, null);
@@ -653,7 +664,7 @@ test "privileged: multiple directories creation with mode" {
                 const full_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ abs_path, dir });
                 defer testing.allocator.free(full_path);
 
-                try createSingleDirectory(full_path, options);
+                try createSingleDirectory(full_path, options, testing.allocator);
 
                 // Verify each directory has correct permissions
                 try privilege_test.assertPermissions(full_path, mode, null, null);

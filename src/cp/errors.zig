@@ -1,5 +1,5 @@
 const std = @import("std");
-const common = @import("../common/lib.zig");
+const common = @import("common");
 
 /// Specific error types for copy operations
 pub const CopyError = error{

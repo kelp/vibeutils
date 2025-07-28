@@ -1,66 +1,71 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
 const privilege_test = common.privilege_test;
 
+const ChmodArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    changes: bool = false,
+    silent: bool = false,
+    verbose: bool = false,
+    recursive: bool = false,
+    reference: ?[]const u8 = null,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .changes = .{ .short = 'c', .desc = "Like verbose but report only when a change is made" },
+        .silent = .{ .short = 'f', .desc = "Suppress most error messages" },
+        .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
+        .recursive = .{ .short = 'R', .desc = "Change files and directories recursively" },
+        .reference = .{ .desc = "Use reference file's mode instead of MODE", .value_name = "RFILE" },
+    };
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help              Display this help and exit.
-        \\-V, --version           Output version information and exit.
-        \\-c, --changes           Like verbose but report only when a change is made.
-        \\-f, --silent            Suppress most error messages.
-        \\-v, --verbose           Output a diagnostic for every file processed.
-        \\-R, --recursive         Change files and directories recursively.
-        \\    --reference <str>   Use reference file's mode instead of MODE.
-        \\<str>...                MODE and files or directories to modify.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(ChmodArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument\nTry 'chmod --help' for more information.", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         try printVersion();
         return;
     }
 
-    const positionals = res.positionals.@"0";
+    const positionals = args.positionals;
 
     // When using --reference, we only need file arguments (no mode)
-    const using_reference = res.args.reference != null;
+    const using_reference = args.reference != null;
     if (using_reference) {
         if (positionals.len < 1) {
-            common.printError("missing file operand", .{});
-            try std.io.getStdErr().writer().writeAll("Try 'chmod --help' for more information.\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("missing file operand\nTry 'chmod --help' for more information.", .{});
         }
     } else {
         if (positionals.len < 2) {
-            common.printError("missing operand", .{});
-            try std.io.getStdErr().writer().writeAll("Try 'chmod --help' for more information.\n");
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("missing operand\nTry 'chmod --help' for more information.", .{});
         }
     }
 
@@ -70,11 +75,11 @@ pub fn main() !void {
 
     // Create options
     const options = ChmodOptions{
-        .changes_only = res.args.changes != 0,
-        .quiet = res.args.silent != 0,
-        .verbose = res.args.verbose != 0,
-        .recursive = res.args.recursive != 0,
-        .reference_file = res.args.reference,
+        .changes_only = args.changes,
+        .quiet = args.silent,
+        .verbose = args.verbose,
+        .recursive = args.recursive,
+        .reference_file = args.reference,
     };
 
     const stdout = std.io.getStdOut().writer();

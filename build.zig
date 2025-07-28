@@ -8,11 +8,6 @@ pub fn build(b: *std.Build) void {
     // Coverage option - now uses Zig's native coverage
     const coverage = b.option(bool, "coverage", "Generate test coverage") orelse false;
 
-    // Dependencies
-    const clap = b.dependency("clap", .{
-        .target = target,
-        .optimize = optimize,
-    });
 
     // Validate utilities exist before building
     utils.validateUtilities() catch |err| {
@@ -39,21 +34,20 @@ pub fn build(b: *std.Build) void {
     const common = b.addModule("common", .{
         .root_source_file = b.path("src/common/lib.zig"),
         .imports = &.{
-            .{ .name = "clap", .module = clap.module("clap") },
             .{ .name = "build_options", .module = build_options_module },
         },
     });
 
     // Build utilities using metadata-driven approach
     for (utils.utilities) |util| {
-        buildUtility(b, util, target, optimize, coverage, common, clap, build_options_module) catch |err| {
+        buildUtility(b, util, target, optimize, coverage, common, build_options_module) catch |err| {
             std.log.err("Failed to build utility {s}: {}", .{util.name, err});
             return; // Let build system handle the error gracefully
         };
     }
 
     // Unit tests
-    buildTests(b, target, optimize, coverage, common, clap, build_options_module) catch |err| {
+    buildTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Let build system handle the error gracefully
     };
@@ -69,7 +63,6 @@ fn buildUtility(
     optimize: std.builtin.OptimizeMode,
     coverage: bool,
     common: *std.Build.Module,
-    clap: *std.Build.Dependency,
     build_options_module: *std.Build.Module,
 ) !void {
     const exe = b.addExecutable(.{
@@ -81,7 +74,6 @@ fn buildUtility(
     
     // Add imports
     exe.root_module.addImport("common", common);
-    exe.root_module.addImport("clap", clap.module("clap"));
     exe.root_module.addImport("build_options", build_options_module);
     
     // Metadata-driven library linking
@@ -111,14 +103,12 @@ fn buildUtility(
 }
 
 /// Configure tests with proper error handling
-/// Uses the provided clap dependency instead of creating a new one
 fn buildTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     coverage: bool,
     common: *std.Build.Module,
-    clap: *std.Build.Dependency,
     build_options_module: *std.Build.Module,
 ) !void {
     const test_step = b.step("test", "Run unit tests");
@@ -132,7 +122,6 @@ fn buildTests(
         });
         
         util_tests.root_module.addImport("common", common);
-        util_tests.root_module.addImport("clap", clap.module("clap"));
         util_tests.root_module.addImport("build_options", build_options_module);
         
         // Metadata-driven library linking for tests
@@ -167,6 +156,28 @@ fn buildTests(
     const run_common_tests = b.addRunArtifact(common_tests);
     test_step.dependOn(&run_common_tests.step);
     
+    // Add benchmark executable
+    const benchmark_exe = b.addExecutable(.{
+        .name = "benchmark-parsers",
+        .root_source_file = b.path("src/benchmark_parsers.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    
+    benchmark_exe.root_module.addImport("common", common);
+    benchmark_exe.root_module.addImport("build_options", build_options_module);
+    
+    const benchmark_install = b.addInstallArtifact(benchmark_exe, .{});
+    
+    const benchmark_cmd = b.addRunArtifact(benchmark_exe);
+    if (b.args) |args| {
+        benchmark_cmd.addArgs(args);
+    }
+    
+    const benchmark_step = b.step("benchmark", "Run parser performance benchmarks");
+    benchmark_step.dependOn(&benchmark_install.step);
+    benchmark_step.dependOn(&benchmark_cmd.step);
+    
     // Create a separate privileged test step
     const privileged_test_step = b.step("test-privileged", "Run tests that require privilege simulation (run under fakeroot)");
     
@@ -180,7 +191,6 @@ fn buildTests(
         });
         
         util_tests.root_module.addImport("common", common);
-        util_tests.root_module.addImport("clap", clap.module("clap"));
         util_tests.root_module.addImport("build_options", build_options_module);
         
         if (util.needs_libc) {
@@ -204,7 +214,7 @@ fn buildTests(
     privileged_test_step.dependOn(&run_common_tests_priv.step);
     
     // Integration tests
-    buildIntegrationTests(b, target, optimize, coverage, common, clap, build_options_module) catch |err| {
+    buildIntegrationTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
         std.log.err("Failed to configure integration tests: {}", .{err});
         return;
     };
@@ -217,7 +227,6 @@ fn buildIntegrationTests(
     optimize: std.builtin.OptimizeMode,
     coverage: bool,
     common: *std.Build.Module,
-    _: *std.Build.Dependency,  // clap - not used but kept for API consistency
     build_options_module: *std.Build.Module,
 ) !void {
     const integration_test_step = b.step("test-integration", "Run privilege framework integration tests");

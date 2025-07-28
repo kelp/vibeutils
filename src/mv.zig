@@ -1,19 +1,26 @@
 const std = @import("std");
 const testing = std.testing;
-const clap = @import("clap");
-const common = @import("common/lib.zig");
-const test_utils = @import("common/test_utils.zig");
+const common = @import("common");
+const test_utils = common.test_utils;
 
-const params = clap.parseParamsComptime(
-    \\-h, --help              Display this help and exit.
-    \\-V, --version           Output version information and exit.
-    \\-i, --interactive       Prompt before overwrite.
-    \\-f, --force             Force overwrite without prompting.
-    \\-v, --verbose           Explain what is being done.
-    \\-n, --no-clobber       Do not overwrite an existing file.
-    \\<str>...                Source and destination paths.
-    \\
-);
+const MvArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    interactive: bool = false,
+    force: bool = false,
+    verbose: bool = false,
+    no_clobber: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .interactive = .{ .short = 'i', .desc = "Prompt before overwrite" },
+        .force = .{ .short = 'f', .desc = "Force overwrite without prompting" },
+        .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
+        .no_clobber = .{ .short = 'n', .desc = "Do not overwrite an existing file" },
+    };
+};
 
 // Test helpers
 const TestDir = struct {
@@ -523,6 +530,30 @@ const MoveOptions = struct {
     no_clobber: bool = false,
 };
 
+/// Print help message for mv command
+fn printHelp() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print(
+        \\Usage: mv [OPTION]... SOURCE DEST
+        \\  or:  mv [OPTION]... SOURCE... DIRECTORY
+        \\  or:  mv [OPTION]... -t DIRECTORY SOURCE...
+        \\Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
+        \\
+        \\Mandatory arguments to long options are mandatory for short options too.
+        \\  -f, --force                do not prompt before overwriting
+        \\  -i, --interactive          prompt before overwrite
+        \\  -n, --no-clobber           do not overwrite an existing file
+        \\  -v, --verbose              explain what is being done
+        \\  -h, --help                 display this help and exit
+        \\  -V, --version              output version information and exit
+        \\
+        \\The backup suffix is '~', unless set with --suffix or SIMPLE_BACKUP_SUFFIX.
+        \\The version control method may be selected via the --backup option or through
+        \\the VERSION_CONTROL environment variable.
+        \\
+    , .{});
+}
+
 /// Main entry point for the mv utility.
 ///
 /// Parses command line arguments and performs move operations according to
@@ -541,77 +572,76 @@ const MoveOptions = struct {
 ///   mv file*.txt backup/       # Move all matching files to backup/
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
-    const parsers = comptime .{
-        .str = clap.parsers.string,
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(MvArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag => {
+                common.fatal("unrecognized option\nTry 'mv --help' for more information.", .{});
+            },
+            error.MissingValue => {
+                common.fatal("option requires an argument\nTry 'mv --help' for more information.", .{});
+            },
+            else => return err,
+        }
     };
+    defer allocator.free(args.positionals);
 
-    var diag = clap.Diagnostic{};
-    const res = clap.parse(clap.Help, &params, parsers, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| switch (err) {
-        error.InvalidArgument => {
-            diag.report(std.io.getStdErr().writer(), err) catch {};
-            std.process.exit(@intFromEnum(common.ExitCode.misuse));
-        },
-        else => return err,
-    };
-    defer res.deinit();
-
-    if (res.args.help != 0) {
-        return clap.help(std.io.getStdErr().writer(), clap.Help, &params, .{});
-    }
-    if (res.args.version != 0) {
-        common.CommonOpts.printVersion();
+    // Handle help
+    if (args.help) {
+        try printHelp();
         return;
     }
 
-    const args = res.positionals.@"0";
-    if (args.len < 2) {
-        common.printError("missing file operand", .{});
-        common.printError("Try 'mv --help' for more information.", .{});
-        std.process.exit(@intFromEnum(common.ExitCode.misuse));
+    // Handle version
+    if (args.version) {
+        const stdout = std.io.getStdOut().writer();
+        try stdout.print("mv ({s}) {s}\n", .{ common.name, common.version });
+        return;
+    }
+
+    const files = args.positionals;
+    if (files.len < 2) {
+        common.fatal("missing file operand\nTry 'mv --help' for more information.", .{});
     }
 
     const options = MoveOptions{
-        .interactive = res.args.interactive != 0,
-        .force = res.args.force != 0,
-        .verbose = res.args.verbose != 0,
-        .no_clobber = res.args.@"no-clobber" != 0,
+        .interactive = args.interactive,
+        .force = args.force,
+        .verbose = args.verbose,
+        .no_clobber = args.no_clobber,
     };
 
     // Handle multiple sources case
-    if (args.len > 2) {
+    if (files.len > 2) {
         // Multiple sources - destination must be a directory
-        const dest = args[args.len - 1];
+        const dest = files[files.len - 1];
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printError("target '{s}' is not a directory", .{dest});
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("target '{s}' is not a directory", .{dest});
             },
             else => return err,
         };
 
         if (dest_stat.kind != .directory) {
-            common.printError("target '{s}' is not a directory", .{dest});
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("target '{s}' is not a directory", .{dest});
         }
 
         // Move each source to destination directory
         // TODO: Consider parallel processing for multiple independent file moves
         // This could be implemented using a thread pool for better performance
         // when moving many files, but would require careful error handling
-        for (args[0 .. args.len - 1]) |source| {
+        for (files[0 .. files.len - 1]) |source| {
             const basename = std.fs.path.basename(source);
             const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
             defer allocator.free(full_dest);
 
             moveFile(allocator, source, full_dest, options) catch |err| {
-                common.printError("cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
-                std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                common.fatal("cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
             };
 
             if (options.verbose) {
@@ -621,12 +651,11 @@ pub fn main() !void {
         }
     } else {
         // Single source
-        const source = args[0];
-        const dest = args[1];
+        const source = files[0];
+        const dest = files[1];
 
         moveFile(allocator, source, dest, options) catch |err| {
-            common.printError("cannot move '{s}' to '{s}': {}", .{ source, dest, err });
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            common.fatal("cannot move '{s}' to '{s}': {}", .{ source, dest, err });
         };
 
         if (options.verbose) {
