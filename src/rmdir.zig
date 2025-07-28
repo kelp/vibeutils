@@ -1,9 +1,25 @@
 const std = @import("std");
-const clap = @import("clap");
 const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
 const posix = std.posix;
+
+const RmdirArgs = struct {
+    help: bool = false,
+    version: bool = false,
+    parents: bool = false,
+    verbose: bool = false,
+    ignore_fail_on_non_empty: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .parents = .{ .short = 'p', .desc = "Remove DIRECTORY and its ancestors; e.g., 'rmdir -p a/b/c' is similar to 'rmdir a/b/c a/b a'" },
+        .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every directory processed" },
+        .ignore_fail_on_non_empty = .{ .short = 0, .desc = "Ignore each failure that is solely because a directory is non-empty" },
+    };
+};
 
 // Enhanced error types for better error handling
 pub const RmdirError = error{
@@ -204,53 +220,39 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Define parameters using zig-clap
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help                  Display this help and exit.
-        \\-V, --version               Output version information and exit.
-        \\-p, --parents               Remove DIRECTORY and its ancestors; e.g., 'rmdir -p a/b/c' is
-        \\                            similar to 'rmdir a/b/c a/b a'.
-        \\-v, --verbose               Output a diagnostic for every directory processed.
-        \\--ignore-fail-on-non-empty  Ignore each failure that is solely because a directory
-        \\                            is non-empty.
-        \\<str>...                    Directory(ies) to remove.
-        \\
-    );
-
-    // Parse arguments
-    var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
-        .diagnostic = &diag,
-        .allocator = allocator,
-    }) catch |err| {
-        diag.report(std.io.getStdErr().writer(), err) catch {};
-        return err;
+    // Parse arguments using new parser
+    const args = common.argparse.ArgParser.parseProcess(RmdirArgs, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                common.fatal("invalid argument", .{});
+            },
+            else => return err,
+        }
     };
-    defer res.deinit();
+    defer allocator.free(args.positionals);
 
     // Handle help
-    if (res.args.help != 0) {
+    if (args.help) {
         try printHelp();
         return;
     }
 
     // Handle version
-    if (res.args.version != 0) {
+    if (args.version) {
         try printVersion();
         return;
     }
 
-    const directories = res.positionals.@"0";
+    const directories = args.positionals;
     if (directories.len == 0) {
-        common.printError("missing operand", .{});
-        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+        common.fatal("missing operand", .{});
     }
 
     // Create options
     const options = RmdirOptions{
-        .parents = res.args.parents != 0,
-        .verbose = res.args.verbose != 0,
-        .ignore_fail_on_non_empty = res.args.@"ignore-fail-on-non-empty" != 0,
+        .parents = args.parents,
+        .verbose = args.verbose,
+        .ignore_fail_on_non_empty = args.ignore_fail_on_non_empty,
     };
 
     const stdout = std.io.getStdOut().writer();
@@ -385,9 +387,7 @@ fn handleError(err: anyerror, path: []const u8, writer: anytype, options: RmdirO
     }
 
     const msg = ErrorMessages.format(err, path);
-    const stderr = std.io.getStdErr().writer();
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-    stderr.print("{s}: failed to remove '{s}': {s}\n", .{ prog_name, path, msg }) catch {};
+    common.printError("failed to remove '{s}': {s}", .{ path, msg });
 }
 
 // ===== TESTS =====
