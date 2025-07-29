@@ -59,10 +59,12 @@ if [ "$DEBUG_COUNT" -gt 0 ]; then
     echo -e "${YELLOW}Warning: Found $DEBUG_COUNT debug prints in non-test code${NC}"
 fi
 
-# Check for panic/unreachable in non-test code
-PANIC_COUNT=$(grep -r "@panic\|unreachable" src/ 2>/dev/null | grep -v "test\|Test" | wc -l || echo 0)
+# Check for @panic in non-test code (unreachable is often legitimate in switch statements)
+PANIC_COUNT=$(grep -r "@panic" src/ 2>/dev/null | grep -v "test\|Test" | wc -l || echo 0)
 if [ "$PANIC_COUNT" -gt 0 ]; then
-    echo -e "${YELLOW}Warning: Found $PANIC_COUNT @panic or unreachable in non-test code${NC}"
+    echo -e "${YELLOW}Warning: Found $PANIC_COUNT @panic in non-test code${NC}"
+    echo "Found @panic calls:"
+    grep -r "@panic" src/ 2>/dev/null | grep -v "test\|Test" || echo "None"
 fi
 
 # Summary
