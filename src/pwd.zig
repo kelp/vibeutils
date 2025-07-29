@@ -191,17 +191,21 @@ test "getWorkingDirectory logical mode without PWD" {
 }
 
 test "getWorkingDirectory logical mode with valid PWD" {
-    // Get the current physical directory first
-    const physical_cwd = try std.process.getCwdAlloc(testing.allocator);
-    defer testing.allocator.free(physical_cwd);
+    // Create a temp directory to avoid accessing protected locations
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get the temp directory path
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const temp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
     // Test the validation function directly
-    try testing.expect(isValidPwd(physical_cwd, physical_cwd));
+    try testing.expect(isValidPwd(temp_path, temp_path));
 
     // Test with invalid PWD values
-    try testing.expect(!isValidPwd("", physical_cwd));
-    try testing.expect(!isValidPwd("relative/path", physical_cwd));
-    try testing.expect(!isValidPwd("/nonexistent/path", physical_cwd));
+    try testing.expect(!isValidPwd("", temp_path));
+    try testing.expect(!isValidPwd("relative/path", temp_path));
+    try testing.expect(!isValidPwd("/nonexistent/path", temp_path));
 
     // Test logical mode fallback when PWD is not set
     const options = PwdOptions{ .logical = true, .physical = false };

@@ -283,15 +283,9 @@ test "ls -F adds file type indicators" {
 
     try tmp_dir.dir.makeDir("directory");
 
-    // Create executable file
-    const exe = try tmp_dir.dir.createFile("executable", .{});
+    // Create executable file with execute permissions
+    const exe = try tmp_dir.dir.createFile("executable", .{ .mode = 0o755 });
     exe.close();
-    // Set execute permissions after creation
-    var exe_path_buf: [4096]u8 = undefined;
-    const exe_path = try tmp_dir.dir.realpath("executable", &exe_path_buf);
-    const exe_path_z = try testing.allocator.dupeZ(u8, exe_path);
-    defer testing.allocator.free(exe_path_z);
-    _ = std.c.chmod(exe_path_z, 0o755);
 
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();

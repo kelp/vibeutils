@@ -82,12 +82,9 @@ pub fn createUniqueTestFile(dir: std.fs.Dir, allocator: std.mem.Allocator, base_
 
 /// Create an executable test file
 pub fn createExecutableFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(name, .{});
+    const file = try dir.createFile(name, .{ .mode = 0o755 });
     defer file.close();
     try file.writeAll(content);
-
-    // Set execute permissions
-    try file.chmod(0o755);
 }
 
 /// A test writer that captures output to a buffer for testing
