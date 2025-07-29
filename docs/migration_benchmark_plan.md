@@ -56,13 +56,13 @@ Create a benchmark measuring common argument patterns:
 ### 2.2 Per-Utility Process
 ```bash
 # Before migration
-./benchmark_single_utility.sh <utility> > benchmark_results/<utility>_before.txt
+./scripts/benchmark_single_utility.sh <utility> > benchmark_results/<utility>_before.txt
 
 # Migrate the utility
 # ... code changes ...
 
 # After migration  
-./benchmark_single_utility.sh <utility> > benchmark_results/<utility>_after.txt
+./scripts/benchmark_single_utility.sh <utility> > benchmark_results/<utility>_after.txt
 
 # Compare
 diff benchmark_results/<utility>_before.txt benchmark_results/<utility>_after.txt
@@ -83,18 +83,18 @@ time zig build -Doptimize=ReleaseSmall
 ls -l zig-out/bin/ > benchmark_results/final_sizes.txt
 
 # Size comparison
-./compare_sizes.sh benchmark_results/baseline_sizes.txt benchmark_results/final_sizes.txt
+./scripts/compare_sizes.sh benchmark_results/baseline_sizes.txt benchmark_results/final_sizes.txt
 ```
 
 ### 3.2 Performance Testing
 Run comprehensive benchmarks on all migrated utilities:
 ```bash
-./run_all_benchmarks.sh > benchmark_results/final_performance.txt
+./scripts/run_all_benchmarks.sh > benchmark_results/final_performance.txt
 ```
 
 ## Scripts to Create
 
-### benchmark_single_utility.sh
+### scripts/benchmark_single_utility.sh
 ```bash
 #!/bin/bash
 UTILITY=$1
@@ -127,7 +127,7 @@ case $UTILITY in
 esac
 ```
 
-### compare_sizes.sh
+### scripts/compare_sizes.sh
 ```bash
 #!/bin/bash
 echo "Size Comparison Report"

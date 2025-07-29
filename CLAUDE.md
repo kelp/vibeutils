@@ -319,6 +319,80 @@ return common.ExitCode.Failure;
 - Pre-allocate buffers when size is known
 - Consider parallel processing for independent operations (e.g., multiple files)
 
+### Idiomatic Zig Practices
+
+#### Documentation Comments
+Zig uses special doc comments (`///`) for generating documentation. Always document:
+- Public functions and types
+- Complex algorithms or non-obvious code
+- Error conditions and return values
+- Usage examples for public APIs
+
+```zig
+/// Copies a file from source to destination with optional progress reporting.
+/// Returns an error if the source doesn't exist or destination cannot be written.
+/// 
+/// Example:
+/// ```
+/// try copyFile(allocator, "input.txt", "output.txt", .{ .progress = true });
+/// ```
+pub fn copyFile(allocator: Allocator, src: []const u8, dst: []const u8, options: CopyOptions) !void {
+    // Implementation
+}
+
+/// Options for file copying operations.
+pub const CopyOptions = struct {
+    /// Display progress bar for large files
+    progress: bool = false,
+    /// Preserve file permissions and timestamps
+    preserve_attrs: bool = true,
+};
+```
+
+#### Common Zig Idioms
+- **Comptime**: Use `comptime` for compile-time computation and type generation
+- **Error Sets**: Define explicit error sets for functions that can fail
+- **Optionals**: Use `?T` for nullable values, not sentinel values
+- **Slices**: Prefer slices (`[]const u8`) over pointers for string/array parameters
+- **Allocators**: Always accept an allocator parameter for functions that allocate
+- **Defer**: Use `defer` for cleanup immediately after resource acquisition
+- **Error Unions**: Return `!T` for fallible operations, not success/failure booleans
+
+```zig
+// Good: Explicit error set
+const FileError = error{
+    NotFound,
+    PermissionDenied,
+    DiskFull,
+};
+
+// Good: Slice parameter with clear ownership
+pub fn processFile(allocator: Allocator, path: []const u8) FileError!void {
+    const file = try openFile(path);
+    defer file.close();  // Cleanup immediately after acquisition
+    
+    // Process file...
+}
+
+// Good: Optional for nullable value
+pub fn findChar(str: []const u8, char: u8) ?usize {
+    for (str, 0..) |c, i| {
+        if (c == char) return i;
+    }
+    return null;
+}
+```
+
+#### Build System Integration
+For documentation generation, ensure all public APIs have doc comments:
+```bash
+# Generate documentation
+zig build docs
+
+# Documentation will be in zig-out/docs/
+# Can be served locally or published to GitHub Pages
+```
+
 ## Privileged Testing Infrastructure
 
 The project includes infrastructure for testing operations that require elevated privileges (like chmod, chown) using fakeroot and other privilege simulation tools.

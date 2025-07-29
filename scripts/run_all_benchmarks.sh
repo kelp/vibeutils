@@ -27,7 +27,7 @@ UTILITIES="echo cat pwd chmod chown cp ln ls mkdir mv rm rmdir touch"
     for UTILITY in $UTILITIES; do
         if [ -f "zig-out/bin/$UTILITY" ]; then
             echo "========================================="
-            ./benchmark_single_utility.sh "$UTILITY"
+            ./scripts/benchmark_single_utility.sh "$UTILITY"
             echo
         else
             echo "Warning: $UTILITY not found in zig-out/bin/"
