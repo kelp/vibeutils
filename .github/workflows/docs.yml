@@ -35,10 +35,37 @@ jobs:
       with:
         version: ${{ env.ZIG_VERSION }}
         
+    - name: Cache Zig artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          zig-cache
+          zig-out
+          ~/.cache/zig
+        key: ${{ runner.os }}-zig-docs-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon', 'build/**/*.zig') }}
+        restore-keys: |
+          ${{ runner.os }}-zig-docs-${{ env.ZIG_VERSION }}-
+          ${{ runner.os }}-zig-
+        
     - name: Install documentation tools
       run: |
         sudo apt-get update
         sudo apt-get install -y mandoc groff-base pandoc
+        
+    - name: Setup Zig cache directories
+      run: |
+        echo "Setting up Zig cache directories..."
+        # Zig expects these directories to exist when running build commands
+        # Set up the cache directory based on the OS default location
+        ZIG_LOCAL_CACHE_DIR="${HOME}/.cache/zig"
+        echo "Creating Zig cache directories at: ${ZIG_LOCAL_CACHE_DIR}"
+        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/b"
+        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/c"
+        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/o"
+        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/p"
+        # Also create the local zig-cache directory for the project
+        mkdir -p zig-cache
+        echo "Zig cache directories created successfully"
         
     - name: Validate man pages
       run: |
