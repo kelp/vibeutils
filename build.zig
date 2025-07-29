@@ -4,10 +4,15 @@ const utils = @import("build/utils.zig");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    
+
     // Coverage option - now uses Zig's native coverage
     const coverage = b.option(bool, "coverage", "Generate test coverage") orelse false;
 
+    // CI option - enables CI-specific behavior
+    const ci = b.option(bool, "ci", "Enable CI-specific behavior") orelse false;
+
+    // Coverage backend option
+    const coverage_backend = b.option([]const u8, "coverage-backend", "Coverage backend: native, kcov") orelse "native";
 
     // Validate utilities exist before building
     utils.validateUtilities() catch |err| {
@@ -17,19 +22,19 @@ pub fn build(b: *std.Build) void {
 
     // Build options with version from build.zig.zon using safe parser
     const build_options = b.addOptions();
-    
+
     const version = utils.parseVersion(b.allocator) catch |err| {
         std.log.err("Failed to parse version from build.zig.zon: {}", .{err});
         std.log.err("Ensure build.zig.zon exists and contains a valid .version field", .{});
         return; // Let build system handle the error gracefully
     };
     defer b.allocator.free(version); // Free the allocated version string
-    
+
     build_options.addOption([]const u8, "version", version);
-    
+
     // Create build_options module once and reuse it
     const build_options_module = build_options.createModule();
-    
+
     // Common library module
     const common = b.addModule("common", .{
         .root_source_file = b.path("src/common/lib.zig"),
@@ -41,7 +46,7 @@ pub fn build(b: *std.Build) void {
     // Build utilities using metadata-driven approach
     for (utils.utilities) |util| {
         buildUtility(b, util, target, optimize, coverage, common, build_options_module) catch |err| {
-            std.log.err("Failed to build utility {s}: {}", .{util.name, err});
+            std.log.err("Failed to build utility {s}: {}", .{ util.name, err });
             return; // Let build system handle the error gracefully
         };
     }
@@ -51,6 +56,12 @@ pub fn build(b: *std.Build) void {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Let build system handle the error gracefully
     };
+
+    // Add additional build steps
+    addFormatSteps(b);
+    addCleanStep(b);
+    addCoverageSteps(b, target, optimize, coverage_backend, common, build_options_module);
+    addCIValidateStep(b, ci);
 }
 
 /// Build a single utility with proper error handling
@@ -71,22 +82,22 @@ fn buildUtility(
         .target = target,
         .optimize = optimize,
     });
-    
+
     // Add imports
     exe.root_module.addImport("common", common);
     exe.root_module.addImport("build_options", build_options_module);
-    
+
     // Metadata-driven library linking
     if (util.needs_libc) {
         exe.linkLibC();
     }
-    
+
     // Enable coverage if requested
     if (coverage) {
         // For now, just ensure debug info is preserved for coverage tools
         exe.root_module.strip = false;
     }
-    
+
     b.installArtifact(exe);
 
     // Create run step with error handling
@@ -95,9 +106,9 @@ fn buildUtility(
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    
+
     const run_step_name = b.fmt("run-{s}", .{util.name});
-    const run_step_desc = b.fmt("Run {s} - {s}", .{util.name, util.description});
+    const run_step_desc = b.fmt("Run {s} - {s}", .{ util.name, util.description });
     const run_step = b.step(run_step_name, run_step_desc);
     run_step.dependOn(&run_cmd.step);
 }
@@ -112,7 +123,7 @@ fn buildTests(
     build_options_module: *std.Build.Module,
 ) !void {
     const test_step = b.step("test", "Run unit tests");
-    
+
     // Test each utility
     for (utils.utilities) |util| {
         const util_tests = b.addTest(.{
@@ -120,25 +131,25 @@ fn buildTests(
             .target = target,
             .optimize = optimize,
         });
-        
+
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("build_options", build_options_module);
-        
+
         // Metadata-driven library linking for tests
         if (util.needs_libc) {
             util_tests.linkLibC();
         }
-        
+
         // Configure coverage
         if (coverage) {
             // Preserve debug info for coverage tools
             util_tests.root_module.strip = false;
         }
-        
+
         const run_util_tests = b.addRunArtifact(util_tests);
         test_step.dependOn(&run_util_tests.step);
     }
-    
+
     // Common library tests
     const common_tests = b.addTest(.{
         .root_source_file = b.path("src/common/lib.zig"),
@@ -146,16 +157,16 @@ fn buildTests(
         .optimize = optimize,
     });
     common_tests.root_module.addImport("build_options", build_options_module);
-    
+
     // Configure coverage for common tests
     if (coverage) {
         // Preserve debug info for coverage tools
         common_tests.root_module.strip = false;
     }
-    
+
     const run_common_tests = b.addRunArtifact(common_tests);
     test_step.dependOn(&run_common_tests.step);
-    
+
     // Add benchmark executable
     const benchmark_exe = b.addExecutable(.{
         .name = "benchmark-parsers",
@@ -163,56 +174,56 @@ fn buildTests(
         .target = target,
         .optimize = .ReleaseFast,
     });
-    
+
     benchmark_exe.root_module.addImport("common", common);
     benchmark_exe.root_module.addImport("build_options", build_options_module);
-    
+
     const benchmark_install = b.addInstallArtifact(benchmark_exe, .{});
-    
+
     const benchmark_cmd = b.addRunArtifact(benchmark_exe);
     if (b.args) |args| {
         benchmark_cmd.addArgs(args);
     }
-    
+
     const benchmark_step = b.step("benchmark", "Run parser performance benchmarks");
     benchmark_step.dependOn(&benchmark_install.step);
     benchmark_step.dependOn(&benchmark_cmd.step);
-    
+
     // Create a separate privileged test step
     const privileged_test_step = b.step("test-privileged", "Run tests that require privilege simulation (run under fakeroot)");
-    
+
     // Run privileged tests only - filter for tests starting with "privileged:"
     for (utils.utilities) |util| {
         const util_tests = b.addTest(.{
             .root_source_file = b.path(util.path),
             .target = target,
             .optimize = optimize,
-            .filters = &.{"privileged:"},  // Only run tests starting with "privileged:"
+            .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
         });
-        
+
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("build_options", build_options_module);
-        
+
         if (util.needs_libc) {
             util_tests.linkLibC();
         }
-        
+
         const run_util_tests = b.addRunArtifact(util_tests);
         privileged_test_step.dependOn(&run_util_tests.step);
     }
-    
+
     // Also add common library privileged tests if any
     const common_tests_priv = b.addTest(.{
         .root_source_file = b.path("src/common/lib.zig"),
         .target = target,
         .optimize = optimize,
-        .filters = &.{"privileged:"},  // Only run tests starting with "privileged:"
+        .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
     });
     common_tests_priv.root_module.addImport("build_options", build_options_module);
-    
+
     const run_common_tests_priv = b.addRunArtifact(common_tests_priv);
     privileged_test_step.dependOn(&run_common_tests_priv.step);
-    
+
     // Integration tests
     buildIntegrationTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
         std.log.err("Failed to configure integration tests: {}", .{err});
@@ -230,7 +241,7 @@ fn buildIntegrationTests(
     build_options_module: *std.Build.Module,
 ) !void {
     const integration_test_step = b.step("test-integration", "Run privilege framework integration tests");
-    
+
     // Core infrastructure integration tests
     const core_integration_tests = b.addTest(.{
         .root_source_file = b.path("src/common/privilege_test_integration.zig"),
@@ -238,14 +249,14 @@ fn buildIntegrationTests(
         .optimize = optimize,
     });
     core_integration_tests.root_module.addImport("build_options", build_options_module);
-    
+
     if (coverage) {
         core_integration_tests.root_module.strip = false;
     }
-    
+
     const run_core_integration = b.addRunArtifact(core_integration_tests);
     integration_test_step.dependOn(&run_core_integration.step);
-    
+
     // Workflow integration tests
     const workflow_tests = b.addTest(.{
         .root_source_file = b.path("tests/privilege_integration/workflow_test.zig"),
@@ -253,14 +264,14 @@ fn buildIntegrationTests(
         .optimize = optimize,
     });
     workflow_tests.root_module.addImport("common", common);
-    
+
     if (coverage) {
         workflow_tests.root_module.strip = false;
     }
-    
+
     const run_workflow_tests = b.addRunArtifact(workflow_tests);
     integration_test_step.dependOn(&run_workflow_tests.step);
-    
+
     // File operations integration tests
     const file_ops_tests = b.addTest(.{
         .root_source_file = b.path("tests/privilege_integration/file_ops_test.zig"),
@@ -268,11 +279,104 @@ fn buildIntegrationTests(
         .optimize = optimize,
     });
     file_ops_tests.root_module.addImport("common", common);
-    
+
     if (coverage) {
         file_ops_tests.root_module.strip = false;
     }
-    
+
     const run_file_ops_tests = b.addRunArtifact(file_ops_tests);
     integration_test_step.dependOn(&run_file_ops_tests.step);
+}
+
+/// Add format and format-check steps
+fn addFormatSteps(b: *std.Build) void {
+    // Format step - formats all source files
+    const fmt_step = b.step("fmt", "Format all source files");
+    const fmt_cmd = b.addSystemCommand(&.{ "zig", "fmt", "src/", "build.zig", "build/" });
+    fmt_step.dependOn(&fmt_cmd.step);
+
+    // Format check step - checks if files are properly formatted
+    const fmt_check_step = b.step("fmt-check", "Check if source files are properly formatted");
+    const fmt_check_cmd = b.addSystemCommand(&.{ "zig", "fmt", "--check", "src/", "build.zig", "build/" });
+    fmt_check_step.dependOn(&fmt_check_cmd.step);
+}
+
+/// Add clean step
+fn addCleanStep(b: *std.Build) void {
+    const clean_step = b.step("clean", "Remove build artifacts");
+
+    // Remove zig-cache directory
+    const rm_cache = b.addRemoveDirTree(b.path("zig-cache"));
+    clean_step.dependOn(&rm_cache.step);
+
+    // Remove zig-out directory
+    const rm_out = b.addRemoveDirTree(b.path("zig-out"));
+    clean_step.dependOn(&rm_out.step);
+
+    // Remove coverage directory
+    const rm_coverage = b.addRemoveDirTree(b.path("coverage"));
+    clean_step.dependOn(&rm_coverage.step);
+}
+
+/// Add coverage steps with multiple backend support
+fn addCoverageSteps(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    backend: []const u8,
+    common: *std.Build.Module,
+    build_options_module: *std.Build.Module,
+) void {
+    const coverage_step = b.step("coverage", "Run tests with coverage");
+
+    if (std.mem.eql(u8, backend, "kcov")) {
+        // Create coverage directory
+        const mkdir_cmd = b.addSystemCommand(&.{ "mkdir", "-p", "coverage/kcov" });
+        coverage_step.dependOn(&mkdir_cmd.step);
+
+        // Run kcov coverage script
+        const kcov_script = b.addSystemCommand(&.{"scripts/run-kcov-coverage.sh"});
+        kcov_script.step.dependOn(&mkdir_cmd.step);
+        coverage_step.dependOn(&kcov_script.step);
+    } else {
+        // Native Zig coverage
+        const test_with_coverage = b.step("test-coverage", "Run tests with native coverage");
+
+        // Run tests with coverage enabled
+        for (utils.utilities) |util| {
+            const util_tests = b.addTest(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = optimize,
+            });
+
+            util_tests.root_module.addImport("common", common);
+            util_tests.root_module.addImport("build_options", build_options_module);
+
+            if (util.needs_libc) {
+                util_tests.linkLibC();
+            }
+
+            // Enable coverage
+            util_tests.root_module.strip = false;
+            util_tests.setExecCmd(&.{ "zig", "build", "test", "-Dcoverage=true" });
+
+            const run_util_tests = b.addRunArtifact(util_tests);
+            test_with_coverage.dependOn(&run_util_tests.step);
+        }
+
+        coverage_step.dependOn(test_with_coverage);
+    }
+}
+
+/// Add CI validation step
+fn addCIValidateStep(b: *std.Build, ci: bool) void {
+    const ci_validate_step = b.step("ci-validate", "Validate project for CI");
+
+    // Run CI validation script
+    const validate_cmd = b.addSystemCommand(&.{"scripts/ci-validate.sh"});
+    if (ci) {
+        validate_cmd.setEnvironmentVariable("CI", "true");
+    }
+    ci_validate_step.dependOn(&validate_cmd.step);
 }

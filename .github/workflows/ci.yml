@@ -85,7 +85,7 @@ jobs:
     - name: Check code formatting
       run: |
         echo "Checking code formatting..."
-        zig fmt --check src/ || {
+        make fmt-check || {
           echo "::error::Code is not properly formatted. Run 'make fmt' to fix."
           exit 1
         }
@@ -244,44 +244,11 @@ jobs:
         }
         
     - name: Run tests with kcov
+      if: env.KCOV_AVAILABLE == 'true'
       run: |
         echo "Running tests with kcov for detailed coverage..."
-        mkdir -p coverage/kcov
-        
-        # Build first
-        make build
-        
-        # Run tests for utilities that exist
-        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
-          if [ -f "src/${utility}.zig" ]; then
-            echo "Running kcov for ${utility}..."
-            kcov \
-              --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
-              --include-pattern=$(pwd)/src/ \
-              coverage/kcov/${utility}/ \
-              zig test "src/${utility}.zig" 2>&1 || {
-              echo "::warning::kcov failed for ${utility}, continuing..."
-            }
-          elif [ -f "src/${utility}/main.zig" ]; then
-            echo "Running kcov for ${utility} (modular)..."
-            kcov \
-              --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
-              --include-pattern=$(pwd)/src/ \
-              coverage/kcov/${utility}/ \
-              zig test "src/${utility}/main.zig" 2>&1 || {
-              echo "::warning::kcov failed for ${utility}, continuing..."
-            }
-          fi
-        done
-        
-        # Run common library tests
-        echo "Running kcov for common library..."
-        kcov \
-          --exclude-pattern=/usr/include,/usr/lib,/zig/,/snap/ \
-          --include-pattern=$(pwd)/src/ \
-          coverage/kcov/common/ \
-          zig test src/common/lib.zig 2>&1 || {
-          echo "::warning::kcov failed for common library, continuing..."
+        make coverage-kcov || {
+          echo "::warning::kcov coverage had issues"
         }
         
     - name: Merge coverage reports
@@ -339,7 +306,7 @@ jobs:
     - name: Check code formatting
       run: |
         echo "Checking code formatting..."
-        zig fmt --check src/ || {
+        make fmt-check || {
           echo "::error::Code is not properly formatted. Run 'make fmt' to fix."
           echo "Files that need formatting:"
           zig fmt --check src/ 2>&1 || true
@@ -371,7 +338,7 @@ jobs:
     - name: Validate build configuration
       run: |
         echo "Validating build configuration..."
-        zig build --help
+        make ci-validate
         echo "Build system validation complete"
 
   benchmark-check:

@@ -37,10 +37,10 @@ fn parseVersionFromContent(allocator: std.mem.Allocator, zon_content: []const u8
         ".version=\"",
         "version=\"",
     };
-    
+
     var version_start: ?usize = null;
     var pattern_len: usize = 0;
-    
+
     // Find version pattern
     for (version_patterns) |pattern| {
         if (std.mem.indexOf(u8, zon_content, pattern)) |start| {
@@ -49,37 +49,37 @@ fn parseVersionFromContent(allocator: std.mem.Allocator, zon_content: []const u8
             break;
         }
     }
-    
+
     const start_idx = version_start orelse return error.VersionFieldNotFound;
-    
+
     // Bounds check
     if (start_idx >= zon_content.len) {
         return error.VersionFieldMalformed;
     }
-    
+
     // Find closing quote with bounds checking
-    const end_idx = std.mem.indexOfScalarPos(u8, zon_content, start_idx, '"') orelse 
+    const end_idx = std.mem.indexOfScalarPos(u8, zon_content, start_idx, '"') orelse
         return error.VersionFieldMalformed;
-    
+
     // Additional bounds and sanity checks
     if (end_idx <= start_idx or end_idx >= zon_content.len) {
         return error.VersionFieldMalformed;
     }
-    
+
     const version = zon_content[start_idx..end_idx];
-    
+
     // Validate version format (basic semantic version check)
     if (version.len == 0 or version.len > 20) {
         return error.VersionFormatInvalid;
     }
-    
+
     // Check for basic version pattern (digits and dots)
     for (version) |c| {
         if (!std.ascii.isDigit(c) and c != '.' and c != '-' and !std.ascii.isAlphabetic(c)) {
             return error.VersionFormatInvalid;
         }
     }
-    
+
     return allocator.dupe(u8, version);
 }
 
@@ -138,7 +138,7 @@ test "parseVersionFromContent - valid version formats" {
     for (test_cases) |case| {
         const version = try parseVersionFromContent(testing.allocator, case.content);
         defer testing.allocator.free(version);
-        
+
         try testing.expectEqualStrings(case.expected, version);
     }
 }
@@ -162,7 +162,7 @@ test "parseVersionFromContent - error cases" {
 test "parseVersion - empty content" {
     // Test parsing empty content - this simulates the missing version field case
     // This is safer than manipulating the real build.zig.zon file
-    
+
     const result = parseVersionFromContent(testing.allocator, "");
     try testing.expectError(error.VersionFieldNotFound, result);
 }
@@ -171,7 +171,7 @@ test "validateUtilities - all utilities exist" {
     // This test assumes the utilities exist in the actual project structure
     // In a real project, this would pass when run from the project root
     const result = validateUtilities();
-    
+
     // The test might fail if run from a different directory, but that's expected
     // This test is more for ensuring the function doesn't crash
     _ = result catch {};
@@ -181,11 +181,11 @@ test "validateUtilities - handles missing files gracefully" {
     // This test would fail if utilities don't exist, which is expected behavior
     // In a real project context, this validates that the function works correctly
     // when called from a directory without the utility source files
-    
+
     // We can't easily test this without changing directories, so we'll just
     // ensure the function can be called without crashing
     const result = validateUtilities();
-    
+
     // If we're in the project directory, it should succeed
     // If not, it should fail with UtilitySourceNotFound
     result catch |err| switch (err) {
