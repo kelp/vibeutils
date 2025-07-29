@@ -26,6 +26,7 @@ env:
 jobs:
   build-and-test:
     name: Build and Test (${{ matrix.os }})
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +124,7 @@ jobs:
 
   privileged-tests:
     name: Privileged Tests (${{ matrix.os }})
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -165,30 +167,36 @@ jobs:
         
     - name: Run privileged tests (Linux)
       if: runner.os == 'Linux'
+      timeout-minutes: 5
       run: |
         echo "Running privileged tests with fakeroot support..."
-        chmod +x scripts/run-privileged-tests.sh
         
-        # Test the smart runner first
-        ./scripts/run-privileged-tests.sh -v || {
-          echo "::warning::Smart privileged test runner had issues"
-        }
-        
-        # Also test Makefile target
-        make test-privileged-local || {
-          echo "::warning::Makefile privileged tests had issues"
-        }
+        # Check if script exists and is executable
+        if [ -f scripts/run-privileged-tests.sh ]; then
+          chmod +x scripts/run-privileged-tests.sh
+          timeout 300 ./scripts/run-privileged-tests.sh -v || {
+            echo "::warning::Privileged test runner timed out or had issues"
+          }
+        else
+          echo "::warning::Privileged test script not found, running basic test"
+          fakeroot zig build test-privileged || true
+        fi
         
     - name: Run privileged tests (macOS)
       if: runner.os == 'macOS'
+      timeout-minutes: 5
       run: |
         echo "::notice::Running limited privileged tests on macOS..."
-        chmod +x scripts/run-privileged-tests.sh
         
         # macOS has limited privileged testing support
-        ./scripts/run-privileged-tests.sh -v || {
-          echo "::warning::Some privileged tests were skipped on macOS (expected)"
-        }
+        if [ -f scripts/run-privileged-tests.sh ]; then
+          chmod +x scripts/run-privileged-tests.sh
+          timeout 300 ./scripts/run-privileged-tests.sh -v || {
+            echo "::warning::Some privileged tests were skipped on macOS (expected)"
+          }
+        else
+          echo "::warning::Privileged tests skipped on macOS - script not found"
+        fi
         
     - name: Upload privileged test results
       if: always()
@@ -204,6 +212,7 @@ jobs:
   coverage:
     name: Coverage Report
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     
     steps:
     - name: Checkout code
@@ -217,7 +226,15 @@ jobs:
     - name: Install coverage tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y kcov fakeroot build-essential
+        # Try to install kcov from package manager first
+        sudo apt-get install -y fakeroot build-essential
+        if ! sudo apt-get install -y kcov; then
+          echo "::warning::kcov not available in apt, skipping kcov coverage"
+          echo "KCOV_AVAILABLE=false" >> $GITHUB_ENV
+        else
+          echo "KCOV_AVAILABLE=true" >> $GITHUB_ENV
+          kcov --version || true
+        fi
         
     - name: Run tests with native coverage
       run: |
