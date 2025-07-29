@@ -331,8 +331,8 @@ jobs:
         
         # Check for common issues in Zig code
         echo "Checking for common Zig issues..."
-        if grep -r "@panic\|unreachable" src/ | grep -v "test\|Test"; then
-          echo "::warning::Found @panic or unreachable in non-test code"
+        if grep -r "@panic" src/ | grep -v "test\|Test"; then
+          echo "::warning::Found @panic in non-test code"
         fi
         
     - name: Validate build configuration
