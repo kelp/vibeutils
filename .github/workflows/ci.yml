@@ -483,7 +483,7 @@ jobs:
         ../zig-out/bin/cp file1.txt file1_copy.txt
         
         # Test mv functionality
-        ../zig-out/bin/mv file1_copy.txt dir2/
+        ../zig-out/bin/mv file1_copy.txt dir2
         
         # Test rm functionality
         ../zig-out/bin/rm dir2/file1_copy.txt

@@ -60,30 +60,6 @@ jobs:
           fi
         done
         
-    - name: Build Zig documentation
-      run: |
-        echo "Building Zig documentation..."
-        
-        # Generate documentation for the common library
-        zig build-lib src/common/lib.zig -femit-docs=docs/zig-docs/common/
-        
-        # Generate documentation for individual utilities (where possible)
-        mkdir -p docs/zig-docs/utilities/
-        
-        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
-          if [ -f "src/${utility}.zig" ]; then
-            echo "Generating docs for ${utility}..."
-            zig build-lib "src/${utility}.zig" -femit-docs="docs/zig-docs/utilities/${utility}/" || {
-              echo "::warning::Could not generate docs for ${utility}"
-            }
-          elif [ -f "src/${utility}/main.zig" ]; then
-            echo "Generating docs for ${utility} (modular)..."
-            zig build-lib "src/${utility}/main.zig" -femit-docs="docs/zig-docs/utilities/${utility}/" || {
-              echo "::warning::Could not generate docs for ${utility}"
-            }
-          fi
-        done
-        
     - name: Convert man pages to HTML
       run: |
         echo "Converting man pages to HTML..."
@@ -163,12 +139,6 @@ jobs:
         
         cat >> docs/html/index.html << 'EOF'
             </div>
-            
-            <h2>Zig Documentation</h2>
-            <ul>
-                <li><a href="zig-docs/common/index.html">Common Library</a></li>
-                <li><a href="zig-docs/utilities/">Utilities (Zig source docs)</a></li>
-            </ul>
             
             <footer>
                 <p><em>Documentation generated on $(date)</em></p>
@@ -252,9 +222,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: documentation
-        path: |
-          docs/html/
-          docs/zig-docs/
+        path: docs/html/
         retention-days: 30
 
   # Deploy documentation to GitHub Pages (only on main branch)
@@ -413,7 +381,6 @@ jobs:
         echo "### Generated Documentation" >> $GITHUB_STEP_SUMMARY
         echo "- HTML documentation with navigation" >> $GITHUB_STEP_SUMMARY
         echo "- Man pages converted to HTML" >> $GITHUB_STEP_SUMMARY
-        echo "- Zig source code documentation" >> $GITHUB_STEP_SUMMARY
         echo "- Cross-referenced utility guide" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "*Documentation generated on $(date)*" >> $GITHUB_STEP_SUMMARY
