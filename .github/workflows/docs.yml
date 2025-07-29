@@ -89,6 +89,16 @@ jobs:
           }
         fi
         
+    - name: Generate Zig documentation
+      run: |
+        echo "Generating Zig documentation..."
+        zig build docs
+        
+        # Copy generated docs to the output directory
+        if [ -d "zig-out/docs" ]; then
+          cp -r zig-out/docs/* docs/html/
+        fi
+        
     - name: Create documentation index
       run: |
         echo "Creating documentation index..."
@@ -118,6 +128,7 @@ jobs:
             <ul>
                 <li><a href="README.html">README</a></li>
                 <li><a href="https://github.com/kelp/vibeutils">Source Code</a></li>
+                <li><a href="common/index.html">Common Library API</a></li>
             </ul>
             
             <h2>Utilities</h2>
@@ -132,6 +143,7 @@ jobs:
                 <div class="utility-card">
                     <h3><a href="man/${utility}.html">${utility}</a></h3>
                     <p>${description}</p>
+                    <small><a href="${utility}/index.html">API Documentation</a></small>
                 </div>
         EOF
           fi

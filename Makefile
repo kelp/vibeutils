@@ -1,4 +1,4 @@
-.PHONY: all build test test-privileged test-privileged-local clean install coverage coverage-kcov fmt fmt-check ci-validate help
+.PHONY: all build test test-privileged test-privileged-local clean install coverage coverage-kcov fmt fmt-check ci-validate docs help
 
 # Default target
 all: build
@@ -68,6 +68,12 @@ fmt-check:
 ci-validate:
 	zig build ci-validate -Dci=true
 
+# Generate documentation
+docs:
+	zig build docs
+	@echo "Documentation generated in zig-out/docs/"
+	@echo "Open zig-out/docs/*/index.html in a browser to view."
+
 # Show help
 help:
 	@echo "vibeutils Makefile targets:"
@@ -85,3 +91,4 @@ help:
 	@echo "  make fmt                 - Format source code"
 	@echo "  make fmt-check           - Check code formatting"
 	@echo "  make ci-validate         - Run CI validation checks"
+	@echo "  make docs                - Generate API documentation"

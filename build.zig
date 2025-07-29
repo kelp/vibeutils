@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     addCleanStep(b);
     addCoverageSteps(b, target, optimize, coverage_backend, common, build_options_module);
     addCIValidateStep(b, ci);
+    addDocsStep(b, target, optimize, common, build_options_module);
 }
 
 /// Build a single utility with proper error handling
@@ -379,4 +380,65 @@ fn addCIValidateStep(b: *std.Build, ci: bool) void {
         validate_cmd.setEnvironmentVariable("CI", "true");
     }
     ci_validate_step.dependOn(&validate_cmd.step);
+}
+
+/// Add documentation generation step
+fn addDocsStep(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    common: *std.Build.Module,
+    build_options_module: *std.Build.Module,
+) void {
+    const docs_step = b.step("docs", "Generate documentation");
+
+    // Generate documentation for the common module
+    // We need to create a dummy executable that imports the common module
+    // to generate its documentation
+    const common_docs_exe = b.addStaticLibrary(.{
+        .name = "common-docs",
+        .root_source_file = b.path("src/common/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    common_docs_exe.root_module.addImport("build_options", build_options_module);
+
+    // Get the emitted docs for the common module
+    const common_docs = common_docs_exe.getEmittedDocs();
+    const install_common_docs = b.addInstallDirectory(.{
+        .source_dir = common_docs,
+        .install_dir = .prefix,
+        .install_subdir = "docs/common",
+    });
+    docs_step.dependOn(&install_common_docs.step);
+
+    // Generate documentation for each utility
+    for (utils.utilities) |util| {
+        const util_exe = b.addExecutable(.{
+            .name = util.name,
+            .root_source_file = b.path(util.path),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        // Add imports needed for the utility
+        util_exe.root_module.addImport("common", common);
+        util_exe.root_module.addImport("build_options", build_options_module);
+
+        if (util.needs_libc) {
+            util_exe.linkLibC();
+        }
+
+        // Get the emitted docs for this utility
+        const util_docs = util_exe.getEmittedDocs();
+        const install_util_docs = b.addInstallDirectory(.{
+            .source_dir = util_docs,
+            .install_dir = .prefix,
+            .install_subdir = b.fmt("docs/{s}", .{util.name}),
+        });
+        docs_step.dependOn(&install_util_docs.step);
+    }
+
+    // Add a completion message (without circular dependency)
+    // This is just informational and doesn't need to be part of the step chain
 }
