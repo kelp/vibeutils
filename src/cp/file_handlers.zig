@@ -25,22 +25,23 @@ pub const FileHandlers = struct {
             try user_interaction.UserInteraction.handleForceOverwrite(operation.final_dest_path);
         }
 
-        // Copy the file
-        std.fs.cwd().copyFile(operation.source, std.fs.cwd(), operation.final_dest_path, .{}) catch |err| {
-            const copy_err = errors.ErrorHandler.mapSystemError(err);
-            const context = errors.ErrorContext{
-                .operation = "copy file",
-                .source_path = operation.source,
-                .dest_path = operation.final_dest_path,
-            };
-            errors.ErrorHandler.reportError(context, copy_err);
-            stats.addError();
-            return copy_err;
-        };
-
-        // Preserve attributes if requested
+        // Copy the file with correct permissions
         if (ctx.options.preserve) {
-            try preserveFileAttributes(operation.source, operation.final_dest_path, source_stat);
+            // When preserving attributes, create the file with the source's mode directly
+            try copyFileWithMode(operation.source, operation.final_dest_path, source_stat.mode, source_stat);
+        } else {
+            // Use standard copy when not preserving attributes
+            std.fs.cwd().copyFile(operation.source, std.fs.cwd(), operation.final_dest_path, .{}) catch |err| {
+                const copy_err = errors.ErrorHandler.mapSystemError(err);
+                const context = errors.ErrorContext{
+                    .operation = "copy file",
+                    .source_path = operation.source,
+                    .dest_path = operation.final_dest_path,
+                };
+                errors.ErrorHandler.reportError(context, copy_err);
+                stats.addError();
+                return copy_err;
+            };
         }
 
         stats.addFile(@intCast(source_stat.size));
@@ -232,13 +233,25 @@ fn copyDirectoryContents(ctx: types.CopyContext, source_dir: []const u8, dest_di
     }
 }
 
-/// Preserve file attributes (mode, timestamps)
-fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) !void {
-    // Open destination file to set attributes
-    const dest_file = std.fs.cwd().openFile(dest_path, .{}) catch |err| {
+/// Copy a file with specific mode (permissions) set atomically
+fn copyFileWithMode(source_path: []const u8, dest_path: []const u8, mode: std.fs.File.Mode, source_stat: std.fs.File.Stat) !void {
+    // Open source file
+    const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
         const copy_err = errors.ErrorHandler.mapSystemError(err);
         const context = errors.ErrorContext{
-            .operation = "open destination for attribute preservation",
+            .operation = "open source file",
+            .source_path = source_path,
+        };
+        errors.ErrorHandler.reportError(context, copy_err);
+        return copy_err;
+    };
+    defer source_file.close();
+
+    // Create destination file with the correct mode
+    const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = mode }) catch |err| {
+        const copy_err = errors.ErrorHandler.mapSystemError(err);
+        const context = errors.ErrorContext{
+            .operation = "create destination file",
             .dest_path = dest_path,
         };
         errors.ErrorHandler.reportError(context, copy_err);
@@ -246,11 +259,21 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
     };
     defer dest_file.close();
 
-    // Copy mode/permissions
-    dest_file.chmod(source_stat.mode) catch |err| {
+    // Copy the file contents
+    var buffer: [8192]u8 = undefined;
+    while (true) {
+        const bytes_read = try source_file.read(&buffer);
+        if (bytes_read == 0) break;
+        try dest_file.writeAll(buffer[0..bytes_read]);
+    }
+
+    // Explicitly set the mode after creation to ensure it's correct
+    // This is necessary because createFile's mode parameter can be affected by umask,
+    // particularly under fakeroot where the umask behavior may differ
+    dest_file.chmod(mode) catch |err| {
         const copy_err = errors.ErrorHandler.mapSystemError(err);
         const context = errors.ErrorContext{
-            .operation = "preserve file mode",
+            .operation = "set file mode",
             .source_path = source_path,
             .dest_path = dest_path,
         };
@@ -269,6 +292,96 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
         errors.ErrorHandler.reportError(context, copy_err);
         return copy_err;
     };
+}
+
+/// Preserve file attributes (mode, timestamps)
+fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) !void {
+    // For directories, open as a directory
+    if (source_stat.kind == .directory) {
+        var dest_dir = std.fs.cwd().openDir(dest_path, .{}) catch |err| {
+            const copy_err = errors.ErrorHandler.mapSystemError(err);
+            const context = errors.ErrorContext{
+                .operation = "open destination directory for attribute preservation",
+                .dest_path = dest_path,
+            };
+            errors.ErrorHandler.reportError(context, copy_err);
+            return copy_err;
+        };
+        defer dest_dir.close();
+
+        // Copy mode/permissions
+        dest_dir.chmod(source_stat.mode) catch |err| {
+            const copy_err = errors.ErrorHandler.mapSystemError(err);
+            const context = errors.ErrorContext{
+                .operation = "preserve directory mode",
+                .source_path = source_path,
+                .dest_path = dest_path,
+            };
+            errors.ErrorHandler.reportError(context, copy_err);
+            return copy_err;
+        };
+
+        // Copy timestamps
+        // For directories, we need to use futimens/utimensat through posix API
+        // since Dir doesn't expose updateTimes directly
+        const handle = dest_dir.fd;
+        const times = [2]std.posix.timespec{
+            std.posix.timespec{
+                .sec = @intCast(@divFloor(source_stat.atime, std.time.ns_per_s)),
+                .nsec = @intCast(@mod(source_stat.atime, std.time.ns_per_s)),
+            },
+            std.posix.timespec{
+                .sec = @intCast(@divFloor(source_stat.mtime, std.time.ns_per_s)),
+                .nsec = @intCast(@mod(source_stat.mtime, std.time.ns_per_s)),
+            },
+        };
+        std.posix.futimens(handle, &times) catch |err| {
+            const copy_err = errors.ErrorHandler.mapSystemError(err);
+            const context = errors.ErrorContext{
+                .operation = "preserve directory timestamps",
+                .source_path = source_path,
+                .dest_path = dest_path,
+            };
+            errors.ErrorHandler.reportError(context, copy_err);
+            return copy_err;
+        };
+    } else {
+        // For files, open as a file
+        const dest_file = std.fs.cwd().openFile(dest_path, .{}) catch |err| {
+            const copy_err = errors.ErrorHandler.mapSystemError(err);
+            const context = errors.ErrorContext{
+                .operation = "open destination file for attribute preservation",
+                .dest_path = dest_path,
+            };
+            errors.ErrorHandler.reportError(context, copy_err);
+            return copy_err;
+        };
+        defer dest_file.close();
+
+        // Copy mode/permissions
+        dest_file.chmod(source_stat.mode) catch |err| {
+            const copy_err = errors.ErrorHandler.mapSystemError(err);
+            const context = errors.ErrorContext{
+                .operation = "preserve file mode",
+                .source_path = source_path,
+                .dest_path = dest_path,
+            };
+            errors.ErrorHandler.reportError(context, copy_err);
+            return copy_err;
+        };
+
+        // Copy timestamps
+        dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
+            const copy_err = errors.ErrorHandler.mapSystemError(err);
+            const context = errors.ErrorContext{
+                .operation = "preserve file timestamps",
+                .source_path = source_path,
+                .dest_path = dest_path,
+            };
+            errors.ErrorHandler.reportError(context, copy_err);
+            return copy_err;
+        };
+    }
 }
 
 // =============================================================================

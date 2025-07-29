@@ -670,6 +670,15 @@ test "privileged: cp recursive directory copy with full attribute preservation" 
     {
         const ro_src = try test_dir.getFileStat("source_tree/readonly");
         const ro_dst = try test_dir.getFileStat("dest_tree/readonly");
+
+        // Debug output for troubleshooting fakeroot issue
+        if ((ro_src.mode & 0o7777) != (ro_dst.mode & 0o7777)) {
+            std.debug.print("\nDebug: readonly file mode mismatch!\n", .{});
+            std.debug.print("Source mode: {o} (decimal: {})\n", .{ ro_src.mode & 0o7777, ro_src.mode & 0o7777 });
+            std.debug.print("Dest mode: {o} (decimal: {})\n", .{ ro_dst.mode & 0o7777, ro_dst.mode & 0o7777 });
+            std.debug.print("Running under fakeroot: {}\n", .{privilege_test.FakerootContext.isUnderFakeroot()});
+        }
+
         try testing.expectEqual(ro_src.mode & 0o7777, ro_dst.mode & 0o7777);
     }
 
