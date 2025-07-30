@@ -355,10 +355,11 @@ test "mv: empty file" {
 /// indicating that the source and destination are on different filesystems.
 /// It performs a copy-then-delete operation to achieve the move.
 ///
-/// @param allocator Memory allocator for temporary allocations
-/// @param source Path to the source file or directory
-/// @param dest Path to the destination
-/// @param options Move options controlling verbose output, force mode, etc.
+/// Parameters:
+/// - allocator: Memory allocator for temporary allocations
+/// - source: Path to the source file or directory
+/// - dest: Path to the destination
+/// - options: Move options controlling verbose output, force mode, etc.
 ///
 /// Returns error.OutOfMemory if allocation fails.
 /// Returns filesystem errors from copy or delete operations.
@@ -420,7 +421,8 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 /// Tries to remove as a file first, then as a directory tree if that fails.
 /// This handles the case where we don't know if the destination is a file or directory.
 ///
-/// @param dest Path to destination to remove
+/// Parameters:
+/// - dest: Path to destination to remove
 fn removeDestination(dest: []const u8) !void {
     std.fs.cwd().deleteFile(dest) catch |del_err| {
         // Might be a directory
@@ -435,8 +437,10 @@ fn removeDestination(dest: []const u8) !void {
 /// Prompts the user with a y/n question about overwriting the destination file.
 /// Only the first character of the response is checked, case-insensitive.
 ///
-/// @param dest Path to destination file being overwritten
-/// @return true if user confirms (y/Y), false otherwise
+/// Parameters:
+/// - dest: Path to destination file being overwritten
+///
+/// Returns true if user confirms (y/Y), false otherwise.
 fn promptOverwrite(dest: []const u8) !bool {
     const stderr = std.io.getStdErr().writer();
     const stdin = std.io.getStdIn().reader();
@@ -463,10 +467,11 @@ fn promptOverwrite(dest: []const u8) !bool {
 /// - force mode: removes destination and retries
 /// - cross-filesystem moves: uses copy engine
 ///
-/// @param allocator Memory allocator for temporary operations
-/// @param source Path to source file or directory
-/// @param dest Path to destination
-/// @param options Move options (interactive, force, verbose, no_clobber)
+/// Parameters:
+/// - allocator: Memory allocator for temporary operations
+/// - source: Path to source file or directory
+/// - dest: Path to destination
+/// - options: Move options (interactive, force, verbose, no_clobber)
 ///
 /// Returns error.PathAlreadyExists if destination exists and no force/interactive
 /// Returns error.FileNotFound if source doesn't exist

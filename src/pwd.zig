@@ -126,6 +126,11 @@ fn getWorkingDirectory(allocator: std.mem.Allocator, options: PwdOptions) ![]con
 /// Check if PWD environment variable refers to the same directory as physical cwd
 /// This function validates that PWD actually points to the same directory by comparing
 /// inode numbers for security purposes.
+///
+/// Returns false on any error (fails closed for security), including:
+/// - Invalid paths (empty, relative)
+/// - File access errors
+/// - Stat failures
 fn isValidPwd(pwd_env: []const u8, physical_cwd: []const u8) bool {
     // Basic validation: PWD must be an absolute path
     if (pwd_env.len == 0 or pwd_env[0] != '/') {

@@ -1,3 +1,10 @@
+//! Remove files or directories
+//!
+//! The rm utility removes each specified file. By default, it does not remove directories.
+//! If the -r or -R option is specified, rm removes directories and their contents recursively.
+//! This implementation includes advanced safety features such as symlink cycle detection,
+//! atomic operations to prevent race conditions, and protection against removing critical system paths.
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;

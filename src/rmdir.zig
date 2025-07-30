@@ -1,3 +1,9 @@
+//! Remove empty directories (POSIX rmdir).
+//!
+//! Removes the specified directories, which must be empty.
+//! Unlike rm -r, rmdir only removes empty directories and
+//! will fail if a directory contains any files or subdirectories.
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;

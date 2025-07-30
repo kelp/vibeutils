@@ -145,6 +145,13 @@ fn echo(args: []const []const u8, writer: anytype) !void {
     try echoStrings(args[start_index..], writer, options);
 }
 
+/// Write string with backslash escape sequences interpreted.
+///
+/// Incomplete escape sequences at the end of the string are printed literally
+/// (e.g., a trailing backslash or incomplete hex sequence like \x4).
+///
+/// Octal sequences greater than 255 wrap around (overflow behavior).
+/// For example, \400 becomes 0 (400 & 0xFF = 0).
 fn writeWithEscapes(s: []const u8, writer: anytype) !void {
     var i: usize = 0;
     while (i < s.len) {

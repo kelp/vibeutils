@@ -1,3 +1,6 @@
+//! Concatenate FILE(s) to standard output.
+//! With no FILE, or when FILE is -, read standard input.
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -62,8 +65,11 @@ pub fn main() !void {
         return;
     }
 
-    // Create options struct
-    // Handle combination flags
+    // Create options struct from parsed arguments
+    // Handle combination flags:
+    // -A (show_all) is equivalent to -vET (show non-printing, ends, and tabs)
+    // -e is equivalent to -vE (show non-printing and ends)
+    // -t is equivalent to -vT (show non-printing and tabs)
     const options = CatOptions{
         .number_lines = args.number,
         .number_nonblank = args.number_nonblank,
@@ -148,17 +154,21 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
         if (maybe_line) |line| {
             const is_blank = line.len == 0;
 
-            // Handle squeeze blank
+            // Handle squeeze blank: suppress repeated empty output lines
+            // If this line is blank AND the previous line was blank, skip it
             if (options.squeeze_blank and is_blank and state.prev_blank) {
                 continue;
             }
             state.prev_blank = is_blank;
 
             // Handle line numbering
+            // -b (number_nonblank) takes precedence over -n (number_lines)
             if (options.number_nonblank and !is_blank) {
+                // Number only non-blank lines
                 try writer.print("{d: >6}\t", .{state.line_number});
                 state.line_number += 1;
             } else if (options.number_lines and !options.number_nonblank) {
+                // Number all lines (unless -b is set)
                 try writer.print("{d: >6}\t", .{state.line_number});
                 state.line_number += 1;
             }
@@ -185,24 +195,32 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
 fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions) !void {
     for (line) |ch| {
         if (ch == '\t' and options.show_tabs) {
+            // Display TAB characters as ^I
             try writer.writeAll("^I");
         } else if (options.show_nonprinting and ch < 32 and ch != '\t' and ch != '\n') {
-            // Control characters
+            // Control characters (0-31 except tab and newline)
+            // Display as ^@ through ^_ (add 64 to get printable char)
             try writer.print("^{c}", .{ch + 64});
         } else if (options.show_nonprinting and ch == 127) {
+            // DEL character (127) displays as ^?
             try writer.writeAll("^?");
         } else if (options.show_nonprinting and ch >= 128) {
-            // High bit set
+            // Characters with high bit set (128-255)
+            // Display as M- followed by the representation of the lower 7 bits
             try writer.writeAll("M-");
             const ch_low = ch & 0x7F;
             if (ch_low < 32) {
+                // M- followed by control character representation
                 try writer.print("^{c}", .{ch_low + 64});
             } else if (ch_low == 127) {
+                // M- followed by DEL representation
                 try writer.writeAll("^?");
             } else {
+                // M- followed by regular character
                 try writer.writeByte(ch_low);
             }
         } else {
+            // Regular printable character or non-special character
             try writer.writeByte(ch);
         }
     }

@@ -1,3 +1,12 @@
+//! Create directories (POSIX mkdir).
+//!
+//! Creates the specified directories if they do not already exist.
+//! If multiple directories are specified and an error occurs creating one,
+//! the utility continues processing the remaining directories.
+//!
+//! Note: On Windows, the -m (mode) flag prints a warning and is ignored,
+//! as Windows does not support POSIX-style file permissions.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
@@ -140,7 +149,11 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, allocator: std.mem
 
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     // For now, support only octal modes
-    // TODO: Support symbolic modes like u+rwx
+    // TODO: Support symbolic modes like u+rwx, g+w, o-r, a=rw, etc.
+    // This would require parsing chmod-style symbolic notation including:
+    // - User classes: u (user), g (group), o (other), a (all)
+    // - Operations: + (add), - (remove), = (set exactly)
+    // - Permissions: r (read), w (write), x (execute), s (setuid/setgid), t (sticky)
     if (mode_str.len == 0) {
         return error.InvalidMode;
     }

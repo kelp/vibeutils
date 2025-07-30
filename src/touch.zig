@@ -1,3 +1,8 @@
+//! Update file access and modification times (POSIX touch).
+//!
+//! Changes file timestamps to the current time or a specified time.
+//! Creates empty files if they don't exist (unless -c is specified).
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;

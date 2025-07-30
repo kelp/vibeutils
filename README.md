@@ -28,6 +28,29 @@ More utilities coming soon!
 
 ## Installation
 
+### macOS (Homebrew)
+
+```bash
+# Coming soon!
+brew install kelp/tap/vibeutils
+```
+
+By default, commands are installed with a `v` prefix (vls, vcp, vmv, etc.) to avoid conflicts with system utilities.
+
+To use vibeutils commands without the prefix:
+```bash
+# Option 1: Add vibebin to your PATH
+export PATH="$(brew --prefix)/opt/vibeutils/libexec/vibebin:$PATH"
+
+# Option 2: Source the activation script
+source $(brew --prefix)/opt/vibeutils/libexec/activate.sh
+
+# Option 3: Create aliases
+alias ls='vls'
+alias cp='vcp'
+# ... etc
+```
+
 ### Build from source
 
 Requirements: Zig 0.14.1 or later
@@ -40,10 +63,17 @@ zig build -Doptimize=ReleaseSafe
 
 Binaries will be in `zig-out/bin/`.
 
-### Install system-wide
+### Install system-wide (macOS/Linux)
 
 ```bash
-make install
+# Standard installation with 'v' prefix
+sudo ./scripts/install-macos.sh
+
+# Install to custom location (e.g., Homebrew on Apple Silicon)
+sudo ./scripts/install-macos.sh --dir /opt/homebrew
+
+# Install without prefix (replaces system utilities - use with caution!)
+sudo ./scripts/install-macos.sh --default-names
 ```
 
 ## Usage
