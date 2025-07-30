@@ -80,7 +80,8 @@ jobs:
         ls -la
         ls -la src/
         echo "Build file validation:"
-        zig build --help | head -20
+        # Capture help output to avoid BrokenPipe error
+        zig build --help 2>&1 | head -20 || true
         
     - name: Check code formatting
       run: |

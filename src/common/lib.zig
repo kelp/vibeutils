@@ -51,6 +51,9 @@ pub const privilege_test = @import("privilege_test.zig");
 /// Testing utilities specifically for privilege-related tests
 pub const test_utils_privilege = @import("test_utils_privilege.zig");
 
+/// File operation helpers with platform-specific workarounds
+pub const file_ops = @import("file_ops.zig");
+
 /// Version information from build configuration
 pub const version = build_options.version;
 
@@ -111,6 +114,23 @@ pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
     var s = StyleType.init(stderr);
     s.setColor(.bright_red) catch {};
     stderr.print("{s}: ", .{prog_name}) catch return;
+    s.reset() catch {};
+    stderr.print(fmt ++ "\n", fmt_args) catch return;
+}
+
+/// Print warning message to stderr without exiting
+///
+/// Used for non-fatal issues that should be reported but don't stop execution.
+/// Warnings are displayed in yellow to distinguish them from errors.
+pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
+    const stderr = std.io.getStdErr().writer();
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+
+    // Try to use color for warnings
+    const StyleType = style.Style(@TypeOf(stderr));
+    var s = StyleType.init(stderr);
+    s.setColor(.bright_yellow) catch {};
+    stderr.print("{s}: warning: ", .{prog_name}) catch return;
     s.reset() catch {};
     stderr.print(fmt ++ "\n", fmt_args) catch return;
 }

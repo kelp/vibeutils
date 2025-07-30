@@ -513,7 +513,7 @@ fn removeDirectoryRecursiveWithContext(
                         return error.AccessDenied;
                     };
                     defer dir_file.close();
-                    dir_file.chmod(stat_result.mode | 0o700) catch {};
+                    common.file_ops.setPermissions(dir_file, stat_result.mode | 0o700, dir_path) catch {};
                     dir_file.close();
 
                     break :blk parent.openDir(basename, .{ .iterate = true }) catch {
@@ -534,7 +534,7 @@ fn removeDirectoryRecursiveWithContext(
                         return error.AccessDenied;
                     };
                     defer dir_file.close();
-                    dir_file.chmod(stat_result.mode | 0o700) catch {};
+                    common.file_ops.setPermissions(dir_file, stat_result.mode | 0o700, dir_path) catch {};
                     break :blk std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
                         return error.AccessDenied;
                     };
@@ -682,7 +682,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
                     return error.AccessDenied;
                 };
                 defer dir_file.close();
-                dir_file.chmod(stat_result.mode | 0o700) catch {}; // Add rwx for user
+                common.file_ops.setPermissions(dir_file, stat_result.mode | 0o700, dir_path) catch {}; // Add rwx for user
 
                 // Retry opening
                 break :blk std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch {
@@ -766,7 +766,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
                 defer parent_dir.close();
 
                 if (parent_dir.stat()) |parent_stat| {
-                    parent_dir.chmod(parent_stat.mode | 0o700) catch {}; // Add rwx for user
+                    common.file_ops.setPermissions(parent_dir, parent_stat.mode | 0o700, null) catch {}; // Add rwx for user
 
                     // Retry deletion
                     std.fs.cwd().deleteDir(dir_path) catch {
@@ -856,7 +856,7 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
                     return error.AccessDenied;
                 };
                 defer file.close();
-                file.chmod(stat_result.mode | 0o200) catch {};
+                common.file_ops.setPermissions(file, stat_result.mode | 0o200, file_name) catch {};
                 file.close();
 
                 // Retry deletion
@@ -942,7 +942,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
                     return error.AccessDenied;
                 };
                 defer file.close();
-                file.chmod(stat_result.mode | 0o200) catch {};
+                common.file_ops.setPermissions(file, stat_result.mode | 0o200, file_path) catch {};
                 file.close();
 
                 // Retry deletion
@@ -1289,7 +1289,7 @@ test "privileged: remove write-protected file with force" {
             const stat = try std.fs.cwd().statFile(file_path);
             const file = try std.fs.cwd().openFile(file_path, .{});
             defer file.close();
-            try file.chmod(stat.mode & ~@as(std.fs.File.Mode, 0o200));
+            try common.file_ops.setPermissions(file, stat.mode & ~@as(std.fs.File.Mode, 0o200), file_path);
 
             // Note: Under fakeroot, chmod may not actually change permissions
             // but rm should still handle the case properly
@@ -1337,7 +1337,7 @@ test "privileged: prompt for write-protected file removal" {
             const stat = try std.fs.cwd().statFile(file_path);
             const file = try std.fs.cwd().openFile(file_path, .{});
             defer file.close();
-            try file.chmod(stat.mode & ~@as(std.fs.File.Mode, 0o200));
+            try common.file_ops.setPermissions(file, stat.mode & ~@as(std.fs.File.Mode, 0o200), file_path);
 
             // Test removal without force flag (would normally prompt)
             var buffer = std.ArrayList(u8).init(allocator);
@@ -1418,7 +1418,7 @@ test "privileged: force flag changes permissions to allow removal" {
             // Remove write permission from first file
             const stat = try std.fs.cwd().statFile(no_write_path);
             var file = try std.fs.cwd().openFile(no_write_path, .{});
-            try file.chmod(stat.mode & ~@as(std.fs.File.Mode, 0o200));
+            try common.file_ops.setPermissions(file, stat.mode & ~@as(std.fs.File.Mode, 0o200), no_write_path);
             file.close();
 
             // Test force removal of files

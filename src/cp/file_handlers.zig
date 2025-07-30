@@ -1,9 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const types = @import("types.zig");
 const errors = @import("errors.zig");
 const path_resolver = @import("path_resolver.zig");
 const user_interaction = @import("user_interaction.zig");
+const common = @import("common");
 
 pub const FileHandlers = struct {
     /// Copy a regular file
@@ -270,16 +272,7 @@ fn copyFileWithMode(source_path: []const u8, dest_path: []const u8, mode: std.fs
     // Explicitly set the mode after creation to ensure it's correct
     // This is necessary because createFile's mode parameter can be affected by umask,
     // particularly under fakeroot where the umask behavior may differ
-    dest_file.chmod(mode) catch |err| {
-        const copy_err = errors.ErrorHandler.mapSystemError(err);
-        const context = errors.ErrorContext{
-            .operation = "set file mode",
-            .source_path = source_path,
-            .dest_path = dest_path,
-        };
-        errors.ErrorHandler.reportError(context, copy_err);
-        return copy_err;
-    };
+    try common.file_ops.setPermissions(dest_file, mode, dest_path);
 
     // Copy timestamps
     dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
@@ -310,16 +303,7 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
         defer dest_dir.close();
 
         // Copy mode/permissions
-        dest_dir.chmod(source_stat.mode) catch |err| {
-            const copy_err = errors.ErrorHandler.mapSystemError(err);
-            const context = errors.ErrorContext{
-                .operation = "preserve directory mode",
-                .source_path = source_path,
-                .dest_path = dest_path,
-            };
-            errors.ErrorHandler.reportError(context, copy_err);
-            return copy_err;
-        };
+        try common.file_ops.setPermissions(dest_dir, source_stat.mode, dest_path);
 
         // Copy timestamps
         // For directories, we need to use futimens/utimensat through posix API
@@ -359,16 +343,7 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
         defer dest_file.close();
 
         // Copy mode/permissions
-        dest_file.chmod(source_stat.mode) catch |err| {
-            const copy_err = errors.ErrorHandler.mapSystemError(err);
-            const context = errors.ErrorContext{
-                .operation = "preserve file mode",
-                .source_path = source_path,
-                .dest_path = dest_path,
-            };
-            errors.ErrorHandler.reportError(context, copy_err);
-            return copy_err;
-        };
+        try common.file_ops.setPermissions(dest_file, source_stat.mode, dest_path);
 
         // Copy timestamps
         dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {

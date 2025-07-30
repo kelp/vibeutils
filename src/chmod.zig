@@ -534,7 +534,7 @@ fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, options: 
     const new_mode = mode.toOctal();
 
     // Apply the new mode using the file's chmod method
-    try file.chmod(@as(std.fs.File.Mode, @intCast(new_mode)));
+    try common.file_ops.setPermissions(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path);
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {
@@ -572,7 +572,7 @@ fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: 
     const new_mode = new_mode_struct.toOctal();
 
     // Apply the new mode using the file's chmod method
-    try file.chmod(@as(std.fs.File.Mode, @intCast(new_mode)));
+    try common.file_ops.setPermissions(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path);
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {
