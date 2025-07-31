@@ -5,7 +5,6 @@
 //!
 //! This implementation is compatible with GNU echo and supports backslash escape
 //! sequences when the -e option is specified.
-
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -64,6 +63,7 @@ pub fn main() !void {
     }
 
     // Create options (handle -E flag which disables -e)
+    // Note: -E takes precedence over -e when both are specified
     const options = EchoOptions{
         .suppress_newline = args.n,
         .interpret_escapes = args.e and !args.E,
@@ -132,7 +132,7 @@ fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOption
     }
 }
 
-// Test helper that parses flags manually for backward compatibility with tests
+/// Test helper that simulates echo command behavior
 fn echo(args: []const []const u8, writer: anytype) !void {
     var suppress_newline = false;
     var interpret_escapes = false;
@@ -158,7 +158,7 @@ fn echo(args: []const []const u8, writer: anytype) !void {
             start_index += 1;
             break;
         } else {
-            break; // Unknown flag, treat as argument
+            break;
         }
     }
 
@@ -170,6 +170,14 @@ fn echo(args: []const []const u8, writer: anytype) !void {
     try echoStrings(args[start_index..], writer, options);
 }
 
+/// Write string while interpreting backslash escape sequences
+/// Invalid escape sequences are passed through literally
+///
+/// Edge cases handled:
+/// - Incomplete escape sequences at end of string (e.g., "\") are output as literal backslash
+/// - Octal sequences overflow wraps around (values > 255 wrap to low 8 bits)
+/// - Hex sequences without valid digits after \x are output literally
+/// - Single backslash at end of string outputs the backslash character
 fn writeWithEscapes(s: []const u8, writer: anytype) !void {
     var i: usize = 0;
     while (i < s.len) {
@@ -184,7 +192,8 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
                     i += 2;
                 },
                 'c' => {
-                    // Suppress trailing newline
+                    // \c suppresses all further output, including the trailing newline
+                    // This matches GNU echo behavior
                     return;
                 },
                 'e' => {
@@ -216,19 +225,23 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
                     i += 2;
                 },
                 '0'...'7' => {
-                    // Octal sequence
+                    // Octal sequence: \0NNN (1-3 digits)
                     var octal_value: u8 = 0;
                     var j: usize = 1;
                     while (j <= 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : (j += 1) {
+                        // Convert octal digit to value and accumulate
+                        // Note: We don't check for overflow as echo traditionally wraps values
                         octal_value = octal_value * 8 + (s[i + j] - '0');
                     }
                     try writer.writeByte(octal_value);
                     i += j;
                 },
                 'x' => {
-                    // Hex sequence
+                    // Hex sequence: \xHH (exactly 2 hex digits)
                     if (i + 3 < s.len) {
+                        // Try to parse the next 2 characters as hex
                         const hex_value = std.fmt.parseInt(u8, s[i + 2 .. i + 4], 16) catch {
+                            // Invalid hex sequence, output literally
                             try writer.writeByte('\\');
                             try writer.writeByte('x');
                             i += 2;
@@ -237,12 +250,14 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
                         try writer.writeByte(hex_value);
                         i += 4;
                     } else {
+                        // Not enough characters for hex value, output literally
                         try writer.writeByte('\\');
                         try writer.writeByte('x');
                         i += 2;
                     }
                 },
                 else => {
+                    // Unknown escape sequence, output literally
                     try writer.writeByte('\\');
                     i += 1;
                 },

@@ -1,15 +1,25 @@
+//! Move (rename) files and directories with atomic rename and cross-filesystem support
+
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const test_utils = common.test_utils;
 
+/// Command line arguments for mv utility
 const MvArgs = struct {
+    /// Display help and exit
     help: bool = false,
+    /// Display version and exit
     version: bool = false,
+    /// Prompt before overwrite
     interactive: bool = false,
+    /// Force overwrite without prompting
     force: bool = false,
+    /// Explain what is being done
     verbose: bool = false,
+    /// Do not overwrite existing files
     no_clobber: bool = false,
+    /// Source files and destination
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -23,10 +33,15 @@ const MvArgs = struct {
 };
 
 // Test helpers
+
+/// Test helper for managing temporary directories
 const TestDir = struct {
+    /// Temporary directory
     tmp_dir: testing.TmpDir,
+    /// Memory allocator
     allocator: std.mem.Allocator,
 
+    /// Initialize test directory
     pub fn init(allocator: std.mem.Allocator) TestDir {
         return .{
             .tmp_dir = testing.tmpDir(.{}),
@@ -34,29 +49,35 @@ const TestDir = struct {
         };
     }
 
+    /// Clean up test directory
     pub fn deinit(self: *TestDir) void {
         self.tmp_dir.cleanup();
     }
 
+    /// Create file with given name and content
     pub fn createFile(self: *TestDir, name: []const u8, content: []const u8) !void {
         const file = try self.tmp_dir.dir.createFile(name, .{});
         defer file.close();
         try file.writeAll(content);
     }
 
+    /// Create file with unique name based on base name
     pub fn createUniqueFile(self: *TestDir, base_name: []const u8, content: []const u8) ![]u8 {
         return try test_utils.createUniqueTestFile(self.tmp_dir.dir, self.allocator, base_name, content);
     }
 
+    /// Check if file exists in test directory
     pub fn fileExists(self: *TestDir, name: []const u8) bool {
         self.tmp_dir.dir.access(name, .{}) catch return false;
         return true;
     }
 
+    /// Read entire file contents
     pub fn readFile(self: *TestDir, name: []const u8) ![]u8 {
         return try self.tmp_dir.dir.readFileAlloc(self.allocator, name, 1024 * 1024);
     }
 
+    /// Get absolute path for file in test directory
     pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
         return try self.tmp_dir.dir.realpathAlloc(self.allocator, name);
     }
@@ -349,19 +370,7 @@ test "mv: empty file" {
     try testing.expectEqualStrings("", content);
 }
 
-/// Cross-filesystem move helper using cp functionality.
-///
-/// This function is called when std.posix.rename fails with RenameAcrossMountPoints,
-/// indicating that the source and destination are on different filesystems.
-/// It performs a copy-then-delete operation to achieve the move.
-///
-/// @param allocator Memory allocator for temporary allocations
-/// @param source Path to the source file or directory
-/// @param dest Path to the destination
-/// @param options Move options controlling verbose output, force mode, etc.
-///
-/// Returns error.OutOfMemory if allocation fails.
-/// Returns filesystem errors from copy or delete operations.
+/// Move across filesystems using copy-then-delete
 fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions) !void {
     // Import cp modules for cross-filesystem copy
     const cp_types = @import("cp/types.zig");
@@ -374,6 +383,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     }
 
     // Create cp options from mv options
+    // We always use recursive mode for cross-filesystem moves to handle directories
     const cp_options = cp_types.CpOptions{
         .recursive = true, // Always recursive for directories
         .preserve = true, // Preserve attributes
@@ -390,6 +400,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     defer operation.deinit(allocator);
 
     // Show progress for cross-filesystem moves
+    // Step 1 of 2: Copying files
     const source_basename = std.fs.path.basename(source);
     try user_interaction.UserInteraction.showProgress(0, 2, source_basename);
 
@@ -401,9 +412,11 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     };
 
     // Update progress after copy
+    // Step 2 of 2: Removing source
     try user_interaction.UserInteraction.showProgress(1, 2, source_basename);
 
     // If copy succeeded, remove the source
+    // We need to check if it's a directory to use the appropriate delete method
     const source_stat = try std.fs.cwd().statFile(source);
     if (source_stat.kind == .directory) {
         try std.fs.cwd().deleteTree(source);
@@ -415,28 +428,18 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     try user_interaction.UserInteraction.showProgress(2, 2, source_basename);
 }
 
-/// Helper function to remove a destination file or directory.
-///
-/// Tries to remove as a file first, then as a directory tree if that fails.
-/// This handles the case where we don't know if the destination is a file or directory.
-///
-/// @param dest Path to destination to remove
+/// Remove destination file or directory
 fn removeDestination(dest: []const u8) !void {
     std.fs.cwd().deleteFile(dest) catch |del_err| {
-        // Might be a directory
+        // If deleteFile fails, it might be a directory
+        // Try deleteTree, but if that also fails, return the original error
         std.fs.cwd().deleteTree(dest) catch {
             return del_err;
         };
     };
 }
 
-/// Check if user wants to proceed with overwrite.
-///
-/// Prompts the user with a y/n question about overwriting the destination file.
-/// Only the first character of the response is checked, case-insensitive.
-///
-/// @param dest Path to destination file being overwritten
-/// @return true if user confirms (y/Y), false otherwise
+/// Prompt user for overwrite confirmation
 fn promptOverwrite(dest: []const u8) !bool {
     const stderr = std.io.getStdErr().writer();
     const stdin = std.io.getStdIn().reader();
@@ -451,29 +454,11 @@ fn promptOverwrite(dest: []const u8) !bool {
     return false;
 }
 
-/// Main move function that handles all mv operations.
-///
-/// This function attempts an atomic rename first, which is fast and preserves
-/// all file attributes. If that fails due to cross-filesystem boundaries,
-/// it falls back to a copy-then-delete operation.
-///
-/// The function handles various cases:
-/// - no-clobber mode: skips if destination exists (check before operation for safe semantics)
-/// - interactive mode: prompts user before overwriting
-/// - force mode: removes destination and retries
-/// - cross-filesystem moves: uses copy engine
-///
-/// @param allocator Memory allocator for temporary operations
-/// @param source Path to source file or directory
-/// @param dest Path to destination
-/// @param options Move options (interactive, force, verbose, no_clobber)
-///
-/// Returns error.PathAlreadyExists if destination exists and no force/interactive
-/// Returns error.FileNotFound if source doesn't exist
-/// Returns error.PermissionDenied if lacking permissions
-/// Returns other filesystem errors as appropriate
+/// Move file or directory with atomic rename or cross-filesystem copy
 fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions) !void {
-    // For no-clobber mode, check if destination exists first (acceptable TOCTOU for this use case)
+    // For no-clobber mode, check if destination exists first
+    // Note: There's a TOCTOU (time-of-check-time-of-use) race here, but this is
+    // acceptable for no-clobber mode as it's a best-effort safety feature
     if (options.no_clobber) {
         std.fs.cwd().access(dest, .{}) catch |err| switch (err) {
             error.FileNotFound => {}, // Destination doesn't exist, proceed
@@ -491,13 +476,15 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
         },
         error.PathAlreadyExists => {
             // Destination exists - handle based on options
+            // Interactive mode takes precedence unless force is also specified
             if (options.interactive and !options.force) {
                 if (!try promptOverwrite(dest)) {
                     return; // User chose not to overwrite
                 }
                 // User approved, remove destination and retry
                 try removeDestination(dest);
-                // Retry the rename
+                // Retry the rename after removing destination
+                // We might still get RenameAcrossMountPoints if on different filesystems
                 std.posix.rename(source, dest) catch |rename_err| switch (rename_err) {
                     error.RenameAcrossMountPoints => {
                         try crossFilesystemMove(allocator, source, dest, options);
@@ -505,9 +492,9 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                     else => return rename_err,
                 };
             } else if (options.force) {
-                // Force mode - remove destination and retry
+                // Force mode - remove destination without asking and retry
                 try removeDestination(dest);
-                // Retry the rename
+                // Retry the rename after removing destination
                 std.posix.rename(source, dest) catch |rename_err| switch (rename_err) {
                     error.RenameAcrossMountPoints => {
                         try crossFilesystemMove(allocator, source, dest, options);
@@ -515,7 +502,8 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                     else => return rename_err,
                 };
             } else {
-                // No force, no interactive - fail
+                // No force, no interactive - fail with error
+                // This preserves existing files by default
                 return error.PathAlreadyExists;
             }
         },
@@ -523,14 +511,19 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
     };
 }
 
+/// Options controlling move operation behavior
 const MoveOptions = struct {
+    /// Prompt before overwrite
     interactive: bool = false,
+    /// Force overwrite without prompting
     force: bool = false,
+    /// Print verbose output
     verbose: bool = false,
+    /// Do not overwrite existing files
     no_clobber: bool = false,
 };
 
-/// Print help message for mv command
+/// Print help message
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
@@ -554,22 +547,7 @@ fn printHelp() !void {
     , .{});
 }
 
-/// Main entry point for the mv utility.
-///
-/// Parses command line arguments and performs move operations according to
-/// GNU mv compatibility standards. Supports both single file moves and
-/// multiple source files to a directory.
-///
-/// Command line options:
-/// -i, --interactive: Prompt before overwrite
-/// -f, --force: Force overwrite without prompting
-/// -v, --verbose: Explain what is being done
-/// -n, --no-clobber: Do not overwrite existing files
-///
-/// Examples:
-///   mv file1.txt file2.txt     # Rename file1.txt to file2.txt
-///   mv file1.txt dir/          # Move file1.txt into dir/
-///   mv file*.txt backup/       # Move all matching files to backup/
+/// Main entry point for mv utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -632,6 +610,7 @@ pub fn main() !void {
         }
 
         // Move each source to destination directory
+        // Move each source to destination directory
         // TODO: Consider parallel processing for multiple independent file moves
         // This could be implemented using a thread pool for better performance
         // when moving many files, but would require careful error handling
@@ -650,7 +629,7 @@ pub fn main() !void {
             }
         }
     } else {
-        // Single source
+        // Single source case: simple rename or move
         const source = files[0];
         const dest = files[1];
 

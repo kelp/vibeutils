@@ -1,9 +1,15 @@
+//! chmod - Change file mode (permissions) utility
+//!
+//! Supports both numeric (octal) and symbolic mode specifications, recursive operations,
+//! and includes safety features to prevent accidental system damage.
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
 const privilege_test = common.privilege_test;
 
+/// Command-line arguments for chmod
 const ChmodArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -25,6 +31,7 @@ const ChmodArgs = struct {
     };
 };
 
+/// Main entry point for chmod
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -32,7 +39,6 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(ChmodArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -43,13 +49,11 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
-    // Handle help
     if (args.help) {
         try printHelp();
         return;
     }
 
-    // Handle version
     if (args.version) {
         try printVersion();
         return;
@@ -57,7 +61,7 @@ pub fn main() !void {
 
     const positionals = args.positionals;
 
-    // When using --reference, we only need file arguments (no mode)
+    // --reference requires only file arguments
     const using_reference = args.reference != null;
     if (using_reference) {
         if (positionals.len < 1) {
@@ -69,11 +73,10 @@ pub fn main() !void {
         }
     }
 
-    // When using --reference, all positionals are files; otherwise first is mode
+    // With --reference, all args are files; otherwise first is mode
     const mode_str = if (using_reference) "" else positionals[0];
     const files = if (using_reference) positionals else positionals[1..];
 
-    // Create options
     const options = ChmodOptions{
         .changes_only = args.changes,
         .quiet = args.silent,
@@ -86,6 +89,7 @@ pub fn main() !void {
     try chmodFiles(allocator, mode_str, files, stdout, options);
 }
 
+/// Print usage information and examples
 fn printHelp() !void {
     const help_text =
         \\Usage: chmod [OPTION]... MODE[,MODE]... FILE...
@@ -114,11 +118,13 @@ fn printHelp() !void {
     try stdout.writeAll(help_text);
 }
 
+/// Print version information
 fn printVersion() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print("chmod ({s}) {s}\n", .{ common.name, common.version });
 }
 
+/// Options controlling chmod behavior
 const ChmodOptions = struct {
     changes_only: bool = false,
     quiet: bool = false,
@@ -127,6 +133,7 @@ const ChmodOptions = struct {
     reference_file: ?[]const u8 = null,
 };
 
+/// Unix file permissions with special bits
 const Mode = struct {
     user: u3,
     group: u3,
@@ -135,6 +142,7 @@ const Mode = struct {
     setgid: bool = false,
     sticky: bool = false,
 
+    /// Convert to octal representation (e.g., 0o755)
     fn toOctal(self: Mode) u32 {
         var result = (@as(u32, self.user) << 6) | (@as(u32, self.group) << 3) | @as(u32, self.other);
         if (self.setuid) result |= 0o4000;
@@ -143,6 +151,7 @@ const Mode = struct {
         return result;
     }
 
+    /// Create from octal permission value
     fn fromOctal(octal: u32) Mode {
         return Mode{
             .user = @truncate((octal >> 6) & 0x7),
@@ -155,15 +164,22 @@ const Mode = struct {
     }
 };
 
-// Custom error types
+/// Errors specific to chmod operations
 const ChmodError = error{
+    /// Invalid symbolic mode string
     InvalidMode,
+    /// Invalid octal mode
     InvalidOctalMode,
+    /// Reference file not found
     ReferenceFileNotFound,
+    /// Path traversal attempt detected
     PathTraversal,
+    /// User cancelled operation
     UserCancelled,
 };
 
+/// Apply chmod operations to files
+/// Handles both single files and recursive directory operations
 fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const []const u8, writer: anytype, options: ChmodOptions) !void {
     // Handle reference file mode if specified
     var reference_mode: ?Mode = null;
@@ -180,7 +196,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
     // Determine mode to use - reference mode takes precedence
     const use_reference = reference_mode != null;
 
-    // Check if this is a symbolic mode (contains letters) - only relevant if not using reference
+    // Check if this is a symbolic mode
     const is_symbolic = if (use_reference) false else blk: {
         for (mode_str) |c| {
             if (std.ascii.isAlphabetic(c) or c == '+' or c == '-' or c == '=' or c == ',') {
@@ -196,11 +212,11 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
         const normalized = if (std.fs.cwd().access(file_path, .{})) |_| blk: {
             break :blk std.fs.realpath(file_path, &normalized_buf) catch file_path;
         } else |_| blk: {
-            // File doesn't exist, pass the original path for error handling
+            // File doesn't exist
             break :blk file_path;
         };
 
-        // Additional safety check for critical system paths
+        // Safety check for critical system paths
         if (isCriticalSystemPath(normalized)) {
             if (!options.quiet) {
                 common.printError("cannot modify '{s}': Operation not permitted", .{file_path});
@@ -209,7 +225,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
         }
 
         if (options.recursive) {
-            // For recursive operations, check if path is a directory first
+            // Check if path is a directory
             const stat_result = std.fs.cwd().statFile(file_path) catch |err| {
                 if (!options.quiet) {
                     common.printError("cannot access '{s}': {s}", .{ file_path, @errorName(err) });
@@ -220,7 +236,6 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             if (stat_result.kind == .directory) {
                 try chmodRecursive(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, writer, options);
             } else {
-                // Apply to single file
                 if (use_reference) {
                     try applyModeToFile(file_path, reference_mode.?, writer, options);
                 } else if (is_symbolic) {
@@ -265,6 +280,8 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
     }
 }
 
+/// Recursively apply chmod to a directory and all its contents
+/// Processes directories depth-first
 fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, writer: anytype, options: ChmodOptions) !void {
     // Apply mode to the directory itself first
     if (use_reference) {
@@ -299,12 +316,10 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
     // Iterate through directory entries
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
-        // Skip . and .. entries
         if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
             continue;
         }
 
-        // Build full path for the entry
         const full_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
         defer allocator.free(full_path);
 
@@ -314,7 +329,6 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
                 try chmodRecursive(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, writer, options);
             },
             .file, .sym_link => {
-                // Apply mode to file or symlink
                 if (use_reference) {
                     applyModeToFile(full_path, reference_mode.?, writer, options) catch |err| {
                         if (!options.quiet) {
@@ -373,6 +387,8 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
     }
 }
 
+/// Parse a mode string (octal or symbolic) into a Mode struct
+/// First attempts octal parsing, then falls back to symbolic mode parsing
 fn parseMode(mode_str: []const u8) !Mode {
     // Try octal mode first (Phase 1)
     if (mode_str.len == 3 or mode_str.len == 4) {
@@ -410,7 +426,7 @@ fn parseMode(mode_str: []const u8) !Mode {
     }
 
     if (all_numeric) {
-        // It's numeric but not valid octal (wrong length or invalid digits)
+        // Numeric but not valid octal
         return ChmodError.InvalidOctalMode;
     }
 
@@ -419,15 +435,19 @@ fn parseMode(mode_str: []const u8) !Mode {
 }
 
 // Symbolic mode parsing structures and functions
+
+/// Single symbolic mode operation
 const SymbolicMode = struct {
-    who: u8, // Bitmask: 1=user, 2=group, 4=other, 8=all
-    op: u8, // Operation: +, -, =
-    perms: u8, // Permissions: r=4, w=2, x=1
+    who: u8, // 1=user, 2=group, 4=other, 8=all
+    op: u8, // +, -, =
+    perms: u8, // r=4, w=2, x=1
 };
 
+/// Parse a complete symbolic mode string
+/// Returns a base mode - actual application uses current file mode
 fn parseSymbolicModeString(mode_str: []const u8) !Mode {
-    // Start with a base mode of 0 - symbolic modes will be applied to current file mode in practice
-    var base_mode = Mode.fromOctal(0o000); // Start with no permissions for symbolic parsing
+    // Start with base mode of 0
+    var base_mode = Mode.fromOctal(0o000);
 
     // Split by commas for multiple operations
     var iter = std.mem.splitScalar(u8, mode_str, ',');
@@ -438,10 +458,11 @@ fn parseSymbolicModeString(mode_str: []const u8) !Mode {
     return base_mode;
 }
 
+/// Apply a single symbolic mode clause
+/// Modifies the mode in-place
 fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
     if (clause.len < 2) return ChmodError.InvalidMode;
 
-    // Parse who (ugoa)
     var i: usize = 0;
     var who: u8 = 0;
 
@@ -462,14 +483,12 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
 
     if (i >= clause.len) return ChmodError.InvalidMode;
 
-    // Parse operation
     const op = clause[i];
     if (op != '+' and op != '-' and op != '=') {
         return ChmodError.InvalidMode;
     }
     i += 1;
 
-    // Parse permissions
     var perms: u8 = 0;
     while (i < clause.len) {
         switch (clause[i]) {
@@ -478,18 +497,17 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
             'x' => perms |= 1,
             's' => perms |= 8, // Special bit (setuid/setgid)
             't' => perms |= 16, // Sticky bit
-            'X' => perms |= 1, // Execute if directory or already executable
+            'X' => perms |= 1, // Execute if directory or already has execute
             else => return ChmodError.InvalidMode,
         }
         i += 1;
     }
 
-    // Apply the changes
     applyPermissionChange(mode, who, op, perms);
 }
 
+/// Apply permission changes based on parsed symbolic mode components
 fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
-    // Apply to user
     if (who & 1 != 0) {
         switch (op) {
             '+' => mode.user |= @as(u3, @truncate(perms)),
@@ -499,7 +517,6 @@ fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
         }
     }
 
-    // Apply to group
     if (who & 2 != 0) {
         switch (op) {
             '+' => mode.group |= @as(u3, @truncate(perms)),
@@ -509,7 +526,6 @@ fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
         }
     }
 
-    // Apply to other
     if (who & 4 != 0) {
         switch (op) {
             '+' => mode.other |= @as(u3, @truncate(perms)),
@@ -520,8 +536,9 @@ fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
     }
 }
 
+/// Apply a specific mode to a single file
+/// Reports changes if verbose or changes_only flags are set
 fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, options: ChmodOptions) !void {
-    // Get current file stats
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.PermissionDenied,
@@ -548,8 +565,9 @@ fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, options: 
     }
 }
 
+/// Apply a symbolic mode string to a file
+/// Preserves existing permissions and applies changes relative to them
 fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: anytype, options: ChmodOptions) !void {
-    // Get current file stats
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.PermissionDenied,
@@ -563,7 +581,6 @@ fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: 
     // Start with current mode
     var new_mode_struct = Mode.fromOctal(old_mode);
 
-    // Apply symbolic changes
     var iter = std.mem.splitScalar(u8, mode_str, ',');
     while (iter.next()) |clause| {
         try applySymbolicMode(&new_mode_struct, std.mem.trim(u8, clause, " "));
@@ -586,6 +603,8 @@ fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: 
     }
 }
 
+/// Convert octal mode to string representation (e.g., "rwxr-xr-x")
+/// Handles special permission bits
 fn modeToString(mode: u32) [9]u8 {
     var result = [_]u8{'-'} ** 9;
 
@@ -619,6 +638,7 @@ fn modeToString(mode: u32) [9]u8 {
 }
 
 /// Check if a path is a critical system path that should not be modified
+/// Security feature to prevent accidental system damage
 fn isCriticalSystemPath(path: []const u8) bool {
     const critical_paths = [_][]const u8{
         "/bin",
@@ -640,7 +660,7 @@ fn isCriticalSystemPath(path: []const u8) bool {
         if (std.mem.eql(u8, path, critical)) {
             return true;
         }
-        // Check if path starts with critical path followed by /
+        // Check if path starts with critical path
         if (path.len > critical.len and path[critical.len] == '/' and std.mem.startsWith(u8, path, critical)) {
             return true;
         }
@@ -648,7 +668,8 @@ fn isCriticalSystemPath(path: []const u8) bool {
     return false;
 }
 
-// Test helper function for Phase 1 tests
+/// Helper function for testing chmod functionality
+/// Used in integration tests to simulate command-line usage
 fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !void {
     if (args.len < 2) {
         return error.InvalidArguments;
@@ -661,9 +682,7 @@ fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype
     try chmodFiles(allocator, mode_str, files, writer, options);
 }
 
-// ============================================================================
-// TESTS - Phase 1: Basic numeric mode parsing and application
-// ============================================================================
+// Tests: Basic numeric mode parsing and application
 
 test "parseMode handles 3-digit octal modes" {
     const mode = try parseMode("755");
@@ -688,7 +707,7 @@ test "parseMode rejects invalid octal digits" {
 }
 
 test "parseMode rejects modes over 777" {
-    // This would be caught by the octal digit check, but test for completeness
+    // Test for completeness
     try testing.expectError(ChmodError.InvalidOctalMode, parseMode("999"));
 }
 
@@ -720,23 +739,17 @@ test "modeToString converts correctly" {
     try testing.expectEqualStrings("-wx-wx-wx", &modeToString(0o333));
 }
 
-// ============================================================================
-// PRIVILEGED TESTS
-// These tests require privilege simulation (fakeroot) to run properly.
-// They are named with "privileged:" prefix and are excluded from regular tests.
-// Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged under fakeroot
-// ============================================================================
+// Privileged tests require fakeroot
+// Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged
 
-// File operation tests require actual file system operations, which we'll test with temporary files
+// File operation tests
 test "privileged: applyModeToFile basic functionality" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
     try privilege_test.withFakeroot(testing.allocator, struct {
         fn testFn(allocator: std.mem.Allocator) !void {
             _ = allocator;
-            // Create a temporary file for testing
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -751,7 +764,6 @@ test "privileged: applyModeToFile basic functionality" {
             const mode = Mode.fromOctal(0o644);
             const options = ChmodOptions{ .verbose = true };
 
-            // Use absolute path to avoid directory changes
             const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
             defer testing.allocator.free(abs_path);
 
@@ -769,13 +781,11 @@ test "privileged: applyModeToFile basic functionality" {
 }
 
 test "privileged: chmodFiles handles multiple files" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     try privilege_test.withFakeroot(testing.allocator, struct {
         fn testFn(allocator: std.mem.Allocator) !void {
             _ = allocator;
-            // Create temporary files for testing
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -788,7 +798,6 @@ test "privileged: chmodFiles handles multiple files" {
                 test_files_abs.deinit();
             }
 
-            // Create files and get absolute paths
             for (test_files_rel) |filename| {
                 const file = try tmp_dir.dir.createFile(filename, .{});
                 file.close();
@@ -820,8 +829,7 @@ test "chmodFiles handles nonexistent files gracefully" {
     const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
     const options = ChmodOptions{ .quiet = true };
 
-    // This should not crash, even though the file doesn't exist
-    // The function should continue processing other files
+    // Should not crash on nonexistent files
     try chmodFiles(testing.allocator, "644", &nonexistent_files, buffer.writer(), options);
 
     // Should produce no output due to quiet mode
@@ -830,7 +838,6 @@ test "chmodFiles handles nonexistent files gracefully" {
 
 // Integration test using the chmod helper function
 test "privileged: chmod integration test with octal mode" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     try privilege_test.withFakeroot(testing.allocator, struct {
@@ -846,7 +853,6 @@ test "privileged: chmod integration test with octal mode" {
             var buffer = std.ArrayList(u8).init(testing.allocator);
             defer buffer.deinit();
 
-            // Get absolute path
             const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
             defer testing.allocator.free(abs_path);
 
@@ -864,26 +870,22 @@ test "chmod handles invalid mode strings" {
     const test_cases = [_][]const u8{ "abc", "999", "12a", "", "75555" };
 
     for (test_cases) |invalid_mode| {
-        // This should fail with InvalidArguments or the parsing should fail
-        // We expect the parseMode to be called and return an error
+        // Should fail with invalid mode
         const result = parseMode(invalid_mode);
         try testing.expect(std.meta.isError(result));
     }
 }
 
-// ============================================================================
-// TESTS - Security and Safety Features
-// ============================================================================
+// Tests: Security and Safety Features
 
 test "isCriticalSystemPath detects system paths" {
-    // Test that critical system paths are properly detected
+    // Test critical system path detection
     try testing.expect(isCriticalSystemPath("/etc"));
     try testing.expect(isCriticalSystemPath("/bin"));
     try testing.expect(isCriticalSystemPath("/usr"));
     try testing.expect(isCriticalSystemPath("/etc/passwd"));
     try testing.expect(isCriticalSystemPath("/bin/sh"));
 
-    // Test that non-critical paths are not blocked
     try testing.expect(!isCriticalSystemPath("/home/user/test"));
     try testing.expect(!isCriticalSystemPath("/tmp/test"));
     try testing.expect(!isCriticalSystemPath("/opt/myapp"));
@@ -891,7 +893,6 @@ test "isCriticalSystemPath detects system paths" {
 }
 
 test "Mode struct supports special permissions" {
-    // Test setuid, setgid, and sticky bit support
     const mode_with_setuid = Mode{
         .user = 7,
         .group = 5,
@@ -965,9 +966,7 @@ test "modeToString includes special permission bits" {
     try testing.expectEqualStrings("rwxr-xr-T", &modeToString(0o1754)); // sticky without other execute
 }
 
-// ============================================================================
-// TESTS - Phase 2: Symbolic mode parsing
-// ============================================================================
+// Tests: Symbolic mode parsing
 
 test "parseSymbolicMode basic additions" {
     // u+r: add read for user
@@ -1043,7 +1042,7 @@ test "parseSymbolicMode complex combinations" {
     try applySymbolicMode(&mode, "u+rwx");
     try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
 
-    // Mixed operations - apply each separately since comma parsing is complex
+    // Mixed operations
     mode = Mode.fromOctal(0o755);
     try applySymbolicMode(&mode, "u-x");
     try testing.expectEqual(@as(u32, 0o655), mode.toOctal());
@@ -1053,26 +1052,20 @@ test "parseSymbolicMode complex combinations" {
     try testing.expectEqual(@as(u32, 0o775), mode.toOctal());
 }
 
-// ============================================================================
-// TESTS - Phase 3: Recursive operations
-// ============================================================================
+// Tests: Recursive operations
 
 test "privileged: recursive chmod on directory structure" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     try privilege_test.withFakeroot(testing.allocator, struct {
         fn testFn(allocator: std.mem.Allocator) !void {
             _ = allocator;
-            // Create a temporary directory structure for testing
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
-            // Create nested directory structure
             try tmp_dir.dir.makeDir("subdir");
             try tmp_dir.dir.makeDir("subdir/deeper");
 
-            // Create files at different levels
             const test_file1 = try tmp_dir.dir.createFile("file1.txt", .{});
             defer test_file1.close();
 
@@ -1082,7 +1075,6 @@ test "privileged: recursive chmod on directory structure" {
             const test_file3 = try tmp_dir.dir.createFile("subdir/deeper/file3.txt", .{});
             defer test_file3.close();
 
-            // Get absolute paths
             const abs_root = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
             defer testing.allocator.free(abs_root);
 
@@ -1092,24 +1084,20 @@ test "privileged: recursive chmod on directory structure" {
             const options = ChmodOptions{ .recursive = true, .verbose = true };
             const files = [_][]const u8{abs_root};
 
-            // Apply recursive chmod
             try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
 
-            // Verify that all files and directories were processed
-            // Note: This is a basic test - full verification would check each file's permissions
+            // Basic verification
             try testing.expect(buffer.items.len > 0); // Should have verbose output
         }
     }.testFn);
 }
 
 test "privileged: recursive flag processes files and directories" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     try privilege_test.withFakeroot(testing.allocator, struct {
         fn testFn(allocator: std.mem.Allocator) !void {
             _ = allocator;
-            // Create a simple directory structure
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -1117,7 +1105,6 @@ test "privileged: recursive flag processes files and directories" {
             const test_file = try tmp_dir.dir.createFile("testdir/test.txt", .{});
             defer test_file.close();
 
-            // Get absolute path to the directory
             const abs_dir = try tmp_dir.dir.realpathAlloc(testing.allocator, "testdir");
             defer testing.allocator.free(abs_dir);
 
@@ -1127,7 +1114,6 @@ test "privileged: recursive flag processes files and directories" {
             const options = ChmodOptions{ .recursive = true, .changes_only = true };
             const files = [_][]const u8{abs_dir};
 
-            // Apply recursive chmod - should not error
             try chmodFiles(testing.allocator, "644", &files, buffer.writer(), options);
 
             // The test passes if no errors are thrown
@@ -1135,12 +1121,9 @@ test "privileged: recursive flag processes files and directories" {
     }.testFn);
 }
 
-// ============================================================================
-// TESTS - Phase 4: Verbose, changes, and silent flags
-// ============================================================================
+// Tests: Verbose, changes, and silent flags
 
 test "privileged: verbose flag outputs changes" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     try privilege_test.withFakeroot(testing.allocator, struct {
@@ -1172,7 +1155,6 @@ test "privileged: verbose flag outputs changes" {
 }
 
 test "privileged: changes flag only outputs when mode changes" {
-    // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     try privilege_test.withFakeroot(testing.allocator, struct {
@@ -1193,7 +1175,6 @@ test "privileged: changes flag only outputs when mode changes" {
             const options = ChmodOptions{ .changes_only = true };
             const files = [_][]const u8{abs_path};
 
-            // Apply mode that differs from current
             try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
 
             // Should have output when mode changes
@@ -1203,7 +1184,6 @@ test "privileged: changes flag only outputs when mode changes" {
             buffer.clearRetainingCapacity();
             try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
 
-            // Should have no output when mode doesn't change
             try testing.expectEqual(@as(usize, 0), buffer.items.len);
         }
     }.testFn);
@@ -1216,7 +1196,7 @@ test "quiet flag suppresses error messages" {
     const nonexistent_files = [_][]const u8{"nonexistent_file.txt"};
     const options = ChmodOptions{ .quiet = true };
 
-    // This should not produce output even with errors
+    // Should produce no output due to quiet mode
     try chmodFiles(testing.allocator, "755", &nonexistent_files, buffer.writer(), options);
 
     // Should produce no output due to quiet mode
@@ -1248,7 +1228,7 @@ test "path traversal protection" {
 }
 
 test "error handling consistency" {
-    // Test that both octal and symbolic mode errors are handled consistently
+    // Test error handling consistency
     try testing.expectError(ChmodError.InvalidOctalMode, parseMode("999"));
     try testing.expectError(ChmodError.InvalidMode, parseMode("u+invalid"));
     try testing.expectError(ChmodError.InvalidMode, parseMode("invalid+x"));

@@ -19,3 +19,14 @@ coverage/
 *.gcov
 *.gcda
 *.gcno
+
+# Generated documentation
+docs/*.html
+docs/*.js
+docs/*.wasm
+docs/*.tar
+
+# Temporary files
+*_REVIEW*.md
+*_review.md
+*_report.md

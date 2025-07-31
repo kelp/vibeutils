@@ -1,3 +1,4 @@
+//! Main entry point for the ls command with file listing functionality
 const std = @import("std");
 const common = @import("common");
 
@@ -14,6 +15,7 @@ const Entry = types.Entry;
 const ColorMode = types.ColorMode;
 const TimeStyle = types.TimeStyle;
 
+/// Command-line argument structure parsed by ArgParser
 const LsArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -40,6 +42,7 @@ const LsArgs = struct {
     git: bool = false,
     positionals: []const []const u8 = &.{},
 
+    /// Metadata for argument parser help generation
     pub const meta = .{
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -67,6 +70,8 @@ const LsArgs = struct {
     };
 };
 
+/// Main entry point for the ls command
+/// Parses arguments and lists files or directories
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -105,6 +110,7 @@ pub fn main() !void {
     }
 
     // Parse color mode
+    // Default to 'auto' which enables colors in terminal but not in pipes
     var color_mode = ColorMode.auto;
     if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
@@ -113,6 +119,7 @@ pub fn main() !void {
     }
 
     // Parse icon mode
+    // First check environment variable LS_ICONS, then command-line override
     var icon_mode = common.icons.getIconModeFromEnv(allocator);
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
@@ -121,14 +128,15 @@ pub fn main() !void {
     }
 
     // Parse time style
-    var time_style = TimeStyle.relative; // Default to relative
+    // Default to 'relative' for human-friendly time displays
+    var time_style = TimeStyle.relative;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
             common.fatal("invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
         };
     }
 
-    // Create options struct
+    // Create options struct by consolidating all parsed arguments
     const options = LsOptions{
         .all = args.all,
         .almost_all = args.almost_all,
@@ -154,13 +162,15 @@ pub fn main() !void {
 
     const stdout = std.io.getStdOut().writer();
 
-    // Access positionals
+    // Access positionals (the paths to list)
     const paths = args.positionals;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
         try listDirectory(".", stdout, options, allocator);
     } else {
+        // List each specified path
+        // When multiple paths are given, print headers between them
         for (paths, 0..) |path, i| {
             if (paths.len > 1) {
                 if (i > 0) try stdout.writeAll("\n");
@@ -171,6 +181,7 @@ pub fn main() !void {
     }
 }
 
+/// Print help message with usage examples
 fn printHelp() !void {
     // Use auto-generated help from ArgParser
     try common.argparse.ArgParser.printHelp(LsArgs, "ls", std.io.getStdOut().writer());
@@ -193,7 +204,7 @@ fn printHelp() !void {
     );
 }
 
-/// Print icon test to help users verify Nerd Font support
+/// Print comprehensive icon test to verify Nerd Font support
 fn printIconTest() !void {
     const stdout = std.io.getStdOut().writer();
     const theme = common.icons.IconTheme{};
@@ -248,6 +259,8 @@ fn printIconTest() !void {
     try stdout.writeAll("  3. Restart your terminal\n");
 }
 
+/// List a directory or file, handling both files and directories appropriately
+/// Errors are printed but don't stop execution except for BrokenPipe
 fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(writer, options.color_mode);
@@ -268,6 +281,7 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
         };
 
         // Get Git status for the file if requested
+        // We initialize the git repo at the current directory and check the file's status
         if (options.show_git_status) {
             var git_repo = git_integration.initGitRepo(allocator, ".");
             defer if (git_repo) |*repo| repo.deinit();
@@ -311,7 +325,7 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     try listDirectoryImpl(dir, path, writer, options, allocator, style);
 }
 
-// Shared implementation that works with an open directory handle
+/// Set up visited inode tracking for cycle detection in recursive mode
 fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) anyerror!void {
     // For recursive listing with symlinks, we need to track visited inodes
     var visited_inodes = std.AutoHashMap(u64, void).init(allocator);
@@ -320,16 +334,18 @@ fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options
     try listDirectoryImplWithVisited(dir, path, writer, options, allocator, style, &visited_inodes);
 }
 
-// Internal implementation that tracks visited inodes
+/// Core directory listing logic with cycle detection
+/// Collects, sorts, and prints directory entries
 fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_inodes: *std.AutoHashMap(u64, void)) anyerror!void {
-    // Collect and filter entries
+    // Collect and filter entries based on options
     var entries = try entry_collector.collectFilteredEntries(dir, allocator, options);
     defer entries.deinit();
     defer {
+        // Free any allocated memory within entries (e.g., symlink targets)
         entry_collector.freeEntries(entries.items, allocator);
     }
 
-    // Enhance with metadata if needed
+    // Enhance with metadata if needed for sorting or display
     if (entry_collector.needsMetadata(options)) {
         try entry_collector.enhanceEntriesWithMetadata(entries.items, dir, options, allocator);
     }
@@ -349,7 +365,7 @@ fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anyty
         try writer.print("{s}:\n", .{path});
     }
 
-    // Print entries
+    // Print entries using the appropriate formatter
     _ = try formatter.printEntries(entries.items, writer, options, style);
 
     // Handle recursive listing
@@ -358,8 +374,8 @@ fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anyty
     }
 }
 
-// Now we can fix the circular dependency by implementing the recursive function here
-/// This is called from entry_collector.zig to complete the recursion
+/// Recursively list a subdirectory with proper error handling
+/// BrokenPipe errors are propagated, others are printed but don't stop processing
 pub fn recurseIntoSubdirectory(
     sub_dir: std.fs.Dir,
     subdir_path: []const u8,
@@ -370,7 +386,7 @@ pub fn recurseIntoSubdirectory(
     visited_inodes: *std.AutoHashMap(u64, void),
 ) anyerror!void {
     listDirectoryImplWithVisited(sub_dir, subdir_path, writer, options, allocator, style, visited_inodes) catch |err| switch (err) {
-        error.BrokenPipe => return err, // Propagate BrokenPipe
+        error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
         else => {
             common.printError("{s}: {}", .{ subdir_path, err });
             // Continue with other directories even if one fails
@@ -378,7 +394,7 @@ pub fn recurseIntoSubdirectory(
     };
 }
 
-// Include all test files
+// Import all module tests for comprehensive test coverage
 test {
     _ = @import("display.zig");
     _ = @import("entry_collector.zig");

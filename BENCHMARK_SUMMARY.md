@@ -85,8 +85,7 @@ To run benchmarks:
 # Run performance benchmark
 zig build benchmark
 
-# Or use the script to save timestamped results
-./run_benchmark.sh
+# This will run parser performance benchmarks
 ```
 
 Results are saved in `benchmark_results/` directory.

@@ -1,3 +1,4 @@
+//! chown - change file owner and group
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -6,24 +7,43 @@ const c = std.c;
 const privilege_test = common.privilege_test;
 
 // External C function bindings
+
+/// Changes owner and group of a file (follows symbolic links)
 extern "c" fn chown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
+
+/// Changes owner and group of a file (does not follow symbolic links)
 extern "c" fn lchown(path: [*:0]const u8, uid: c.uid_t, gid: c.gid_t) c_int;
 
+/// Command-line arguments for chown
 const ChownArgs = struct {
+    /// Display help and exit
     help: bool = false,
+    /// Display version and exit
     version: bool = false,
+    /// Report only when a change is made
     changes: bool = false,
+    /// Suppress most error messages
     silent: bool = false,
+    /// Same as silent
     quiet: bool = false,
+    /// Output a diagnostic for every file processed
     verbose: bool = false,
+    /// Affect symbolic links instead of referenced files
     no_dereference: bool = false,
+    /// If a command line argument is a symbolic link to a directory, traverse it
     H: bool = false,
+    /// Traverse every symbolic link to a directory encountered
     L: bool = false,
+    /// Do not traverse any symbolic links (default behavior)
     P: bool = false,
+    /// Operate on files and directories recursively
     recursive: bool = false,
+    /// Use file's owner and group as reference
     reference: ?[]const u8 = null,
+    /// Positional arguments (owner spec and file paths)
     positionals: []const []const u8 = &.{},
 
+    /// Metadata for argument parsing
     pub const meta = .{
         .help = .{ .short = 0, .desc = "Display this help and exit" }, // Disable short flag for help
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -40,6 +60,7 @@ const ChownArgs = struct {
     };
 };
 
+/// Main entry point for chown utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -47,7 +68,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using new parser
+    // Parse command-line arguments using the common argument parser
     const args = common.argparse.ArgParser.parseProcess(ChownArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -58,22 +79,21 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
-    // Handle help
+    // Handle information requests (help/version) - these exit immediately
     if (args.help) {
         try printHelp();
         return;
     }
 
-    // Handle version
     if (args.version) {
         try printVersion();
         return;
     }
 
-    // Get positional arguments
+    // Get positional arguments for further processing
     const positionals = args.positionals;
 
-    // Create options struct
+    // Convert arguments to internal options
     const options = ChownOptions{
         .changes = args.changes,
         .silent = args.silent or args.quiet,
@@ -86,13 +106,13 @@ pub fn main() !void {
         .reference_file = args.reference,
     };
 
-    // Check arguments based on whether we have a reference file
+    // Extract owner spec and files based on whether --reference is used
     const owner_spec: []const u8 = if (args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
             common.fatal("missing file operand", .{});
         }
-        break :blk ""; // Empty owner spec when using reference
+        break :blk "";
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
@@ -101,12 +121,13 @@ pub fn main() !void {
         break :blk positionals[0];
     };
 
+    // Extract file list based on mode
     const files: []const []const u8 = if (args.reference != null)
         positionals
     else
         positionals[1..];
 
-    // Process files
+    // Process each file, accumulating error status
     var exit_code: u8 = 0;
     for (files) |file_path| {
         chownFile(file_path, owner_spec, options, allocator) catch |err| {
@@ -118,6 +139,7 @@ pub fn main() !void {
     std.process.exit(exit_code);
 }
 
+/// Print help message
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
@@ -162,23 +184,35 @@ fn printHelp() !void {
     , .{ prog_name, prog_name, prog_name, prog_name, prog_name });
 }
 
+/// Print version information
 fn printVersion() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print("chown ({s}) {s}\n", .{ common.name, common.version });
 }
 
+/// Internal options for chown operations
 const ChownOptions = struct {
+    /// Report only on changes
     changes: bool = false,
+    /// Suppress error messages
     silent: bool = false,
+    /// Report all operations
     verbose: bool = false,
+    /// Don't follow symlinks
     no_dereference: bool = false,
+    /// Follow command line symlinks
     traverse_command_line_symlinks: bool = false,
+    /// Follow all symlinks
     traverse_all_symlinks: bool = false,
+    /// Never follow symlinks
     no_traverse_symlinks: bool = false,
+    /// Change ownership recursively
     recursive: bool = false,
+    /// Reference file path
     reference_file: ?[]const u8 = null,
 };
 
+/// Change ownership of a file or directory
 fn chownFile(
     path: []const u8,
     owner_spec: []const u8,
@@ -204,13 +238,14 @@ fn chownFile(
     }
 }
 
+/// Change ownership of a single file (non-recursive)
 fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions) !void {
     // Get current ownership for comparison
     const stat_info = try common.file.FileInfo.stat(path);
     const current_uid = @as(common.user_group.uid_t, @intCast(stat_info.uid));
     const current_gid = @as(common.user_group.gid_t, @intCast(stat_info.gid));
 
-    // Determine new ownership values
+    // Use current values if not specified
     const new_uid = ownership.user orelse current_uid;
     const new_gid = ownership.group orelse current_gid;
 
@@ -226,11 +261,13 @@ fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, opt
             reportChange(path, current_uid, current_gid, new_uid, new_gid);
         }
     } else if (options.verbose) {
-        // Report no change
+        // Report no change in verbose mode
         reportNoChange(path);
     }
 }
 
+/// Recursively change ownership of directory and contents
+/// Errors during traversal are ignored to continue processing
 fn chownRecursive(
     path: []const u8,
     ownership: common.user_group.OwnershipSpec,
@@ -241,11 +278,11 @@ fn chownRecursive(
     try chownSingle(path, ownership, options);
 
     // Check if it's a directory to recurse into
-    const stat_info = common.file.FileInfo.stat(path) catch return; // Ignore errors for missing files
+    const stat_info = common.file.FileInfo.stat(path) catch return;
 
     if (stat_info.kind == .directory) {
         // Open directory and iterate
-        var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch return; // Ignore permission errors
+        var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch return;
         defer dir.close();
 
         var iterator = dir.iterate();
@@ -254,12 +291,14 @@ fn chownRecursive(
             const full_path = try fs.path.join(allocator, &.{ path, entry.name });
             defer allocator.free(full_path);
 
-            // Recurse
+            // Recurse into subdirectory or change file
             try chownRecursive(full_path, ownership, options, allocator);
         }
     }
 }
 
+/// Perform ownership change via system call
+/// Uses chown() or lchown() based on no_dereference option
 fn changeOwnership(path: []const u8, uid: common.user_group.uid_t, gid: common.user_group.gid_t, options: ChownOptions) !void {
     // Convert path to null-terminated string for system call
     const path_c = try std.heap.page_allocator.dupeZ(u8, path);
@@ -272,6 +311,7 @@ fn changeOwnership(path: []const u8, uid: common.user_group.uid_t, gid: common.u
         chown(path_c.ptr, uid, gid);
 
     if (result != 0) {
+        // Map errno to appropriate Zig error
         const errno = std.c._errno().*;
         return switch (errno) {
             @intFromEnum(std.c.E.NOENT) => error.FileNotFound,
@@ -289,6 +329,7 @@ fn changeOwnership(path: []const u8, uid: common.user_group.uid_t, gid: common.u
     }
 }
 
+/// Extract ownership from reference file
 fn getOwnershipFromReference(ref_path: []const u8) !common.user_group.OwnershipSpec {
     const stat_info = try common.file.FileInfo.stat(ref_path);
     return common.user_group.OwnershipSpec{
@@ -297,16 +338,19 @@ fn getOwnershipFromReference(ref_path: []const u8) !common.user_group.OwnershipS
     };
 }
 
+/// Report successful ownership change
 fn reportChange(path: []const u8, old_uid: common.user_group.uid_t, old_gid: common.user_group.gid_t, new_uid: common.user_group.uid_t, new_gid: common.user_group.gid_t) void {
     const stdout = std.io.getStdOut().writer();
     stdout.print("changed ownership of '{s}' from {d}:{d} to {d}:{d}\n", .{ path, old_uid, old_gid, new_uid, new_gid }) catch {};
 }
 
+/// Report ownership unchanged
 fn reportNoChange(path: []const u8) void {
     const stdout = std.io.getStdOut().writer();
     stdout.print("ownership of '{s}' retained\n", .{path}) catch {};
 }
 
+/// Handle and report errors
 fn handleError(path: []const u8, err: anyerror, options: ChownOptions) void {
     if (options.silent) return; // Suppress errors in silent mode
 
@@ -328,22 +372,10 @@ fn handleError(path: []const u8, err: anyerror, options: ChownOptions) void {
     }
 }
 
-// ==================== TESTS ====================
+// Tests
 
-// ============================================================================
-// REGULAR TESTS
-// These tests can run without special privileges and test logic that doesn't
-// require actual ownership changes (e.g., parsing, error handling).
-// ============================================================================
-
-// Regular tests that don't require privileges will remain here
-
-// ============================================================================
-// PRIVILEGED TESTS
-// These tests require privilege simulation (fakeroot) to run properly.
-// They are named with "privileged:" prefix and are excluded from regular tests.
-// Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged under fakeroot
-// ============================================================================
+// Regular tests run without privileges
+// Privileged tests require fakeroot and are named with "privileged:" prefix
 
 test "privileged: chown basic functionality" {
     // Skip test if no privilege simulation available
@@ -352,7 +384,6 @@ test "privileged: chown basic functionality" {
     // Run test under privilege simulation
     try privilege_test.withFakeroot(testing.allocator, struct {
         fn testFn(allocator: std.mem.Allocator) !void {
-            // This is a failing test that we'll implement step by step
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -724,7 +755,6 @@ test "privileged: chown with no-dereference option" {
 
             // Create symlink (this might fail on some systems)
             tmp_dir.dir.symLink("target.txt", "link.txt", .{}) catch {
-                // Skip test if symlinks aren't supported
                 return;
             };
 
@@ -813,12 +843,7 @@ test "error handling different error types" {
 }
 
 test "reportChange function" {
-    // These functions write to stdout, which can cause issues in tests
-    // For now, we'll just verify they compile and the logic works
-    // In a real implementation, we'd refactor to take a writer parameter
-
-    // Instead of calling them directly, we verify the functions exist
-    // and trust that the print operations work correctly
+    // Verify function signatures exist
     try testing.expect(@TypeOf(reportChange) == fn ([]const u8, common.user_group.uid_t, common.user_group.gid_t, common.user_group.uid_t, common.user_group.gid_t) void);
     try testing.expect(@TypeOf(reportNoChange) == fn ([]const u8) void);
 }

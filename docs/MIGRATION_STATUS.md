@@ -32,10 +32,10 @@ None currently in progress.
 ## Benchmarking Infrastructure
 
 ### Scripts Created
-1. `run_benchmark.sh` - Run parser benchmarks
-2. `benchmark_single_utility.sh` - Benchmark individual utility
-3. `compare_sizes.sh` - Compare binary sizes
-4. `run_all_benchmarks.sh` - Benchmark all utilities
+1. `scripts/benchmark_single_utility.sh` - Benchmark individual utility
+2. `scripts/compare_sizes.sh` - Compare binary sizes
+3. `scripts/run_all_benchmarks.sh` - Benchmark all utilities
+4. `zig build benchmark` - Run parser performance benchmarks
 
 ### Baseline Captured
 - Binary sizes: `benchmark_results/baseline/sizes_with_mixed_parsers.txt`
@@ -70,10 +70,10 @@ None currently in progress.
 grep -l "clap" src/*.zig | wc -l  # Count remaining
 
 # Run benchmarks before migration
-./benchmark_single_utility.sh <utility> > before.txt
+./scripts/benchmark_single_utility.sh <utility> > before.txt
 
 # After migration
-./benchmark_single_utility.sh <utility> > after.txt
+./scripts/benchmark_single_utility.sh <utility> > after.txt
 
 # Compare
 diff before.txt after.txt

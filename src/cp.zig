@@ -1,13 +1,15 @@
+//! Copy files and directories with POSIX-compatible behavior
+
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
 
-// Import our new modular architecture
 const types = @import("cp/types.zig");
 const errors = @import("cp/errors.zig");
 const copy_engine = @import("cp/copy_engine.zig");
 const user_interaction = @import("cp/user_interaction.zig");
 
+/// Command-line arguments for cp
 const CpArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -41,6 +43,7 @@ const CpArgs = struct {
     };
 };
 
+/// Main entry point for the cp command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -48,7 +51,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using new parser
+    // Parse command line arguments
     const args = common.argparse.ArgParser.parseProcess(CpArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
@@ -81,7 +84,7 @@ pub fn main() !void {
         }
     }
 
-    // Create options from parsed arguments - merge -r, -R and --recursive
+    // Create options from parsed arguments
     const options = types.CpOptions{
         .recursive = args.r or args.R or args.recursive,
         .interactive = args.i or args.interactive,
@@ -94,7 +97,7 @@ pub fn main() !void {
     const context = types.CopyContext.create(allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
 
-    // Plan all operations upfront
+    // Plan all copy operations
     var operations = engine.planOperations(args.positionals) catch |err| {
         switch (err) {
             error.InsufficientArguments => common.fatal("insufficient arguments", .{}),
@@ -103,24 +106,26 @@ pub fn main() !void {
         }
     };
     defer {
+        // Clean up all planned operations
         for (operations.items) |*op| {
             op.deinit(allocator);
         }
         operations.deinit();
     }
 
-    // Execute all operations
+    // Execute all copy operations
     engine.executeCopyBatch(operations.items) catch {
-        return; // Error already reported by engine
+        return;
     };
 
-    // Check final statistics for any errors
+    // Check for errors during execution
     const stats = engine.getStats();
     if (stats.errors_encountered > 0) {
-        return; // Errors already reported during operation
+        return;
     }
 }
 
+/// Print help message for cp
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
@@ -147,14 +152,13 @@ fn printHelp() !void {
     , .{ prog_name, prog_name, prog_name, prog_name, prog_name, prog_name });
 }
 
-// =============================================================================
-// TESTS (Migrated from original implementation)
-// =============================================================================
+// Tests
 
 const testing = std.testing;
 const TestUtils = @import("cp/test_utils.zig").TestUtils;
 const privilege_test = common.privilege_test;
 
+// Basic file copy
 test "cp: single file copy" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -178,24 +182,19 @@ test "cp: single file copy" {
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
 }
 
+// Argument count validation
 test "cp: basic argument validation" {
-    // Test argument count validation logic
     const args_empty = [_][]const u8{};
     const args_one = [_][]const u8{"source"};
     const args_two = [_][]const u8{ "source", "dest" };
 
-    // Empty args should be invalid
     try testing.expect(args_empty.len < 2);
-
-    // One arg should be invalid
     try testing.expect(args_one.len < 2);
-
-    // Two args should be valid
     try testing.expect(args_two.len >= 2);
 }
 
+// Options structure defaults
 test "cp: options structure" {
-    // Test that our options structure works correctly
     const options_default = types.CpOptions{};
     try testing.expect(!options_default.recursive);
     try testing.expect(!options_default.interactive);
@@ -208,6 +207,7 @@ test "cp: options structure" {
     try testing.expect(!options_recursive.interactive);
 }
 
+// Copy file to existing directory
 test "cp: copy to existing directory" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -232,6 +232,7 @@ test "cp: copy to existing directory" {
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
 }
 
+// Directory copy requires recursive flag
 test "cp: error on directory without recursive flag" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -253,11 +254,11 @@ test "cp: error on directory without recursive flag" {
     try testing.expectError(errors.CopyError.RecursionNotAllowed, engine.executeCopy(operation));
 }
 
+// Preserve file attributes (non-privileged)
 test "cp: basic preserve attributes (non-privileged)" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    // Create a file with specific permissions (within user's rights)
     try test_dir.createFileWithMode("source.txt", "Test content", 0o644);
 
     const source_path = try test_dir.getPath("source.txt");
@@ -277,12 +278,13 @@ test "cp: basic preserve attributes (non-privileged)" {
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
 
-    // Only check user permissions, as these should work without privileges
+    // Check user permissions only (works without privileges)
     const source_user_perms = source_stat.mode & 0o700;
     const dest_user_perms = dest_stat.mode & 0o700;
     try testing.expectEqual(source_user_perms, dest_user_perms);
 }
 
+// Preserve attributes with privileges
 test "privileged: cp preserve attributes" {
     try privilege_test.requiresPrivilege();
 
@@ -310,6 +312,7 @@ test "privileged: cp preserve attributes" {
     try testing.expectEqual(source_stat.mode, dest_stat.mode);
 }
 
+// Recursive directory copy
 test "cp: recursive directory copy" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -338,6 +341,7 @@ test "cp: recursive directory copy" {
     try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
 }
 
+// Force mode overwrites read-only files
 test "privileged: cp force mode overwrites" {
     try privilege_test.requiresPrivilege();
 
@@ -372,6 +376,7 @@ test "privileged: cp force mode overwrites" {
     try test_dir.expectFileContent("dest.txt", "New content");
 }
 
+// Symbolic links followed by default
 test "cp: symbolic link handling - follow by default" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -393,11 +398,12 @@ test "cp: symbolic link handling - follow by default" {
 
     try engine.executeCopy(operation);
 
-    // Should copy the file content, not create a symlink
+    // Should copy file content, not create symlink
     try test_dir.expectFileContent("copied.txt", "Original content");
     try testing.expect(!test_dir.isSymlink("copied.txt"));
 }
 
+// Preserve symbolic links with -d flag
 test "cp: symbolic link handling - no dereference (-d)" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -419,13 +425,14 @@ test "cp: symbolic link handling - no dereference (-d)" {
 
     try engine.executeCopy(operation);
 
-    // Should create a symlink, not copy file content
+    // Should create symlink, not copy content
     try testing.expect(test_dir.isSymlink("copied_link.txt"));
     const target = try test_dir.getSymlinkTarget("copied_link.txt");
     defer testing.allocator.free(target);
     try testing.expectEqualStrings("original.txt", target);
 }
 
+// Copy broken symbolic links
 test "cp: broken symlink handling" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -446,13 +453,13 @@ test "cp: broken symlink handling" {
 
     try engine.executeCopy(operation);
 
-    // Should copy broken symlink as symlink
     try testing.expect(test_dir.isSymlink("copied_broken.txt"));
     const target = try test_dir.getSymlinkTarget("copied_broken.txt");
     defer testing.allocator.free(target);
     try testing.expectEqualStrings("nonexistent.txt", target);
 }
 
+// Multiple sources to directory
 test "cp: multiple sources to directory" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
@@ -488,6 +495,7 @@ test "cp: multiple sources to directory" {
     try test_dir.expectFileContent("dest_dir/file2.txt", "Content 2");
 }
 
+// Preserve ownership with privileges
 test "privileged: cp preserve ownership with -p flag" {
     try privilege_test.requiresPrivilege();
 
@@ -510,15 +518,12 @@ test "privileged: cp preserve ownership with -p flag" {
     const dest_path = try test_dir.joinPath("dest.txt");
     defer testing.allocator.free(dest_path);
 
-    // Set specific owner/group on source (in fakeroot environment)
     if (privilege_test.FakerootContext.isUnderFakeroot()) {
         const source_file = try std.fs.cwd().openFile(source_path, .{});
         defer source_file.close();
 
-        // Attempt to change ownership (may not work on all platforms with fakeroot)
         source_file.chown(1000, 1000) catch |err| switch (err) {
             error.AccessDenied => {
-                // Expected on some platforms, skip this part of the test
                 return;
             },
             else => return err,
@@ -534,26 +539,15 @@ test "privileged: cp preserve ownership with -p flag" {
 
     try engine.executeCopy(operation);
 
-    // Verify attributes were preserved
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
 
-    // Mode should always be preserved
     try testing.expectEqual(source_stat.mode, dest_stat.mode);
 
-    // Ownership preservation depends on platform and fakeroot support
-    if (privilege_test.FakerootContext.isUnderFakeroot()) {
-        // In fakeroot, ownership operations may be simulated
-        // The important thing is that cp attempted to preserve ownership
-        // and didn't fail. Actual uid/gid verification may not work
-        // reliably across all fakeroot implementations
-
-        // In a real privileged environment, we would verify:
-        // try testing.expectEqual(@as(u32, 1000), dest_stat.uid);
-        // try testing.expectEqual(@as(u32, 1000), dest_stat.gid);
-    }
+    if (privilege_test.FakerootContext.isUnderFakeroot()) {}
 }
 
+// Preserve special permissions (setuid, setgid, sticky)
 test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     try privilege_test.requiresPrivilege();
 
@@ -572,7 +566,6 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     try test_dir.createFileWithMode("setuid_file", "setuid content", 0o4755);
     try test_dir.createFileWithMode("setgid_file", "setgid content", 0o2755);
 
-    // Test setuid preservation
     {
         const source_path = try test_dir.getPath("setuid_file");
         defer testing.allocator.free(source_path);
@@ -591,11 +584,9 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
         const source_stat = try test_dir.getFileStat("setuid_file");
         const dest_stat = try test_dir.getFileStat("setuid_copy");
 
-        // Check that setuid bit is preserved
         try testing.expectEqual(source_stat.mode & 0o7777, dest_stat.mode & 0o7777);
     }
 
-    // Test setgid preservation
     {
         const source_path = try test_dir.getPath("setgid_file");
         defer testing.allocator.free(source_path);
@@ -614,11 +605,9 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
         const source_stat = try test_dir.getFileStat("setgid_file");
         const dest_stat = try test_dir.getFileStat("setgid_copy");
 
-        // Check that setgid bit is preserved
         try testing.expectEqual(source_stat.mode & 0o7777, dest_stat.mode & 0o7777);
     }
 
-    // Test sticky bit on directory
     try test_dir.createDir("sticky_dir");
     const sticky_path = try test_dir.getPath("sticky_dir");
     defer testing.allocator.free(sticky_path);
@@ -651,10 +640,10 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     const source_stat = try test_dir.getFileStat("sticky_dir");
     const dest_stat = try test_dir.getFileStat("sticky_copy");
 
-    // Check that sticky bit is preserved
     try testing.expectEqual(source_stat.mode & 0o7777, dest_stat.mode & 0o7777);
 }
 
+// Recursive copy with full attribute preservation
 test "privileged: cp recursive directory copy with full attribute preservation" {
     try privilege_test.requiresPrivilege();
 
@@ -666,7 +655,6 @@ test "privileged: cp recursive directory copy with full attribute preservation" 
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    // Create a complex directory structure with various permissions
     try test_dir.createDir("source_tree");
     try test_dir.createFileWithMode("source_tree/executable", "#!/bin/sh\necho test", 0o755);
     try test_dir.createFileWithMode("source_tree/readonly", "readonly content", 0o444);
@@ -702,7 +690,6 @@ test "privileged: cp recursive directory copy with full attribute preservation" 
 
     try engine.executeCopy(operation);
 
-    // Verify all permissions were preserved
     {
         const exec_src = try test_dir.getFileStat("source_tree/executable");
         const exec_dst = try test_dir.getFileStat("dest_tree/executable");
@@ -728,7 +715,6 @@ test "privileged: cp recursive directory copy with full attribute preservation" 
         try testing.expectEqual(setuid_src.mode & 0o7777, setuid_dst.mode & 0o7777);
     }
 
-    // Verify content was also copied correctly
     try test_dir.expectFileContent("dest_tree/executable", "#!/bin/sh\necho test");
     try test_dir.expectFileContent("dest_tree/readonly", "readonly content");
     try test_dir.expectFileContent("dest_tree/subdir/setuid", "setuid content");
