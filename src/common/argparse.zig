@@ -103,7 +103,6 @@ pub const ArgParser = struct {
                         const next_arg: ?[]const u8 = null;
                         const used = try parseLongFlagWithValue(T, &result, flag_name, flag_value, next_arg, i);
                         if (used == .Unknown) {
-                            std.debug.print("Error: Unknown flag '--{s}' at position {}\n", .{ flag_name, i });
                             return ParseError.UnknownFlag;
                         }
                     } else {
@@ -112,7 +111,6 @@ pub const ArgParser = struct {
                         const used = try parseLongFlagWithValue(T, &result, flag_content, null, next_arg, i);
                         switch (used) {
                             .Unknown => {
-                                std.debug.print("Error: Unknown flag '--{s}' at position {}\n", .{ flag_content, i });
                                 return ParseError.UnknownFlag;
                             },
                             .ValueUsed => i += 1, // Skip next arg as it was used as value
@@ -130,7 +128,6 @@ pub const ArgParser = struct {
 
                         const used = try parseShortFlagWithValue(T, &result, flag_char, flag_value, next_arg, i);
                         if (used == .Unknown) {
-                            std.debug.print("Error: Unknown flag '-{c}' at position {}\n", .{ flag_char, i });
                             return ParseError.UnknownFlag;
                         }
                     } else {
@@ -148,7 +145,6 @@ pub const ArgParser = struct {
                                 const used = try parseShortFlagWithValue(T, &result, flag_char, remaining, next_arg, i);
                                 switch (used) {
                                     .Unknown => {
-                                        std.debug.print("Error: Unknown flag '-{c}' at position {} in '{s}'\n", .{ flag_char, i, arg });
                                         return ParseError.UnknownFlag;
                                     },
                                     .ValueUsed => {
@@ -160,7 +156,6 @@ pub const ArgParser = struct {
                             } else {
                                 // Middle of combined flags, must be boolean
                                 if (!try parseShortFlag(T, &result, flag_char)) {
-                                    std.debug.print("Error: Unknown flag '-{c}' at position {} in combined flags '{s}'\n", .{ flag_char, i, arg });
                                     return ParseError.UnknownFlag;
                                 }
                             }
@@ -342,7 +337,6 @@ pub const ArgParser = struct {
                 if (field.type == bool) {
                     // Boolean flag
                     if (provided_value != null) {
-                        std.debug.print("Error: Flag '--{s}' does not accept a value at position {}\n", .{ flag_name, position });
                         return ParseError.TooManyValues;
                     }
                     @field(obj, field.name) = true;
@@ -350,7 +344,6 @@ pub const ArgParser = struct {
                 } else if (field_type_info == .optional) {
                     // Optional field - parse based on child type
                     const value_str = provided_value orelse next_arg orelse {
-                        std.debug.print("Error: Flag '--{s}' requires a value at position {}\n", .{ flag_name, position });
                         return ParseError.MissingValue;
                     };
 
@@ -382,7 +375,6 @@ pub const ArgParser = struct {
                 if (field.type == bool) {
                     // Boolean flag
                     if (provided_value != null) {
-                        std.debug.print("Error: Flag '-{c}' does not accept a value at position {}\n", .{ flag_char, position });
                         return ParseError.TooManyValues;
                     }
                     @field(obj, field.name) = true;
@@ -390,7 +382,6 @@ pub const ArgParser = struct {
                 } else if (field_type_info == .optional) {
                     // Optional field - parse based on child type
                     const value_str = provided_value orelse next_arg orelse {
-                        std.debug.print("Error: Flag '-{c}' requires a value at position {}\n", .{ flag_char, position });
                         return ParseError.MissingValue;
                     };
 
@@ -489,6 +480,8 @@ pub const ArgParser = struct {
 
     /// Parse a value string into the appropriate type
     fn parseValue(comptime T: type, dest: *?T, value_str: []const u8, flag_name: []const u8, position: usize) !void {
+        _ = flag_name;
+        _ = position;
         const type_info = @typeInfo(T);
 
         if (type_info == .pointer and type_info.pointer.child == u8) {
@@ -496,27 +489,17 @@ pub const ArgParser = struct {
             dest.* = value_str;
         } else if (type_info == .int) {
             // Integer types
-            dest.* = std.fmt.parseInt(T, value_str, 10) catch |err| {
-                std.debug.print("Error: Invalid {s} value '{s}' for flag '{s}' at position {}: {s}\n", .{ @typeName(T), value_str, flag_name, position, @errorName(err) });
+            dest.* = std.fmt.parseInt(T, value_str, 10) catch {
                 return ParseError.InvalidValue;
             };
         } else if (type_info == .float) {
             // Float types
-            dest.* = std.fmt.parseFloat(T, value_str) catch |err| {
-                std.debug.print("Error: Invalid {s} value '{s}' for flag '{s}' at position {}: {s}\n", .{ @typeName(T), value_str, flag_name, position, @errorName(err) });
+            dest.* = std.fmt.parseFloat(T, value_str) catch {
                 return ParseError.InvalidValue;
             };
         } else if (type_info == .@"enum") {
             // Enum types
             dest.* = std.meta.stringToEnum(T, value_str) orelse {
-                std.debug.print("Error: Invalid enum value '{s}' for flag '{s}' at position {}. Valid values are: ", .{ value_str, flag_name, position });
-
-                // Print valid enum values
-                inline for (std.meta.fields(T), 0..) |enum_field, idx| {
-                    if (idx > 0) std.debug.print(", ", .{});
-                    std.debug.print("{s}", .{enum_field.name});
-                }
-                std.debug.print("\n", .{});
                 return ParseError.InvalidValue;
             };
         } else {

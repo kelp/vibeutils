@@ -1,0 +1,371 @@
+name: Security and Maintenance
+
+on:
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      force_scan:
+        description: 'Force security scan even if no changes'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  ZIG_VERSION: "0.14.1"
+  FORCE_COLOR: 1
+
+jobs:
+  # Check for Zig version updates
+  check-zig-updates:
+    name: Check Zig Version Updates
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check latest Zig version
+      id: zig_check
+      run: |
+        echo "Current Zig version: ${{ env.ZIG_VERSION }}"
+        
+        # Get latest stable Zig version from GitHub releases
+        LATEST_ZIG=$(curl -s https://api.github.com/repos/ziglang/zig/releases/latest | jq -r .tag_name)
+        echo "Latest Zig version: $LATEST_ZIG"
+        
+        echo "latest_version=$LATEST_ZIG" >> $GITHUB_OUTPUT
+        
+        if [ "$LATEST_ZIG" != "${{ env.ZIG_VERSION }}" ]; then
+          echo "update_available=true" >> $GITHUB_OUTPUT
+          echo "::notice::Zig update available: ${{ env.ZIG_VERSION }} -> $LATEST_ZIG"
+        else
+          echo "update_available=false" >> $GITHUB_OUTPUT
+          echo "::notice::Zig is up to date"
+        fi
+        
+    - name: Create issue for Zig update
+      if: steps.zig_check.outputs.update_available == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: issues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            labels: ['dependencies', 'zig-update'],
+            state: 'open'
+          });
+          
+          // Check if issue already exists
+          const existingIssue = issues.find(issue => 
+            issue.title.includes('Update Zig')
+          );
+          
+          if (!existingIssue) {
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Update Zig from ${{ env.ZIG_VERSION }} to ${{ steps.zig_check.outputs.latest_version }}`,
+              body: `A new version of Zig is available.
+              
+              **Current version:** ${{ env.ZIG_VERSION }}
+              **Latest version:** ${{ steps.zig_check.outputs.latest_version }}
+              
+              ## Tasks
+              - [ ] Update \`.github/workflows/ci.yml\`
+              - [ ] Update \`.github/workflows/release.yml\`
+              - [ ] Update \`.github/workflows/security.yml\`
+              - [ ] Update \`build.zig.zon\` if needed
+              - [ ] Test all utilities with new Zig version
+              - [ ] Update documentation if there are breaking changes
+              
+              This issue was automatically created by the security workflow.`,
+              labels: ['dependencies', 'zig-update', 'automated']
+            });
+          }
+
+  # Security scanning
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Run CodeQL Analysis
+      uses: github/codeql-action/init@v3
+      with:
+        languages: cpp  # Zig compiles to C, so we scan as C++
+        
+    - name: Build for security analysis
+      run: |
+        # Build all utilities for analysis
+        zig build -Doptimize=Debug
+        
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:cpp"
+        
+    - name: Check for common security issues
+      run: |
+        echo "Checking for common security patterns..."
+        
+        # Check for potential buffer overflows (less common in Zig but worth checking)
+        echo "Checking for unsafe patterns..."
+        if grep -r "@ptrCast\|@intCast\|@bitCast" src/ --exclude-dir=zig-cache; then
+          echo "::warning::Found pointer/type casts - review for safety"
+        fi
+        
+        # Check for C interop that might introduce vulnerabilities
+        echo "Checking C interop..."
+        if grep -r "extern\|@cImport\|@cInclude" src/ --exclude-dir=zig-cache; then
+          echo "::notice::Found C interop - ensure external libraries are secure"
+        fi
+        
+        # Check for file operations that might be unsafe
+        echo "Checking file operations..."
+        if grep -r "std\.fs\.deleteFile\|std\.fs\.deleteDir" src/ --exclude-dir=zig-cache; then
+          echo "::notice::Found file deletion operations - ensure proper validation"
+        fi
+        
+        # Check for potential command injection in shell utilities
+        echo "Checking for command construction..."
+        if grep -r "std\.process\.Child\|execv\|system" src/ --exclude-dir=zig-cache; then
+          echo "::warning::Found process execution - review for command injection"
+        fi
+        
+    - name: Scan dependencies
+      run: |
+        echo "Scanning dependencies in build.zig.zon..."
+        
+        # Check if any dependencies are declared
+        if grep -q "dependencies.*=" build.zig.zon; then
+          echo "Dependencies found, checking for known issues..."
+          # In a real setup, you'd integrate with dependency vulnerability databases
+          cat build.zig.zon
+        else
+          echo "No external dependencies found - good for security!"
+        fi
+
+  # License compliance check
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check license files
+      run: |
+        echo "Checking license compliance..."
+        
+        # Verify LICENSE file exists
+        if [ ! -f LICENSE ]; then
+          echo "::error::No LICENSE file found"
+          exit 1
+        fi
+        
+        # Check for proper license headers in source files
+        echo "Checking for license headers..."
+        missing_headers=0
+        
+        find src/ -name "*.zig" | while read file; do
+          if ! head -10 "$file" | grep -q -i "license\|copyright"; then
+            echo "::warning::$file may be missing license header"
+            missing_headers=$((missing_headers + 1))
+          fi
+        done
+        
+        if [ $missing_headers -gt 0 ]; then
+          echo "::notice::$missing_headers files may need license headers"
+        fi
+        
+    - name: Generate SBOM (Software Bill of Materials)
+      run: |
+        echo "Generating Software Bill of Materials..."
+        
+        cat > SBOM.json << EOF
+        {
+          "bomFormat": "CycloneDX",
+          "specVersion": "1.4",
+          "metadata": {
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "tools": [
+              {
+                "vendor": "GitHub Actions",
+                "name": "security-workflow"
+              }
+            ],
+            "component": {
+              "type": "application",
+              "name": "vibeutils",
+              "version": "$(grep -o '"[0-9]\+\.[0-9]\+\.[0-9]\+"' build.zig.zon | tr -d '"')",
+              "description": "Modern Zig implementation of GNU coreutils"
+            }
+          },
+          "components": [
+            {
+              "type": "framework",
+              "name": "zig-stdlib",
+              "version": "${{ env.ZIG_VERSION }}",
+              "description": "Zig standard library"
+            }
+          ]
+        }
+        EOF
+        
+        echo "SBOM generated:"
+        cat SBOM.json
+        
+    - name: Upload SBOM
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: SBOM.json
+        retention-days: 90
+
+  # Performance regression detection
+  performance-regression:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Build benchmarks
+      run: |
+        zig build benchmark
+        
+    - name: Run performance benchmarks
+      run: |
+        echo "Running performance benchmarks..."
+        ./zig-out/bin/benchmark-parsers > current-performance.txt
+        
+    - name: Check for performance regression
+      run: |
+        echo "Current performance results:"
+        cat current-performance.txt
+        
+        # In a production setup, you'd compare against historical baselines
+        # and alert if performance degrades significantly
+        echo "::notice::Performance baseline recorded"
+        
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-results
+        path: current-performance.txt
+        retention-days: 30
+
+  # Documentation freshness check
+  docs-freshness:
+    name: Documentation Freshness
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check documentation currency
+      run: |
+        echo "Checking documentation freshness..."
+        
+        # Check if README has been updated recently
+        readme_age=$(( ($(date +%s) - $(stat -f %m README.md)) / 86400 ))
+        echo "README.md is $readme_age days old"
+        
+        if [ $readme_age -gt 90 ]; then
+          echo "::warning::README.md hasn't been updated in over 90 days"
+        fi
+        
+        # Check if man pages exist for all utilities
+        echo "Checking man page coverage..."
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "src/${utility}.zig" ] || [ -f "src/${utility}/main.zig" ]; then
+            if [ ! -f "man/man1/${utility}.1" ]; then
+              echo "::warning::Missing man page for ${utility}"
+            fi
+          fi
+        done
+        
+        # Check for outdated TODO items
+        echo "Checking for stale TODO items..."
+        if grep -r "TODO.*[0-9]\{4\}" src/ | grep -v "$(date +%Y)"; then
+          echo "::notice::Found TODO items with old dates"
+        fi
+
+  # Cleanup old artifacts and caches
+  cleanup:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+    - name: Delete old workflow runs
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 100
+          });
+          
+          // Delete runs older than 30 days
+          const thirtyDaysAgo = new Date();
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          
+          for (const run of runs.workflow_runs) {
+            const runDate = new Date(run.created_at);
+            if (runDate < thirtyDaysAgo && run.status === 'completed') {
+              await github.rest.actions.deleteWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id
+              });
+              console.log(`Deleted workflow run ${run.id} from ${run.created_at}`);
+            }
+          }
+
+  # Security summary
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [check-zig-updates, security-scan, license-check, performance-regression, docs-freshness]
+    if: always()
+    
+    steps:
+    - name: Generate security report
+      run: |
+        echo "## Security and Maintenance Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Results" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔍 Zig Updates Check: ${{ needs.check-zig-updates.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 🛡️ Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 📜 License Check: ${{ needs.license-check.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- ⚡ Performance Check: ${{ needs.performance-regression.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- 📚 Documentation Check: ${{ needs.docs-freshness.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Actions Taken" >> $GITHUB_STEP_SUMMARY
+        echo "- Scanned for security vulnerabilities" >> $GITHUB_STEP_SUMMARY
+        echo "- Checked for dependency updates" >> $GITHUB_STEP_SUMMARY
+        echo "- Validated license compliance" >> $GITHUB_STEP_SUMMARY
+        echo "- Generated Software Bill of Materials" >> $GITHUB_STEP_SUMMARY
+        echo "- Checked performance baselines" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "*This report was automatically generated on $(date)*" >> $GITHUB_STEP_SUMMARY

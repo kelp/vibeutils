@@ -1,0 +1,38 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "^http://localhost"
+    },
+    {
+      "pattern": "^https://localhost"
+    },
+    {
+      "pattern": "^http://127.0.0.1"
+    },
+    {
+      "pattern": "^https://127.0.0.1"
+    }
+  ],
+  "httpHeaders": [
+    {
+      "urls": ["https://github.com"],
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (compatible; link-check)"
+      }
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackHttpStatus": [
+    400,
+    401,
+    403,
+    404,
+    405,
+    500,
+    502,
+    503,
+    504
+  ]
+}

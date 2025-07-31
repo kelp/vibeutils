@@ -1,15 +1,27 @@
 //! echo - display a line of text
+//!
+//! The echo utility writes its arguments to standard output, followed by a newline.
+//! If the -n option is present, the trailing newline is omitted.
+//!
+//! This implementation is compatible with GNU echo and supports backslash escape
+//! sequences when the -e option is specified.
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 
-/// Command-line arguments for echo
+/// Command-line arguments for the echo utility
 const EchoArgs = struct {
+    /// Display help and exit
     help: bool = false,
+    /// Output version information and exit
     version: bool = false,
+    /// Do not output the trailing newline
     n: bool = false,
+    /// Enable interpretation of backslash escapes
     e: bool = false,
+    /// Disable interpretation of backslash escapes (default)
     E: bool = false,
+    /// Text arguments to display
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -21,7 +33,7 @@ const EchoArgs = struct {
     };
 };
 
-/// Main entry point for echo
+/// Main entry point for the echo utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -92,13 +104,18 @@ fn printVersion() !void {
     try stdout.print("echo ({s}) {s}\n", .{ common.name, common.version });
 }
 
-/// Options controlling echo behavior
+/// Options for echo behavior
 const EchoOptions = struct {
+    /// If true, do not output a trailing newline
     suppress_newline: bool = false,
+    /// If true, interpret backslash escape sequences
     interpret_escapes: bool = false,
 };
 
-/// Echo strings to writer with specified options
+/// Echo strings to the provided writer with the specified options
+///
+/// This function handles the core echo functionality, writing each string
+/// separated by spaces and optionally interpreting escape sequences.
 fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOptions) !void {
     for (strings, 0..) |str, i| {
         if (i > 0) try writer.writeAll(" ");

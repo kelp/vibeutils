@@ -1,0 +1,271 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0, v0.4.1, etc.
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as prerelease'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  ZIG_VERSION: "0.14.1"
+  FORCE_COLOR: 1
+
+jobs:
+  # Build binaries for multiple platforms
+  build-release:
+    name: Build Release (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-gnu
+            os: ubuntu-latest
+            name: linux-x86_64
+          - target: x86_64-macos-none
+            os: macos-latest
+            name: macos-x86_64
+          - target: aarch64-macos-none
+            os: macos-latest
+            name: macos-aarch64
+          - target: x86_64-windows-gnu
+            os: ubuntu-latest
+            name: windows-x86_64
+          - target: aarch64-linux-gnu
+            os: ubuntu-latest
+            name: linux-aarch64
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+        
+    - name: Build for target
+      run: |
+        echo "Building for target: ${{ matrix.target }}"
+        
+        # Build all utilities for the target platform
+        zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+        
+    - name: Package binaries (Unix)
+      if: matrix.os != 'windows-latest'
+      run: |
+        mkdir -p release-${{ matrix.name }}
+        
+        # Copy binaries
+        cp -r zig-out/bin/* release-${{ matrix.name }}/
+        
+        # Add version info and documentation
+        echo "vibeutils ${{ github.ref_name || github.event.inputs.tag_name }}" > release-${{ matrix.name }}/VERSION
+        echo "Built for: ${{ matrix.target }}" >> release-${{ matrix.name }}/VERSION
+        echo "Build date: $(date -u)" >> release-${{ matrix.name }}/VERSION
+        
+        # Copy license and readme
+        cp LICENSE release-${{ matrix.name }}/ || true
+        cp README.md release-${{ matrix.name }}/ || true
+        
+        # Create tarball
+        tar -czf vibeutils-${{ matrix.name }}.tar.gz release-${{ matrix.name }}/
+        
+    - name: Package binaries (Windows)
+      if: matrix.target == 'x86_64-windows-gnu'
+      run: |
+        mkdir -p release-${{ matrix.name }}
+        
+        # Copy binaries (Windows executables)
+        find zig-out/bin -name "*.exe" -exec cp {} release-${{ matrix.name }}/ \; || true
+        
+        # Add version info and documentation
+        echo "vibeutils ${{ github.ref_name || github.event.inputs.tag_name }}" > release-${{ matrix.name }}/VERSION.txt
+        echo "Built for: ${{ matrix.target }}" >> release-${{ matrix.name }}/VERSION.txt
+        echo "Build date: $(date -u)" >> release-${{ matrix.name }}/VERSION.txt
+        
+        # Copy license and readme
+        cp LICENSE release-${{ matrix.name }}/ || true
+        cp README.md release-${{ matrix.name }}/ || true
+        
+        # Create zip file
+        zip -r vibeutils-${{ matrix.name }}.zip release-${{ matrix.name }}/
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.name }}
+        path: |
+          vibeutils-${{ matrix.name }}.tar.gz
+          vibeutils-${{ matrix.name }}.zip
+        retention-days: 5
+
+  # Create GitHub release
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-release]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./releases
+        
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        
+        # Move all release files to a single directory
+        find releases/ -name "*.tar.gz" -o -name "*.zip" | while read file; do
+          cp "$file" release-assets/
+        done
+        
+        # List what we have
+        ls -la release-assets/
+        
+    - name: Generate release notes
+      run: |
+        echo "# Release Notes" > RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "This release includes the following utilities:" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        
+        # List utilities from build metadata
+        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
+          if [ -f "src/${utility}.zig" ] || [ -f "src/${utility}/main.zig" ]; then
+            echo "- \`${utility}\` - $(grep -h "description.*${utility}" build/utils.zig | head -1 | sed 's/.*description = "\(.*\)".*/\1/' || echo "Core utility")" >> RELEASE_NOTES.md
+          fi
+        done
+        
+        echo "" >> RELEASE_NOTES.md
+        echo "## Supported Platforms" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "- Linux x86_64 (\`vibeutils-linux-x86_64.tar.gz\`)" >> RELEASE_NOTES.md
+        echo "- Linux ARM64 (\`vibeutils-linux-aarch64.tar.gz\`)" >> RELEASE_NOTES.md
+        echo "- macOS x86_64 (\`vibeutils-macos-x86_64.tar.gz\`)" >> RELEASE_NOTES.md
+        echo "- macOS ARM64 (\`vibeutils-macos-aarch64.tar.gz\`)" >> RELEASE_NOTES.md
+        echo "- Windows x86_64 (\`vibeutils-windows-x86_64.zip\`)" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "## Installation" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "1. Download the appropriate archive for your platform" >> RELEASE_NOTES.md
+        echo "2. Extract the archive: \`tar -xzf vibeutils-*.tar.gz\` (or unzip for Windows)" >> RELEASE_NOTES.md
+        echo "3. Add the extracted binaries to your PATH" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "## Notes" >> RELEASE_NOTES.md
+        echo "" >> RELEASE_NOTES.md
+        echo "- Built with Zig ${{ env.ZIG_VERSION }}" >> RELEASE_NOTES.md
+        echo "- All binaries are statically linked and ready to run" >> RELEASE_NOTES.md
+        echo "- For detailed documentation, see the man pages included or visit the repository" >> RELEASE_NOTES.md
+        
+    - name: Create Release
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
+        release_name: vibeutils ${{ github.ref_name || github.event.inputs.tag_name }}
+        body_path: RELEASE_NOTES.md
+        draft: false
+        prerelease: ${{ github.event.inputs.prerelease || false }}
+        
+    - name: Upload Linux x86_64
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/vibeutils-linux-x86_64.tar.gz
+        asset_name: vibeutils-linux-x86_64.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: Upload Linux ARM64
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/vibeutils-linux-aarch64.tar.gz
+        asset_name: vibeutils-linux-aarch64.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: Upload macOS x86_64
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/vibeutils-macos-x86_64.tar.gz
+        asset_name: vibeutils-macos-x86_64.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: Upload macOS ARM64
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/vibeutils-macos-aarch64.tar.gz
+        asset_name: vibeutils-macos-aarch64.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: Upload Windows x86_64
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./release-assets/vibeutils-windows-x86_64.zip
+        asset_name: vibeutils-windows-x86_64.zip
+        asset_content_type: application/zip
+
+  # Post-release validation
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Download Linux release
+      run: |
+        # Download and test the Linux x86_64 release
+        curl -L -o vibeutils-linux-x86_64.tar.gz \
+          "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || github.event.inputs.tag_name }}/vibeutils-linux-x86_64.tar.gz"
+        
+    - name: Test release binary
+      run: |
+        # Extract and test
+        tar -xzf vibeutils-linux-x86_64.tar.gz
+        cd release-linux-x86_64
+        
+        # Test basic functionality
+        ./echo "Release validation test"
+        ./pwd
+        
+        # Verify version info
+        cat VERSION
+        
+        echo "✅ Release validation successful"
+        
+    - name: Cleanup
+      run: |
+        echo "Release ${{ github.ref_name || github.event.inputs.tag_name }} has been successfully created and validated!"

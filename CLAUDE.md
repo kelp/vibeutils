@@ -42,6 +42,10 @@ make install
 # Format source code
 make fmt
 
+# Generate documentation
+zig build docs
+make docs
+
 # Run a single test file
 zig test src/echo.zig
 zig test src/common/lib.zig
@@ -69,6 +73,7 @@ The project includes a comprehensive Makefile with the following targets:
 - `make debug` - Build with debug information
 - `make release` - Build optimized for smallest size
 - `make fmt` - Format all source code with `zig fmt`
+- `make docs` - Generate HTML API documentation
 - `make help` - Show all available targets
 
 ## Test Coverage

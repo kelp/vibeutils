@@ -1,4 +1,4 @@
-.PHONY: all build test test-privileged test-privileged-local clean install coverage help
+.PHONY: all build test test-privileged test-privileged-local clean install coverage coverage-kcov fmt fmt-check ci-validate docs help
 
 # Default target
 all: build
@@ -27,18 +27,17 @@ test-privileged-local:
 	@echo "Running privileged tests with best available method..."
 	@scripts/run-privileged-tests.sh
 
-# Run tests with coverage using Zig's native coverage
+# Run tests with native Zig coverage
 coverage:
-	@echo "Running tests with coverage..."
-	@mkdir -p coverage
-	@zig build test -Dcoverage=true 2>&1 | tee coverage/test_output.log
-	@echo "Coverage information saved to coverage/"
-	@echo "Note: Native Zig coverage support is still evolving."
-	@echo "For detailed coverage reports, consider using external tools like kcov."
+	zig build coverage
+
+# Run tests with kcov coverage
+coverage-kcov:
+	zig build coverage -Dcoverage-backend=kcov
 
 # Clean build artifacts
 clean:
-	rm -rf zig-cache zig-out coverage
+	zig build clean
 
 # Install utilities
 install:
@@ -59,7 +58,21 @@ release:
 
 # Format code
 fmt:
-	zig fmt src/
+	zig build fmt
+
+# Check code formatting
+fmt-check:
+	zig build fmt-check
+
+# CI validation
+ci-validate:
+	zig build ci-validate -Dci=true
+
+# Generate documentation
+docs:
+	zig build docs
+	@echo "Documentation generated in zig-out/docs/"
+	@echo "Open zig-out/docs/*/index.html in a browser to view."
 
 # Show help
 help:
@@ -68,10 +81,14 @@ help:
 	@echo "  make test                - Run all tests"
 	@echo "  make test-privileged     - Run privileged tests (requires fakeroot)"
 	@echo "  make test-privileged-local - Run privileged tests with fallback"
-	@echo "  make coverage            - Run tests with coverage report"
+	@echo "  make coverage            - Run tests with native coverage"
+	@echo "  make coverage-kcov       - Run tests with kcov coverage"
 	@echo "  make clean               - Remove build artifacts"
 	@echo "  make install             - Build optimized binaries"
-	@echo "  make run-echo            - Run echo utility (ARGS='arguments')"
+	@echo "  make run-<utility>       - Run utility (e.g., make run-echo ARGS='hello')"
 	@echo "  make debug               - Build with debug info"
 	@echo "  make release             - Build optimized for size"
 	@echo "  make fmt                 - Format source code"
+	@echo "  make fmt-check           - Check code formatting"
+	@echo "  make ci-validate         - Run CI validation checks"
+	@echo "  make docs                - Generate API documentation"
