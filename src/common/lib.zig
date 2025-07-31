@@ -107,15 +107,23 @@ pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
 /// Useful for non-fatal warnings or when handling multiple errors.
 pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
     const stderr = std.io.getStdErr().writer();
+    printErrorTo(stderr, fmt, fmt_args);
+}
+
+/// Print error message to a specific writer without exiting
+///
+/// Like printError() but allows specifying the writer to use.
+/// Useful for testing or when redirecting error output.
+pub fn printErrorTo(writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Try to use color for errors
-    const StyleType = style.Style(@TypeOf(stderr));
-    var s = StyleType.init(stderr);
+    const StyleType = style.Style(@TypeOf(writer));
+    var s = StyleType.init(writer);
     s.setColor(.bright_red) catch {};
-    stderr.print("{s}: ", .{prog_name}) catch return;
+    writer.print("{s}: ", .{prog_name}) catch return;
     s.reset() catch {};
-    stderr.print(fmt ++ "\n", fmt_args) catch return;
+    writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
 /// Print warning message to stderr without exiting
@@ -161,4 +169,9 @@ test "common library basics" {
     // Test that we can import and use basic functionality
     const ec = ExitCode.success;
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(ec));
+}
+
+// Import buffering tests to ensure they are run as part of the test suite
+test {
+    _ = @import("buffering_test.zig");
 }

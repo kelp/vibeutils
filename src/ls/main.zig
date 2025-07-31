@@ -71,7 +71,7 @@ const LsArgs = struct {
 };
 
 /// Main entry point for the ls command
-/// Parses arguments and lists files or directories
+/// Parses arguments and delegates to lsMain
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -90,22 +90,30 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
+    // Create stdout writer once and pass it through
+    const stdout = std.io.getStdOut().writer();
+
+    try lsMain(stdout, args, allocator);
+}
+
+/// Core ls functionality that accepts a writer parameter
+/// This allows for testing and different output targets
+fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     // Handle help
     if (args.help) {
-        try printHelp();
+        try printHelp(writer);
         return;
     }
 
     // Handle version
     if (args.version) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("ls ({s}) {s}\n", .{ common.name, common.version });
+        try writer.print("ls ({s}) {s}\n", .{ common.name, common.version });
         return;
     }
 
     // Handle test-icons
     if (args.test_icons) {
-        try printIconTest();
+        try printIconTest(writer);
         return;
     }
 
@@ -160,35 +168,32 @@ pub fn main() !void {
         .show_git_status = args.git,
     };
 
-    const stdout = std.io.getStdOut().writer();
-
     // Access positionals (the paths to list)
     const paths = args.positionals;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
-        try listDirectory(".", stdout, options, allocator);
+        try listDirectory(".", writer, options, allocator);
     } else {
         // List each specified path
         // When multiple paths are given, print headers between them
         for (paths, 0..) |path, i| {
             if (paths.len > 1) {
-                if (i > 0) try stdout.writeAll("\n");
-                try stdout.print("{s}:\n", .{path});
+                if (i > 0) try writer.writeAll("\n");
+                try writer.print("{s}:\n", .{path});
             }
-            try listDirectory(path, stdout, options, allocator);
+            try listDirectory(path, writer, options, allocator);
         }
     }
 }
 
 /// Print help message with usage examples
-fn printHelp() !void {
+fn printHelp(writer: anytype) !void {
     // Use auto-generated help from ArgParser
-    try common.argparse.ArgParser.printHelp(LsArgs, "ls", std.io.getStdOut().writer());
+    try common.argparse.ArgParser.printHelp(LsArgs, "ls", writer);
 
     // Add custom examples section
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(
+    try writer.writeAll(
         \\
         \\List information about the FILEs (the current directory by default).
         \\Sort entries alphabetically by default.
@@ -205,58 +210,57 @@ fn printHelp() !void {
 }
 
 /// Print comprehensive icon test to verify Nerd Font support
-fn printIconTest() !void {
-    const stdout = std.io.getStdOut().writer();
+fn printIconTest(writer: anytype) !void {
     const theme = common.icons.IconTheme{};
 
-    try stdout.writeAll("Icon Test - Nerd Font Support Check\n");
-    try stdout.writeAll("====================================\n\n");
+    try writer.writeAll("Icon Test - Nerd Font Support Check\n");
+    try writer.writeAll("====================================\n\n");
 
-    try stdout.writeAll("If you can see the following icons correctly, your terminal supports Nerd Fonts:\n\n");
+    try writer.writeAll("If you can see the following icons correctly, your terminal supports Nerd Fonts:\n\n");
 
     // Test common file type icons
-    try stdout.print("  {s}  Directory\n", .{theme.directory});
-    try stdout.print("  {s}  Regular file\n", .{theme.file});
-    try stdout.print("  {s}  Executable\n", .{theme.executable});
-    try stdout.print("  {s}  Symbolic link\n", .{theme.symlink});
+    try writer.print("  {s}  Directory\n", .{theme.directory});
+    try writer.print("  {s}  Regular file\n", .{theme.file});
+    try writer.print("  {s}  Executable\n", .{theme.executable});
+    try writer.print("  {s}  Symbolic link\n", .{theme.symlink});
 
-    try stdout.writeAll("\nProgramming language icons:\n");
-    try stdout.print("  {s}  C/C++ ({s})\n", .{ theme.c, theme.cpp });
-    try stdout.print("  {s}  Rust\n", .{theme.rust});
-    try stdout.print("  {s}  Go\n", .{theme.go});
-    try stdout.print("  {s}  Python\n", .{theme.python});
-    try stdout.print("  {s}  JavaScript\n", .{theme.javascript});
-    try stdout.print("  {s}  TypeScript\n", .{theme.typescript});
-    try stdout.print("  {s}  Zig\n", .{theme.zig});
-    try stdout.print("  {s}  Java\n", .{theme.java});
-    try stdout.print("  {s}  Ruby\n", .{theme.ruby});
-    try stdout.print("  {s}  Perl\n", .{theme.perl});
+    try writer.writeAll("\nProgramming language icons:\n");
+    try writer.print("  {s}  C/C++ ({s})\n", .{ theme.c, theme.cpp });
+    try writer.print("  {s}  Rust\n", .{theme.rust});
+    try writer.print("  {s}  Go\n", .{theme.go});
+    try writer.print("  {s}  Python\n", .{theme.python});
+    try writer.print("  {s}  JavaScript\n", .{theme.javascript});
+    try writer.print("  {s}  TypeScript\n", .{theme.typescript});
+    try writer.print("  {s}  Zig\n", .{theme.zig});
+    try writer.print("  {s}  Java\n", .{theme.java});
+    try writer.print("  {s}  Ruby\n", .{theme.ruby});
+    try writer.print("  {s}  Perl\n", .{theme.perl});
 
-    try stdout.writeAll("\nDocument and media icons:\n");
-    try stdout.print("  {s}  Text file\n", .{theme.text});
-    try stdout.print("  {s}  Markdown\n", .{theme.markdown});
-    try stdout.print("  {s}  PDF\n", .{theme.pdf});
-    try stdout.print("  {s}  Archive\n", .{theme.archive});
-    try stdout.print("  {s}  Image\n", .{theme.image});
-    try stdout.print("  {s}  Audio\n", .{theme.audio});
-    try stdout.print("  {s}  Video\n", .{theme.video});
+    try writer.writeAll("\nDocument and media icons:\n");
+    try writer.print("  {s}  Text file\n", .{theme.text});
+    try writer.print("  {s}  Markdown\n", .{theme.markdown});
+    try writer.print("  {s}  PDF\n", .{theme.pdf});
+    try writer.print("  {s}  Archive\n", .{theme.archive});
+    try writer.print("  {s}  Image\n", .{theme.image});
+    try writer.print("  {s}  Audio\n", .{theme.audio});
+    try writer.print("  {s}  Video\n", .{theme.video});
 
-    try stdout.writeAll("\nSpecial files:\n");
-    try stdout.print("  {s}  Git files\n", .{theme.git});
-    try stdout.print("  {s}  Config files\n", .{theme.config});
-    try stdout.print("  {s}  JSON\n", .{theme.json});
+    try writer.writeAll("\nSpecial files:\n");
+    try writer.print("  {s}  Git files\n", .{theme.git});
+    try writer.print("  {s}  Config files\n", .{theme.config});
+    try writer.print("  {s}  JSON\n", .{theme.json});
 
-    try stdout.writeAll("\n");
-    try stdout.writeAll("To configure icons in ls:\n");
-    try stdout.writeAll("  ls --icons=auto                      # Show icons in terminal, hide in pipes (default)\n");
-    try stdout.writeAll("  ls --icons=always                    # Always show icons\n");
-    try stdout.writeAll("  ls --icons=never                     # Never show icons\n");
-    try stdout.writeAll("  export LS_ICONS=auto                 # Set default mode\n");
-    try stdout.writeAll("  echo 'export LS_ICONS=auto' >> ~/.zshrc  # Permanent setting\n");
-    try stdout.writeAll("\nIf icons appear as boxes or question marks, you need to:\n");
-    try stdout.writeAll("  1. Install a Nerd Font (https://www.nerdfonts.com/)\n");
-    try stdout.writeAll("  2. Configure your terminal to use the Nerd Font\n");
-    try stdout.writeAll("  3. Restart your terminal\n");
+    try writer.writeAll("\n");
+    try writer.writeAll("To configure icons in ls:\n");
+    try writer.writeAll("  ls --icons=auto                      # Show icons in terminal, hide in pipes (default)\n");
+    try writer.writeAll("  ls --icons=always                    # Always show icons\n");
+    try writer.writeAll("  ls --icons=never                     # Never show icons\n");
+    try writer.writeAll("  export LS_ICONS=auto                 # Set default mode\n");
+    try writer.writeAll("  echo 'export LS_ICONS=auto' >> ~/.zshrc  # Permanent setting\n");
+    try writer.writeAll("\nIf icons appear as boxes or question marks, you need to:\n");
+    try writer.writeAll("  1. Install a Nerd Font (https://www.nerdfonts.com/)\n");
+    try writer.writeAll("  2. Configure your terminal to use the Nerd Font\n");
+    try writer.writeAll("  3. Restart your terminal\n");
 }
 
 /// List a directory or file, handling both files and directories appropriately
@@ -404,4 +408,40 @@ test {
     _ = @import("test_utils.zig");
     _ = @import("types.zig");
     _ = @import("integration_test.zig");
+}
+
+// Test the refactored lsMain function with writer parameter
+test "lsMain help works with different writers" {
+    const testing = std.testing;
+
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    const args = LsArgs{
+        .help = true,
+        .positionals = &.{},
+    };
+
+    try lsMain(buffer.writer(), args, testing.allocator);
+
+    // Should contain help text
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: ls") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "--help") != null);
+}
+
+test "lsMain version works with different writers" {
+    const testing = std.testing;
+
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    const args = LsArgs{
+        .version = true,
+        .positionals = &.{},
+    };
+
+    try lsMain(buffer.writer(), args, testing.allocator);
+
+    // Should contain version info
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "ls (") != null);
 }

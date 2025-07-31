@@ -49,13 +49,15 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
+    const stdout = std.io.getStdOut().writer();
+
     if (args.help) {
-        try printHelp();
+        try printHelp(stdout);
         return;
     }
 
     if (args.version) {
-        try printVersion();
+        try printVersion(stdout);
         return;
     }
 
@@ -85,12 +87,11 @@ pub fn main() !void {
         .reference_file = args.reference,
     };
 
-    const stdout = std.io.getStdOut().writer();
     try chmodFiles(allocator, mode_str, files, stdout, options);
 }
 
 /// Print usage information and examples
-fn printHelp() !void {
+fn printHelp(writer: anytype) !void {
     const help_text =
         \\Usage: chmod [OPTION]... MODE[,MODE]... FILE...
         \\  or:  chmod [OPTION]... OCTAL-MODE FILE...
@@ -114,14 +115,12 @@ fn printHelp() !void {
         \\  chmod -R go-w /path/to/dir       Recursively remove write for group/other
         \\
     ;
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(help_text);
+    try writer.writeAll(help_text);
 }
 
 /// Print version information
-fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("chmod ({s}) {s}\n", .{ common.name, common.version });
+fn printVersion(writer: anytype) !void {
+    try writer.print("chmod ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Options controlling chmod behavior

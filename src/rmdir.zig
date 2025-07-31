@@ -235,17 +235,29 @@ const ParentIterator = struct {
 /// Main entry point for rmdir utility.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try runRmdir(stdout_writer, stderr_writer, allocator);
+    if (exit_code != common.ExitCode.success) {
+        std.process.exit(@intFromEnum(exit_code));
+    }
+}
+
+/// Run rmdir with provided writers for output
+pub fn runRmdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(RmdirArgs, allocator) catch |err| {
         // Handle parsing errors gracefully
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                try stderr_writer.print("{s}: invalid argument\n", .{prog_name});
+                return common.ExitCode.general_error;
             },
             else => return err,
         }
@@ -254,20 +266,21 @@ pub fn main() !void {
 
     // Handle help request
     if (args.help) {
-        try printHelp();
-        return;
+        try printHelp(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Handle version request
     if (args.version) {
-        try printVersion();
-        return;
+        try printVersion(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Validate that at least one directory was specified
     const directories = args.positionals;
     if (directories.len == 0) {
-        common.fatal("missing operand", .{});
+        try stderr_writer.print("{s}: missing operand\n", .{prog_name});
+        return common.ExitCode.general_error;
     }
 
     // Create options structure from parsed arguments
@@ -277,17 +290,12 @@ pub fn main() !void {
         .ignore_fail_on_non_empty = args.ignore_fail_on_non_empty,
     };
 
-    const stdout = std.io.getStdOut().writer();
-    const exit_code = try removeDirectories(allocator, directories, stdout, options);
-
-    // Exit with appropriate code
-    if (exit_code != .success) {
-        std.process.exit(@intFromEnum(exit_code));
-    }
+    const exit_code = try removeDirectories(allocator, directories, stdout_writer, stderr_writer, options);
+    return exit_code;
 }
 
-/// Print help information to stdout.
-fn printHelp() !void {
+/// Print help information to provided writer.
+fn printHelp(writer: anytype) !void {
     const help_text =
         \\Usage: rmdir [OPTION]... DIRECTORY...
         \\Remove the DIRECTORY(ies), if they are empty.
@@ -302,22 +310,20 @@ fn printHelp() !void {
         \\      --version   output version information and exit
         \\
     ;
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(help_text);
+    try writer.writeAll(help_text);
 }
 
-/// Print version information to stdout.
-fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("rmdir ({s}) {s}\n", .{ common.name, common.version });
+/// Print version information to provided writer.
+fn printVersion(writer: anytype) !void {
+    try writer.print("rmdir ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Main function to remove directories.
-fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const u8, writer: anytype, options: RmdirOptions) !common.ExitCode {
+fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmdirOptions) !common.ExitCode {
     var had_error = false;
 
     // Initialize progress indicator for bulk operations
-    var progress = ProgressIndicator(@TypeOf(writer)).init(writer, directories.len);
+    var progress = ProgressIndicator(@TypeOf(stdout_writer)).init(stdout_writer, directories.len);
 
     // Initialize path validator
     const validator = PathValidator.init(allocator);
@@ -330,17 +336,23 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
 
         if (options.parents) {
             // Remove directory and its parents
-            const err = removeDirectoryWithParents(allocator, dir, writer, options, validator);
+            const err = removeDirectoryWithParents(allocator, dir, stdout_writer, options, validator);
             if (err) |e| {
                 had_error = true;
-                handleError(e, dir, writer, options);
+                handleError(e, dir, stderr_writer, options) catch |write_err| {
+                    // If we can't write to stderr, return the write error
+                    return write_err;
+                };
             }
         } else {
             // Remove single directory
-            const err = removeSingleDirectory(dir, writer, options, validator);
+            const err = removeSingleDirectory(dir, stdout_writer, options, validator);
             if (err) |e| {
                 had_error = true;
-                handleError(e, dir, writer, options);
+                handleError(e, dir, stderr_writer, options) catch |write_err| {
+                    // If we can't write to stderr, return the write error
+                    return write_err;
+                };
             }
         }
     }
@@ -372,10 +384,10 @@ fn removeSingleDirectory(path: []const u8, writer: anytype, options: RmdirOption
     if (options.verbose) {
         // Use styled output for better readability
         const style = common.style.Style(@TypeOf(writer)).init(writer);
-        style.setColor(.green) catch {};
-        writer.print("rmdir: ", .{}) catch {};
-        style.reset() catch {};
-        writer.print("removing directory, '{s}'\n", .{path}) catch {};
+        style.setColor(.green) catch |err| return err;
+        writer.print("rmdir: ", .{}) catch |err| return err;
+        style.reset() catch |err| return err;
+        writer.print("removing directory, '{s}'\n", .{path}) catch |err| return err;
     }
 
     return null;
@@ -408,24 +420,25 @@ fn removeDirectoryWithParents(allocator: std.mem.Allocator, path: []const u8, wr
 }
 
 /// Centralized error handling function.
-fn handleError(err: anyerror, path: []const u8, writer: anytype, options: RmdirOptions) void {
-    _ = writer;
-
+fn handleError(err: anyerror, path: []const u8, stderr_writer: anytype, options: RmdirOptions) !void {
     // Some errors should be ignored with the flag
     if (options.ignore_fail_on_non_empty and err == error.DirectoryNotEmpty) {
         return;
     }
 
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
     const msg = ErrorMessages.format(err, path);
-    common.printError("failed to remove '{s}': {s}", .{ path, msg });
+    try stderr_writer.print("{s}: failed to remove '{s}': {s}\n", .{ prog_name, path, msg });
 }
 
 // ===== TESTS =====
 
 test "rmdir: remove empty directory" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test directory
     const test_dir = "test_rmdir_empty";
@@ -435,7 +448,7 @@ test "rmdir: remove empty directory" {
     const dirs = [_][]const u8{test_dir};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // Verify directory was removed
@@ -445,8 +458,10 @@ test "rmdir: remove empty directory" {
 
 test "rmdir: fail on non-empty directory" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test directory with a file
     const test_dir = "test_rmdir_nonempty";
@@ -462,7 +477,7 @@ test "rmdir: fail on non-empty directory" {
     const dirs = [_][]const u8{test_dir};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
     // Verify directory still exists
@@ -472,8 +487,10 @@ test "rmdir: fail on non-empty directory" {
 
 test "rmdir: ignore fail on non-empty with flag" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test directory with a file
     const test_dir = "test_rmdir_ignore_nonempty";
@@ -491,7 +508,7 @@ test "rmdir: ignore fail on non-empty with flag" {
         .ignore_fail_on_non_empty = true,
     };
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // Directory should still exist
@@ -501,8 +518,10 @@ test "rmdir: ignore fail on non-empty with flag" {
 
 test "rmdir: verbose output" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test directory
     const test_dir = "test_rmdir_verbose";
@@ -514,17 +533,19 @@ test "rmdir: verbose output" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // Check verbose output contains the directory name
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "test_rmdir_verbose") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "test_rmdir_verbose") != null);
 }
 
 test "rmdir: remove with parents" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create nested directories
     const base_dir = "test_rmdir_parents";
@@ -539,7 +560,7 @@ test "rmdir: remove with parents" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // All directories should be removed
@@ -547,15 +568,17 @@ test "rmdir: remove with parents" {
     try testing.expectError(error.FileNotFound, stat);
 
     // Check verbose output shows all removals
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "test_rmdir_parents/sub/deep") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "test_rmdir_parents/sub") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "test_rmdir_parents") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "test_rmdir_parents/sub/deep") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "test_rmdir_parents/sub") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "test_rmdir_parents") != null);
 }
 
 test "rmdir: multiple directories" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create multiple test directories
     const dir1 = "test_rmdir_multi1";
@@ -574,7 +597,7 @@ test "rmdir: multiple directories" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // All directories should be removed
@@ -585,20 +608,24 @@ test "rmdir: multiple directories" {
 
 test "rmdir: error on non-existent directory" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     const dirs = [_][]const u8{"nonexistent_directory"};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 }
 
 test "rmdir: error on file instead of directory" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test file
     const test_file = "test_rmdir_file.txt";
@@ -609,7 +636,7 @@ test "rmdir: error on file instead of directory" {
     const dirs = [_][]const u8{test_file};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
     // File should still exist
@@ -619,8 +646,10 @@ test "rmdir: error on file instead of directory" {
 
 test "rmdir: parents stops on error" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create nested directories with a file in the middle one
     const base_dir = "test_rmdir_parents_stop";
@@ -643,7 +672,7 @@ test "rmdir: parents stops on error" {
         .verbose = true,
     };
 
-    _ = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    _ = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
     // Should have removed deep_dir but not sub_dir or base_dir
     try testing.expectError(error.FileNotFound, std.fs.cwd().statFile(deep_dir));
@@ -657,13 +686,15 @@ test "rmdir: parents stops on error" {
 
 test "rmdir: path traversal protection" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     const dirs = [_][]const u8{"../../../etc"};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 }
 
@@ -671,8 +702,10 @@ test "rmdir: symbolic link detection" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create a directory and a symlink to it
     const test_dir = "test_rmdir_symlink_target";
@@ -687,7 +720,7 @@ test "rmdir: symbolic link detection" {
     const dirs = [_][]const u8{test_link};
     const options = RmdirOptions{};
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 
     // Both should still exist
@@ -701,8 +734,10 @@ test "rmdir: symbolic link detection" {
 
 test "rmdir: unicode path handling" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create directory with unicode name
     const test_dir = "test_rmdir_unicode_🎯";
@@ -714,7 +749,7 @@ test "rmdir: unicode path handling" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, &dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // Verify directory was removed
@@ -724,8 +759,10 @@ test "rmdir: unicode path handling" {
 
 test "rmdir: progress indicator for bulk operations" {
     const allocator = testing.allocator;
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
 
     // Create multiple directories
     var dirs: [5][]u8 = undefined;
@@ -759,12 +796,12 @@ test "rmdir: progress indicator for bulk operations" {
         .verbose = true,
     };
 
-    const exit_code = try removeDirectories(allocator, &const_dirs, buffer.writer(), options);
+    const exit_code = try removeDirectories(allocator, &const_dirs, stdout_buffer.writer(), stderr_buffer.writer(), options);
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
     // Should show progress indicators
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "[1/5]") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "[5/5]") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "[1/5]") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "[5/5]") != null);
 }
 
 test "rmdir: parent iterator memory management" {

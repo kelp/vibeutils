@@ -79,14 +79,16 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
+    const stdout = std.io.getStdOut().writer();
+
     // Handle information requests (help/version) - these exit immediately
     if (args.help) {
-        try printHelp();
+        try printHelp(stdout);
         return;
     }
 
     if (args.version) {
-        try printVersion();
+        try printVersion(stdout);
         return;
     }
 
@@ -130,7 +132,7 @@ pub fn main() !void {
     // Process each file, accumulating error status
     var exit_code: u8 = 0;
     for (files) |file_path| {
-        chownFile(file_path, owner_spec, options, allocator) catch |err| {
+        chownFile(file_path, owner_spec, options, allocator, stdout) catch |err| {
             handleError(file_path, err, options);
             exit_code = @intFromEnum(common.ExitCode.general_error);
         };
@@ -140,11 +142,10 @@ pub fn main() !void {
 }
 
 /// Print help message
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
+fn printHelp(writer: anytype) !void {
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
-    try stdout.print(
+    try writer.print(
         \\Usage: {s} [OPTION]... [OWNER][:[GROUP]] FILE...
         \\  or:  {s} [OPTION]... --reference=RFILE FILE...
         \\Change the owner and/or group of each FILE to OWNER and/or GROUP.
@@ -185,9 +186,8 @@ fn printHelp() !void {
 }
 
 /// Print version information
-fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("chown ({s}) {s}\n", .{ common.name, common.version });
+fn printVersion(writer: anytype) !void {
+    try writer.print("chown ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Internal options for chown operations
@@ -218,6 +218,7 @@ fn chownFile(
     owner_spec: []const u8,
     options: ChownOptions,
     allocator: std.mem.Allocator,
+    writer: anytype,
 ) !void {
     // Parse ownership specification
     var ownership: common.user_group.OwnershipSpec = undefined;
@@ -232,14 +233,14 @@ fn chownFile(
 
     // Apply ownership change
     if (options.recursive) {
-        try chownRecursive(path, ownership, options, allocator);
+        try chownRecursive(path, ownership, options, allocator, writer);
     } else {
-        try chownSingle(path, ownership, options);
+        try chownSingle(path, ownership, options, writer);
     }
 }
 
 /// Change ownership of a single file (non-recursive)
-fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions) !void {
+fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions, writer: anytype) !void {
     // Get current ownership for comparison
     const stat_info = try common.file.FileInfo.stat(path);
     const current_uid = @as(common.user_group.uid_t, @intCast(stat_info.uid));
@@ -258,11 +259,11 @@ fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, opt
 
         // Report change if requested
         if (options.verbose or options.changes) {
-            reportChange(path, current_uid, current_gid, new_uid, new_gid);
+            try reportChange(writer, path, current_uid, current_gid, new_uid, new_gid);
         }
     } else if (options.verbose) {
         // Report no change in verbose mode
-        reportNoChange(path);
+        try reportNoChange(writer, path);
     }
 }
 
@@ -273,9 +274,10 @@ fn chownRecursive(
     ownership: common.user_group.OwnershipSpec,
     options: ChownOptions,
     allocator: std.mem.Allocator,
+    writer: anytype,
 ) !void {
     // First change the directory/file itself
-    try chownSingle(path, ownership, options);
+    try chownSingle(path, ownership, options, writer);
 
     // Check if it's a directory to recurse into
     const stat_info = common.file.FileInfo.stat(path) catch return;
@@ -292,7 +294,7 @@ fn chownRecursive(
             defer allocator.free(full_path);
 
             // Recurse into subdirectory or change file
-            try chownRecursive(full_path, ownership, options, allocator);
+            try chownRecursive(full_path, ownership, options, allocator, writer);
         }
     }
 }
@@ -339,15 +341,13 @@ fn getOwnershipFromReference(ref_path: []const u8) !common.user_group.OwnershipS
 }
 
 /// Report successful ownership change
-fn reportChange(path: []const u8, old_uid: common.user_group.uid_t, old_gid: common.user_group.gid_t, new_uid: common.user_group.uid_t, new_gid: common.user_group.gid_t) void {
-    const stdout = std.io.getStdOut().writer();
-    stdout.print("changed ownership of '{s}' from {d}:{d} to {d}:{d}\n", .{ path, old_uid, old_gid, new_uid, new_gid }) catch {};
+fn reportChange(writer: anytype, path: []const u8, old_uid: common.user_group.uid_t, old_gid: common.user_group.gid_t, new_uid: common.user_group.uid_t, new_gid: common.user_group.gid_t) !void {
+    try writer.print("changed ownership of '{s}' from {d}:{d} to {d}:{d}\n", .{ path, old_uid, old_gid, new_uid, new_gid });
 }
 
 /// Report ownership unchanged
-fn reportNoChange(path: []const u8) void {
-    const stdout = std.io.getStdOut().writer();
-    stdout.print("ownership of '{s}' retained\n", .{path}) catch {};
+fn reportNoChange(writer: anytype, path: []const u8) !void {
+    try writer.print("ownership of '{s}' retained\n", .{path});
 }
 
 /// Handle and report errors
@@ -408,7 +408,9 @@ test "privileged: chown basic functionality" {
             const options = ChownOptions{};
 
             // This should work for changing to the same ownership
-            try chownFile(test_file, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -429,7 +431,9 @@ test "chown with invalid owner specification" {
     const options = ChownOptions{};
 
     // Empty specification should fail
-    try testing.expectError(error.InvalidFormat, chownFile(test_file, "", options, testing.allocator));
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+    try testing.expectError(error.InvalidFormat, chownFile(test_file, "", options, testing.allocator, buffer.writer()));
 }
 
 test "privileged: chown user only specification" {
@@ -458,7 +462,9 @@ test "privileged: chown user only specification" {
             const options = ChownOptions{};
 
             // Should work for user-only specification
-            try chownFile(test_file, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -489,7 +495,9 @@ test "privileged: chown group only specification" {
             const options = ChownOptions{};
 
             // Should work for group-only specification
-            try chownFile(test_file, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -523,7 +531,9 @@ test "privileged: chown with reference file" {
             const options = ChownOptions{ .reference_file = ref_path };
 
             // Should use reference file's ownership
-            try chownFile(target_path, "", options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(target_path, "", options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -535,7 +545,9 @@ test "chown nonexistent file" {
     defer testing.allocator.free(owner_spec);
 
     // Should fail for nonexistent file
-    try testing.expectError(error.FileNotFound, chownFile("/nonexistent/file", owner_spec, options, testing.allocator));
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+    try testing.expectError(error.FileNotFound, chownFile("/nonexistent/file", owner_spec, options, testing.allocator, buffer.writer()));
 }
 
 test "OwnershipSpec parsing" {
@@ -637,7 +649,9 @@ test "privileged: chownSingle basic operation" {
             const options = ChownOptions{};
 
             // Should work for same ownership
-            try chownSingle(test_file, ownership, options);
+            var buffer = std.ArrayList(u8).init(testing.allocator);
+            defer buffer.deinit();
+            try chownSingle(test_file, ownership, options, buffer.writer());
         }
     }.testFn);
 }
@@ -672,7 +686,9 @@ test "privileged: chown recursive option" {
             const options = ChownOptions{ .recursive = true };
 
             // Should work recursively
-            try chownFile(test_dir, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_dir, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -703,7 +719,9 @@ test "privileged: chown with verbose option" {
             const options = ChownOptions{ .verbose = true };
 
             // Should work with verbose output
-            try chownFile(test_file, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -734,7 +752,9 @@ test "privileged: chown with changes option" {
             const options = ChownOptions{ .changes = true };
 
             // Should work with changes option
-            try chownFile(test_file, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -771,7 +791,9 @@ test "privileged: chown with no-dereference option" {
             const options = ChownOptions{ .no_dereference = true };
 
             // Should work with no-dereference option
-            try chownFile(test_link, owner_spec, options, allocator);
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+            try chownFile(test_link, owner_spec, options, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -784,7 +806,9 @@ test "chown with silent option suppresses errors" {
     const options = ChownOptions{ .silent = true };
 
     // Should not panic or output errors for nonexistent file in silent mode
-    const result = chownFile("/nonexistent/path", owner_spec, options, testing.allocator);
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+    const result = chownFile("/nonexistent/path", owner_spec, options, testing.allocator, buffer.writer());
     try testing.expectError(error.FileNotFound, result);
 }
 
@@ -811,17 +835,20 @@ test "privileged: chown traverse options" {
             const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
             defer allocator.free(owner_spec);
 
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+
             // Test traverse command line symlinks
             const options_h = ChownOptions{ .traverse_command_line_symlinks = true };
-            try chownFile(test_file, owner_spec, options_h, allocator);
+            try chownFile(test_file, owner_spec, options_h, allocator, buffer.writer());
 
             // Test traverse all symlinks
             const options_l = ChownOptions{ .traverse_all_symlinks = true };
-            try chownFile(test_file, owner_spec, options_l, allocator);
+            try chownFile(test_file, owner_spec, options_l, allocator, buffer.writer());
 
             // Test no traverse symlinks (default)
             const options_p = ChownOptions{ .no_traverse_symlinks = true };
-            try chownFile(test_file, owner_spec, options_p, allocator);
+            try chownFile(test_file, owner_spec, options_p, allocator, buffer.writer());
         }
     }.testFn);
 }
@@ -829,8 +856,11 @@ test "privileged: chown traverse options" {
 test "error handling different error types" {
     const options = ChownOptions{};
 
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
     // Test invalid owner specification
-    const result1 = chownFile("/tmp/test", "", options, testing.allocator);
+    const result1 = chownFile("/tmp/test", "", options, testing.allocator, buffer.writer());
     try testing.expectError(error.InvalidFormat, result1);
 
     // Test nonexistent file (with valid owner spec)
@@ -838,12 +868,20 @@ test "error handling different error types" {
     const owner_spec = try std.fmt.allocPrint(testing.allocator, "{d}", .{current_uid});
     defer testing.allocator.free(owner_spec);
 
-    const result2 = chownFile("/nonexistent/file", owner_spec, options, testing.allocator);
+    const result2 = chownFile("/nonexistent/file", owner_spec, options, testing.allocator, buffer.writer());
     try testing.expectError(error.FileNotFound, result2);
 }
 
 test "reportChange function" {
-    // Verify function signatures exist
-    try testing.expect(@TypeOf(reportChange) == fn ([]const u8, common.user_group.uid_t, common.user_group.gid_t, common.user_group.uid_t, common.user_group.gid_t) void);
-    try testing.expect(@TypeOf(reportNoChange) == fn ([]const u8) void);
+    // The reportChange and reportNoChange functions now accept writer: anytype
+    // and return !void. This is verified by compilation.
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // Test that the functions can be called without error
+    try reportChange(buffer.writer(), "/test", 1000, 100, 1001, 101);
+    try reportNoChange(buffer.writer(), "/test");
+
+    // Verify output was written
+    try testing.expect(buffer.items.len > 0);
 }

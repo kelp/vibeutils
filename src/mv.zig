@@ -112,7 +112,11 @@ test "mv: file rename in same directory" {
     defer testing.allocator.free(new_path);
 
     // Run mv
-    try moveFile(testing.allocator, old_path, new_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, old_path, new_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify old file is gone
     try testing.expect(!test_dir.fileExists(old_name));
@@ -145,7 +149,11 @@ test "mv: move to different directory" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    try moveFile(testing.allocator, source_path, dest_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify original is gone
     try testing.expect(!test_dir.fileExists(source_name));
@@ -181,7 +189,11 @@ test "mv: directory move" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    try moveFile(testing.allocator, source_path, dest_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify original directory is gone
     test_dir.tmp_dir.dir.access("source_dir", .{}) catch |err| {
@@ -215,7 +227,11 @@ test "mv: force mode overwrites existing file" {
 
     // With force mode, should overwrite without error
     const options = MoveOptions{ .force = true };
-    try moveFile(testing.allocator, source_path, dest_path, options);
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify source is gone and dest has new content
     try testing.expect(!test_dir.fileExists(source_name));
@@ -245,7 +261,11 @@ test "mv: no-clobber mode preserves existing file" {
 
     // With no-clobber mode, should not overwrite
     const options = MoveOptions{ .no_clobber = true };
-    try moveFile(testing.allocator, source_path, dest_path, options);
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify source still exists and dest is unchanged
     try testing.expect(test_dir.fileExists(source_name));
@@ -273,7 +293,11 @@ test "mv: files with spaces in names" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    try moveFile(testing.allocator, source_path, dest_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -302,7 +326,11 @@ test "mv: files with unicode characters" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    try moveFile(testing.allocator, source_path, dest_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -331,7 +359,11 @@ test "mv: files with special characters" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    try moveFile(testing.allocator, source_path, dest_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -360,7 +392,11 @@ test "mv: empty file" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    try moveFile(testing.allocator, source_path, dest_path, .{});
+    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buf.deinit();
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -371,15 +407,14 @@ test "mv: empty file" {
 }
 
 /// Move across filesystems using copy-then-delete
-fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions) !void {
+fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     // Import cp modules for cross-filesystem copy
     const cp_types = @import("cp/types.zig");
     const cp_engine = @import("cp/copy_engine.zig");
     const user_interaction = @import("cp/user_interaction.zig");
 
     if (options.verbose) {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("mv: moving '{s}' to '{s}' (cross-filesystem)\n", .{ source, dest });
+        try stdout_writer.print("mv: moving '{s}' to '{s}' (cross-filesystem)\n", .{ source, dest });
     }
 
     // Create cp options from mv options
@@ -402,18 +437,32 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     // Show progress for cross-filesystem moves
     // Step 1 of 2: Copying files
     const source_basename = std.fs.path.basename(source);
-    try user_interaction.UserInteraction.showProgress(0, 2, source_basename);
+    user_interaction.UserInteraction.showProgress(stderr_writer, 0, 2, source_basename) catch |progress_err| {
+        // Progress display is optional - continue if it fails
+        if (options.verbose) {
+            try stderr_writer.print("mv: warning: failed to display progress: {}\n", .{progress_err});
+        }
+    };
 
     // Execute copy with proper error handling
-    engine.executeCopy(operation) catch |err| {
-        // Clear progress on error
-        user_interaction.UserInteraction.clearProgress() catch {};
+    engine.executeCopy(stderr_writer, operation) catch |err| {
+        // Clear progress on error and provide error message
+        user_interaction.UserInteraction.clearProgress(stderr_writer) catch |clear_err| {
+            if (options.verbose) {
+                try stderr_writer.print("mv: warning: failed to clear progress display: {}\n", .{clear_err});
+            }
+        };
+        try stderr_writer.print("mv: error copying '{s}' to '{s}': {}\n", .{ source, dest, err });
         return err;
     };
 
     // Update progress after copy
     // Step 2 of 2: Removing source
-    try user_interaction.UserInteraction.showProgress(1, 2, source_basename);
+    user_interaction.UserInteraction.showProgress(stderr_writer, 1, 2, source_basename) catch |progress_err| {
+        if (options.verbose) {
+            try stderr_writer.print("mv: warning: failed to display progress: {}\n", .{progress_err});
+        }
+    };
 
     // If copy succeeded, remove the source
     // We need to check if it's a directory to use the appropriate delete method
@@ -425,7 +474,11 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     }
 
     // Complete progress
-    try user_interaction.UserInteraction.showProgress(2, 2, source_basename);
+    user_interaction.UserInteraction.showProgress(stderr_writer, 2, 2, source_basename) catch |progress_err| {
+        if (options.verbose) {
+            try stderr_writer.print("mv: warning: failed to display progress: {}\n", .{progress_err});
+        }
+    };
 }
 
 /// Remove destination file or directory
@@ -440,11 +493,10 @@ fn removeDestination(dest: []const u8) !void {
 }
 
 /// Prompt user for overwrite confirmation
-fn promptOverwrite(dest: []const u8) !bool {
-    const stderr = std.io.getStdErr().writer();
+fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
     const stdin = std.io.getStdIn().reader();
 
-    try stderr.print("mv: overwrite '{s}'? ", .{dest});
+    try stderr_writer.print("mv: overwrite '{s}'? ", .{dest});
 
     var buf: [16]u8 = undefined;
     if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
@@ -455,7 +507,7 @@ fn promptOverwrite(dest: []const u8) !bool {
 }
 
 /// Move file or directory with atomic rename or cross-filesystem copy
-fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions) !void {
+fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     // For no-clobber mode, check if destination exists first
     // Note: There's a TOCTOU (time-of-check-time-of-use) race here, but this is
     // acceptable for no-clobber mode as it's a best-effort safety feature
@@ -472,13 +524,13 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
     std.posix.rename(source, dest) catch |err| switch (err) {
         error.RenameAcrossMountPoints => {
             // Fall back to copy + remove
-            try crossFilesystemMove(allocator, source, dest, options);
+            try crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
         },
         error.PathAlreadyExists => {
             // Destination exists - handle based on options
             // Interactive mode takes precedence unless force is also specified
             if (options.interactive and !options.force) {
-                if (!try promptOverwrite(dest)) {
+                if (!try promptOverwrite(dest, stderr_writer)) {
                     return; // User chose not to overwrite
                 }
                 // User approved, remove destination and retry
@@ -487,7 +539,7 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 // We might still get RenameAcrossMountPoints if on different filesystems
                 std.posix.rename(source, dest) catch |rename_err| switch (rename_err) {
                     error.RenameAcrossMountPoints => {
-                        try crossFilesystemMove(allocator, source, dest, options);
+                        try crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
                     },
                     else => return rename_err,
                 };
@@ -497,7 +549,7 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 // Retry the rename after removing destination
                 std.posix.rename(source, dest) catch |rename_err| switch (rename_err) {
                     error.RenameAcrossMountPoints => {
-                        try crossFilesystemMove(allocator, source, dest, options);
+                        try crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
                     },
                     else => return rename_err,
                 };
@@ -524,9 +576,8 @@ const MoveOptions = struct {
 };
 
 /// Print help message
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print(
+fn printHelp(writer: anytype) !void {
+    try writer.print(
         \\Usage: mv [OPTION]... SOURCE DEST
         \\  or:  mv [OPTION]... SOURCE... DIRECTORY
         \\  or:  mv [OPTION]... -t DIRECTORY SOURCE...
@@ -550,19 +601,32 @@ fn printHelp() !void {
 /// Main entry point for mv utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try runMv(stdout_writer, stderr_writer, allocator);
+    if (exit_code != common.ExitCode.success) {
+        std.process.exit(@intFromEnum(exit_code));
+    }
+}
+
+/// Run mv with provided writers for output
+pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(MvArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.fatal("unrecognized option\nTry 'mv --help' for more information.", .{});
+                try stderr_writer.print("{s}: unrecognized option\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                return common.ExitCode.general_error;
             },
             error.MissingValue => {
-                common.fatal("option requires an argument\nTry 'mv --help' for more information.", .{});
+                try stderr_writer.print("{s}: option requires an argument\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                return common.ExitCode.general_error;
             },
             else => return err,
         }
@@ -571,20 +635,20 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        try printHelp();
-        return;
+        try printHelp(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Handle version
     if (args.version) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("mv ({s}) {s}\n", .{ common.name, common.version });
-        return;
+        try stdout_writer.print("mv ({s}) {s}\n", .{ common.name, common.version });
+        return common.ExitCode.success;
     }
 
     const files = args.positionals;
     if (files.len < 2) {
-        common.fatal("missing file operand\nTry 'mv --help' for more information.", .{});
+        try stderr_writer.print("{s}: missing file operand\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+        return common.ExitCode.general_error;
     }
 
     const options = MoveOptions{
@@ -600,46 +664,51 @@ pub fn main() !void {
         const dest = files[files.len - 1];
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
-                common.fatal("target '{s}' is not a directory", .{dest});
+                try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, dest });
+                return common.ExitCode.general_error;
             },
             else => return err,
         };
 
         if (dest_stat.kind != .directory) {
-            common.fatal("target '{s}' is not a directory", .{dest});
+            try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, dest });
+            return common.ExitCode.general_error;
         }
 
-        // Move each source to destination directory
         // Move each source to destination directory
         // TODO: Consider parallel processing for multiple independent file moves
         // This could be implemented using a thread pool for better performance
         // when moving many files, but would require careful error handling
+        var exit_code = common.ExitCode.success;
         for (files[0 .. files.len - 1]) |source| {
             const basename = std.fs.path.basename(source);
             const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options) catch |err| {
-                common.fatal("cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
+            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch |err| {
+                try stderr_writer.print("{s}: cannot move '{s}' to '{s}': {}\n", .{ prog_name, source, full_dest, err });
+                exit_code = common.ExitCode.general_error;
+                continue;
             };
 
             if (options.verbose) {
-                const stdout = std.io.getStdOut().writer();
-                try stdout.print("'{s}' -> '{s}'\n", .{ source, full_dest });
+                try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, full_dest });
             }
         }
+        return exit_code;
     } else {
         // Single source case: simple rename or move
         const source = files[0];
         const dest = files[1];
 
-        moveFile(allocator, source, dest, options) catch |err| {
-            common.fatal("cannot move '{s}' to '{s}': {}", .{ source, dest, err });
+        moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |err| {
+            try stderr_writer.print("{s}: cannot move '{s}' to '{s}': {}\n", .{ prog_name, source, dest, err });
+            return common.ExitCode.general_error;
         };
 
         if (options.verbose) {
-            const stdout = std.io.getStdOut().writer();
-            try stdout.print("'{s}' -> '{s}'\n", .{ source, dest });
+            try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
         }
+        return common.ExitCode.success;
     }
 }

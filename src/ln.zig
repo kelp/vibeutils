@@ -163,16 +163,28 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
 /// Main entry point for ln command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try runLn(stdout_writer, stderr_writer, allocator);
+    if (exit_code != common.ExitCode.success) {
+        std.process.exit(@intFromEnum(exit_code));
+    }
+}
+
+/// Run ln with provided writers for output
+pub fn runLn(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Parse arguments
     const args = common.argparse.ArgParser.parseProcess(LnArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                try stderr_writer.print("{s}: invalid argument\n", .{prog_name});
+                return common.ExitCode.general_error;
             },
             else => return err,
         }
@@ -181,14 +193,14 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        try printHelp();
-        return;
+        try printHelp(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Handle version
     if (args.version) {
-        try printVersion();
-        return;
+        try printVersion(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Create options
@@ -208,17 +220,16 @@ pub fn main() !void {
     const files = args.positionals;
 
     if (files.len == 0) {
-        common.printError("missing file operand", .{});
-        return common.Error.ArgumentError;
+        try stderr_writer.print("{s}: missing file operand\n", .{prog_name});
+        return common.ExitCode.general_error;
     }
 
-    try createLinks(allocator, files, options);
+    return try createLinks(allocator, files, options, stdout_writer, stderr_writer);
 }
 
-/// Print help information to stdout
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(
+/// Print help information to provided writer
+fn printHelp(writer: anytype) !void {
+    try writer.writeAll(
         \\Usage: ln [OPTION]... [-T] TARGET LINK_NAME
         \\  or:  ln [OPTION]... TARGET
         \\  or:  ln [OPTION]... TARGET... DIRECTORY
@@ -256,10 +267,9 @@ fn printHelp() !void {
     );
 }
 
-/// Print version information to stdout
-fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("ln ({s}) {s}\n", .{ common.name, common.version });
+/// Print version information to provided writer
+fn printVersion(writer: anytype) !void {
+    try writer.print("ln ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Options for link creation
@@ -278,47 +288,54 @@ const LinkOptions = struct {
 
 /// Create links based on command form and options
 /// Supports all four POSIX ln command forms
-fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions) !void {
+fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
     if (options.target_directory) |target_dir| {
         // Form 4: ln -t DIRECTORY TARGET...
         // Validate the target directory path
         validatePath(target_dir) catch |err| {
-            common.printError("invalid target directory '{s}': {}", .{ target_dir, err });
-            return err;
+            try stderr_writer.print("{s}: invalid target directory '{s}': {}\n", .{ prog_name, target_dir, err });
+            return common.ExitCode.general_error;
         };
 
         // Check that target directory exists and is a directory
         const stat = std.fs.cwd().statFile(target_dir) catch |err| {
             switch (err) {
                 error.FileNotFound => {
-                    common.printError("target '{s}' is not a directory", .{target_dir});
-                    return common.Error.ArgumentError;
+                    try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, target_dir });
+                    return common.ExitCode.general_error;
                 },
                 else => return err,
             }
         };
 
         if (stat.kind != .directory) {
-            common.printError("target '{s}' is not a directory", .{target_dir});
-            return common.Error.ArgumentError;
+            try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, target_dir });
+            return common.ExitCode.general_error;
         }
 
         for (files) |target| {
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ target_dir, link_name });
             defer allocator.free(full_link_path);
-            try createSingleLink(target, full_link_path, options);
+            createSingleLink(target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
+                return common.ExitCode.general_error;
+            };
         }
     } else if (files.len == 1) {
         // Form 2: ln TARGET
         const target = files[0];
         const link_name = std.fs.path.basename(target);
-        try createSingleLink(target, link_name, options);
+        createSingleLink(target, link_name, options, stdout_writer, stderr_writer, false) catch {
+            return common.ExitCode.general_error;
+        };
     } else if (files.len == 2 and options.no_target_directory) {
         // Form 1: ln [-T] TARGET LINK_NAME
         const target = files[0];
         const link_name = files[1];
-        try createSingleLink(target, link_name, options);
+        createSingleLink(target, link_name, options, stdout_writer, stderr_writer, false) catch {
+            return common.ExitCode.general_error;
+        };
     } else if (files.len >= 2) {
         // Form 3: ln TARGET... DIRECTORY
         const directory = files[files.len - 1];
@@ -327,11 +344,13 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             error.FileNotFound => {
                 if (files.len == 2) {
                     // Special case: 2 args, treat as Form 1
-                    try createSingleLink(files[0], files[1], options);
-                    return;
+                    createSingleLink(files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
+                        return common.ExitCode.general_error;
+                    };
+                    return common.ExitCode.success;
                 } else {
-                    common.printError("target '{s}' is not a directory", .{directory});
-                    return common.Error.ArgumentError;
+                    try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, directory });
+                    return common.ExitCode.general_error;
                 }
             },
             else => return err,
@@ -340,11 +359,13 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         if (stat.kind != .directory) {
             if (files.len == 2) {
                 // Special case: 2 args, treat as Form 1
-                try createSingleLink(files[0], files[1], options);
-                return;
+                createSingleLink(files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
+                    return common.ExitCode.general_error;
+                };
+                return common.ExitCode.success;
             } else {
-                common.printError("target '{s}' is not a directory", .{directory});
-                return common.Error.ArgumentError;
+                try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, directory });
+                return common.ExitCode.general_error;
             }
         }
 
@@ -353,24 +374,30 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ directory, link_name });
             defer allocator.free(full_link_path);
-            try createSingleLink(target, full_link_path, options);
+            createSingleLink(target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
+                return common.ExitCode.general_error;
+            };
         }
     } else {
-        common.printError("missing destination file operand after '{s}'", .{files[0]});
-        return common.Error.ArgumentError;
+        try stderr_writer.print("{s}: missing destination file operand after '{s}'\n", .{ prog_name, files[0] });
+        return common.ExitCode.general_error;
     }
+
+    return common.ExitCode.success;
 }
 
 /// Create a single link (hard or symbolic) from target to link_name
 /// Handles security validation, existing files, and relative paths
-fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOptions) !void {
+/// When test_mode is true, interactive prompts are skipped (assumes 'no')
+fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype, test_mode: bool) !void {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
     // Validate paths for security
     validatePath(target) catch |err| {
-        common.printError("invalid target path '{s}': {}", .{ target, err });
+        try stderr_writer.print("{s}: invalid target path '{s}': {}\n", .{ prog_name, target, err });
         return err;
     };
     validatePath(link_name) catch |err| {
-        common.printError("invalid link path '{s}': {}", .{ link_name, err });
+        try stderr_writer.print("{s}: invalid link path '{s}': {}\n", .{ prog_name, link_name, err });
         return err;
     };
 
@@ -385,21 +412,25 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
 
     if (link_exists and !options.force) {
         if (options.interactive) {
-            // Interactive prompt
-            const stdin = std.io.getStdIn().reader();
-            const stdout = std.io.getStdOut().writer();
+            if (test_mode) {
+                // Test mode: assume 'no' for interactive prompts
+                return error.FileExists;
+            } else {
+                // Interactive prompt
+                const stdin = std.io.getStdIn().reader();
 
-            try stdout.print("ln: replace '{s}'? ", .{link_name});
+                try stderr_writer.print("ln: replace '{s}'? ", .{link_name});
 
-            var buffer: [10]u8 = undefined;
-            const input = (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) orelse return;
+                var buffer: [10]u8 = undefined;
+                const input = (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) orelse return;
 
-            // Proceed only on 'y' or 'Y'
-            if (input.len == 0 or (input[0] != 'y' and input[0] != 'Y')) {
-                return;
+                // Proceed only on 'y' or 'Y'
+                if (input.len == 0 or (input[0] != 'y' and input[0] != 'Y')) {
+                    return;
+                }
             }
         } else {
-            common.printError("'{s}': File exists", .{link_name});
+            try stderr_writer.print("{s}: '{s}': File exists\n", .{ prog_name, link_name });
             return error.FileExists;
         }
     }
@@ -409,7 +440,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
         std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
             error.FileNotFound => {}, // Already removed
             else => {
-                common.printError("cannot remove '{s}': {}", .{ link_name, err });
+                try stderr_writer.print("{s}: cannot remove '{s}': {}\n", .{ prog_name, link_name, err });
                 return err;
             },
         };
@@ -435,7 +466,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
                     break :blk target;
                 } else {
                     break :blk std.fs.realpath(target, &target_abs_buf) catch |err| {
-                        common.printError("cannot resolve target path '{s}': {}", .{ target, err });
+                        try stderr_writer.print("{s}: cannot resolve target path '{s}': {}\n", .{ prog_name, target, err });
                         return err;
                     };
                 }
@@ -453,126 +484,68 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
 
             // Calculate relative path
             allocated_path = makeRelativePath(allocator, link_dir_abs, target_abs) catch |err| {
-                common.printError("cannot compute relative path: {}", .{err});
+                try stderr_writer.print("{s}: cannot compute relative path: {}\n", .{ prog_name, err });
                 return err;
             };
             target_path = allocated_path.?;
         }
 
         std.fs.cwd().symLink(target_path, link_name, .{}) catch |err| {
-            common.printError("cannot create symbolic link '{s}' to '{s}': {}", .{ link_name, target, err });
+            try stderr_writer.print("{s}: cannot create symbolic link '{s}' to '{s}': {}\n", .{ prog_name, link_name, target, err });
             return err;
         };
     } else {
         // Create hard link - target must exist
         std.fs.cwd().access(target, .{}) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printError("cannot link '{s}': No such file or directory", .{target});
+                try stderr_writer.print("{s}: cannot link '{s}': No such file or directory\n", .{ prog_name, target });
                 return error.FileNotFound;
             },
             else => {
-                common.printError("cannot access '{s}': {}", .{ target, err });
+                try stderr_writer.print("{s}: cannot access '{s}': {}\n", .{ prog_name, target, err });
                 return err;
             },
         };
 
         std.posix.link(target, link_name) catch |err| {
-            common.printError("cannot create link '{s}' to '{s}': {}", .{ link_name, target, err });
+            try stderr_writer.print("{s}: cannot create link '{s}' to '{s}': {}\n", .{ prog_name, link_name, target, err });
             return err;
         };
     }
 
     if (options.verbose) {
-        const stdout = std.io.getStdOut().writer();
         if (options.symbolic) {
             // Use -> for symbolic links
-            try stdout.print("'{s}' -> '{s}'\n", .{ link_name, target });
+            try stdout_writer.print("'{s}' -> '{s}'\n", .{ link_name, target });
         } else {
             // Use => for hard links
-            try stdout.print("'{s}' => '{s}'\n", .{ link_name, target });
+            try stdout_writer.print("'{s}' => '{s}'\n", .{ link_name, target });
         }
     }
 }
 
+/// Dummy writer that discards all output for test mode
+const TestWriter = struct {
+    const Error = error{};
+    const Writer = std.io.Writer(*TestWriter, Error, write);
+
+    fn write(self: *TestWriter, bytes: []const u8) Error!usize {
+        _ = self;
+        return bytes.len;
+    }
+
+    fn writer(self: *TestWriter) Writer {
+        return .{ .context = self };
+    }
+};
+
 /// Test-friendly version of createSingleLink that returns errors for unit testing
 fn createSingleLinkTest(target: []const u8, link_name: []const u8, options: LinkOptions) !void {
-    // Validate paths for security
-    try validatePath(target);
-    try validatePath(link_name);
+    var test_writer = TestWriter{};
+    const stdout_writer = test_writer.writer();
+    const stderr_writer = test_writer.writer();
 
-    // Check if link already exists
-    const link_exists = blk: {
-        std.fs.cwd().access(link_name, .{}) catch |err| switch (err) {
-            error.FileNotFound => break :blk false,
-            else => break :blk true,
-        };
-        break :blk true;
-    };
-
-    if (link_exists and !options.force) {
-        if (options.interactive) {
-            // Test mode: assume 'no' for interactive prompts
-            return error.FileExists;
-        } else {
-            return error.FileExists;
-        }
-    }
-
-    // Remove existing link if force is enabled
-    if (link_exists and options.force) {
-        std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
-            error.FileNotFound => {}, // Already removed
-            else => return err,
-        };
-    }
-
-    if (options.symbolic) {
-        // Create symbolic link
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
-        var target_path = target;
-        var allocated_path: ?[]u8 = null;
-        defer if (allocated_path) |p| allocator.free(p);
-
-        if (options.relative) {
-            // Compute relative path from link location to target
-            var target_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-            var link_dir_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-
-            const target_abs = blk: {
-                if (std.fs.path.isAbsolute(target)) {
-                    break :blk target;
-                } else {
-                    break :blk try std.fs.realpath(target, &target_abs_buf);
-                }
-            };
-
-            const link_dir = std.fs.path.dirname(link_name) orelse ".";
-            const link_dir_abs = blk: {
-                if (std.fs.path.isAbsolute(link_dir)) {
-                    break :blk link_dir;
-                } else {
-                    break :blk try std.fs.realpath(link_dir, &link_dir_abs_buf);
-                }
-            };
-
-            allocated_path = try makeRelativePath(allocator, link_dir_abs, target_abs);
-            target_path = allocated_path.?;
-        }
-
-        try std.fs.cwd().symLink(target_path, link_name, .{});
-    } else {
-        // Create hard link
-        // First check if target exists for hard links
-        std.fs.cwd().access(target, .{}) catch |err| switch (err) {
-            error.FileNotFound => return error.FileNotFound,
-            else => return err,
-        };
-
-        try std.posix.link(target, link_name);
-    }
+    try createSingleLink(target, link_name, options, stdout_writer, stderr_writer, true);
 }
 
 /// Test helper for link creation in a specific directory

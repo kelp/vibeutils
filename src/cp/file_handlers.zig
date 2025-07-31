@@ -9,7 +9,7 @@ const common = @import("common");
 
 pub const FileHandlers = struct {
     /// Copy a regular file
-    pub fn copyRegularFile(ctx: types.CopyContext, operation: types.CopyOperation, stats: *types.CopyStats) anyerror!void {
+    pub fn copyRegularFile(stderr_writer: anytype, ctx: types.CopyContext, operation: types.CopyOperation, stats: *types.CopyStats) anyerror!void {
         // Get source file stats for size and attributes
         const source_stat = std.fs.cwd().statFile(operation.source) catch |err| {
             const copy_err = errors.ErrorHandler.mapSystemError(err);
@@ -17,7 +17,7 @@ pub const FileHandlers = struct {
                 .operation = "stat source file",
                 .source_path = operation.source,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             stats.addError();
             return copy_err;
         };
@@ -30,7 +30,7 @@ pub const FileHandlers = struct {
         // Copy the file with correct permissions
         if (ctx.options.preserve) {
             // When preserving attributes, create the file with the source's mode directly
-            try copyFileWithMode(operation.source, operation.final_dest_path, source_stat.mode, source_stat);
+            try copyFileWithMode(stderr_writer, operation.source, operation.final_dest_path, source_stat.mode, source_stat);
         } else {
             // Use standard copy when not preserving attributes
             std.fs.cwd().copyFile(operation.source, std.fs.cwd(), operation.final_dest_path, .{}) catch |err| {
@@ -40,7 +40,7 @@ pub const FileHandlers = struct {
                     .source_path = operation.source,
                     .dest_path = operation.final_dest_path,
                 };
-                errors.ErrorHandler.reportError(context, copy_err);
+                errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
                 stats.addError();
                 return copy_err;
             };
@@ -50,7 +50,7 @@ pub const FileHandlers = struct {
     }
 
     /// Copy a symbolic link
-    pub fn copySymlink(ctx: types.CopyContext, operation: types.CopyOperation, stats: *types.CopyStats) anyerror!void {
+    pub fn copySymlink(stderr_writer: anytype, ctx: types.CopyContext, operation: types.CopyOperation, stats: *types.CopyStats) anyerror!void {
         // Get symlink target
         const target = path_resolver.PathResolver.getSymlinkTarget(ctx.allocator, operation.source) catch |err| {
             const copy_err = errors.ErrorHandler.mapSystemError(err);
@@ -58,7 +58,7 @@ pub const FileHandlers = struct {
                 .operation = "read symlink",
                 .source_path = operation.source,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             stats.addError();
             return copy_err;
         };
@@ -69,7 +69,7 @@ pub const FileHandlers = struct {
             if (ctx.options.force) {
                 try user_interaction.UserInteraction.handleForceOverwrite(operation.final_dest_path);
             } else {
-                const copy_err = errors.destinationExists(operation.final_dest_path);
+                const copy_err = errors.destinationExists(stderr_writer, operation.final_dest_path);
                 stats.addError();
                 return copy_err;
             }
@@ -83,7 +83,7 @@ pub const FileHandlers = struct {
                 .source_path = operation.source,
                 .dest_path = operation.final_dest_path,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             stats.addError();
             return copy_err;
         };
@@ -92,9 +92,9 @@ pub const FileHandlers = struct {
     }
 
     /// Copy a directory recursively
-    pub fn copyDirectory(ctx: types.CopyContext, operation: types.CopyOperation, stats: *types.CopyStats) anyerror!void {
+    pub fn copyDirectory(stderr_writer: anytype, ctx: types.CopyContext, operation: types.CopyOperation, stats: *types.CopyStats) anyerror!void {
         if (!ctx.options.recursive) {
-            const copy_err = errors.recursionNotAllowed(operation.source);
+            const copy_err = errors.recursionNotAllowed(stderr_writer, operation.source);
             stats.addError();
             return copy_err;
         }
@@ -109,7 +109,7 @@ pub const FileHandlers = struct {
                         .operation = "stat destination",
                         .dest_path = operation.final_dest_path,
                     };
-                    errors.ErrorHandler.reportError(context, copy_err);
+                    errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
                     stats.addError();
                     return copy_err;
                 };
@@ -120,7 +120,7 @@ pub const FileHandlers = struct {
                         .source_path = operation.source,
                         .dest_path = operation.final_dest_path,
                     };
-                    errors.ErrorHandler.reportError(context, errors.CopyError.DestinationIsNotDirectory);
+                    errors.ErrorHandler.reportError(stderr_writer, context, errors.CopyError.DestinationIsNotDirectory);
                     stats.addError();
                     return errors.CopyError.DestinationIsNotDirectory;
                 }
@@ -132,14 +132,14 @@ pub const FileHandlers = struct {
                     .source_path = operation.source,
                     .dest_path = operation.final_dest_path,
                 };
-                errors.ErrorHandler.reportError(context, copy_err);
+                errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
                 stats.addError();
                 return copy_err;
             },
         };
 
         // Copy directory contents
-        try copyDirectoryContents(ctx, operation.source, operation.final_dest_path, stats);
+        try copyDirectoryContents(stderr_writer, ctx, operation.source, operation.final_dest_path, stats);
 
         // Preserve directory attributes if requested
         if (ctx.options.preserve) {
@@ -149,12 +149,12 @@ pub const FileHandlers = struct {
                     .operation = "stat source directory",
                     .source_path = operation.source,
                 };
-                errors.ErrorHandler.reportError(context, copy_err);
+                errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
                 stats.addError();
                 return copy_err;
             };
 
-            try preserveFileAttributes(operation.source, operation.final_dest_path, source_stat);
+            try preserveFileAttributes(stderr_writer, operation.source, operation.final_dest_path, source_stat);
         }
 
         stats.addDirectory();
@@ -162,14 +162,14 @@ pub const FileHandlers = struct {
 };
 
 /// Copy contents of a directory recursively
-fn copyDirectoryContents(ctx: types.CopyContext, source_dir: []const u8, dest_dir: []const u8, stats: *types.CopyStats) anyerror!void {
+fn copyDirectoryContents(stderr_writer: anytype, ctx: types.CopyContext, source_dir: []const u8, dest_dir: []const u8, stats: *types.CopyStats) anyerror!void {
     var source = std.fs.cwd().openDir(source_dir, .{ .iterate = true }) catch |err| {
         const copy_err = errors.ErrorHandler.mapSystemError(err);
         const context = errors.ErrorContext{
             .operation = "open source directory",
             .source_path = source_dir,
         };
-        errors.ErrorHandler.reportError(context, copy_err);
+        errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
         stats.addError();
         return copy_err;
     };
@@ -191,7 +191,7 @@ fn copyDirectoryContents(ctx: types.CopyContext, source_dir: []const u8, dest_di
                 .source_path = source_path,
                 .dest_path = dest_path,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             stats.addError();
             continue; // Skip this entry but continue with others
         };
@@ -199,26 +199,26 @@ fn copyDirectoryContents(ctx: types.CopyContext, source_dir: []const u8, dest_di
 
         // Execute copy based on entry type
         switch (entry_operation.source_type) {
-            .regular_file => FileHandlers.copyRegularFile(ctx, entry_operation, stats) catch {
+            .regular_file => FileHandlers.copyRegularFile(stderr_writer, ctx, entry_operation, stats) catch {
                 // Error already reported in copyRegularFile
                 continue;
             },
             .symlink => {
                 if (ctx.options.no_dereference) {
-                    FileHandlers.copySymlink(ctx, entry_operation, stats) catch {
+                    FileHandlers.copySymlink(stderr_writer, ctx, entry_operation, stats) catch {
                         // Error already reported in copySymlink
                         continue;
                     };
                 } else {
                     // Follow the symlink and copy the target
-                    FileHandlers.copyRegularFile(ctx, entry_operation, stats) catch {
+                    FileHandlers.copyRegularFile(stderr_writer, ctx, entry_operation, stats) catch {
                         // Error already reported in copyRegularFile
                         continue;
                     };
                 }
             },
             .directory => {
-                FileHandlers.copyDirectory(ctx, entry_operation, stats) catch {
+                FileHandlers.copyDirectory(stderr_writer, ctx, entry_operation, stats) catch {
                     // Error already reported in copyDirectory, continue with next entry
                 };
             },
@@ -227,7 +227,7 @@ fn copyDirectoryContents(ctx: types.CopyContext, source_dir: []const u8, dest_di
                     .operation = "copy special file",
                     .source_path = source_path,
                 };
-                errors.ErrorHandler.reportError(context, errors.CopyError.UnsupportedFileType);
+                errors.ErrorHandler.reportError(stderr_writer, context, errors.CopyError.UnsupportedFileType);
                 stats.addError();
                 continue;
             },
@@ -236,7 +236,7 @@ fn copyDirectoryContents(ctx: types.CopyContext, source_dir: []const u8, dest_di
 }
 
 /// Copy a file with specific mode (permissions) set atomically
-fn copyFileWithMode(source_path: []const u8, dest_path: []const u8, mode: std.fs.File.Mode, source_stat: std.fs.File.Stat) !void {
+fn copyFileWithMode(stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, mode: std.fs.File.Mode, source_stat: std.fs.File.Stat) !void {
     // Open source file
     const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
         const copy_err = errors.ErrorHandler.mapSystemError(err);
@@ -244,7 +244,7 @@ fn copyFileWithMode(source_path: []const u8, dest_path: []const u8, mode: std.fs
             .operation = "open source file",
             .source_path = source_path,
         };
-        errors.ErrorHandler.reportError(context, copy_err);
+        errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
         return copy_err;
     };
     defer source_file.close();
@@ -256,7 +256,7 @@ fn copyFileWithMode(source_path: []const u8, dest_path: []const u8, mode: std.fs
             .operation = "create destination file",
             .dest_path = dest_path,
         };
-        errors.ErrorHandler.reportError(context, copy_err);
+        errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
         return copy_err;
     };
     defer dest_file.close();
@@ -282,13 +282,13 @@ fn copyFileWithMode(source_path: []const u8, dest_path: []const u8, mode: std.fs
             .source_path = source_path,
             .dest_path = dest_path,
         };
-        errors.ErrorHandler.reportError(context, copy_err);
+        errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
         return copy_err;
     };
 }
 
 /// Preserve file attributes (mode, timestamps)
-fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) !void {
+fn preserveFileAttributes(stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) !void {
     // For directories, open as a directory
     if (source_stat.kind == .directory) {
         var dest_dir = std.fs.cwd().openDir(dest_path, .{}) catch |err| {
@@ -297,7 +297,7 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
                 .operation = "open destination directory for attribute preservation",
                 .dest_path = dest_path,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             return copy_err;
         };
         defer dest_dir.close();
@@ -326,7 +326,7 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
                 .source_path = source_path,
                 .dest_path = dest_path,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             return copy_err;
         };
     } else {
@@ -337,7 +337,7 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
                 .operation = "open destination file for attribute preservation",
                 .dest_path = dest_path,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             return copy_err;
         };
         defer dest_file.close();
@@ -353,7 +353,7 @@ fn preserveFileAttributes(source_path: []const u8, dest_path: []const u8, source
                 .source_path = source_path,
                 .dest_path = dest_path,
             };
-            errors.ErrorHandler.reportError(context, copy_err);
+            errors.ErrorHandler.reportError(stderr_writer, context, copy_err);
             return copy_err;
         };
     }
@@ -381,8 +381,12 @@ test "FileHandlers: copy regular file" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
     var stats = types.CopyStats{};
-    try FileHandlers.copyRegularFile(context, operation, &stats);
+    try FileHandlers.copyRegularFile(stderr_writer, context, operation, &stats);
 
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
     try testing.expectEqual(@as(usize, 1), stats.files_copied);
@@ -405,8 +409,12 @@ test "FileHandlers: copy symlink" {
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
 
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
     var stats = types.CopyStats{};
-    try FileHandlers.copySymlink(context, operation, &stats);
+    try FileHandlers.copySymlink(stderr_writer, context, operation, &stats);
 
     try testing.expect(test_dir.isSymlink("copied_link.txt"));
     const target = try test_dir.getSymlinkTarget("copied_link.txt");
@@ -435,8 +443,12 @@ test "FileHandlers: copy directory" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
     var stats = types.CopyStats{};
-    try FileHandlers.copyDirectory(context, operation, &stats);
+    try FileHandlers.copyDirectory(stderr_writer, context, operation, &stats);
 
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1");
     try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2");
@@ -460,8 +472,12 @@ test "FileHandlers: preserve attributes" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
     var stats = types.CopyStats{};
-    try FileHandlers.copyRegularFile(context, operation, &stats);
+    try FileHandlers.copyRegularFile(stderr_writer, context, operation, &stats);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");

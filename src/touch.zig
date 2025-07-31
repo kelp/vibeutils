@@ -42,19 +42,32 @@ const TouchArgs = struct {
 /// Main entry point for the touch utility.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try mainWithWriter(stdout_writer, stderr_writer, allocator);
+    if (exit_code != common.ExitCode.success) {
+        std.process.exit(@intFromEnum(exit_code));
+    }
+}
+
+/// Main implementation that accepts writers for output.
+pub fn mainWithWriter(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(TouchArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.fatal("unrecognized option\nTry 'touch --help' for more information.", .{});
+                try stderr_writer.print("{s}: unrecognized option\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                return common.ExitCode.general_error;
             },
             error.MissingValue => {
-                common.fatal("option requires an argument\nTry 'touch --help' for more information.", .{});
+                try stderr_writer.print("{s}: option requires an argument\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                return common.ExitCode.general_error;
             },
             else => return err,
         }
@@ -63,15 +76,14 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        try printHelp();
-        return;
+        try printHelp(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Handle version
     if (args.version) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("touch ({s}) {s}\n", .{ common.name, common.version });
-        return;
+        try stdout_writer.print("touch ({s}) {s}\n", .{ common.name, common.version });
+        return common.ExitCode.success;
     }
 
     // Map long form aliases to short form
@@ -96,51 +108,51 @@ pub fn main() !void {
     const files = args.positionals;
 
     if (files.len == 0) {
-        common.fatal("missing file operand\nTry 'touch --help' for more information.", .{});
+        try stderr_writer.print("{s}: missing file operand\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+        return common.ExitCode.general_error;
     }
 
     // Process files - continue even if one fails (GNU touch behavior)
-    var exit_code: u8 = 0;
+    var has_error = false;
     for (files) |file_path| {
         touchFile(file_path, options, allocator) catch |err| {
             // Map specific errors to user-friendly messages
             switch (err) {
                 error.InvalidTimestamp => {
                     if (options.timestamp_str) |ts| {
-                        common.printError("invalid date format '{s}'", .{ts});
+                        try stderr_writer.print("{s}: invalid date format '{s}'\n", .{ prog_name, ts });
                     } else {
-                        common.printError("invalid date format", .{});
+                        try stderr_writer.print("{s}: invalid date format\n", .{prog_name});
                     }
                 },
                 error.InvalidTimeType => {
                     if (options.time_arg) |ta| {
-                        common.printError("invalid argument '{s}' for '--time'", .{ta});
+                        try stderr_writer.print("{s}: invalid argument '{s}' for '--time'\n", .{ prog_name, ta });
                     } else {
-                        common.printError("invalid argument for '--time'", .{});
+                        try stderr_writer.print("{s}: invalid argument for '--time'\n", .{prog_name});
                     }
                 },
                 error.DateParsingNotImplemented => {
                     if (options.date_str) |ds| {
-                        common.printError("invalid date format '{s}'", .{ds});
+                        try stderr_writer.print("{s}: invalid date format '{s}'\n", .{ prog_name, ds });
                     } else {
-                        common.printError("invalid date format", .{});
+                        try stderr_writer.print("{s}: invalid date format\n", .{prog_name});
                     }
                 },
-                else => handleError(file_path, err),
+                else => handleError(prog_name, file_path, err, stderr_writer),
             }
-            exit_code = @intFromEnum(common.ExitCode.general_error);
+            has_error = true;
         };
     }
 
-    std.process.exit(exit_code);
+    return if (has_error) common.ExitCode.general_error else common.ExitCode.success;
 }
 
-/// Prints the help message to stdout.
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
+/// Prints the help message using the provided writer.
+fn printHelp(writer: anytype) !void {
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
-    try stdout.print(
+    try writer.print(
         \\Usage: {s} [OPTION]... FILE...
         \\Update the access and modification times of each FILE to the current time.
         \\
@@ -476,22 +488,22 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
 }
 
 /// Handles errors by printing appropriate error messages.
-fn handleError(path: []const u8, err: anyerror) void {
+fn handleError(prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: anytype) void {
     // GNU touch format: "touch: cannot touch 'filename': Error message"
     switch (err) {
-        error.FileNotFound => common.printError("cannot touch '{s}': No such file or directory", .{path}),
-        error.AccessDenied => common.printError("cannot touch '{s}': Permission denied", .{path}),
-        error.BadPathName => common.printError("cannot touch '{s}': Bad address", .{path}),
-        error.Interrupted => common.printError("cannot touch '{s}': Interrupted system call", .{path}),
-        error.SystemCallNotSupported => common.printError("cannot touch '{s}': Function not implemented", .{path}),
-        error.ReadOnlyFileSystem => common.printError("cannot touch '{s}': Read-only file system", .{path}),
-        error.NameTooLong => common.printError("cannot touch '{s}': File name too long", .{path}),
-        error.NotDir => common.printError("cannot touch '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printError("cannot touch '{s}': Too many levels of symbolic links", .{path}),
-        error.InvalidValue => common.printError("cannot touch '{s}': Invalid argument", .{path}),
-        error.BadFileDescriptor => common.printError("cannot touch '{s}': Bad file descriptor", .{path}),
-        error.NoSuchProcess => common.printError("cannot touch '{s}': No such process", .{path}),
-        else => common.printError("cannot touch '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => stderr_writer.print("{s}: cannot touch '{s}': No such file or directory\n", .{ prog_name, path }) catch {},
+        error.AccessDenied => stderr_writer.print("{s}: cannot touch '{s}': Permission denied\n", .{ prog_name, path }) catch {},
+        error.BadPathName => stderr_writer.print("{s}: cannot touch '{s}': Bad address\n", .{ prog_name, path }) catch {},
+        error.Interrupted => stderr_writer.print("{s}: cannot touch '{s}': Interrupted system call\n", .{ prog_name, path }) catch {},
+        error.SystemCallNotSupported => stderr_writer.print("{s}: cannot touch '{s}': Function not implemented\n", .{ prog_name, path }) catch {},
+        error.ReadOnlyFileSystem => stderr_writer.print("{s}: cannot touch '{s}': Read-only file system\n", .{ prog_name, path }) catch {},
+        error.NameTooLong => stderr_writer.print("{s}: cannot touch '{s}': File name too long\n", .{ prog_name, path }) catch {},
+        error.NotDir => stderr_writer.print("{s}: cannot touch '{s}': Not a directory\n", .{ prog_name, path }) catch {},
+        error.SymLinkLoop => stderr_writer.print("{s}: cannot touch '{s}': Too many levels of symbolic links\n", .{ prog_name, path }) catch {},
+        error.InvalidValue => stderr_writer.print("{s}: cannot touch '{s}': Invalid argument\n", .{ prog_name, path }) catch {},
+        error.BadFileDescriptor => stderr_writer.print("{s}: cannot touch '{s}': Bad file descriptor\n", .{ prog_name, path }) catch {},
+        error.NoSuchProcess => stderr_writer.print("{s}: cannot touch '{s}': No such process\n", .{ prog_name, path }) catch {},
+        else => stderr_writer.print("{s}: cannot touch '{s}': {s}\n", .{ prog_name, path, @errorName(err) }) catch {},
     }
 }
 

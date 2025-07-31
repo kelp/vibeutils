@@ -46,19 +46,32 @@ const CpArgs = struct {
 /// Main entry point for the cp command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try runCp(stdout_writer, stderr_writer, allocator);
+    if (exit_code != common.ExitCode.success) {
+        std.process.exit(@intFromEnum(exit_code));
+    }
+}
+
+/// Run cp with provided writers for output
+pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Parse command line arguments
     const args = common.argparse.ArgParser.parseProcess(CpArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.fatal("unrecognized option\nTry 'cp --help' for more information.", .{});
+                try stderr_writer.print("{s}: unrecognized option\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                return common.ExitCode.misuse;
             },
             error.MissingValue => {
-                common.fatal("option requires an argument\nTry 'cp --help' for more information.", .{});
+                try stderr_writer.print("{s}: option requires an argument\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                return common.ExitCode.misuse;
             },
             else => return err,
         }
@@ -66,21 +79,22 @@ pub fn main() !void {
     defer allocator.free(args.positionals);
 
     if (args.help) {
-        try printHelp();
-        return;
+        try printHelp(stdout_writer);
+        return common.ExitCode.success;
     }
     if (args.version) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("cp ({s}) {s}\n", .{ common.name, common.version });
-        return;
+        try stdout_writer.print("cp ({s}) {s}\n", .{ common.name, common.version });
+        return common.ExitCode.success;
     }
 
     // Validate argument count
     if (args.positionals.len < 2) {
         if (args.positionals.len == 0) {
-            common.fatal("missing file operand", .{});
+            try stderr_writer.print("{s}: missing file operand\n", .{prog_name});
+            return common.ExitCode.misuse;
         } else {
-            common.fatal("missing destination file operand after '{s}'", .{args.positionals[0]});
+            try stderr_writer.print("{s}: missing destination file operand after '{s}'\n", .{ prog_name, args.positionals[0] });
+            return common.ExitCode.misuse;
         }
     }
 
@@ -98,11 +112,20 @@ pub fn main() !void {
     var engine = copy_engine.CopyEngine.init(context);
 
     // Plan all copy operations
-    var operations = engine.planOperations(args.positionals) catch |err| {
+    var operations = engine.planOperations(stderr_writer, args.positionals) catch |err| {
         switch (err) {
-            error.InsufficientArguments => common.fatal("insufficient arguments", .{}),
-            errors.CopyError.DestinationIsNotDirectory => common.fatal("destination is not a directory", .{}),
-            else => common.fatal("error planning operations: {}", .{err}),
+            error.InsufficientArguments => {
+                try stderr_writer.print("{s}: insufficient arguments\n", .{prog_name});
+                return common.ExitCode.misuse;
+            },
+            errors.CopyError.DestinationIsNotDirectory => {
+                try stderr_writer.print("{s}: destination is not a directory\n", .{prog_name});
+                return common.ExitCode.general_error;
+            },
+            else => {
+                try stderr_writer.print("{s}: error planning operations: {}\n", .{ prog_name, err });
+                return common.ExitCode.general_error;
+            },
         }
     };
     defer {
@@ -114,22 +137,23 @@ pub fn main() !void {
     }
 
     // Execute all copy operations
-    engine.executeCopyBatch(operations.items) catch {
-        return;
+    engine.executeCopyBatch(stderr_writer, operations.items) catch {
+        return common.ExitCode.general_error;
     };
 
     // Check for errors during execution
     const stats = engine.getStats();
     if (stats.errors_encountered > 0) {
-        return;
+        return common.ExitCode.general_error;
     }
+
+    return common.ExitCode.success;
 }
 
 /// Print help message for cp
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
+fn printHelp(writer: anytype) !void {
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-    try stdout.print(
+    try writer.print(
         \\Usage: {s} [OPTION]... [-T] SOURCE DEST
         \\   or: {s} [OPTION]... SOURCE... DIRECTORY
         \\   or: {s} [OPTION]... -t DIRECTORY SOURCE...
@@ -177,7 +201,11 @@ test "cp: single file copy" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
 }
@@ -227,7 +255,11 @@ test "cp: copy to existing directory" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
 }
@@ -251,7 +283,11 @@ test "cp: error on directory without recursive flag" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try testing.expectError(errors.CopyError.RecursionNotAllowed, engine.executeCopy(operation));
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try testing.expectError(errors.CopyError.RecursionNotAllowed, engine.executeCopy(stderr_writer, operation));
 }
 
 // Preserve file attributes (non-privileged)
@@ -273,7 +309,11 @@ test "cp: basic preserve attributes (non-privileged)" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -305,7 +345,11 @@ test "privileged: cp preserve attributes" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -335,7 +379,11 @@ test "cp: recursive directory copy" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
     try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
@@ -371,7 +419,11 @@ test "privileged: cp force mode overwrites" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     try test_dir.expectFileContent("dest.txt", "New content");
 }
@@ -396,7 +448,11 @@ test "cp: symbolic link handling - follow by default" {
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     // Should copy file content, not create symlink
     try test_dir.expectFileContent("copied.txt", "Original content");
@@ -423,7 +479,11 @@ test "cp: symbolic link handling - no dereference (-d)" {
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     // Should create symlink, not copy content
     try testing.expect(test_dir.isSymlink("copied_link.txt"));
@@ -451,7 +511,11 @@ test "cp: broken symlink handling" {
     var operation = try context.planOperation(link_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     try testing.expect(test_dir.isSymlink("copied_broken.txt"));
     const target = try test_dir.getSymlinkTarget("copied_broken.txt");
@@ -481,7 +545,11 @@ test "cp: multiple sources to directory" {
     const context = types.CopyContext.create(testing.allocator, options);
     var engine = copy_engine.CopyEngine.init(context);
 
-    var operations = try engine.planOperations(&args);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    var operations = try engine.planOperations(stderr_writer, &args);
     defer {
         for (operations.items) |*op| {
             op.deinit(testing.allocator);
@@ -489,7 +557,7 @@ test "cp: multiple sources to directory" {
         operations.deinit();
     }
 
-    try engine.executeCopyBatch(operations.items);
+    try engine.executeCopyBatch(stderr_writer, operations.items);
 
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
     try test_dir.expectFileContent("dest_dir/file2.txt", "Content 2");
@@ -537,7 +605,11 @@ test "privileged: cp preserve ownership with -p flag" {
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -590,7 +662,11 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
             std.debug.print("\n[WARNING] Destination already exists in test: {s}\n", .{dest_path});
         }
 
-        try engine.executeCopy(operation);
+        var test_stderr = std.ArrayList(u8).init(testing.allocator);
+        defer test_stderr.deinit();
+        const stderr_writer = test_stderr.writer();
+
+        try engine.executeCopy(stderr_writer, operation);
 
         const source_stat = try test_dir.getFileStat("setuid_file");
         const dest_stat = try test_dir.getFileStat("setuid_copy");
@@ -611,7 +687,11 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
         var operation = try context.planOperation(source_path, dest_path);
         defer operation.deinit(testing.allocator);
 
-        try engine.executeCopy(operation);
+        var test_stderr = std.ArrayList(u8).init(testing.allocator);
+        defer test_stderr.deinit();
+        const stderr_writer = test_stderr.writer();
+
+        try engine.executeCopy(stderr_writer, operation);
 
         const source_stat = try test_dir.getFileStat("setgid_file");
         const dest_stat = try test_dir.getFileStat("setgid_copy");
@@ -646,7 +726,11 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     var operation = try context.planOperation(sticky_path, sticky_dest);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("sticky_dir");
     const dest_stat = try test_dir.getFileStat("sticky_copy");
@@ -699,7 +783,11 @@ test "privileged: cp recursive directory copy with full attribute preservation" 
     var operation = try context.planOperation(source_path, dest_path);
     defer operation.deinit(testing.allocator);
 
-    try engine.executeCopy(operation);
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try engine.executeCopy(stderr_writer, operation);
 
     {
         const exec_src = try test_dir.getFileStat("source_tree/executable");

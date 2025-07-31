@@ -46,11 +46,19 @@ const CatArgs = struct {
     };
 };
 
+/// Print version information to the specified writer
+fn printVersion(writer: anytype) !void {
+    try writer.print("cat ({s}) {s}\n", .{ common.name, common.version });
+}
+
 /// Process files or stdin with the specified formatting options
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Create stdout writer once at the top to pass to all functions
+    const stdout = std.io.getStdOut().writer();
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(CatArgs, allocator) catch |err| {
@@ -65,14 +73,13 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        try printHelp();
+        try printHelp(stdout);
         return;
     }
 
     // Handle version
     if (args.version) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("cat ({s}) {s}\n", .{ common.name, common.version });
+        try printVersion(stdout);
         return;
     }
 
@@ -87,7 +94,6 @@ pub fn main() !void {
         .show_nonprinting = args.show_nonprinting or args.show_all or args.e or args.t,
     };
 
-    const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
 
     var line_state = LineNumberState{};
@@ -113,10 +119,9 @@ pub fn main() !void {
     }
 }
 
-/// Print usage information
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(
+/// Print usage information to the specified writer
+fn printHelp(writer: anytype) !void {
+    try writer.writeAll(
         \\Usage: cat [OPTION]... [FILE]...
         \\Concatenate FILE(s) to standard output.
         \\

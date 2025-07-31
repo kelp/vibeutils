@@ -5,18 +5,14 @@ const builtin = @import("builtin");
 
 pub const UserInteraction = struct {
     /// Prompt user for overwrite confirmation
-    pub fn shouldOverwrite(dest_path: []const u8) !bool {
+    pub fn shouldOverwrite(stderr_writer: anytype, dest_path: []const u8) !bool {
         // During tests, NEVER do any I/O operations that might hang
         if (builtin.is_test) {
             std.debug.print("\n[DEBUG] shouldOverwrite called during test for: {s} - returning false\n", .{dest_path});
             return false;
         }
 
-        const stderr = std.io.getStdErr();
-        const writer = stderr.writer();
-        try writer.print("cp: overwrite '{s}'? ", .{dest_path});
-        // Note: sync() can fail with ENOTSUP on stderr in some environments
-        stderr.sync() catch {};
+        try stderr_writer.print("cp: overwrite '{s}'? ", .{dest_path});
 
         return try promptYesNo();
     }
@@ -63,18 +59,15 @@ pub const UserInteraction = struct {
     }
 
     /// Prompt user with a custom message
-    pub fn promptUser(message: []const u8) !bool {
-        const stderr = std.io.getStdErr();
-        const writer = stderr.writer();
-        try writer.print("{s} ", .{message});
-        // Note: sync() can fail with ENOTSUP on stderr in some environments
-        stderr.sync() catch {};
+    pub fn promptUser(stderr_writer: anytype, message: []const u8) !bool {
+        try stderr_writer.print("{s} ", .{message});
 
         return try promptYesNo();
     }
 
     /// Check if we should proceed with overwrite based on options
     pub fn checkOverwritePolicy(
+        stderr_writer: anytype,
         dest_path: []const u8,
         interactive: bool,
         force: bool,
@@ -86,11 +79,11 @@ pub const UserInteraction = struct {
 
         // Interactive mode - ask user
         if (interactive) {
-            return try shouldOverwrite(dest_path);
+            return try shouldOverwrite(stderr_writer, dest_path);
         }
 
         // Default mode - don't overwrite, return error
-        return errors.destinationExists(dest_path);
+        return errors.destinationExists(stderr_writer, dest_path);
     }
 
     /// Handle force removal of destination file
@@ -107,31 +100,25 @@ pub const UserInteraction = struct {
     }
 
     /// Display progress information for long operations
-    pub fn showProgress(current: usize, total: usize, item_name: []const u8) !void {
-        const stderr = std.io.getStdErr();
-        const writer = stderr.writer();
-
+    pub fn showProgress(stderr_writer: anytype, current: usize, total: usize, item_name: []const u8) !void {
         if (total > 10) { // Only show progress for operations with more than 10 items
             const percent = (current * 100) / total;
-            try writer.print("\rCopying: {s} ({d}/{d} - {d}%)", .{ item_name, current, total, percent });
+            try stderr_writer.print("\rCopying: {s} ({d}/{d} - {d}%)", .{ item_name, current, total, percent });
 
             if (current == total) {
-                try writer.print("\n", .{}); // Final newline
+                try stderr_writer.print("\n", .{}); // Final newline
             }
 
             // Flush to ensure output appears immediately
             // Note: sync() can fail with ENOTSUP on stderr in some environments
+            const stderr = std.io.getStdErr();
             stderr.sync() catch {};
         }
     }
 
     /// Clear progress line
-    pub fn clearProgress() !void {
-        const stderr = std.io.getStdErr();
-        const writer = stderr.writer();
-        try writer.print("\r\x1b[K", .{}); // Clear line
-        // Note: sync() can fail with ENOTSUP on stderr in some environments
-        stderr.sync() catch {};
+    pub fn clearProgress(stderr_writer: anytype) !void {
+        try stderr_writer.print("\r\x1b[K", .{}); // Clear line
     }
 };
 
@@ -155,7 +142,8 @@ pub const MockUserInteraction = struct {
         try self.responses.append(response);
     }
 
-    pub fn shouldOverwrite(self: *MockUserInteraction, dest_path: []const u8) !bool {
+    pub fn shouldOverwrite(self: *MockUserInteraction, stderr_writer: anytype, dest_path: []const u8) !bool {
+        _ = stderr_writer; // Unused in mock
         _ = dest_path; // Unused in mock
         return self.getNextResponse();
     }
@@ -164,7 +152,8 @@ pub const MockUserInteraction = struct {
         return self.getNextResponse();
     }
 
-    pub fn promptUser(self: *MockUserInteraction, message: []const u8) !bool {
+    pub fn promptUser(self: *MockUserInteraction, stderr_writer: anytype, message: []const u8) !bool {
+        _ = stderr_writer; // Unused in mock
         _ = message; // Unused in mock
         return self.getNextResponse();
     }
@@ -189,12 +178,16 @@ pub const MockUserInteraction = struct {
 // =============================================================================
 
 test "UserInteraction: checkOverwritePolicy" {
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
     // Force mode should always return true (regardless of interactive setting)
-    try testing.expect(try UserInteraction.checkOverwritePolicy("/test/path", false, true));
+    try testing.expect(try UserInteraction.checkOverwritePolicy(stderr_writer, "/test/path", false, true));
     // Note: Removed the test with interactive=true to avoid potential stdin issues
 
     // Non-interactive, non-force should return error
-    try testing.expectError(errors.CopyError.DestinationExists, UserInteraction.checkOverwritePolicy("/test/path", false, false));
+    try testing.expectError(errors.CopyError.DestinationExists, UserInteraction.checkOverwritePolicy(stderr_writer, "/test/path", false, false));
 
     // Note: We don't test interactive=true here because it would
     // try to read from stdin, which hangs in test environments
@@ -210,16 +203,20 @@ test "MockUserInteraction: basic functionality" {
     try mock.addResponse(true);
 
     // Test responses are returned in order
-    try testing.expect(try mock.shouldOverwrite("/test1"));
+    var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    defer test_stderr.deinit();
+    const stderr_writer = test_stderr.writer();
+
+    try testing.expect(try mock.shouldOverwrite(stderr_writer, "/test1"));
     try testing.expect(!try mock.promptYesNo());
-    try testing.expect(try mock.promptUser("Test message?"));
+    try testing.expect(try mock.promptUser(stderr_writer, "Test message?"));
 
     // Should error when no more responses
     try testing.expectError(error.NoMoreResponses, mock.promptYesNo());
 
     // Reset should start from beginning
     mock.reset();
-    try testing.expect(try mock.shouldOverwrite("/test1"));
+    try testing.expect(try mock.shouldOverwrite(stderr_writer, "/test1"));
 }
 
 test "UserInteraction: progress display" {
@@ -227,4 +224,19 @@ test "UserInteraction: progress display" {
     // The functions work correctly in real usage but can't be tested properly
     // due to the way stderr is handled in the test runner
     return error.SkipZigTest;
+
+    // The following would be the test if we could run it:
+    // var test_stderr = std.ArrayList(u8).init(testing.allocator);
+    // defer test_stderr.deinit();
+    // const stderr_writer = test_stderr.writer();
+    //
+    // // Test progress display doesn't crash
+    // // In real usage this would write to stderr, but in tests it's fine
+    // try UserInteraction.showProgress(stderr_writer, 1, 5, "test.txt");
+    // try UserInteraction.showProgress(stderr_writer, 5, 5, "final.txt");
+    // try UserInteraction.clearProgress(stderr_writer);
+    //
+    // // Test with large number of items (should show progress)
+    // try UserInteraction.showProgress(stderr_writer, 50, 100, "large_operation.txt");
+    // try UserInteraction.clearProgress(stderr_writer);
 }

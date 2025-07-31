@@ -38,17 +38,29 @@ const MkdirOptions = struct {
 /// Main entry point for mkdir command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try runMkdir(stdout_writer, stderr_writer, allocator);
+    if (exit_code != common.ExitCode.success) {
+        std.process.exit(@intFromEnum(exit_code));
+    }
+}
+
+/// Run mkdir with provided writers for output
+pub fn runMkdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Parse arguments using common argparse module
     const args = common.argparse.ArgParser.parseProcess(MkdirArgs, allocator) catch |err| {
         switch (err) {
             // Handle argument parsing errors with appropriate error messages
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                try stderr_writer.print("{s}: invalid argument\n", .{prog_name});
+                return common.ExitCode.general_error;
             },
             else => return err,
         }
@@ -57,20 +69,21 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        try printHelp();
-        return;
+        try printHelp(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Handle version
     if (args.version) {
-        try printVersion();
-        return;
+        try printVersion(stdout_writer);
+        return common.ExitCode.success;
     }
 
     // Check if we have directories to create
     const dirs = args.positionals;
     if (dirs.len == 0) {
-        common.fatal("missing operand", .{});
+        try stderr_writer.print("{s}: missing operand\n", .{prog_name});
+        return common.ExitCode.general_error;
     }
 
     // Create options
@@ -81,26 +94,28 @@ pub fn main() !void {
 
     // Parse mode if provided
     if (args.mode) |mode_str| {
-        options.mode = try parseMode(mode_str);
+        options.mode = parseMode(mode_str) catch {
+            try stderr_writer.print("{s}: invalid mode '{s}'\n", .{ prog_name, mode_str });
+            return common.ExitCode.general_error;
+        };
     }
 
     // Process directories - continue processing even if some fail
     var exit_code = common.ExitCode.success;
     for (dirs) |dir_path| {
-        createDirectory(dir_path, options, allocator) catch {
+        createDirectory(dir_path, options, stdout_writer, stderr_writer, allocator) catch {
             // Mark overall failure but continue with remaining directories
             exit_code = common.ExitCode.general_error;
             continue;
         };
     }
 
-    std.process.exit(@intFromEnum(exit_code));
+    return exit_code;
 }
 
-/// Print help message to stdout
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print(
+/// Print help message to provided writer
+fn printHelp(writer: anytype) !void {
+    try writer.print(
         \\Usage: mkdir [OPTION]... DIRECTORY...
         \\Create the DIRECTORY(ies), if they do not already exist.
         \\
@@ -118,10 +133,9 @@ fn printHelp() !void {
     , .{});
 }
 
-/// Print version information
-fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("mkdir (vibeutils) 0.1.0\n", .{});
+/// Print version information to provided writer
+fn printVersion(writer: anytype) !void {
+    try writer.print("mkdir (vibeutils) 0.1.0\n", .{});
 }
 
 /// Set directory permissions (POSIX only)
@@ -135,11 +149,12 @@ fn printVersion() !void {
 /// - POSIX systems: Returns error.ChmodFailed if chmod() syscall fails
 /// - All errors from chmod are converted to our custom error type for consistent handling
 /// - Path is converted to null-terminated for C API compatibility
-fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, allocator: std.mem.Allocator) !void {
+fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("mkdir: warning: mode flag (-m) is not supported on Windows\n", .{});
+        try stderr_writer.print("{s}: warning: mode flag (-m) is not supported on Windows\n", .{prog_name});
         return;
     }
 
@@ -150,7 +165,7 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, allocator: std.mem
     const result = std.c.chmod(path_z, mode);
     if (result != 0) {
         const err = std.posix.errno(result);
-        common.printError("cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
+        try stderr_writer.print("{s}: cannot set mode on '{s}': {s}\n", .{ prog_name, path, @tagName(err) });
         return error.ChmodFailed;
     }
 }
@@ -182,57 +197,62 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
 }
 
 /// Create directory with specified options
-fn createDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
+fn createDirectory(path: []const u8, options: MkdirOptions, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+
     // Normalize path by removing trailing slashes
     const normalized_path = std.mem.trimRight(u8, path, "/");
     if (normalized_path.len == 0) {
         // Special case: root directory
-        common.printError("cannot create directory '/': File exists", .{});
+        try stderr_writer.print("{s}: cannot create directory '/': File exists\n", .{prog_name});
         return error.AlreadyExists;
     }
 
     if (options.parents) {
-        try createDirectoryWithParents(normalized_path, options, allocator);
+        try createDirectoryWithParents(normalized_path, options, stdout_writer, stderr_writer, allocator);
     } else {
-        try createSingleDirectory(normalized_path, options, allocator);
+        try createSingleDirectory(normalized_path, options, stdout_writer, stderr_writer, allocator);
     }
 }
 
 /// Create single directory without parent creation
-fn createSingleDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
+fn createSingleDirectory(path: []const u8, options: MkdirOptions, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+
     // Create directory
     std.fs.cwd().makeDir(path) catch |err| switch (err) {
         error.PathAlreadyExists => {
-            common.printError("cannot create directory '{s}': File exists", .{path});
+            try stderr_writer.print("{s}: cannot create directory '{s}': File exists\n", .{ prog_name, path });
             return err;
         },
         error.FileNotFound => {
-            common.printError("cannot create directory '{s}': No such file or directory", .{path});
+            try stderr_writer.print("{s}: cannot create directory '{s}': No such file or directory\n", .{ prog_name, path });
             return err;
         },
         error.AccessDenied => {
-            common.printError("cannot create directory '{s}': Permission denied", .{path});
+            try stderr_writer.print("{s}: cannot create directory '{s}': Permission denied\n", .{ prog_name, path });
             return err;
         },
         else => {
-            common.printError("cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+            try stderr_writer.print("{s}: cannot create directory '{s}': {s}\n", .{ prog_name, path, @errorName(err) });
             return err;
         },
     };
 
     // Set mode if specified
     if (options.mode) |mode| {
-        try setDirectoryMode(path, mode, allocator);
+        try setDirectoryMode(path, mode, stderr_writer, allocator);
     }
 
     if (options.verbose) {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("mkdir: created directory '{s}'\n", .{path});
+        try stdout_writer.print("{s}: created directory '{s}'\n", .{ prog_name, path });
     }
 }
 
 /// Create directory tree with parent directories
-fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
+fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+
     // Use arena allocator to prevent memory leaks
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -271,23 +291,22 @@ fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, allocator
                 continue;
             },
             error.AccessDenied => {
-                common.printError("cannot create directory '{s}': Permission denied", .{current_path.items});
+                try stderr_writer.print("{s}: cannot create directory '{s}': Permission denied\n", .{ prog_name, current_path.items });
                 return err;
             },
             else => {
-                common.printError("cannot create directory '{s}': {s}", .{ current_path.items, @errorName(err) });
+                try stderr_writer.print("{s}: cannot create directory '{s}': {s}\n", .{ prog_name, current_path.items, @errorName(err) });
                 return err;
             },
         };
 
         // Set mode only on the final directory if specified
         if (is_last and options.mode != null) {
-            try setDirectoryMode(current_path.items, options.mode.?, arena_allocator);
+            try setDirectoryMode(current_path.items, options.mode.?, stderr_writer, arena_allocator);
         }
 
         if (options.verbose) {
-            const stdout = std.io.getStdOut().writer();
-            try stdout.print("mkdir: created directory '{s}'\n", .{current_path.items});
+            try stdout_writer.print("{s}: created directory '{s}'\n", .{ prog_name, current_path.items });
         }
     }
 }
@@ -467,6 +486,27 @@ test "multiple directories creation" {
     }
 }
 
+test "writer functionality - help and version output" {
+    var stdout_buf: [2048]u8 = undefined;
+    var stdout_fbs = std.io.fixedBufferStream(&stdout_buf);
+
+    // Test help output
+    try printHelp(stdout_fbs.writer());
+    const help_output = stdout_fbs.getWritten();
+    try testing.expect(std.mem.indexOf(u8, help_output, "Usage: mkdir") != null);
+    try testing.expect(std.mem.indexOf(u8, help_output, "--help") != null);
+    try testing.expect(std.mem.indexOf(u8, help_output, "--verbose") != null);
+
+    // Reset buffer for version test
+    stdout_fbs.reset();
+
+    // Test version output
+    try printVersion(stdout_fbs.writer());
+    const version_output = stdout_fbs.getWritten();
+    try testing.expect(std.mem.indexOf(u8, version_output, "mkdir (vibeutils)") != null);
+    try testing.expect(std.mem.indexOf(u8, version_output, "0.1.0") != null);
+}
+
 test "mode setting verification" {
     // Skip on non-POSIX systems
     if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -550,7 +590,12 @@ test "privileged: create single directory with mode setting" {
             defer allocator.free(full_path);
 
             // Create directory with mode
-            try createSingleDirectory(full_path, options, testing.allocator);
+            var stdout_buf: [1024]u8 = undefined;
+            var stderr_buf: [1024]u8 = undefined;
+            var stdout_fbs = std.io.fixedBufferStream(&stdout_buf);
+            var stderr_fbs = std.io.fixedBufferStream(&stderr_buf);
+
+            try createSingleDirectory(full_path, options, stdout_fbs.writer(), stderr_fbs.writer(), testing.allocator);
 
             // Verify directory exists and has correct permissions
             try privilege_test.assertPermissions(full_path, 0o755, null, null);
@@ -579,7 +624,12 @@ test "privileged: create directory with parents - only final gets mode" {
             defer testing.allocator.free(full_path);
 
             // Create directory structure with parents
-            try createDirectoryWithParents(full_path, options, allocator);
+            var stdout_buf: [1024]u8 = undefined;
+            var stderr_buf: [1024]u8 = undefined;
+            var stdout_fbs = std.io.fixedBufferStream(&stdout_buf);
+            var stderr_fbs = std.io.fixedBufferStream(&stderr_buf);
+
+            try createDirectoryWithParents(full_path, options, stdout_fbs.writer(), stderr_fbs.writer(), allocator);
 
             // Verify all directories exist
             const parent_path = try std.fmt.allocPrint(testing.allocator, "{s}/parent", .{abs_path});
@@ -631,7 +681,12 @@ test "privileged: verbose output with mode setting" {
             // Capture stdout to verify verbose output
             // Note: In the actual implementation, this would write to stdout
             // For testing, we verify the directory was created with correct mode
-            try createSingleDirectory(full_path, options, testing.allocator);
+            var stdout_buf: [1024]u8 = undefined;
+            var stderr_buf: [1024]u8 = undefined;
+            var stdout_fbs = std.io.fixedBufferStream(&stdout_buf);
+            var stderr_fbs = std.io.fixedBufferStream(&stderr_buf);
+
+            try createSingleDirectory(full_path, options, stdout_fbs.writer(), stderr_fbs.writer(), testing.allocator);
 
             // Verify directory exists and has correct permissions
             try privilege_test.assertPermissions(full_path, 0o644, null, null);
@@ -676,7 +731,12 @@ test "privileged: mode setting with various octal values" {
                 defer testing.allocator.free(full_path);
 
                 // Create directory with specific mode
-                try createSingleDirectory(full_path, options, testing.allocator);
+                var stdout_buf: [1024]u8 = undefined;
+                var stderr_buf: [1024]u8 = undefined;
+                var stdout_fbs = std.io.fixedBufferStream(&stdout_buf);
+                var stderr_fbs = std.io.fixedBufferStream(&stderr_buf);
+
+                try createSingleDirectory(full_path, options, stdout_fbs.writer(), stderr_fbs.writer(), testing.allocator);
 
                 // Verify directory has correct permissions
                 try privilege_test.assertPermissions(full_path, case.mode, null, null);
@@ -708,7 +768,12 @@ test "privileged: multiple directories creation with mode" {
                 const full_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ abs_path, dir });
                 defer testing.allocator.free(full_path);
 
-                try createSingleDirectory(full_path, options, testing.allocator);
+                var stdout_buf: [1024]u8 = undefined;
+                var stderr_buf: [1024]u8 = undefined;
+                var stdout_fbs = std.io.fixedBufferStream(&stdout_buf);
+                var stderr_fbs = std.io.fixedBufferStream(&stderr_buf);
+
+                try createSingleDirectory(full_path, options, stdout_fbs.writer(), stderr_fbs.writer(), testing.allocator);
 
                 // Verify each directory has correct permissions
                 try privilege_test.assertPermissions(full_path, mode, null, null);
