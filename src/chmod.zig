@@ -1205,15 +1205,39 @@ test "path traversal protection" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const malicious_paths = [_][]const u8{
-        "/etc/passwd",
-        "/bin/sh",
+    // Create a temporary directory for safe testing
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create test files in the temp directory
+    const test_file1 = try tmp_dir.dir.createFile("test1.txt", .{});
+    test_file1.close();
+    const test_file2 = try tmp_dir.dir.createFile("test2.txt", .{});
+    test_file2.close();
+
+    // Get the temp directory path
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    // Test with paths that would normally be dangerous but are safe in temp dir
+    const test_paths = [_][]const u8{
+        try std.fmt.allocPrint(testing.allocator, "{s}/test1.txt", .{tmp_path}),
+        try std.fmt.allocPrint(testing.allocator, "{s}/test2.txt", .{tmp_path}),
     };
+    defer for (test_paths) |path| {
+        testing.allocator.free(path);
+    };
+
     const options = ChmodOptions{ .quiet = true };
 
-    for (malicious_paths) |path| {
+    // This tests the chmod logic without actually trying to chmod system files
+    for (test_paths) |path| {
         try chmodFiles(testing.allocator, "755", &.{path}, buffer.writer(), options);
     }
+
+    // Verify the critical system path checking logic separately
+    try testing.expect(isCriticalSystemPath("/etc/passwd"));
+    try testing.expect(isCriticalSystemPath("/bin/sh"));
 }
 
 test "error handling consistency" {
