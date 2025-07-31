@@ -132,15 +132,23 @@ pub fn printErrorTo(writer: anytype, comptime fmt: []const u8, fmt_args: anytype
 /// Warnings are displayed in yellow to distinguish them from errors.
 pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
     const stderr = std.io.getStdErr().writer();
+    printWarningTo(stderr, fmt, fmt_args);
+}
+
+/// Print warning message to a specific writer
+///
+/// Used for non-fatal issues that should be reported but don't stop execution.
+/// Warnings are displayed in yellow to distinguish them from errors.
+pub fn printWarningTo(writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
 
     // Try to use color for warnings
-    const StyleType = style.Style(@TypeOf(stderr));
-    var s = StyleType.init(stderr);
+    const StyleType = style.Style(@TypeOf(writer));
+    var s = StyleType.init(writer);
     s.setColor(.bright_yellow) catch {};
-    stderr.print("{s}: warning: ", .{prog_name}) catch return;
+    writer.print("{s}: warning: ", .{prog_name}) catch return;
     s.reset() catch {};
-    stderr.print(fmt ++ "\n", fmt_args) catch return;
+    writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
 /// Common command line options

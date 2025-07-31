@@ -75,8 +75,8 @@ fn processSubdirectoriesRecursivelyTest(
         if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
 
         // Open subdirectory
-        var sub_dir = parent_dir.openDir(entry.name, .{ .iterate = true }) catch |err| {
-            std.debug.print("Failed to open {s}: {}\n", .{ entry.name, err });
+        var sub_dir = parent_dir.openDir(entry.name, .{ .iterate = true }) catch {
+            // Skip directories we can't open (permissions, etc)
             continue;
         };
         defer sub_dir.close();

@@ -257,7 +257,7 @@ test "buffering fix: time-bounded stress test with TestWriter completes within l
         // Check that we haven't exceeded reasonable time limits
         const current_elapsed = timer.elapsedMs();
         if (current_elapsed > 5000) {
-            std.debug.print("Test taking too long at iteration {d}: {d}ms\n", .{ iteration, current_elapsed });
+            // Test is taking too long, fail fast
             return error.TestTimeout;
         }
     }

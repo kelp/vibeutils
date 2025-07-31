@@ -8,7 +8,7 @@ pub const UserInteraction = struct {
     pub fn shouldOverwrite(stderr_writer: anytype, dest_path: []const u8) !bool {
         // During tests, NEVER do any I/O operations that might hang
         if (builtin.is_test) {
-            std.debug.print("\n[DEBUG] shouldOverwrite called during test for: {s} - returning false\n", .{dest_path});
+            // Debug print removed to prevent test hangs - always return false in tests
             return false;
         }
 
