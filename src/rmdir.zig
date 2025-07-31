@@ -1,15 +1,11 @@
-//! Remove empty directories (POSIX rmdir).
-//!
-//! Removes the specified directories, which must be empty.
-//! Unlike rm -r, rmdir only removes empty directories and
-//! will fail if a directory contains any files or subdirectories.
-
+/// POSIX rmdir utility for removing empty directories.
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
 const posix = std.posix;
 
+/// Command-line arguments for rmdir.
 const RmdirArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -27,7 +23,7 @@ const RmdirArgs = struct {
     };
 };
 
-// Enhanced error types for better error handling
+/// Enhanced error types for rmdir operations.
 pub const RmdirError = error{
     DirectoryNotEmpty,
     NotADirectory,
@@ -42,7 +38,7 @@ pub const RmdirError = error{
     FileNotFound,
 };
 
-// Centralized error messages
+/// Centralized error messages for rmdir operations.
 const ErrorMessages = struct {
     const directory_not_empty = "Directory not empty";
     const not_a_directory = "Not a directory";
@@ -54,6 +50,7 @@ const ErrorMessages = struct {
     const symbolic_link = "Cannot remove symbolic link (use rm instead)";
     const path_too_long = "Path too long";
 
+    /// Format an error into a human-readable message.
     pub fn format(err: anyerror, path: []const u8) []const u8 {
         _ = path;
         return switch (err) {
@@ -75,11 +72,11 @@ const ErrorMessages = struct {
     }
 };
 
-// Path validator to prevent security issues
+/// Path validator to prevent security issues.
 const PathValidator = struct {
     allocator: std.mem.Allocator,
 
-    // System paths that should never be removed
+    /// System paths that should never be removed.
     const protected_paths = [_][]const u8{
         "/",
         "/bin",
@@ -105,10 +102,12 @@ const PathValidator = struct {
         "/var",
     };
 
+    /// Initialize a new PathValidator with the given allocator.
     pub fn init(allocator: std.mem.Allocator) PathValidator {
         return .{ .allocator = allocator };
     }
 
+    /// Validate a path for safe removal.
     pub fn validate(self: PathValidator, path: []const u8) !void {
         // Check for empty path
         if (path.len == 0) {
@@ -116,12 +115,15 @@ const PathValidator = struct {
         }
 
         // Check for path traversal attempts
+        // Both "../" anywhere in the path and ".." as the entire path are dangerous
         if (std.mem.indexOf(u8, path, "../") != null or std.mem.eql(u8, path, "..")) {
             return error.PathTraversalAttempt;
         }
 
         // Get absolute path
+        // This resolves relative paths and symlinks to their real paths
         const abs_path = std.fs.cwd().realpathAlloc(self.allocator, path) catch |err| {
+            // Map filesystem errors to our custom error types
             return switch (err) {
                 error.FileNotFound => RmdirError.FileNotFound,
                 error.NameTooLong => RmdirError.PathTooLong,
@@ -132,6 +134,7 @@ const PathValidator = struct {
         defer self.allocator.free(abs_path);
 
         // Check against protected system paths
+        // These critical directories must never be removed
         for (protected_paths) |protected| {
             if (std.mem.eql(u8, abs_path, protected)) {
                 return error.SystemPathProtected;
@@ -139,26 +142,28 @@ const PathValidator = struct {
         }
 
         // Check if path is a symbolic link using fstatat with AT.SYMLINK_NOFOLLOW
+        // This flag ensures we stat the link itself, not what it points to
         const path_c = try std.posix.toPosixPath(path);
         const stat_buf = std.posix.fstatatZ(std.fs.cwd().fd, &path_c, posix.AT.SYMLINK_NOFOLLOW) catch {
             return; // Will be caught by actual removal
         };
 
         // Check if it's a symlink
+        // rmdir should not remove symlinks - that's rm's job
         if (std.posix.S.ISLNK(stat_buf.mode)) {
             return error.SymbolicLinkDetected;
         }
     }
 };
 
-// Options for rmdir command
+/// Options for rmdir command.
 const RmdirOptions = struct {
     parents: bool = false,
     verbose: bool = false,
     ignore_fail_on_non_empty: bool = false,
 };
 
-// Progress indicator for bulk operations
+/// Generic progress indicator for bulk operations.
 fn ProgressIndicator(comptime Writer: type) type {
     return struct {
         writer: Writer,
@@ -168,6 +173,7 @@ fn ProgressIndicator(comptime Writer: type) type {
 
         const Self = @This();
 
+        /// Initialize a new progress indicator.
         pub fn init(writer: Writer, total: usize) Self {
             return .{
                 .writer = writer,
@@ -177,8 +183,10 @@ fn ProgressIndicator(comptime Writer: type) type {
             };
         }
 
+        /// Update progress display with current path being processed.
         pub fn update(self: *Self, path: []const u8) !void {
             self.current += 1;
+            // Only show progress for multiple directories to avoid clutter
             if (self.total > 1) {
                 try self.style.setColor(.cyan);
                 try self.writer.print("[{d}/{d}] ", .{ self.current, self.total });
@@ -189,12 +197,13 @@ fn ProgressIndicator(comptime Writer: type) type {
     };
 }
 
-// Iterator for parent directories to avoid allocations
+/// Iterator for parent directories to avoid allocations.
 const ParentIterator = struct {
     allocator: std.mem.Allocator,
     original: []u8,
     current: []const u8,
 
+    /// Initialize iterator with a path.
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !ParentIterator {
         const duped = try allocator.dupe(u8, path);
         return .{
@@ -204,10 +213,12 @@ const ParentIterator = struct {
         };
     }
 
+    /// Clean up allocated memory.
     pub fn deinit(self: *ParentIterator) void {
         self.allocator.free(self.original);
     }
 
+    /// Get the next parent directory in the hierarchy.
     pub fn next(self: *ParentIterator) ?[]const u8 {
         const parent = std.fs.path.dirname(self.current) orelse return null;
 
@@ -221,6 +232,7 @@ const ParentIterator = struct {
     }
 };
 
+/// Main entry point for rmdir utility.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -230,6 +242,7 @@ pub fn main() !void {
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(RmdirArgs, allocator) catch |err| {
+        // Handle parsing errors gracefully
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.fatal("invalid argument", .{});
@@ -239,24 +252,25 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
-    // Handle help
+    // Handle help request
     if (args.help) {
         try printHelp();
         return;
     }
 
-    // Handle version
+    // Handle version request
     if (args.version) {
         try printVersion();
         return;
     }
 
+    // Validate that at least one directory was specified
     const directories = args.positionals;
     if (directories.len == 0) {
         common.fatal("missing operand", .{});
     }
 
-    // Create options
+    // Create options structure from parsed arguments
     const options = RmdirOptions{
         .parents = args.parents,
         .verbose = args.verbose,
@@ -266,11 +280,13 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const exit_code = try removeDirectories(allocator, directories, stdout, options);
 
+    // Exit with appropriate code
     if (exit_code != .success) {
         std.process.exit(@intFromEnum(exit_code));
     }
 }
 
+/// Print help information to stdout.
 fn printHelp() !void {
     const help_text =
         \\Usage: rmdir [OPTION]... DIRECTORY...
@@ -290,12 +306,13 @@ fn printHelp() !void {
     try stdout.writeAll(help_text);
 }
 
+/// Print version information to stdout.
 fn printVersion() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print("rmdir ({s}) {s}\n", .{ common.name, common.version });
 }
 
-// Main function to remove directories - returns exit code
+/// Main function to remove directories.
 fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const u8, writer: anytype, options: RmdirOptions) !common.ExitCode {
     var had_error = false;
 
@@ -306,6 +323,7 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
     const validator = PathValidator.init(allocator);
 
     for (directories) |dir| {
+        // Show progress for multiple directories
         if (options.verbose and directories.len > 1) {
             try progress.update(dir);
         }
@@ -330,7 +348,7 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
     return if (had_error) .general_error else .success;
 }
 
-// Remove a single directory using atomic operation
+/// Remove a single directory using atomic operation.
 fn removeSingleDirectory(path: []const u8, writer: anytype, options: RmdirOptions, validator: PathValidator) ?anyerror {
     // Validate path first
     validator.validate(path) catch |err| {
@@ -338,8 +356,10 @@ fn removeSingleDirectory(path: []const u8, writer: anytype, options: RmdirOption
     };
 
     // Use atomic unlinkat for race condition prevention
+    // AT.REMOVEDIR ensures only directories are removed
     const dir_fd = std.fs.cwd().fd;
     posix.unlinkat(dir_fd, path, posix.AT.REMOVEDIR) catch |err| {
+        // Map POSIX errors to our custom error types
         return switch (err) {
             error.DirNotEmpty => if (options.ignore_fail_on_non_empty) null else error.DirectoryNotEmpty,
             error.NotDir => error.NotADirectory,
@@ -350,7 +370,7 @@ fn removeSingleDirectory(path: []const u8, writer: anytype, options: RmdirOption
     };
 
     if (options.verbose) {
-        // Use styled output
+        // Use styled output for better readability
         const style = common.style.Style(@TypeOf(writer)).init(writer);
         style.setColor(.green) catch {};
         writer.print("rmdir: ", .{}) catch {};
@@ -361,7 +381,7 @@ fn removeSingleDirectory(path: []const u8, writer: anytype, options: RmdirOption
     return null;
 }
 
-// Remove directory with its parent directories
+/// Remove directory with its parent directories.
 fn removeDirectoryWithParents(allocator: std.mem.Allocator, path: []const u8, writer: anytype, options: RmdirOptions, validator: PathValidator) ?anyerror {
     // First remove the directory itself
     if (removeSingleDirectory(path, writer, options, validator)) |err| {
@@ -375,9 +395,11 @@ fn removeDirectoryWithParents(allocator: std.mem.Allocator, path: []const u8, wr
     defer iter.deinit();
 
     // Remove parent directories
+    // Iterate up the directory tree, removing each empty parent
     while (iter.next()) |parent| {
         if (removeSingleDirectory(parent, writer, options, validator)) |err| {
             // Stop on first error when removing parents
+            // Exception: continue if error is non-empty and we're ignoring those
             return if (options.ignore_fail_on_non_empty and err == error.DirectoryNotEmpty) null else err;
         }
     }
@@ -385,7 +407,7 @@ fn removeDirectoryWithParents(allocator: std.mem.Allocator, path: []const u8, wr
     return null;
 }
 
-// Centralized error handling
+/// Centralized error handling function.
 fn handleError(err: anyerror, path: []const u8, writer: anytype, options: RmdirOptions) void {
     _ = writer;
 

@@ -1,18 +1,11 @@
-//! Create directories (POSIX mkdir).
-//!
-//! Creates the specified directories if they do not already exist.
-//! If multiple directories are specified and an error occurs creating one,
-//! the utility continues processing the remaining directories.
-//!
-//! Note: On Windows, the -m (mode) flag prints a warning and is ignored,
-//! as Windows does not support POSIX-style file permissions.
-
+//! Create directories with optional parent directory creation and permission setting
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
 const privilege_test = common.privilege_test;
 const testing = std.testing;
 
+/// Command-line arguments for mkdir
 const MkdirArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -30,12 +23,19 @@ const MkdirArgs = struct {
     };
 };
 
+/// Options controlling directory creation behavior
 const MkdirOptions = struct {
-    mode: ?std.fs.File.Mode = null, // -m flag
-    parents: bool = false, // -p flag
-    verbose: bool = false, // -v flag (GNU extension)
+    /// File mode for created directories
+    mode: ?std.fs.File.Mode = null,
+
+    /// Create parent directories as needed
+    parents: bool = false,
+
+    /// Print a message for each created directory
+    verbose: bool = false,
 };
 
+/// Main entry point for mkdir command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -43,9 +43,10 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using new parser
+    // Parse arguments using common argparse module
     const args = common.argparse.ArgParser.parseProcess(MkdirArgs, allocator) catch |err| {
         switch (err) {
+            // Handle argument parsing errors with appropriate error messages
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.fatal("invalid argument", .{});
             },
@@ -83,10 +84,11 @@ pub fn main() !void {
         options.mode = try parseMode(mode_str);
     }
 
-    // Process directories
+    // Process directories - continue processing even if some fail
     var exit_code = common.ExitCode.success;
     for (dirs) |dir_path| {
         createDirectory(dir_path, options, allocator) catch {
+            // Mark overall failure but continue with remaining directories
             exit_code = common.ExitCode.general_error;
             continue;
         };
@@ -95,6 +97,7 @@ pub fn main() !void {
     std.process.exit(@intFromEnum(exit_code));
 }
 
+/// Print help message to stdout
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print(
@@ -115,18 +118,23 @@ fn printHelp() !void {
     , .{});
 }
 
+/// Print version information
 fn printVersion() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print("mkdir (vibeutils) 0.1.0\n", .{});
 }
 
-/// Set the mode (permissions) on a directory.
-/// On Windows, prints a warning that mode setting is not supported.
+/// Set directory permissions (POSIX only)
 ///
-/// Parameters:
-/// - path: The directory path
-/// - mode: The desired file mode
-/// - allocator: Memory allocator for temporary allocations
+/// Windows limitations:
+/// - Mode setting is not supported on Windows filesystems
+/// - Function prints warning and returns successfully to maintain compatibility
+/// - Windows directories use default ACL-based permissions instead
+///
+/// Error handling strategy:
+/// - POSIX systems: Returns error.ChmodFailed if chmod() syscall fails
+/// - All errors from chmod are converted to our custom error type for consistent handling
+/// - Path is converted to null-terminated for C API compatibility
 fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, allocator: std.mem.Allocator) !void {
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
@@ -147,22 +155,21 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, allocator: std.mem
     }
 }
 
+/// Parse octal mode string (e.g. "755") into file mode
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     // For now, support only octal modes
-    // TODO: Support symbolic modes like u+rwx, g+w, o-r, a=rw, etc.
-    // This would require parsing chmod-style symbolic notation including:
-    // - User classes: u (user), g (group), o (other), a (all)
-    // - Operations: + (add), - (remove), = (set exactly)
-    // - Permissions: r (read), w (write), x (execute), s (setuid/setgid), t (sticky)
+    // TODO: Support symbolic modes like u+rwx
     if (mode_str.len == 0) {
         return error.InvalidMode;
     }
 
+    // Parse octal digits
     var mode: u32 = 0;
     for (mode_str) |c| {
         if (c < '0' or c > '7') {
             return error.InvalidMode;
         }
+        // Convert octal string to numeric value
         mode = mode * 8 + (c - '0');
     }
 
@@ -174,6 +181,7 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     return @intCast(mode);
 }
 
+/// Create directory with specified options
 fn createDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
     // Normalize path by removing trailing slashes
     const normalized_path = std.mem.trimRight(u8, path, "/");
@@ -190,6 +198,7 @@ fn createDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.A
     }
 }
 
+/// Create single directory without parent creation
 fn createSingleDirectory(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
     // Create directory
     std.fs.cwd().makeDir(path) catch |err| switch (err) {
@@ -222,6 +231,7 @@ fn createSingleDirectory(path: []const u8, options: MkdirOptions, allocator: std
     }
 }
 
+/// Create directory tree with parent directories
 fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, allocator: std.mem.Allocator) !void {
     // Use arena allocator to prevent memory leaks
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -257,7 +267,7 @@ fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, allocator
         // Try to create the directory
         std.fs.cwd().makeDir(current_path.items) catch |err| switch (err) {
             error.PathAlreadyExists => {
-                // This is OK with -p flag
+                // This is OK with -p flag - existing directories are not an error
                 continue;
             },
             error.AccessDenied => {
@@ -282,7 +292,22 @@ fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, allocator
     }
 }
 
-// ===== Tests =====
+// ============================================================================
+// Tests
+// ============================================================================
+// This test section is divided into two parts:
+//
+// 1. Regular Tests - Can be run with standard permissions
+//    These tests verify basic functionality without requiring special privileges.
+//    They test directory creation logic, error handling, and option parsing.
+//
+// 2. Privileged Tests - Require privilege simulation (fakeroot)
+//    These tests verify mode setting and permission-related functionality.
+//    They are prefixed with "privileged:" and excluded from regular test runs.
+//    Run with: ./scripts/run-privileged-tests.sh or under fakeroot
+// ============================================================================
+
+// ===== Regular Tests =====
 
 test "basic single directory creation" {
     var tmp = testing.tmpDir(.{});
@@ -491,11 +516,17 @@ test "intermediate directories get default permissions" {
 }
 
 // ============================================================================
-// Privileged Tests (require fakeroot or similar privilege simulation)
+// Privileged Tests
 // ============================================================================
-// These tests require privilege simulation (fakeroot) to run properly.
-// They are named with "privileged:" prefix and are excluded from regular tests.
-// Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged under fakeroot
+// These tests require privilege simulation (fakeroot) to properly test mode
+// setting functionality. They verify that:
+// - Directories are created with the correct permissions when using -m
+// - Parent directories get default permissions while final directory gets
+//   the specified mode
+// - Mode setting works correctly with various permission values
+//
+// Test naming convention: All privileged tests start with "privileged:"
+// This allows the test runner to filter them out during regular test runs.
 // ============================================================================
 
 test "privileged: create single directory with mode setting" {

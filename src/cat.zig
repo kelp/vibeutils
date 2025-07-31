@@ -1,10 +1,20 @@
-//! Concatenate FILE(s) to standard output.
-//! With no FILE, or when FILE is -, read standard input.
-
+//! POSIX-compatible cat utility for concatenating and displaying files
+//!
+//! This module implements the cat command with full support for:
+//! - Reading from multiple files or standard input
+//! - Line numbering with -n (all lines) and -b (non-blank lines only)
+//! - Blank line squeezing with -s
+//! - Special character visualization with -T (tabs), -E (line ends), -v (non-printing)
+//! - Combined flag shortcuts: -A (-vET), -e (-vE), -t (-vT)
+//! - Proper handling of binary data and control characters
+//!
+//! The implementation maintains compatibility with GNU coreutils cat while
+//! providing robust error handling and efficient buffered I/O operations.
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 
+/// Command-line arguments for cat
 const CatArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -36,6 +46,7 @@ const CatArgs = struct {
     };
 };
 
+/// Process files or stdin with the specified formatting options
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -65,11 +76,8 @@ pub fn main() !void {
         return;
     }
 
-    // Create options struct from parsed arguments
-    // Handle combination flags:
-    // -A (show_all) is equivalent to -vET (show non-printing, ends, and tabs)
-    // -e is equivalent to -vE (show non-printing and ends)
-    // -t is equivalent to -vT (show non-printing and tabs)
+    // Create options struct with proper flag combinations
+    // -A is equivalent to -vET, -e is equivalent to -vE, -t is equivalent to -vT
     const options = CatOptions{
         .number_lines = args.number,
         .number_nonblank = args.number_nonblank,
@@ -88,10 +96,13 @@ pub fn main() !void {
         // No files specified, read from stdin
         try processInput(stdin, stdout, options, &line_state);
     } else {
+        // Process each file in order
         for (args.positionals) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
+                // "-" means read from stdin
                 try processInput(stdin, stdout, options, &line_state);
             } else {
+                // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                     common.fatal("{s}: {}", .{ file_path, err });
                 };
@@ -102,6 +113,7 @@ pub fn main() !void {
     }
 }
 
+/// Print usage information
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.writeAll(
@@ -130,6 +142,7 @@ fn printHelp() !void {
     );
 }
 
+/// Options controlling output formatting
 const CatOptions = struct {
     number_lines: bool = false,
     number_nonblank: bool = false,
@@ -139,11 +152,14 @@ const CatOptions = struct {
     show_nonprinting: bool = false,
 };
 
+/// Line numbering state maintained across multiple files
 const LineNumberState = struct {
     line_number: usize = 1,
     prev_blank: bool = false,
 };
 
+/// Format output according to the specified options.
+/// Maintains line numbering state across multiple files.
 fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
     var buf_reader = std.io.bufferedReader(reader);
     var input = buf_reader.reader();
@@ -154,21 +170,19 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
         if (maybe_line) |line| {
             const is_blank = line.len == 0;
 
-            // Handle squeeze blank: suppress repeated empty output lines
-            // If this line is blank AND the previous line was blank, skip it
+            // Handle squeeze blank
             if (options.squeeze_blank and is_blank and state.prev_blank) {
                 continue;
             }
             state.prev_blank = is_blank;
 
             // Handle line numbering
-            // -b (number_nonblank) takes precedence over -n (number_lines)
             if (options.number_nonblank and !is_blank) {
-                // Number only non-blank lines
+                // Number non-blank lines only (-b option)
                 try writer.print("{d: >6}\t", .{state.line_number});
                 state.line_number += 1;
             } else if (options.number_lines and !options.number_nonblank) {
-                // Number all lines (unless -b is set)
+                // Number all lines (-n option, but -b takes precedence)
                 try writer.print("{d: >6}\t", .{state.line_number});
                 state.line_number += 1;
             }
@@ -192,35 +206,31 @@ fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *L
     }
 }
 
+/// Write line with special characters shown in caret and M- notation
 fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions) !void {
     for (line) |ch| {
         if (ch == '\t' and options.show_tabs) {
-            // Display TAB characters as ^I
             try writer.writeAll("^I");
         } else if (options.show_nonprinting and ch < 32 and ch != '\t' and ch != '\n') {
-            // Control characters (0-31 except tab and newline)
-            // Display as ^@ through ^_ (add 64 to get printable char)
+            // Control characters
             try writer.print("^{c}", .{ch + 64});
         } else if (options.show_nonprinting and ch == 127) {
-            // DEL character (127) displays as ^?
             try writer.writeAll("^?");
         } else if (options.show_nonprinting and ch >= 128) {
-            // Characters with high bit set (128-255)
-            // Display as M- followed by the representation of the lower 7 bits
+            // High bit set - use M- notation
             try writer.writeAll("M-");
-            const ch_low = ch & 0x7F;
+            const ch_low = ch & 0x7F; // Strip high bit
             if (ch_low < 32) {
-                // M- followed by control character representation
+                // Control character in high range
                 try writer.print("^{c}", .{ch_low + 64});
             } else if (ch_low == 127) {
-                // M- followed by DEL representation
+                // DEL character
                 try writer.writeAll("^?");
             } else {
-                // M- followed by regular character
+                // Regular printable character
                 try writer.writeByte(ch_low);
             }
         } else {
-            // Regular printable character or non-special character
             try writer.writeByte(ch);
         }
     }
@@ -436,7 +446,7 @@ test "cat with -A and control characters" {
     try testing.expectEqualStrings("Test^A^IEnd$\n", buffer.items);
 }
 
-// Test helper that processes a file directly
+/// Test helper for processing a file from a directory
 fn testCatFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options: CatOptions) !void {
     const file = try dir.openFile(filename, .{});
     defer file.close();
@@ -444,7 +454,7 @@ fn testCatFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options: 
     try processInput(file.reader(), writer, options, &line_state);
 }
 
-// Test helper for stdin input
+/// Test helper for processing stdin-like input
 fn testCatStdin(reader: anytype, writer: anytype, options: CatOptions) !void {
     var line_state = LineNumberState{};
     try processInput(reader, writer, options, &line_state);

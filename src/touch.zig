@@ -1,14 +1,11 @@
-//! Update file access and modification times (POSIX touch).
-//!
-//! Changes file timestamps to the current time or a specified time.
-//! Creates empty files if they don't exist (unless -c is specified).
-
+/// GNU-compatible touch utility implementation for Zig.
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 const fs = std.fs;
 const c = std.c;
 
+/// Command-line arguments for the touch utility.
 const TouchArgs = struct {
     help: bool = false,
     version: bool = false,
@@ -42,6 +39,7 @@ const TouchArgs = struct {
     };
 };
 
+/// Main entry point for the touch utility.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -101,10 +99,11 @@ pub fn main() !void {
         common.fatal("missing file operand\nTry 'touch --help' for more information.", .{});
     }
 
-    // Process files
+    // Process files - continue even if one fails (GNU touch behavior)
     var exit_code: u8 = 0;
     for (files) |file_path| {
         touchFile(file_path, options, allocator) catch |err| {
+            // Map specific errors to user-friendly messages
             switch (err) {
                 error.InvalidTimestamp => {
                     if (options.timestamp_str) |ts| {
@@ -136,6 +135,7 @@ pub fn main() !void {
     std.process.exit(exit_code);
 }
 
+/// Prints the help message to stdout.
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
@@ -167,6 +167,7 @@ fn printHelp() !void {
     , .{prog_name});
 }
 
+/// Options structure for touch operations.
 const TouchOptions = struct {
     access_only: bool = false,
     modify_only: bool = false,
@@ -178,6 +179,7 @@ const TouchOptions = struct {
     time_arg: ?[]const u8 = null,
 };
 
+/// Touches a single file with the specified options.
 fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator) !void {
 
     // Get the timestamps to use
@@ -206,6 +208,7 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
         // Use current time with nanosecond precision
         const now_ns = std.time.nanoTimestamp();
         const now = c.timespec{
+            // Convert nanoseconds to seconds and remainder
             .sec = @intCast(@divFloor(now_ns, std.time.ns_per_s)),
             .nsec = @intCast(@mod(now_ns, std.time.ns_per_s)),
         };
@@ -214,7 +217,9 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
     }
 
     // Handle --time argument
+    // This provides compatibility with GNU touch's --time option
     if (options.time_arg) |time_type| {
+        // Access time aliases
         if (std.mem.eql(u8, time_type, "access") or
             std.mem.eql(u8, time_type, "atime") or
             std.mem.eql(u8, time_type, "use"))
@@ -234,6 +239,7 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
     return touchFileWithTimes(path, options, times, options.access_only, options.modify_only, allocator);
 }
 
+/// Touches a file with specific timestamps.
 fn touchFileWithTimes(
     path: []const u8,
     options: TouchOptions,
@@ -263,6 +269,7 @@ fn touchFileWithTimes(
     };
 }
 
+/// Updates file timestamps using the utimensat system call.
 fn updateFileTimes(
     path: []const u8,
     times: [2]c.timespec,
@@ -293,7 +300,9 @@ fn updateFileTimes(
     }
 
     // Use utimensat for precise timestamp control
+    // AT_FDCWD means "relative to current working directory"
     const dirfd = c.AT.FDCWD;
+    // AT_SYMLINK_NOFOLLOW prevents following symbolic links
     const flags: u32 = if (no_dereference) c.AT.SYMLINK_NOFOLLOW else 0;
 
     // Allocate path buffer dynamically
@@ -321,13 +330,8 @@ fn updateFileTimes(
     }
 }
 
+/// Parses a timestamp string in GNU touch -t format.
 fn parseTimestamp(stamp: []const u8) !c.timespec {
-    // Parse [[CC]YY]MMDDhhmm[.ss] format
-    // Examples:
-    // 202312311359.45 -> 2023-12-31 13:59:45
-    // 12311359.45 -> current_century + 23-12-31 13:59:45
-    // 12311359 -> current_century + YY-12-31 13:59:00
-
     var year: u32 = undefined;
     var month: u32 = undefined;
     var day: u32 = undefined;
@@ -348,10 +352,10 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
         }
     }
 
-    // Parse main part
+    // Parse main part based on length
     switch (main_part.len) {
         12 => {
-            // CCYYMMDDhhmm
+            // CCYYMMDDhhmm - full 4-digit year
             year = try std.fmt.parseInt(u32, main_part[0..4], 10);
             month = try std.fmt.parseInt(u32, main_part[4..6], 10);
             day = try std.fmt.parseInt(u32, main_part[6..8], 10);
@@ -362,6 +366,7 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
             // YYMMDDhhmm
             const yy = try std.fmt.parseInt(u32, main_part[0..2], 10);
             // Use POSIX rules: 69-99 -> 1969-1999, 00-68 -> 2000-2068
+            // This handles the Y2K transition period
             year = if (yy >= 69) 1900 + yy else 2000 + yy;
             month = try std.fmt.parseInt(u32, main_part[2..4], 10);
             day = try std.fmt.parseInt(u32, main_part[4..6], 10);
@@ -369,7 +374,7 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
             minute = try std.fmt.parseInt(u32, main_part[8..10], 10);
         },
         8 => {
-            // MMDDhhmm (current year)
+            // MMDDhhmm - use current year
             const now = std.time.timestamp();
             const epoch_seconds = @as(u64, @intCast(now));
             const epoch_day = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_seconds) };
@@ -404,10 +409,12 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     if (days_since_epoch < 0) return error.InvalidTimestamp;
 
     // Check for overflow before multiplication
+    // 86400 seconds per day (24 * 60 * 60)
     const max_days = std.math.maxInt(i64) / 86400;
     if (days_since_epoch > max_days) return error.InvalidTimestamp;
 
     const day_seconds = days_since_epoch * 86400;
+    // Convert time components to seconds (3600 = 60 * 60 seconds per hour)
     const time_seconds = @as(i64, hour) * 3600 + @as(i64, minute) * 60 + @as(i64, second);
 
     // Check for overflow in final addition
@@ -421,8 +428,9 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     };
 }
 
+/// Calculates days since year 1 for a given date.
 fn daysFromYMD(year: u32, month: u32, day: u32) i64 {
-    // Days since a reference point (simplified)
+    // Days in each month (non-leap year)
     const days_in_month = [_]u32{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
     var total_days: i64 = 0;
 
@@ -447,16 +455,19 @@ fn daysFromYMD(year: u32, month: u32, day: u32) i64 {
     return total_days;
 }
 
+/// Determines if a year is a leap year.
 fn isLeapYear(year: u32) bool {
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
 }
 
+/// Returns the number of days in a given month.
 fn getDaysInMonth(year: u32, month: u32) u32 {
     const days_in_month = [_]u32{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
     if (month < 1 or month > 12) return 0;
 
     var days = days_in_month[month - 1];
+    // February in leap years has 29 days
     if (month == 2 and isLeapYear(year)) {
         days = 29;
     }
@@ -464,6 +475,7 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
     return days;
 }
 
+/// Handles errors by printing appropriate error messages.
 fn handleError(path: []const u8, err: anyerror) void {
     // GNU touch format: "touch: cannot touch 'filename': Error message"
     switch (err) {
@@ -484,6 +496,7 @@ fn handleError(path: []const u8, err: anyerror) void {
 }
 
 // ==================== TESTS ====================
+// Comprehensive test suite for touch functionality
 
 test "touch creates new file" {
     var tmp_dir = testing.tmpDir(.{});
@@ -647,6 +660,7 @@ test "touch -r uses reference file times" {
     const target_stat = try common.file.FileInfo.stat(target_path);
 
     // Allow small difference due to nanosecond precision
+    // Some file systems may not support full nanosecond precision
     const time_diff_ns: i128 = 1_000_000; // 1ms tolerance
     try testing.expect(@abs(ref_stat.atime - target_stat.atime) < time_diff_ns);
     try testing.expect(@abs(ref_stat.mtime - target_stat.mtime) < time_diff_ns);

@@ -1,9 +1,4 @@
-//! Remove files or directories
-//!
-//! The rm utility removes each specified file. By default, it does not remove directories.
-//! If the -r or -R option is specified, rm removes directories and their contents recursively.
-//! This implementation includes advanced safety features such as symlink cycle detection,
-//! atomic operations to prevent race conditions, and protection against removing critical system paths.
+//! POSIX-compatible rm command with enhanced safety features.
 
 const std = @import("std");
 const common = @import("common");
@@ -11,15 +6,15 @@ const testing = std.testing;
 const builtin = @import("builtin");
 const privilege_test = common.privilege_test;
 
-// Argument structure for rm command
+/// Command-line arguments for rm.
 const RmArgs = struct {
     help: bool = false,
     version: bool = false,
     force: bool = false,
-    i: bool = false, // interactive
-    I: bool = false, // interactive once
+    i: bool = false,
+    I: bool = false,
     recursive: bool = false,
-    R: bool = false, // Same as recursive
+    R: bool = false,
     verbose: bool = false,
     positionals: []const []const u8 = &.{},
 
@@ -35,11 +30,12 @@ const RmArgs = struct {
     };
 };
 
-// Custom error types
+/// Custom error types for rm operations.
 const RmError = error{
     UserCancelled,
 };
 
+/// Main entry point for the rm command.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -47,7 +43,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using custom parser
+    // Parse command-line arguments using the common argument parser
     const args = common.argparse.ArgParser.parseProcess(RmArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -58,13 +54,13 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
-    // Handle help
+    // Handle help flag - display usage information and exit
     if (args.help) {
         try printHelp();
         return;
     }
 
-    // Handle version
+    // Handle version flag - display version and exit
     if (args.version) {
         try printVersion();
         return;
@@ -75,7 +71,7 @@ pub fn main() !void {
         common.fatal("missing operand", .{});
     }
 
-    // Create options, merging -r and -R flags
+    // Create options structure, merging -r and -R flags (both mean recursive)
     const options = RmOptions{
         .force = args.force,
         .interactive = args.i,
@@ -88,6 +84,7 @@ pub fn main() !void {
     try removeFiles(allocator, files, stdout, options);
 }
 
+/// Prints help information to stdout.
 fn printHelp() !void {
     const help_text =
         \\Usage: rm [OPTION]... [FILE]...
@@ -122,11 +119,13 @@ fn printHelp() !void {
     try std.io.getStdOut().writer().print("{s}", .{help_text});
 }
 
+/// Prints version information to stdout.
 fn printVersion() !void {
     const build_options = @import("build_options");
     try std.io.getStdOut().writer().print("rm (vibeutils) {s}\n", .{build_options.version});
 }
 
+/// Options controlling rm behavior.
 const RmOptions = struct {
     force: bool,
     interactive: bool,
@@ -137,12 +136,13 @@ const RmOptions = struct {
 
 // Phase 4: Advanced Safety Features
 
-/// Tracks symlinks during traversal to detect cycles
+/// Tracks symlinks during directory traversal to detect cycles.
 const SymlinkTracker = struct {
     allocator: std.mem.Allocator,
     path_stack: std.ArrayList([]const u8),
     path_set: std.StringHashMap(void),
 
+    /// Creates a new symlink tracker.
     pub fn init(allocator: std.mem.Allocator) SymlinkTracker {
         return .{
             .allocator = allocator,
@@ -151,6 +151,7 @@ const SymlinkTracker = struct {
         };
     }
 
+    /// Releases all resources used by the tracker.
     pub fn deinit(self: *SymlinkTracker) void {
         // Free all stored paths
         for (self.path_stack.items) |path| {
@@ -160,6 +161,7 @@ const SymlinkTracker = struct {
         self.path_set.deinit();
     }
 
+    /// Adds a path to the tracker.
     pub fn push(self: *SymlinkTracker, path: []const u8) !void {
         // Add to both stack and set
         const path_copy = try self.allocator.dupe(u8, path);
@@ -167,11 +169,13 @@ const SymlinkTracker = struct {
 
         try self.path_stack.append(path_copy);
         // Only add to set if not already present (for cycle detection)
+        // This allows us to track when we revisit a path
         if (!self.path_set.contains(path)) {
             try self.path_set.put(path_copy, {});
         }
     }
 
+    /// Removes the most recently added path from the tracker.
     pub fn pop(self: *SymlinkTracker) void {
         if (self.path_stack.items.len == 0) return;
 
@@ -181,31 +185,36 @@ const SymlinkTracker = struct {
         _ = self.path_stack.pop();
     }
 
+    /// Checks if the most recently pushed path creates a cycle.
     pub fn hasCycle(self: *SymlinkTracker) bool {
         // Check if the last pushed path created a cycle
         if (self.path_stack.items.len == 0) return false;
 
         const last_path = self.path_stack.items[self.path_stack.items.len - 1];
         var count: usize = 0;
+        // Count occurrences of the last path in the stack
         for (self.path_stack.items) |path| {
             if (std.mem.eql(u8, path, last_path)) {
                 count += 1;
             }
         }
+        // If path appears more than once, we have a cycle
         return count > 1;
     }
 
+    /// Checks if a path is already being tracked.
     pub fn contains(self: *SymlinkTracker, path: []const u8) bool {
         return self.path_set.contains(path);
     }
 };
 
-/// Context for atomic removal operations using file descriptors
+/// Context for atomic removal operations using file descriptors.
 const AtomicRemovalContext = struct {
     allocator: std.mem.Allocator,
     dir_stack: std.ArrayList(std.fs.Dir.Handle),
     base_device: ?u64,
 
+    /// Creates a new atomic removal context.
     pub fn init(allocator: std.mem.Allocator) AtomicRemovalContext {
         return .{
             .allocator = allocator,
@@ -214,6 +223,7 @@ const AtomicRemovalContext = struct {
         };
     }
 
+    /// Releases all resources and closes any open directory handles.
     pub fn deinit(self: *AtomicRemovalContext) void {
         // Close any remaining open directory handles
         for (self.dir_stack.items) |handle| {
@@ -222,10 +232,12 @@ const AtomicRemovalContext = struct {
         self.dir_stack.deinit();
     }
 
+    /// Pushes a directory handle onto the stack.
     pub fn pushDir(self: *AtomicRemovalContext, handle: std.fs.Dir.Handle) !void {
         try self.dir_stack.append(handle);
     }
 
+    /// Pops a directory handle from the stack.
     pub fn popDir(self: *AtomicRemovalContext) ?std.fs.Dir.Handle {
         if (self.dir_stack.items.len > 0) {
             return self.dir_stack.pop();
@@ -233,10 +245,12 @@ const AtomicRemovalContext = struct {
         return null;
     }
 
+    /// Sets the base filesystem device ID.
     pub fn setBaseDevice(self: *AtomicRemovalContext, device: u64) void {
         self.base_device = device;
     }
 
+    /// Checks if the given device ID matches the base device.
     pub fn isBaseDevice(self: *AtomicRemovalContext, device: u64) bool {
         if (self.base_device) |base| {
             return base == device;
@@ -245,20 +259,20 @@ const AtomicRemovalContext = struct {
     }
 };
 
-/// Check if two device IDs represent different filesystems
+/// Checks if two device IDs represent different filesystems.
 fn isCrossDevice(dev1: u64, dev2: u64) bool {
     return dev1 != dev2;
 }
 
-/// Check if the system supports atomic removal operations
+/// Checks if the system supports atomic removal operations.
 fn supportsAtomicRemoval() bool {
     // Linux and macOS support the *at() family of syscalls
     return builtin.os.tag == .linux or builtin.os.tag == .macos or builtin.os.tag == .freebsd;
 }
 
-/// User interaction utilities
+/// User interaction utilities for handling prompts and confirmations.
 const UserInteraction = struct {
-    /// Prompt user for removal confirmation
+    /// Prompts user for regular file removal confirmation.
     pub fn shouldRemove(file_path: []const u8) !bool {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("rm: remove regular file '{s}'? ", .{file_path});
@@ -266,7 +280,7 @@ const UserInteraction = struct {
         return try promptYesNo();
     }
 
-    /// Prompt user for write-protected file removal
+    /// Prompts user for write-protected file removal.
     pub fn shouldRemoveWriteProtected(file_path: []const u8, mode: std.fs.File.Mode) !bool {
         _ = mode; // Mode might be used for more detailed permission display later
         const stderr = std.io.getStdErr().writer();
@@ -275,7 +289,7 @@ const UserInteraction = struct {
         return try promptYesNo();
     }
 
-    /// Prompt user for directory removal
+    /// Prompts user for directory removal confirmation.
     pub fn shouldRemoveDirectory(dir_path: []const u8) !bool {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("rm: remove directory '{s}'? ", .{dir_path});
@@ -283,7 +297,7 @@ const UserInteraction = struct {
         return try promptYesNo();
     }
 
-    /// Prompt user with interactive once mode
+    /// Prompts user when removing multiple files (interactive once mode).
     pub fn shouldRemoveMultiple(count: usize) !bool {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("rm: remove {d} arguments? ", .{count});
@@ -291,7 +305,7 @@ const UserInteraction = struct {
         return try promptYesNo();
     }
 
-    /// Read yes/no response from stdin
+    /// Reads yes/no response from stdin.
     pub fn promptYesNo() !bool {
         var buffer: [10]u8 = undefined;
         const stdin = std.io.getStdIn().reader();
@@ -312,48 +326,57 @@ const UserInteraction = struct {
     }
 };
 
+/// Main file removal function that processes a list of files/directories.
+///
+/// Parameters:
+/// - allocator: Memory allocator for temporary allocations
+/// - files: Array of file/directory paths to remove
+/// - writer: Output writer for verbose messages
+/// - options: Configuration options controlling removal behavior
 fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, writer: anytype, options: RmOptions) !void {
-    // Interactive once mode: prompt before removing more than 3 files
+    // Handle interactive once mode (-I flag)
     if (options.interactive_once and files.len > 3) {
         if (!try UserInteraction.shouldRemoveMultiple(files.len)) {
             return; // User said no
         }
     }
 
-    // Track removed inodes to detect same-file removal attempts
+    // Track removed inodes to prevent double-removal of hardlinks
     var removed_inodes = std.AutoHashMap(std.fs.File.INode, void).init(allocator);
     defer removed_inodes.deinit();
 
     for (files) |file| {
-        // Safety checks
+        // Perform safety checks on each file
         if (file.len == 0) {
             common.printError("cannot remove '': No such file or directory", .{});
             continue;
         }
 
-        // Prevent removal of root directory
+        // Special check for root directory - never allow removal
         if (std.mem.eql(u8, file, "/")) {
             common.printError("it is dangerous to operate recursively on '/'", .{});
             common.printError("use --no-preserve-root to override this failsafe", .{});
             continue;
         }
 
-        // Path traversal attack prevention - normalize the path
-        // Only do realpath if the file exists to avoid segfaults
+        // Normalize path to prevent directory traversal attacks
+        // Only use realpath if file exists to avoid errors
         var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
         const normalized = if (std.fs.cwd().access(file, .{})) |_| blk: {
+            // Resolve to absolute path to prevent directory traversal
             break :blk std.fs.realpath(file, &normalized_buf) catch file;
         } else |_| blk: {
-            // File doesn't exist, pass the original path for error handling
+            // File doesn't exist - use original path so error messages are clear
             break :blk file;
         };
 
-        // Additional safety check for critical system paths
+        // Check against list of critical system paths
         if (isCriticalSystemPath(normalized)) {
             common.printError("cannot remove '{s}': Operation not permitted", .{file});
             continue;
         }
 
+        // Attempt to remove the file, handling various error conditions
         removeSingleFile(allocator, file, writer, options, &removed_inodes) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!options.force) {
@@ -364,7 +387,9 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, writer: 
                 common.printError("cannot remove '{s}': Permission denied", .{file});
             },
             error.IsDir => {
+                // File is actually a directory - check if recursive flag is set
                 if (options.recursive) {
+                    // Recursively remove directory with all safety features
                     removeDirectoryRecursiveAtomic(allocator, file, writer, options, &removed_inodes) catch |dir_err| {
                         if (dir_err == error.UserCancelled) {
                             // User said no to prompt, silently skip
@@ -386,7 +411,7 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, writer: 
     }
 }
 
-/// Check if a path is a critical system path that should not be removed
+/// Checks if a path is a critical system path that should not be removed.
 fn isCriticalSystemPath(path: []const u8) bool {
     const critical_paths = [_][]const u8{
         "/bin",
@@ -408,7 +433,7 @@ fn isCriticalSystemPath(path: []const u8) bool {
         if (std.mem.eql(u8, path, critical)) {
             return true;
         }
-        // Check if path starts with critical path followed by /
+        // Check if path is a subdirectory of a critical path (e.g., /usr/local)
         if (path.len > critical.len and path[critical.len] == '/' and std.mem.startsWith(u8, path, critical)) {
             return true;
         }
@@ -416,8 +441,14 @@ fn isCriticalSystemPath(path: []const u8) bool {
     return false;
 }
 
-/// Recursively remove a directory and all its contents with advanced safety
-/// Uses atomic operations when available to prevent race conditions
+/// Recursively removes a directory and all its contents with advanced safety.
+///
+/// Parameters:
+/// - allocator: Memory allocator for temporary allocations
+/// - dir_path: Path to directory to remove recursively
+/// - writer: Output writer for verbose messages
+/// - options: Configuration options controlling removal behavior
+/// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
 fn removeDirectoryRecursiveAtomic(allocator: std.mem.Allocator, dir_path: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     // Initialize atomic removal context if supported
     if (supportsAtomicRemoval()) {
@@ -434,7 +465,7 @@ fn removeDirectoryRecursiveAtomic(allocator: std.mem.Allocator, dir_path: []cons
     }
 }
 
-/// Internal recursive removal with safety context
+/// Internal recursive directory removal with full safety context.
 fn removeDirectoryRecursiveWithContext(
     allocator: std.mem.Allocator,
     dir_path: []const u8,
@@ -445,7 +476,7 @@ fn removeDirectoryRecursiveWithContext(
     symlink_tracker: *SymlinkTracker,
     parent_dir: ?std.fs.Dir,
 ) !void {
-    // Check if directory exists and get its type
+    // Get directory stats, using parent dir handle if available for atomicity
     const stat_result = if (parent_dir) |parent| blk: {
         break :blk parent.statFile(std.fs.path.basename(dir_path)) catch |err| switch (err) {
             error.FileNotFound => return error.FileNotFound,
@@ -460,13 +491,14 @@ fn removeDirectoryRecursiveWithContext(
         };
     };
 
-    // Set base device if not already set
+    // Initialize base device for filesystem boundary detection
     if (atomic_ctx.base_device == null) {
-        // Use inode's device field for filesystem identification
+        // Use inode as device ID (filesystem identifier)
+        // Note: This is a simplification - proper implementation would use stat.dev
         atomic_ctx.setBaseDevice(stat_result.inode);
     }
 
-    // Check for cross-filesystem boundary
+    // Prevent crossing filesystem boundaries (future --one-file-system support)
     if (!atomic_ctx.isBaseDevice(stat_result.inode)) {
         if (options.verbose) {
             try writer.print("skipping '{s}': different filesystem\n", .{dir_path});
@@ -474,12 +506,12 @@ fn removeDirectoryRecursiveWithContext(
         return;
     }
 
-    // Ensure it's actually a directory
+    // Verify target is a directory, not a file
     if (stat_result.kind != .directory) {
         return error.NotDir;
     }
 
-    // Check if we've already processed this inode (cycle detection)
+    // Check if this inode was already removed (handles hardlinks)
     if (removed_inodes.contains(stat_result.inode)) {
         if (options.verbose) {
             try writer.print("removed directory '{s}'\n", .{dir_path});
@@ -487,34 +519,36 @@ fn removeDirectoryRecursiveWithContext(
         return;
     }
 
-    // Check for symlink cycles
+    // Detect symlink cycles by checking real path
     var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const real_path = std.fs.realpath(dir_path, &real_path_buf) catch dir_path;
 
     if (symlink_tracker.contains(real_path)) {
-        // Detected a cycle
+        // Detected a symlink cycle - prevent infinite recursion
         common.printError("cannot remove '{s}': symlink cycle detected", .{dir_path});
         return;
     }
 
-    // Add to symlink tracker
+    // Track this directory in symlink cycle detector
     try symlink_tracker.push(real_path);
     defer symlink_tracker.pop();
 
-    // Interactive mode for directory removal
+    // Prompt user if in interactive mode
     if (options.interactive) {
         if (!try UserInteraction.shouldRemoveDirectory(dir_path)) {
             return error.UserCancelled;
         }
     }
 
-    // Open directory for traversal using parent dir if available (atomic operation)
+    // Open directory atomically through parent if possible
     var dir = if (parent_dir) |parent| blk: {
         const basename = std.fs.path.basename(dir_path);
+        // Use parent directory handle for atomic operation
         break :blk parent.openDir(basename, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return error.FileNotFound,
             error.AccessDenied => {
                 if (options.force) {
+                    // Force mode: attempt to add execute permission to access directory
                     // Try to change permissions - need to open the dir first
                     const dir_file = parent.openFile(basename, .{ .mode = .read_write }) catch {
                         return error.AccessDenied;
@@ -533,6 +567,7 @@ fn removeDirectoryRecursiveWithContext(
             else => return err,
         };
     } else blk: {
+        // Fall back to non-atomic open from current directory
         break :blk std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => return error.FileNotFound,
             error.AccessDenied => {
@@ -554,11 +589,11 @@ fn removeDirectoryRecursiveWithContext(
     };
     defer dir.close();
 
-    // Push directory handle for atomic operations
+    // Track open directory handle for cleanup
     try atomic_ctx.pushDir(dir.fd);
     defer _ = atomic_ctx.popDir();
 
-    // Collect all directory entries first
+    // Collect all entries before removal to avoid iterator invalidation
     var entries = std.ArrayList(std.fs.Dir.Entry).init(allocator);
     defer entries.deinit();
 
@@ -573,12 +608,13 @@ fn removeDirectoryRecursiveWithContext(
         });
     }
     defer {
+        // Free all allocated entry names
         for (entries.items) |entry| {
             allocator.free(entry.name);
         }
     }
 
-    // Remove all entries atomically
+    // Remove all directory contents (files and subdirectories)
     for (entries.items) |entry| {
         if (entry.kind == .directory) {
             const entry_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
@@ -598,7 +634,7 @@ fn removeDirectoryRecursiveWithContext(
                 if (err == error.UserCancelled) {
                     // User cancelled, continue
                 } else if (err == error.FileNotFound) {
-                    // Race condition - file already removed
+                    // Race condition - file was removed between listing and deletion
                 } else {
                     const entry_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
                     defer allocator.free(entry_path);
@@ -608,7 +644,7 @@ fn removeDirectoryRecursiveWithContext(
         }
     }
 
-    // Finally, remove the directory itself atomically
+    // Remove the now-empty directory
     if (parent_dir) |parent| {
         const basename = std.fs.path.basename(dir_path);
         parent.deleteDir(basename) catch |err| switch (err) {
@@ -640,7 +676,7 @@ fn removeDirectoryRecursiveWithContext(
         };
     }
 
-    // Track that we removed this inode
+    // Record this inode as removed
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
@@ -648,23 +684,21 @@ fn removeDirectoryRecursiveWithContext(
     }
 }
 
-/// Recursively remove a directory and all its contents
-/// Uses depth-first traversal to remove files before directories
-/// Does not follow symlinks during traversal for security
+/// Recursively removes a directory and all its contents (non-atomic fallback).
 fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
-    // Check if directory exists and get its type
+    // Get directory stats, using parent dir handle if available for atomicity
     const stat_result = std.fs.cwd().statFile(dir_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.AccessDenied,
         else => return err,
     };
 
-    // Ensure it's actually a directory
+    // Verify target is a directory, not a file
     if (stat_result.kind != .directory) {
         return error.NotDir;
     }
 
-    // Check if we've already processed this inode (cycle detection)
+    // Check if this inode was already removed (handles hardlinks)
     if (removed_inodes.contains(stat_result.inode)) {
         if (options.verbose) {
             try writer.print("removed directory '{s}'\n", .{dir_path});
@@ -672,7 +706,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
         return;
     }
 
-    // Interactive mode for directory removal
+    // Prompt user if in interactive mode
     if (options.interactive) {
         if (!try UserInteraction.shouldRemoveDirectory(dir_path)) {
             return error.UserCancelled;
@@ -703,13 +737,13 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
     };
     defer dir.close();
 
-    // Collect all directory entries first (to avoid iterator invalidation)
+    // Collect all entries before removal to avoid iterator invalidation
     var entries = std.ArrayList(std.fs.Dir.Entry).init(allocator);
     defer entries.deinit();
 
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
-        // Create a copy of the entry with allocated name
+        // Duplicate entry name for safe storage
         const name_copy = try allocator.dupe(u8, entry.name);
         errdefer allocator.free(name_copy);
 
@@ -719,12 +753,13 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
         });
     }
     defer {
+        // Free all allocated entry names
         for (entries.items) |entry| {
             allocator.free(entry.name);
         }
     }
 
-    // Remove all entries (depth-first: files and subdirectories first)
+    // Remove all directory contents (depth-first traversal)
     for (entries.items) |entry| {
         const entry_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
         defer allocator.free(entry_path);
@@ -752,7 +787,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
         }
     }
 
-    // Finally, remove the directory itself
+    // Remove the now-empty directory
     std.fs.cwd().deleteDir(dir_path) catch |err| switch (err) {
         error.FileNotFound => {
             // Directory was already removed, ignore
@@ -795,7 +830,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
         },
     };
 
-    // Track that we removed this inode
+    // Record this inode as removed
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
@@ -803,11 +838,19 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
     }
 }
 
-/// Remove a single file atomically using parent directory handle
+/// Removes a single file atomically using parent directory handle.
+///
+/// Parameters:
+/// - allocator: Memory allocator (currently unused but kept for consistency)
+/// - file_name: Name of file within parent directory to remove
+/// - writer: Output writer for verbose messages
+/// - options: Configuration options controlling removal behavior
+/// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
+/// - parent_dir: Open directory handle containing the file
 fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void), parent_dir: std.fs.Dir) !void {
     _ = allocator;
 
-    // Check if file exists and get its type using parent dir
+    // First check if it's a symlink (without following it)
     const is_symlink = blk: {
         var dummy_buf: [1]u8 = undefined;
         _ = parent_dir.readLink(file_name, &dummy_buf) catch |err| switch (err) {
@@ -823,7 +866,7 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
         else => return err,
     };
 
-    // Check if we've already removed this inode
+    // Skip if we've already removed this inode (hardlink handling)
     if (removed_inodes.contains(stat_result.inode)) {
         if (options.verbose) {
             try writer.print("removed '{s}'\n", .{file_name});
@@ -831,14 +874,14 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
         return;
     }
 
-    // If it's a symlink, treat it as a regular file
+    // Handle symlinks as regular files (don't follow)
     if (is_symlink) {
         // Symlinks are removed as files
     } else if (stat_result.kind == .directory) {
         return error.IsDir;
     }
 
-    // Interactive mode
+    // Handle interactive prompts
     if (options.interactive) {
         if (!try UserInteraction.shouldRemove(file_name)) {
             return error.UserCancelled;
@@ -853,7 +896,7 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
         }
     }
 
-    // Attempt atomic removal using parent directory handle
+    // Perform atomic removal through parent directory
     parent_dir.deleteFile(file_name) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => {
@@ -877,7 +920,7 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
         else => return err,
     };
 
-    // Track that we removed this inode
+    // Record this inode as removed
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
@@ -885,11 +928,18 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
     }
 }
 
+/// Removes a single file (non-atomic version).
+///
+/// Parameters:
+/// - allocator: Memory allocator (currently unused but kept for consistency)
+/// - file_path: Full path to file to remove
+/// - writer: Output writer for verbose messages
+/// - options: Configuration options controlling removal behavior
+/// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
 fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     _ = allocator;
 
-    // Check if file exists and get its type
-    // First check if it's a symlink to avoid following it
+    // First check if it's a symlink (without following it)
     const is_symlink = blk: {
         var dummy_buf: [1]u8 = undefined;
         _ = std.fs.cwd().readLink(file_path, &dummy_buf) catch |err| switch (err) {
@@ -905,7 +955,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
         else => return err,
     };
 
-    // Check if we've already removed this inode (same-file detection)
+    // Skip if we've already removed this inode (hardlink handling) (same-file detection)
     if (removed_inodes.contains(stat_result.inode)) {
         // Already removed this file (hard link to same inode)
         if (options.verbose) {
@@ -914,37 +964,37 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
         return;
     }
 
-    // If it's a symlink, treat it as a regular file (don't follow)
+    // Handle symlinks as regular files (don't follow) (don't follow)
     if (is_symlink) {
         // Symlinks are removed as files, not directories
     } else if (stat_result.kind == .directory) {
         return error.IsDir;
     }
 
-    // Interactive mode - always prompt
+    // Handle interactive prompts - always prompt
     if (options.interactive) {
         if (!try UserInteraction.shouldRemove(file_path)) {
             return error.UserCancelled;
         }
     } else if (!options.force) {
-        // Check if file is write-protected
+        // Check write permissions if not in force mode
         const mode = stat_result.mode;
         const user_write = (mode & 0o200) != 0;
         if (!user_write) {
-            // Prompt for write-protected file removal
+            // Prompt user about write-protected file
             if (!try UserInteraction.shouldRemoveWriteProtected(file_path, mode)) {
                 return error.UserCancelled;
             }
         }
     }
 
-    // Attempt to remove the file
+    // Perform file removal
     std.fs.cwd().deleteFile(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => {
-            // If force mode, try to change permissions and retry
+            // Force mode: attempt to change permissions
             if (options.force) {
-                // Try to add write permission by opening the file and using fchmod
+                // Add write permission through file handle
                 const file = std.fs.cwd().openFile(file_path, .{ .mode = .read_write }) catch {
                     return error.AccessDenied;
                 };
@@ -952,7 +1002,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
                 file.chmod(stat_result.mode | 0o200) catch {};
                 file.close();
 
-                // Retry deletion
+                // Retry removal with new permissions
                 std.fs.cwd().deleteFile(file_path) catch {
                     return error.AccessDenied;
                 };
@@ -963,7 +1013,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
         else => return err,
     };
 
-    // Track that we removed this inode
+    // Record this inode as removed
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
@@ -972,10 +1022,14 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
 }
 
 // Tests
+
+/// Test helper structure for managing temporary directories in tests.
+/// Provides convenient methods for creating and manipulating test files.
 const TestDir = struct {
     tmp_dir: std.testing.TmpDir,
     allocator: std.mem.Allocator,
 
+    /// Creates a new test directory.
     fn init(allocator: std.mem.Allocator) TestDir {
         return TestDir{
             .tmp_dir = std.testing.tmpDir(.{}),
@@ -983,31 +1037,38 @@ const TestDir = struct {
         };
     }
 
+    /// Cleans up the test directory and all its contents.
     fn deinit(self: *TestDir) void {
         self.tmp_dir.cleanup();
     }
 
+    /// Creates a file with the given name and content in the test directory.
     fn createFile(self: *TestDir, name: []const u8, content: []const u8) !void {
         const file = try self.tmp_dir.dir.createFile(name, .{});
         defer file.close();
         try file.writeAll(content);
     }
 
+    /// Creates a subdirectory with the given name in the test directory.
     fn createDir(self: *TestDir, name: []const u8) !void {
         try self.tmp_dir.dir.makeDir(name);
     }
 
+    /// Checks if a file or directory exists in the test directory.
     fn fileExists(self: *TestDir, name: []const u8) bool {
         self.tmp_dir.dir.access(name, .{}) catch return false;
         return true;
     }
 
+    /// Returns the absolute path for a file in the test directory.
+    /// Caller owns the returned memory.
     fn getPath(self: *TestDir, name: []const u8) ![]u8 {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = try self.tmp_dir.dir.realpath(name, &path_buf);
         return try self.allocator.dupe(u8, path);
     }
 
+    /// Changes the current working directory to the test directory.
     fn chdir(self: *TestDir) !void {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const path = try self.tmp_dir.dir.realpath(".", &path_buf);

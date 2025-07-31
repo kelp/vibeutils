@@ -1,14 +1,23 @@
+//! Print current working directory with logical and physical path resolution
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 
+/// Command-line arguments for pwd utility
 const PwdArgs = struct {
+    /// Display help and exit
     help: bool = false,
+    /// Display version and exit
     version: bool = false,
+    /// Use PWD from environment
     logical: bool = false,
+    /// Resolve all symbolic links
     physical: bool = false,
+    /// Positional arguments
     positionals: []const []const u8 = &.{},
 
+    /// Argument parser metadata
     pub const meta = .{
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -17,11 +26,15 @@ const PwdArgs = struct {
     };
 };
 
+/// Runtime options for pwd behavior
 const PwdOptions = struct {
-    logical: bool = false, // -L flag: use PWD environment variable if valid
-    physical: bool = true, // -P flag: resolve symlinks (default)
+    /// Use PWD environment variable if valid
+    logical: bool = false,
+    /// Resolve all symbolic links
+    physical: bool = true,
 };
 
+/// Main entry point for pwd utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -29,7 +42,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using new parser
+    // Parse command-line arguments using the common argument parser
     const args = common.argparse.ArgParser.parseProcess(PwdArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -40,22 +53,23 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
-    // Handle help
+    // Handle help flag - display usage information and exit
     if (args.help) {
         try printHelp();
         return;
     }
 
-    // Handle version
+    // Handle version flag - display version and exit
     if (args.version) {
         common.CommonOpts.printVersion();
         return;
     }
 
-    // Create options - when both flags are given, last one wins
+    // Initialize options with defaults (physical mode)
     var options = PwdOptions{};
 
-    // Process flags - default is physical unless logical is specified
+    // Process mode flags - when both -L and -P are given, the last one wins
+    // This behavior matches POSIX specifications
     if (args.logical) {
         options.logical = true;
         options.physical = false;
@@ -65,18 +79,20 @@ pub fn main() !void {
         options.physical = true;
     }
 
-    // Get and print the working directory
+    // Retrieve the current working directory based on the selected mode
     const stdout = std.io.getStdOut().writer();
     const cwd = getWorkingDirectory(allocator, options) catch |err| {
         common.fatal("failed to get current directory: {s}", .{@errorName(err)});
     };
     defer allocator.free(cwd);
 
+    // Print the directory path followed by a newline
     stdout.print("{s}\n", .{cwd}) catch |err| {
         common.fatal("write failed: {s}", .{@errorName(err)});
     };
 }
 
+/// Print help message to stdout
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.writeAll(
@@ -100,55 +116,58 @@ fn printHelp() !void {
     );
 }
 
-/// Get the current working directory based on options
+/// Get current working directory according to options
 fn getWorkingDirectory(allocator: std.mem.Allocator, options: PwdOptions) ![]const u8 {
     if (options.logical) {
-        // Try to use PWD environment variable if valid
+        // Attempt to use PWD environment variable in logical mode
         if (std.process.getEnvVarOwned(allocator, "PWD")) |pwd_env| {
             defer allocator.free(pwd_env);
 
-            // Validate that PWD refers to the same directory as getcwd
+            // Get the physical path for validation
             const physical_cwd = try std.process.getCwdAlloc(allocator);
             defer allocator.free(physical_cwd);
 
+            // Validate that PWD actually refers to the current directory
             if (isValidPwd(pwd_env, physical_cwd)) {
                 return allocator.dupe(u8, pwd_env);
             }
+            // PWD is invalid, fall through to physical mode
         } else |_| {
-            // PWD not set, fall back to physical
+            // PWD environment variable not set, fall through to physical mode
         }
     }
 
-    // Default: get physical current working directory
+    // Physical mode or fallback: get the actual current directory with symlinks resolved
     return std.process.getCwdAlloc(allocator);
 }
 
-/// Check if PWD environment variable refers to the same directory as physical cwd
-/// This function validates that PWD actually points to the same directory by comparing
-/// inode numbers for security purposes.
+/// Validate PWD environment variable refers to current directory
 ///
-/// Returns false on any error (fails closed for security), including:
-/// - Invalid paths (empty, relative)
-/// - File access errors
-/// - Stat failures
+/// This function fails closed on errors - if any filesystem operation fails,
+/// the PWD is considered invalid for security reasons. This prevents accepting
+/// a potentially malicious PWD when we cannot verify its correctness.
+///
+/// Returns false if:
+/// - PWD is empty or not an absolute path
+/// - stat() fails on either PWD or physical_cwd (filesystem errors, permissions, etc.)
+/// - The inodes don't match (different directories)
 fn isValidPwd(pwd_env: []const u8, physical_cwd: []const u8) bool {
-    // Basic validation: PWD must be an absolute path
+    // PWD must be an absolute path (start with '/')
     if (pwd_env.len == 0 or pwd_env[0] != '/') {
         return false;
     }
 
-    // Compare the paths by stat-ing both and checking if they refer to the same inode
+    // Get file statistics for both paths
+    // Fail closed: any error in stat operations invalidates PWD
     const pwd_stat = std.fs.cwd().statFile(pwd_env) catch return false;
     const cwd_stat = std.fs.cwd().statFile(physical_cwd) catch return false;
 
-    // For security, we validate that PWD refers to the same directory by comparing
-    // inode numbers. This prevents most attacks where PWD is set to a different
-    // directory with the same name. Note: This doesn't protect against cross-device
-    // hard links, but those are rare and typically require elevated privileges.
+    // Validate by comparing inode numbers - if they match, both paths
+    // refer to the same directory
     return pwd_stat.inode == cwd_stat.inode;
 }
 
-/// Simplified pwd function for backward compatibility and testing
+/// Simple pwd function for testing and backward compatibility
 pub fn pwd(allocator: std.mem.Allocator, writer: anytype) !void {
     const cwd = try std.process.getCwdAlloc(allocator);
     defer allocator.free(cwd);

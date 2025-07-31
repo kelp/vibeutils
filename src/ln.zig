@@ -1,3 +1,6 @@
+//! Create links between files (hard and symbolic)
+//! Implements POSIX ln command with security validation for system paths
+
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -40,7 +43,7 @@ fn createTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void 
     try file.writeAll(content);
 }
 
-/// Security validation for paths
+/// Validate path security - prevents links to/in system directories
 fn validatePath(path: []const u8) !void {
     // Check for empty path
     if (path.len == 0) {
@@ -52,8 +55,7 @@ fn validatePath(path: []const u8) !void {
         return error.InvalidPath;
     }
 
-    // First check for path traversal attempts before normalization
-    // Split path into components and check each
+    // Check for path traversal attempts
     var it = std.mem.tokenizeScalar(u8, path, '/');
     var depth: i32 = 0;
     const is_absolute = std.fs.path.isAbsolute(path);
@@ -61,7 +63,6 @@ fn validatePath(path: []const u8) !void {
     while (it.next()) |component| {
         if (std.mem.eql(u8, component, "..")) {
             depth -= 1;
-            // Going above root is suspicious
             if (depth < 0 and is_absolute) {
                 return error.PathTraversalAttempt;
             }
@@ -70,32 +71,25 @@ fn validatePath(path: []const u8) !void {
         }
     }
 
-    // Check for system-critical paths
     const critical_paths = [_][]const u8{
         "/bin",  "/boot", "/dev",  "/etc", "/lib", "/lib32", "/lib64",
         "/proc", "/root", "/sbin", "/sys", "/usr", "/var",
-        "/private", // macOS: /etc, /var, etc. are symlinks to /private/*
+        "/private", // macOS system paths
     };
 
-    // Normalize the path for checking
     var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
     const normalized = blk: {
-        // Only normalize if the path exists or is absolute
         if (is_absolute) {
             break :blk std.fs.realpath(path, &normalized_buf) catch path;
         } else {
-            // For relative paths that might not exist yet, we'll check as-is
             break :blk path;
         }
     };
 
     // Check if it's a critical system path
     for (critical_paths) |critical| {
-        // Check if path matches or starts with critical path
         if (std.mem.startsWith(u8, normalized, critical)) {
-            // It's protected if:
-            // 1. It's an exact match (e.g., "/etc" == "/etc")
-            // 2. It's a subpath (e.g., "/etc/passwd" starts with "/etc/")
+            // Protected if exact match or subpath
             if (normalized.len == critical.len or
                 (normalized.len > critical.len and normalized[critical.len] == '/'))
             {
@@ -106,6 +100,7 @@ fn validatePath(path: []const u8) !void {
 }
 
 /// Calculate relative path from one absolute path to another
+/// Used for creating symbolic links with --relative option
 fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: []const u8) ![]u8 {
     // Split both paths into components
     var from_parts = std.ArrayList([]const u8).init(allocator);
@@ -140,7 +135,7 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
     var result = std.ArrayList(u8).init(allocator);
     errdefer result.deinit();
 
-    // Add ".." for each directory we need to go up from 'from' path
+    // Add ".." for each directory up to common ancestor
     const dirs_up = from_parts.items.len - common_prefix_len;
     for (0..dirs_up) |_| {
         if (result.items.len > 0) {
@@ -157,7 +152,7 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
         try result.appendSlice(to_parts.items[i]);
     }
 
-    // If result is empty, paths are the same
+    // Empty result means same path
     if (result.items.len == 0) {
         try result.appendSlice(".");
     }
@@ -165,6 +160,7 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
     return result.toOwnedSlice();
 }
 
+/// Main entry point for ln command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -172,7 +168,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    // Parse arguments using new parser
+    // Parse arguments
     const args = common.argparse.ArgParser.parseProcess(LnArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -219,6 +215,7 @@ pub fn main() !void {
     try createLinks(allocator, files, options);
 }
 
+/// Print help information to stdout
 fn printHelp() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.writeAll(
@@ -259,11 +256,13 @@ fn printHelp() !void {
     );
 }
 
+/// Print version information to stdout
 fn printVersion() !void {
     const stdout = std.io.getStdOut().writer();
     try stdout.print("ln ({s}) {s}\n", .{ common.name, common.version });
 }
 
+/// Options for link creation
 const LinkOptions = struct {
     force: bool = false,
     interactive: bool = false,
@@ -277,9 +276,11 @@ const LinkOptions = struct {
     verbose: bool = false,
 };
 
+/// Create links based on command form and options
+/// Supports all four POSIX ln command forms
 fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions) !void {
     if (options.target_directory) |target_dir| {
-        // Form 4: ln [OPTION]... -t DIRECTORY TARGET...
+        // Form 4: ln -t DIRECTORY TARGET...
         // Validate the target directory path
         validatePath(target_dir) catch |err| {
             common.printError("invalid target directory '{s}': {}", .{ target_dir, err });
@@ -309,24 +310,23 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             try createSingleLink(target, full_link_path, options);
         }
     } else if (files.len == 1) {
-        // Form 2: ln [OPTION]... TARGET
+        // Form 2: ln TARGET
         const target = files[0];
         const link_name = std.fs.path.basename(target);
         try createSingleLink(target, link_name, options);
     } else if (files.len == 2 and options.no_target_directory) {
-        // Form 1: ln [OPTION]... [-T] TARGET LINK_NAME
+        // Form 1: ln [-T] TARGET LINK_NAME
         const target = files[0];
         const link_name = files[1];
         try createSingleLink(target, link_name, options);
     } else if (files.len >= 2) {
-        // Form 3: ln [OPTION]... TARGET... DIRECTORY
+        // Form 3: ln TARGET... DIRECTORY
         const directory = files[files.len - 1];
 
-        // Check if the last argument is a directory
         const stat = std.fs.cwd().statFile(directory) catch |err| switch (err) {
             error.FileNotFound => {
                 if (files.len == 2) {
-                    // If only 2 arguments and directory doesn't exist, treat as Form 1
+                    // Special case: 2 args, treat as Form 1
                     try createSingleLink(files[0], files[1], options);
                     return;
                 } else {
@@ -339,7 +339,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
 
         if (stat.kind != .directory) {
             if (files.len == 2) {
-                // If only 2 arguments and target is not directory, treat as Form 1
+                // Special case: 2 args, treat as Form 1
                 try createSingleLink(files[0], files[1], options);
                 return;
             } else {
@@ -361,6 +361,8 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
     }
 }
 
+/// Create a single link (hard or symbolic) from target to link_name
+/// Handles security validation, existing files, and relative paths
 fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOptions) !void {
     // Validate paths for security
     validatePath(target) catch |err| {
@@ -383,6 +385,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
 
     if (link_exists and !options.force) {
         if (options.interactive) {
+            // Interactive prompt
             const stdin = std.io.getStdIn().reader();
             const stdout = std.io.getStdOut().writer();
 
@@ -391,6 +394,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
             var buffer: [10]u8 = undefined;
             const input = (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) orelse return;
 
+            // Proceed only on 'y' or 'Y'
             if (input.len == 0 or (input[0] != 'y' and input[0] != 'Y')) {
                 return;
             }
@@ -422,8 +426,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
         defer if (allocated_path) |p| allocator.free(p);
 
         if (options.relative) {
-            // Compute relative path from link location to target
-            // First, get absolute paths
+            // Compute relative path from link to target
             var target_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
             var link_dir_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
 
@@ -438,7 +441,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
                 }
             };
 
-            // Get the directory where the link will be created
+            // Get link directory for relative path calculation
             const link_dir = std.fs.path.dirname(link_name) orelse ".";
             const link_dir_abs = blk: {
                 if (std.fs.path.isAbsolute(link_dir)) {
@@ -461,8 +464,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
             return err;
         };
     } else {
-        // Create hard link
-        // First check if target exists for hard links
+        // Create hard link - target must exist
         std.fs.cwd().access(target, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 common.printError("cannot link '{s}': No such file or directory", .{target});
@@ -483,14 +485,16 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
     if (options.verbose) {
         const stdout = std.io.getStdOut().writer();
         if (options.symbolic) {
+            // Use -> for symbolic links
             try stdout.print("'{s}' -> '{s}'\n", .{ link_name, target });
         } else {
+            // Use => for hard links
             try stdout.print("'{s}' => '{s}'\n", .{ link_name, target });
         }
     }
 }
 
-// Test-friendly version of createSingleLink that returns errors instead of calling exit
+/// Test-friendly version of createSingleLink that returns errors for unit testing
 fn createSingleLinkTest(target: []const u8, link_name: []const u8, options: LinkOptions) !void {
     // Validate paths for security
     try validatePath(target);
@@ -507,7 +511,7 @@ fn createSingleLinkTest(target: []const u8, link_name: []const u8, options: Link
 
     if (link_exists and !options.force) {
         if (options.interactive) {
-            // In test mode, assume user says no to interactive prompts
+            // Test mode: assume 'no' for interactive prompts
             return error.FileExists;
         } else {
             return error.FileExists;
@@ -571,7 +575,7 @@ fn createSingleLinkTest(target: []const u8, link_name: []const u8, options: Link
     }
 }
 
-// Test helper function for testing link creation
+/// Test helper for link creation in a specific directory
 fn testCreateLink(target: []const u8, link_name: []const u8, options: LinkOptions, test_dir: std.fs.Dir) !void {
     // Save current directory
     const original_cwd_fd = try std.posix.open(".", .{ .ACCMODE = .RDONLY }, 0);
@@ -581,7 +585,7 @@ fn testCreateLink(target: []const u8, link_name: []const u8, options: LinkOption
     try std.posix.fchdir(test_dir.fd);
     defer std.posix.fchdir(original_cwd_fd) catch {};
 
-    // Create the actual target file for hard link tests
+    // Create target file for hard link tests
     if (!options.symbolic) {
         const target_file = std.fs.cwd().createFile(target, .{}) catch |err| switch (err) {
             error.PathAlreadyExists => std.fs.cwd().openFile(target, .{}) catch return err,
@@ -606,7 +610,7 @@ test "ln creates hard link to existing file" {
     try std.posix.fchdir(tmp_dir.dir.fd);
     defer std.posix.fchdir(original_cwd_fd) catch {};
 
-    // Create hard link directly using test function
+    // Create hard link
     try createSingleLinkTest("target.txt", "link.txt", .{});
 
     // Verify link was created
@@ -647,7 +651,7 @@ test "ln fails on non-existent target for hard link" {
     try std.posix.fchdir(tmp_dir.dir.fd);
     defer std.posix.fchdir(original_cwd_fd) catch {};
 
-    // This should fail because hard links require existing targets
+    // Should fail - hard links require existing targets
     const result = createSingleLinkTest("nonexistent.txt", "link.txt", .{});
     try testing.expectError(error.FileNotFound, result);
 }
@@ -661,7 +665,7 @@ test "ln allows non-existent target for symbolic link" {
     try std.posix.fchdir(tmp_dir.dir.fd);
     defer std.posix.fchdir(original_cwd_fd) catch {};
 
-    // This should succeed because symbolic links can point to non-existent files
+    // Should succeed - symbolic links allow non-existent targets
     try createSingleLinkTest("nonexistent.txt", "symlink.txt", .{ .symbolic = true });
 
     // Verify the symlink exists (but points to non-existent file)
@@ -713,7 +717,7 @@ test "ln fails without force on existing file" {
     try std.posix.fchdir(tmp_dir.dir.fd);
     defer std.posix.fchdir(original_cwd_fd) catch {};
 
-    // This should fail without force
+    // Should fail without force
     const result = createSingleLinkTest("target.txt", "link.txt", .{});
     try testing.expectError(error.FileExists, result);
 }
@@ -734,7 +738,7 @@ test "ln creates relative symbolic link with -r" {
     // Create relative symbolic link from subdir to parent dir file
     try createSingleLinkTest("target.txt", "subdir/link.txt", .{ .symbolic = true, .relative = true });
 
-    // Verify the link was created with relative path
+    // Verify relative path link
     var buffer: [256]u8 = undefined;
     const link_target = try std.fs.cwd().readLink("subdir/link.txt", &buffer);
     try testing.expectEqualStrings("../target.txt", link_target);
@@ -746,7 +750,7 @@ test "ln creates relative symbolic link with -r" {
 }
 
 test "ln relative path calculation" {
-    // Test the makeRelativePath function directly
+    // Test makeRelativePath
     const test_cases = [_]struct {
         from: []const u8,
         to: []const u8,
@@ -767,7 +771,7 @@ test "ln relative path calculation" {
 }
 
 test "ln path security validation" {
-    // Test validatePath function
+    // Test validatePath
 
     // Valid paths should pass
     try validatePath("/home/user/file.txt");
@@ -780,10 +784,10 @@ test "ln path security validation" {
     try testing.expectError(error.SystemPathProtected, validatePath("/etc/passwd"));
     try testing.expectError(error.SystemPathProtected, validatePath("/bin/sh"));
 
-    // Path traversal attempts - caught before normalization
+    // Path traversal attempts
     try testing.expectError(error.PathTraversalAttempt, validatePath("/../etc/passwd"));
 
-    // Test a path traversal that doesn't end up in a system directory
+    // Path traversal outside system directories
     try testing.expectError(error.PathTraversalAttempt, validatePath("/../home/user"));
 }
 
@@ -802,7 +806,7 @@ test "ln prevents creation of links to system paths" {
 }
 
 test "ln prevents creation of links in system directories" {
-    // This test verifies we can't create links in protected directories
+    // Verify links can't be created in protected directories
     const result = createSingleLinkTest("somefile.txt", "/etc/mylink", .{ .symbolic = true });
     try testing.expectError(error.SystemPathProtected, result);
 }
