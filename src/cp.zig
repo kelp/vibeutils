@@ -562,6 +562,12 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
+    // Debug: Log test start
+    if (std.process.getEnvVarOwned(testing.allocator, "DEBUG_TESTS")) |debug| {
+        testing.allocator.free(debug);
+        std.debug.print("\n[DEBUG] Starting privileged cp test\n", .{});
+    } else |_| {}
+
     // Create files with special permissions
     try test_dir.createFileWithMode("setuid_file", "setuid content", 0o4755);
     try test_dir.createFileWithMode("setgid_file", "setgid content", 0o2755);
@@ -578,6 +584,11 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
 
         var operation = try context.planOperation(source_path, dest_path);
         defer operation.deinit(testing.allocator);
+
+        // Debug: This should be a fresh test directory, so dest should not exist
+        if (operation.dest_exists) {
+            std.debug.print("\n[WARNING] Destination already exists in test: {s}\n", .{dest_path});
+        }
 
         try engine.executeCopy(operation);
 

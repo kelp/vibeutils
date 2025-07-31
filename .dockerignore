@@ -1,0 +1,70 @@
+# Build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Coverage reports
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Test artifacts
+test-output.log
+test-workspace/
+benchmark-results.txt
+benchmark_results/
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Documentation build artifacts
+docs/_build/
+docs/generated/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker files (avoid recursive builds)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts logs
+scripts/*.log
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Archive files
+*.tar
+*.tar.gz
+*.zip
+*.7z
+
+# Large test files
+large_test_file
+test-perf/

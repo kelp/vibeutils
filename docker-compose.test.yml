@@ -1,0 +1,107 @@
+services:
+  # Ubuntu 24.04 LTS (Noble Numbat) - Primary development environment
+  ubuntu-24.04:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      target: test-ubuntu-24.04
+      args:
+        ZIG_VERSION: "0.14.1"
+    image: vibeutils-test:ubuntu-24.04
+    container_name: vibeutils-test-ubuntu-24.04
+    volumes:
+      - .:/workspace:cached
+      - zig-cache-ubuntu-24:/root/.cache/zig:delegated
+      - /workspace/zig-out
+      - /workspace/zig-cache
+    environment:
+      - FORCE_COLOR=1
+      - CI=true
+      - GITHUB_ACTIONS=true
+      - RUNNER_OS=Linux
+      - DISTRO=ubuntu-24.04
+    working_dir: /workspace
+    command: /bin/bash
+
+  # Ubuntu Latest - Bleeding edge testing
+  ubuntu-latest:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      target: test-ubuntu-latest
+      args:
+        ZIG_VERSION: "0.14.1"
+    image: vibeutils-test:ubuntu-latest
+    container_name: vibeutils-test-ubuntu-latest
+    volumes:
+      - .:/workspace:cached
+      - zig-cache-ubuntu-latest:/root/.cache/zig:delegated
+      - /workspace/zig-out
+      - /workspace/zig-cache
+    environment:
+      - FORCE_COLOR=1
+      - CI=true
+      - GITHUB_ACTIONS=true
+      - RUNNER_OS=Linux
+      - DISTRO=ubuntu-latest
+    working_dir: /workspace
+    command: /bin/bash
+
+  # Debian 12 (Bookworm) - Stability testing
+  debian-12:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      target: test-debian-12
+      args:
+        ZIG_VERSION: "0.14.1"
+    image: vibeutils-test:debian-12
+    container_name: vibeutils-test-debian-12
+    volumes:
+      - .:/workspace:cached
+      - zig-cache-debian-12:/root/.cache/zig:delegated
+      - /workspace/zig-out
+      - /workspace/zig-cache
+    environment:
+      - FORCE_COLOR=1
+      - CI=true
+      - GITHUB_ACTIONS=true
+      - RUNNER_OS=Linux
+      - DISTRO=debian-12
+    working_dir: /workspace
+    command: /bin/bash
+
+  # Alpine Latest - musl libc testing
+  alpine:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+      target: test-alpine
+      args:
+        ZIG_VERSION: "0.14.1"
+    image: vibeutils-test:alpine
+    container_name: vibeutils-test-alpine
+    volumes:
+      - .:/workspace:cached
+      - zig-cache-alpine:/root/.cache/zig:delegated
+      - /workspace/zig-out
+      - /workspace/zig-cache
+    environment:
+      - FORCE_COLOR=1
+      - CI=true
+      - GITHUB_ACTIONS=true
+      - RUNNER_OS=Linux
+      - DISTRO=alpine-latest
+    working_dir: /workspace
+    command: /bin/sh
+
+# Named volumes for caching Zig dependencies
+volumes:
+  zig-cache-ubuntu-24:
+    name: vibeutils-zig-cache-ubuntu-24
+  zig-cache-ubuntu-latest:
+    name: vibeutils-zig-cache-ubuntu-latest
+  zig-cache-debian-12:
+    name: vibeutils-zig-cache-debian-12
+  zig-cache-alpine:
+    name: vibeutils-zig-cache-alpine

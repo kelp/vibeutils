@@ -1,0 +1,182 @@
+# Multi-stage Dockerfile for testing vibeutils on different Linux distributions
+# This replicates the GitHub Actions CI environment for local testing on macOS
+
+ARG ZIG_VERSION=0.14.1
+
+# Base stage with common setup for all distributions
+FROM ubuntu:24.04 AS base-ubuntu-24.04
+FROM ubuntu:latest AS base-ubuntu-latest
+FROM debian:12 AS base-debian-12
+FROM alpine:latest AS base-alpine
+
+# Ubuntu 24.04 (Noble Numbat) - Primary development environment
+FROM base-ubuntu-24.04 AS test-ubuntu-24.04
+ARG ZIG_VERSION
+
+# Install dependencies matching GitHub Actions
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    xz-utils \
+    build-essential \
+    fakeroot \
+    git \
+    time \
+    valgrind \
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Zig (detect architecture)
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}/zig /usr/local/bin/zig
+
+# Install kcov for coverage (build from source for better compatibility)
+RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
+    cd /tmp/kcov && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/kcov
+
+# Set working directory
+WORKDIR /workspace
+
+# Environment variables matching GitHub Actions
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Ubuntu Latest - Bleeding edge testing
+FROM base-ubuntu-latest AS test-ubuntu-latest
+ARG ZIG_VERSION
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    xz-utils \
+    build-essential \
+    fakeroot \
+    git \
+    time \
+    valgrind \
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+
+RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
+    cd /tmp/kcov && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/kcov
+
+WORKDIR /workspace
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Debian 12 (Bookworm) - Stability testing
+FROM base-debian-12 AS test-debian-12
+ARG ZIG_VERSION
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    xz-utils \
+    build-essential \
+    fakeroot \
+    git \
+    time \
+    valgrind \
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+
+# Debian has kcov in repos
+RUN apt-get update && \
+    apt-get install -y kcov && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Alpine Latest - musl libc testing
+FROM base-alpine AS test-alpine
+ARG ZIG_VERSION
+
+# Install dependencies for Alpine
+RUN apk add --no-cache \
+    curl \
+    xz \
+    build-base \
+    git \
+    bash \
+    valgrind \
+    python3 \
+    py3-pip \
+    cmake \
+    pkgconf \
+    curl-dev \
+    elfutils-dev \
+    zlib-dev
+
+# Install Zig (Alpine uses musl, so we need the musl build)
+RUN curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+
+# Note: kcov might have issues on Alpine/musl, so we skip it here
+# fakeroot is also not available on Alpine by default
+
+WORKDIR /workspace
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Default to Ubuntu 24.04 if no target specified
+FROM test-ubuntu-24.04
