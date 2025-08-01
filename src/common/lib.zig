@@ -219,64 +219,7 @@ pub fn printWarningWithProgram(writer: anytype, prog_name: []const u8, comptime 
     writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
-/// Utility context for clean two-writer API patterns
-/// Contains both stdout and stderr writers for consistent utility interface
-pub fn UtilityContext(comptime StdoutWriter: type, comptime StderrWriter: type) type {
-    return struct {
-        stdout_writer: StdoutWriter,
-        stderr_writer: StderrWriter,
-        prog_name: []const u8,
-        allocator: std.mem.Allocator,
-
-        const Self = @This();
-
-        /// Initialize utility context with custom writers (useful for testing)
-        pub fn init(stdout_writer: StdoutWriter, stderr_writer: StderrWriter, prog_name: []const u8, allocator: std.mem.Allocator) Self {
-            return Self{
-                .stdout_writer = stdout_writer,
-                .stderr_writer = stderr_writer,
-                .prog_name = prog_name,
-                .allocator = allocator,
-            };
-        }
-
-        /// Print error message and exit with error code
-        pub fn fatal(self: Self, comptime fmt: []const u8, fmt_args: anytype) noreturn {
-            fatalWithWriter(self.stderr_writer, fmt, fmt_args);
-        }
-
-        /// Print error message without exiting
-        pub fn printError(self: Self, comptime fmt: []const u8, fmt_args: anytype) void {
-            printErrorWithProgram(self.stderr_writer, self.prog_name, fmt, fmt_args);
-        }
-
-        /// Print warning message without exiting
-        pub fn printWarning(self: Self, comptime fmt: []const u8, fmt_args: anytype) void {
-            printWarningWithProgram(self.stderr_writer, self.prog_name, fmt, fmt_args);
-        }
-
-        /// Print help message to stdout
-        pub fn printHelp(self: Self, comptime usage: []const u8, comptime description: []const u8) !void {
-            try self.stdout_writer.print("Usage: {s} {s}\n\n", .{ self.prog_name, usage });
-            try self.stdout_writer.print("{s}\n", .{description});
-        }
-
-        /// Print version information to stdout
-        pub fn printVersion(self: Self) !void {
-            try self.stdout_writer.print("{s} ({s}) {s}\n", .{ self.prog_name, name, version });
-        }
-    };
-}
-
-/// Standard utility context type for stdout/stderr writers
-pub const StandardUtilityContext = UtilityContext(@TypeOf(std.io.getStdOut().writer()), @TypeOf(std.io.getStdErr().writer()));
-
-/// Initialize standard utility context with stdout/stderr writers
-pub fn initStandardUtilityContext(allocator: std.mem.Allocator) StandardUtilityContext {
-    return StandardUtilityContext.init(std.io.getStdOut().writer(), std.io.getStdErr().writer(), std.fs.path.basename(std.mem.span(std.os.argv[0])), allocator);
-}
-
-/// Common command line options (DEPRECATED - use UtilityContext instead)
+/// Common command line options (DEPRECATED)
 pub const CommonOpts = struct {
     help: bool = false,
     version: bool = false,
@@ -307,5 +250,4 @@ test "common library basics" {
 // Import tests to ensure they are run as part of the test suite
 test {
     _ = @import("buffering_test.zig");
-    _ = @import("stderr_pollution_test.zig");
 }

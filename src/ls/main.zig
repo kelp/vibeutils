@@ -83,7 +83,8 @@ pub fn main() !void {
     const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                const stderr = std.io.getStdErr().writer();
+                common.fatalWithWriter(stderr, "invalid argument", .{});
             },
             else => return err,
         }
@@ -122,7 +123,8 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     var color_mode = ColorMode.auto;
     if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
-            common.fatal("invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
+            const stderr = std.io.getStdErr().writer();
+            common.fatalWithWriter(stderr, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
         };
     }
 
@@ -131,7 +133,8 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     var icon_mode = common.icons.getIconModeFromEnv(allocator);
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            common.fatal("invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
+            const stderr = std.io.getStdErr().writer();
+            common.fatalWithWriter(stderr, "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
         };
     }
 
@@ -140,7 +143,8 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     var time_style = TimeStyle.relative;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            common.fatal("invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
+            const stderr = std.io.getStdErr().writer();
+            common.fatalWithWriter(stderr, "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
         };
     }
 
@@ -271,7 +275,8 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
-        common.printError("{s}: {}", .{ path, err });
+        const stderr = std.io.getStdErr().writer();
+        common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ path, err });
         return;
     };
 
@@ -320,7 +325,8 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     }
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        common.printError("{s}: {}", .{ path, err });
+        const stderr = std.io.getStdErr().writer();
+        common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ path, err });
         return err;
     };
     defer dir.close();
@@ -392,7 +398,8 @@ pub fn recurseIntoSubdirectory(
     listDirectoryImplWithVisited(sub_dir, subdir_path, writer, options, allocator, style, visited_inodes) catch |err| switch (err) {
         error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
         else => {
-            common.printError("{s}: {}", .{ subdir_path, err });
+            const stderr = std.io.getStdErr().writer();
+            common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ subdir_path, err });
             // Continue with other directories even if one fails
         },
     };

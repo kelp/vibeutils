@@ -118,9 +118,10 @@ The project includes five main workflow files that provide comprehensive automat
   - Validates man page coverage
   - Identifies stale TODO items
 
-- **cleanup**: Maintenance tasks
-  - Removes old workflow runs
-  - Cleans up artifacts and caches
+- **security-summary**: Overall status reporting
+  - Checks all job results
+  - Generates comprehensive security status summary
+  - Fails workflow if critical security issues found
 
 ### 4. Compatibility Workflow (`compatibility.yml`)
 

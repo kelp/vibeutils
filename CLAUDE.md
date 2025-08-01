@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Pre-1.0 Development Philosophy
+
+**This is pre-1.0 software with zero external users. We prioritize getting the design right over backward compatibility.**
+
+### Migration Principles:
+- **Break things to fix them**: If the current API is wrong, change it completely
+- **No deprecated code**: Remove old patterns entirely rather than maintaining compatibility layers
+- **Full migrations only**: When changing a pattern, update ALL code to use the new pattern
+- **Zero external users assumption**: We can make breaking changes without concern for downstream impact
+- **Simplicity over compatibility**: Choose the simpler, cleaner design even if it requires rewriting existing code
+
+### When NOT to maintain compatibility:
+- Function signatures that take too many parameters
+- Inconsistent error handling patterns
+- Over-engineered abstractions that add complexity
+- Any API that makes the codebase harder to understand or maintain
+
+This philosophy allows us to iterate quickly and find the right abstractions before 1.0.
+
 ## Build and Test Commands
 
 ```bash
@@ -304,38 +323,191 @@ Example: "Use the optimizer agent to improve the performance of sorting large di
 
 ## Code Style and Conventions
 
-### Writer Pattern
-All utilities should accept `writer: anytype` for flexible output handling:
+### Simple Writer-Based Error Handling
+All utilities follow a simple pattern: accept `stdout_writer` and `stderr_writer` parameters. This removes direct stderr access from utility functions, preventing stderr pollution during tests.
+
+**Core principle: Pass writers explicitly, use them directly. No frameworks, no abstractions.**
+
+#### Complete Working Example
+Here's a complete, compilable example of the simple writer-based approach:
+
 ```zig
-// Good: Generic writer allows testing and different output targets
-pub fn main(allocator: Allocator, args: []const []const u8, writer: anytype) !u8 {
-    try writer.print("Hello, world!\n", .{});
-    return common.ExitCode.Success;
+const std = @import("std");
+const common = @import("common");
+
+// Simple, direct approach - pass the writers you need
+pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8,
+              stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    if (args.len == 0) {
+        common.printErrorWithProgram(stderr_writer, "cat", "missing file operand", .{});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    
+    for (args) |file_path| {
+        const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+            common.printErrorWithProgram(stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        defer file.close();
+        
+        // Copy file to stdout - direct, no abstraction
+        try file.reader().streamUntilDelimiter(stdout_writer, 0, null);
+    }
+    
+    return @intFromEnum(common.ExitCode.success);
 }
 
-// Testing with ArrayList writer
-test "output test" {
+// Main function - simple setup, no framework
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    
+    // Simple, direct approach - get the writers and pass them
+    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
+    
+    const exit_code = try runCat(allocator, args[1..], stdout, stderr);
+    std.process.exit(exit_code);
+}
+```
+
+#### DEPRECATED API (Do Not Use)
+These functions are deprecated and will cause compile errors:
+```zig
+// DEPRECATED: These will cause @compileError
+common.fatal("error message", .{});
+common.printError("error message", .{});
+common.printWarning("warning message", .{});
+```
+
+#### NEW API (Required)
+Use the simple writer-based API:
+
+```zig
+// REQUIRED: All utilities must accept both stdout_writer and stderr_writer
+pub fn myUtil(allocator: Allocator, args: []const []const u8, 
+              stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    // Normal output goes to stdout_writer
+    try stdout_writer.print("Processing file...\n", .{});
+    
+    // Error messages go to stderr_writer with program name
+    common.printErrorWithProgram(stderr_writer, "myutil", "cannot open file: {s}", .{filename});
+    
+    // Fatal errors that should exit
+    common.fatalWithWriter(stderr_writer, "cannot continue: {s}", .{@errorName(err)});
+}
+
+// In main() function:
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    
+    // Simple, direct approach - get the writers and pass them
+    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
+    const result = try myUtil(allocator, args[1..], stdout, stderr);
+    
+    std.process.exit(result);
+}
+
+// In tests - suppress error output with null writer:
+test "handles missing file gracefully" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
     
-    const result = try main(testing.allocator, &.{}, buffer.writer());
-    try testing.expectEqualStrings("Hello, world!\n", buffer.items);
+    // Use null_writer for stderr to suppress error messages in tests
+    const result = try myUtil(testing.allocator, &.{"missing.txt"}, 
+                              buffer.writer(), common.null_writer);
+    
+    try testing.expectEqual(@as(u8, 1), result);
+    // No "test: cannot open file" messages in test output!
+}
+
+// Complete test example:
+test "error message format" {
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+    
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    
+    // Call the utility function - it will write errors to stderr_buffer
+    const result = try myUtil(testing.allocator, &.{"nonexistent.txt"}, 
+                              stdout_buffer.writer(), stderr_buffer.writer());
+    
+    // Verify the function returned error code
+    try testing.expectEqual(@as(u8, 1), result);
+    
+    // Verify error messages went to stderr only
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "myutil: cannot open file: nonexistent.txt") != null);
+    try testing.expectEqualStrings("", stdout_buffer.items);
+    
+    // For utilities that write normal output, test that too
+    stderr_buffer.clearRetainingCapacity();
+    stdout_buffer.clearRetainingCapacity();
+    
+    const success_result = try myUtil(testing.allocator, &.{"--help"}, 
+                                      stdout_buffer.writer(), stderr_buffer.writer());
+    try testing.expectEqual(@as(u8, 0), success_result);
+    try testing.expect(stdout_buffer.items.len > 0); // Help text went to stdout
+    try testing.expectEqualStrings("", stderr_buffer.items); // No errors
 }
 ```
 
+#### Architecture Benefits
 This pattern enables:
-- Easy unit testing with buffer writers
-- Redirection to files or other outputs
-- Consistent interface across all utilities
+- **Clean test output**: No more "test: cannot remove '': No such file or directory" noise
+- **Proper separation**: stdout and stderr are completely isolated  
+- **Easy testing**: Error messages can be captured and verified
+- **Consistent formatting**: All utilities use the same error message format
+- **Compile-time safety**: Deprecated functions cause build failures, preventing accidental stderr pollution
+- **Simple and direct**: No abstractions, just pass the writers you need
 
-### Error Handling
+#### Migration Guide
+
+**Migration steps:**
+1. Replace `common.fatal()` with `common.fatalWithWriter(stderr_writer, ...)`
+2. Replace `common.printError()` with `common.printErrorWithProgram(stderr_writer, prog_name, ...)`  
+3. Replace `common.printWarning()` with `common.printWarningWithProgram(stderr_writer, prog_name, ...)`
+4. Update function signatures to accept `stdout_writer, stderr_writer` parameters
+5. In main(), get writers with `std.io.getStdOut().writer()` and `std.io.getStdErr().writer()`
+6. Run tests to ensure no stderr pollution occurs during normal operation
+
+### Error Handling (Updated)
 ```zig
-// Use common.printError for consistent error messages
-common.printError("cat", "file.txt: {s}", .{@errorName(err)});
+// DEPRECATED: These functions cause compile errors
+// common.printError("file.txt: {s}", .{@errorName(err)});
+// common.fatal("cannot continue", .{});
 
-// Exit codes from common.ExitCode enum
-return common.ExitCode.Failure;
+// Use writer-based API with explicit stderr_writer
+pub fn processFile(allocator: Allocator, file_path: []const u8, 
+                   stdout_writer: anytype, stderr_writer: anytype) !void {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        common.printErrorWithProgram(stderr_writer, "cat", "file.txt: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer file.close();
+    
+    // For warnings
+    common.printWarningWithProgram(stderr_writer, "cat", "file truncated", .{});
+    
+    // For fatal errors
+    common.fatalWithWriter(stderr_writer, "cannot continue: {s}", .{@errorName(err)});
+}
+
+// Exit codes from common.ExitCode enum  
+return @intFromEnum(common.ExitCode.general_error);
 ```
+
+**Critical**: The deprecated functions (`common.printError()`, `common.fatal()`, `common.printWarning()`) now cause compile-time errors. This prevents accidental stderr pollution during tests. All utility functions must use the two-writer pattern.
 
 ### Memory Management
 - **CLI Tools**: Use Arena allocator (preferred) - all memory freed at once

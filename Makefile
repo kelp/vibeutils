@@ -1,4 +1,4 @@
-.PHONY: all build test test-privileged test-privileged-local clean install coverage coverage-kcov fmt fmt-check ci-validate docs help \
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check ci-validate docs help \
         test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean
 
 # Default target
@@ -27,6 +27,48 @@ test-privileged:
 test-privileged-local:
 	@echo "Running privileged tests with best available method..."
 	@scripts/run-privileged-tests.sh
+
+# Run all tests across all available platforms
+test-all:
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo "Running all tests across all available platforms"
+	@echo "═══════════════════════════════════════════════════════════"
+	@echo ""
+	@OS=$$(uname -s); \
+	if [ "$$OS" = "Darwin" ]; then \
+		echo "🍎 Detected macOS - will run native + Linux Docker tests"; \
+		echo ""; \
+		echo "▶ Running native macOS tests..."; \
+		$(MAKE) test || exit 1; \
+		echo ""; \
+		echo "▶ Running privileged tests (with fallback)..."; \
+		$(MAKE) test-privileged-local || exit 1; \
+		echo ""; \
+		if command -v docker >/dev/null 2>&1; then \
+			echo "▶ Running Linux tests in Docker containers..."; \
+			$(MAKE) test-linux-all || exit 1; \
+			echo ""; \
+			echo "▶ Running Linux privileged tests..."; \
+			$(MAKE) test-linux-privileged || exit 1; \
+		else \
+			echo "⚠️  Docker not found - skipping Linux tests"; \
+		fi; \
+	elif [ "$$OS" = "Linux" ]; then \
+		echo "🐧 Detected Linux - will run native tests only"; \
+		echo ""; \
+		echo "▶ Running native Linux tests..."; \
+		$(MAKE) test || exit 1; \
+		echo ""; \
+		echo "▶ Running privileged tests..."; \
+		$(MAKE) test-privileged-local || exit 1; \
+	else \
+		echo "❓ Unknown OS: $$OS - running basic tests only"; \
+		$(MAKE) test || exit 1; \
+	fi; \
+	echo ""; \
+	echo "═══════════════════════════════════════════════════════════"; \
+	echo "✅ All tests completed successfully!"; \
+	echo "═══════════════════════════════════════════════════════════"
 
 # Run tests with native Zig coverage
 coverage:
@@ -126,6 +168,7 @@ help:
 	@echo ""
 	@echo "Test targets:"
 	@echo "  make test                - Run all tests"
+	@echo "  make test-all            - Run ALL tests (native + cross-platform)"
 	@echo "  make test-privileged     - Run privileged tests (requires fakeroot)"
 	@echo "  make test-privileged-local - Run privileged tests with fallback"
 	@echo "  make coverage            - Run tests with native coverage"

@@ -18,11 +18,17 @@ const lib = @import("lib.zig");
 /// - handle: Either a std.fs.File or std.fs.Dir
 /// - mode: The file mode (permissions) to set
 /// - context: Optional context for error reporting (e.g., file path)
+/// - stderr_writer: Writer for warning messages (optional, uses std.io.getStdErr().writer() if null)
 ///
 /// # Returns
 /// Returns an error if the operation fails on supported platforms, or warns and continues
 /// on platforms with known limitations (macOS CI, Linux fakeroot with special permissions).
 pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8) !void {
+    try setPermissionsWithWriter(handle, mode, context, null);
+}
+
+/// Set file permissions with explicit stderr writer for warnings
+pub fn setPermissionsWithWriter(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8, stderr_writer: anytype) !void {
     const handle_type = @TypeOf(handle);
 
     // Get the file descriptor based on handle type
@@ -39,10 +45,19 @@ pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const
     // On Linux under fakeroot, setting special permissions can cause hangs
     // Strip special bits and warn the user
     const effective_mode = if (isRunningUnderLinuxFakeroot() and has_special_bits) blk: {
-        if (context) |ctx| {
-            lib.printWarning("Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
+        if (@TypeOf(stderr_writer) == @TypeOf(null)) {
+            const writer = std.io.getStdErr().writer();
+            if (context) |ctx| {
+                lib.printWarningWithProgram(writer, "chmod", "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
+            } else {
+                lib.printWarningWithProgram(writer, "chmod", "Stripped special permissions (Linux fakeroot limitation)", .{});
+            }
         } else {
-            lib.printWarning("Stripped special permissions (Linux fakeroot limitation)", .{});
+            if (context) |ctx| {
+                lib.printWarningWithProgram(stderr_writer, "chmod", "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
+            } else {
+                lib.printWarningWithProgram(stderr_writer, "chmod", "Stripped special permissions (Linux fakeroot limitation)", .{});
+            }
         }
         break :blk mode & 0o0777; // Keep only regular permissions
     } else mode;
@@ -52,10 +67,19 @@ pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const
         // operations may fail. We report this as a warning but don't fail
         // the operation since the file operation itself succeeded.
         if (builtin.os.tag == .macos) {
-            if (context) |ctx| {
-                lib.printWarning("Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
+            if (@TypeOf(stderr_writer) == @TypeOf(null)) {
+                const writer = std.io.getStdErr().writer();
+                if (context) |ctx| {
+                    lib.printWarningWithProgram(writer, "chmod", "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
+                } else {
+                    lib.printWarningWithProgram(writer, "chmod", "Failed to set permissions on macOS: {s}", .{@errorName(err)});
+                }
             } else {
-                lib.printWarning("Failed to set permissions on macOS: {s}", .{@errorName(err)});
+                if (context) |ctx| {
+                    lib.printWarningWithProgram(stderr_writer, "chmod", "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
+                } else {
+                    lib.printWarningWithProgram(stderr_writer, "chmod", "Failed to set permissions on macOS: {s}", .{@errorName(err)});
+                }
             }
             return;
         }

@@ -47,7 +47,8 @@ pub fn main() !void {
     const args = common.argparse.ArgParser.parseProcess(RmArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                const stderr = std.io.getStdErr().writer();
+                common.fatalWithWriter(stderr, "invalid argument", .{});
             },
             else => return err,
         }
@@ -68,7 +69,8 @@ pub fn main() !void {
 
     const files = args.positionals;
     if (files.len == 0) {
-        common.fatal("missing operand", .{});
+        const stderr = std.io.getStdErr().writer();
+        common.fatalWithWriter(stderr, "missing operand", .{});
     }
 
     // Create options structure, merging -r and -R flags (both mean recursive)

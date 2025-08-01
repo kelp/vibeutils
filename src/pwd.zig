@@ -34,29 +34,29 @@ const PwdOptions = struct {
     physical: bool = true,
 };
 
-/// Main entry point for pwd utility with UtilityContext
-pub fn runPwdWithContext(ctx: anytype, args: []const []const u8) !u8 {
+/// Main entry point for pwd utility
+pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
-    const parsed_args = common.argparse.ArgParser.parseArgs(PwdArgs, args, ctx.allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(PwdArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(ctx.stderr_writer, "pwd", "invalid argument", .{});
+                common.printErrorWithProgram(stderr_writer, "pwd", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer ctx.allocator.free(parsed_args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help flag - display usage information and exit
     if (parsed_args.help) {
-        try printHelp(ctx.stdout_writer);
+        try printHelp(stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version flag - display version and exit
     if (parsed_args.version) {
-        try ctx.stdout_writer.print("pwd ({s}) {s}\n", .{ common.name, common.version });
+        try stdout_writer.print("pwd ({s}) {s}\n", .{ common.name, common.version });
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -75,22 +75,15 @@ pub fn runPwdWithContext(ctx: anytype, args: []const []const u8) !u8 {
     }
 
     // Retrieve the current working directory based on the selected mode
-    const cwd = getWorkingDirectory(ctx.allocator, options) catch |err| {
-        common.printErrorWithProgram(ctx.stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
+    const cwd = getWorkingDirectory(allocator, options) catch |err| {
+        common.printErrorWithProgram(stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
-    defer ctx.allocator.free(cwd);
+    defer allocator.free(cwd);
 
     // Print the directory path followed by a newline
-    try ctx.stdout_writer.print("{s}\n", .{cwd});
+    try stdout_writer.print("{s}\n", .{cwd});
     return @intFromEnum(common.ExitCode.success);
-}
-
-/// Main entry point for pwd utility with stdout and stderr writer parameters (backwards compatibility)
-pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const ContextType = common.UtilityContext(@TypeOf(stdout_writer), @TypeOf(stderr_writer));
-    const ctx = ContextType.init(stdout_writer, stderr_writer, "pwd", allocator);
-    return runPwdWithContext(ctx, args);
 }
 
 /// Main entry point for pwd utility
@@ -99,56 +92,15 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create utility context with standard writers
-    const ctx = common.initStandardUtilityContext(allocator);
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
-    // Parse command-line arguments using the common argument parser
-    const args = common.argparse.ArgParser.parseProcess(PwdArgs, allocator) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatalWithWriter(ctx.stderr_writer, "invalid argument", .{});
-            },
-            else => return err,
-        }
-    };
-    defer allocator.free(args.positionals);
+    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
 
-    // Handle help flag - display usage information and exit
-    if (args.help) {
-        try printHelp(ctx.stdout_writer);
-        return;
-    }
-
-    // Handle version flag - display version and exit
-    if (args.version) {
-        try ctx.printVersion();
-        return;
-    }
-
-    // Initialize options with defaults (physical mode)
-    var options = PwdOptions{};
-
-    // Process mode flags - when both -L and -P are given, the last one wins
-    // This behavior matches POSIX specifications
-    if (args.logical) {
-        options.logical = true;
-        options.physical = false;
-    }
-    if (args.physical) {
-        options.logical = false;
-        options.physical = true;
-    }
-
-    // Retrieve the current working directory based on the selected mode
-    const cwd = getWorkingDirectory(allocator, options) catch |err| {
-        common.fatalWithWriter(ctx.stderr_writer, "failed to get current directory: {s}", .{@errorName(err)});
-    };
-    defer allocator.free(cwd);
-
-    // Print the directory path followed by a newline
-    ctx.stdout_writer.print("{s}\n", .{cwd}) catch |err| {
-        common.fatalWithWriter(ctx.stderr_writer, "write failed: {s}", .{@errorName(err)});
-    };
+    const exit_code = try runPwd(allocator, args[1..], stdout, stderr);
+    std.process.exit(exit_code);
 }
 
 /// Print help message to the specified writer

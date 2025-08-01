@@ -134,14 +134,16 @@ pub fn processSubdirectoriesRecursively(
 
         // Open the subdirectory relative to the current directory
         var sub_dir = dir.openDir(subdir.name, .{ .iterate = true }) catch |err| {
-            common.printError("{s}: {}", .{ subdir.path, err });
+            const stderr = std.io.getStdErr().writer();
+            common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ subdir.path, err });
             continue;
         };
         defer sub_dir.close();
 
         // Check for cycles
         if (cycle_detector.hasVisited(sub_dir)) {
-            common.printError("{s}: not following symlink cycle", .{subdir.path});
+            const stderr = std.io.getStdErr().writer();
+            common.printErrorWithProgram(stderr, "ls", "{s}: not following symlink cycle", .{subdir.path});
             continue;
         }
         try cycle_detector.markVisited(sub_dir);

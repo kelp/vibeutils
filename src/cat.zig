@@ -128,7 +128,8 @@ pub fn main() !void {
     const args = common.argparse.ArgParser.parseProcess(CatArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                const stderr = std.io.getStdErr().writer();
+                common.fatalWithWriter(stderr, "invalid argument", .{});
             },
             else => return err,
         }
@@ -174,7 +175,8 @@ pub fn main() !void {
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.fatal("{s}: {}", .{ file_path, err });
+                    const stderr = std.io.getStdErr().writer();
+                    common.fatalWithWriter(stderr, "{s}: {}", .{ file_path, err });
                 };
                 defer file.close();
                 try processInput(file.reader(), stdout, options, &line_state);

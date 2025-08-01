@@ -72,7 +72,8 @@ pub fn main() !void {
     const args = common.argparse.ArgParser.parseProcess(ChownArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                const stderr = std.io.getStdErr().writer();
+                common.fatalWithWriter(stderr, "invalid argument", .{});
             },
             else => return err,
         }
@@ -112,13 +113,15 @@ pub fn main() !void {
     const owner_spec: []const u8 = if (args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
-            common.fatal("missing file operand", .{});
+            const stderr = std.io.getStdErr().writer();
+            common.fatalWithWriter(stderr, "missing file operand", .{});
         }
         break :blk "";
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
-            common.fatal("missing operand", .{});
+            const stderr = std.io.getStdErr().writer();
+            common.fatalWithWriter(stderr, "missing operand", .{});
         }
         break :blk positionals[0];
     };
@@ -353,22 +356,23 @@ fn reportNoChange(writer: anytype, path: []const u8) !void {
 /// Handle and report errors
 fn handleError(path: []const u8, err: anyerror, options: ChownOptions) void {
     if (options.silent) return; // Suppress errors in silent mode
+    const stderr = std.io.getStdErr().writer();
 
     switch (err) {
-        error.FileNotFound => common.printError("cannot access '{s}': No such file or directory", .{path}),
-        error.PermissionDenied => common.printError("changing ownership of '{s}': Operation not permitted", .{path}),
-        error.NotDir => common.printError("cannot access '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printError("cannot access '{s}': Too many levels of symbolic links", .{path}),
-        error.NameTooLong => common.printError("cannot access '{s}': File name too long", .{path}),
-        error.ReadOnlyFileSystem => common.printError("changing ownership of '{s}': Read-only file system", .{path}),
-        error.InvalidValue => common.printError("cannot access '{s}': Invalid argument", .{path}),
-        error.InputOutputError => common.printError("cannot access '{s}': Input/output error", .{path}),
-        error.UserNotFound => common.printError("invalid user: '{s}'", .{path}),
-        error.GroupNotFound => common.printError("invalid group: '{s}'", .{path}),
-        error.InvalidFormat => common.printError("invalid owner specification: '{s}'", .{path}),
-        error.SystemResources => common.printError("cannot access '{s}': Cannot allocate memory", .{path}),
-        error.Unexpected => common.printError("cannot access '{s}': Unexpected error", .{path}),
-        else => common.printError("cannot access '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': No such file or directory", .{path}),
+        error.PermissionDenied => common.printErrorWithProgram(stderr, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
+        error.NotDir => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
+        error.NameTooLong => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': File name too long", .{path}),
+        error.ReadOnlyFileSystem => common.printErrorWithProgram(stderr, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
+        error.InvalidValue => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Invalid argument", .{path}),
+        error.InputOutputError => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Input/output error", .{path}),
+        error.UserNotFound => common.printErrorWithProgram(stderr, "chown", "invalid user: '{s}'", .{path}),
+        error.GroupNotFound => common.printErrorWithProgram(stderr, "chown", "invalid group: '{s}'", .{path}),
+        error.InvalidFormat => common.printErrorWithProgram(stderr, "chown", "invalid owner specification: '{s}'", .{path}),
+        error.SystemResources => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
+        error.Unexpected => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Unexpected error", .{path}),
+        else => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
     }
 }
 
