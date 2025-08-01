@@ -166,65 +166,68 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
     const stdout_writer = std.io.getStdOut().writer();
     const stderr_writer = std.io.getStdErr().writer();
 
-    const exit_code = try runLn(stdout_writer, stderr_writer, allocator);
-    if (exit_code != common.ExitCode.success) {
-        std.process.exit(@intFromEnum(exit_code));
-    }
+    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
 }
 
 /// Run ln with provided writers for output
-pub fn runLn(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const prog_name = "ln";
 
     // Parse arguments
-    const args = common.argparse.ArgParser.parseProcess(LnArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(LnArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 try stderr_writer.print("{s}: invalid argument\n", .{prog_name});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help
-    if (args.help) {
+    if (parsed_args.help) {
         try printHelp(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
-    if (args.version) {
+    if (parsed_args.version) {
         try printVersion(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Create options
     const options = LinkOptions{
-        .force = args.force,
-        .interactive = args.interactive,
-        .logical = args.logical,
-        .no_dereference = args.no_dereference,
-        .physical = args.physical,
-        .relative = args.relative,
-        .symbolic = args.symbolic,
-        .target_directory = args.target_directory,
-        .no_target_directory = args.no_target_directory,
-        .verbose = args.verbose,
+        .force = parsed_args.force,
+        .interactive = parsed_args.interactive,
+        .logical = parsed_args.logical,
+        .no_dereference = parsed_args.no_dereference,
+        .physical = parsed_args.physical,
+        .relative = parsed_args.relative,
+        .symbolic = parsed_args.symbolic,
+        .target_directory = parsed_args.target_directory,
+        .no_target_directory = parsed_args.no_target_directory,
+        .verbose = parsed_args.verbose,
     };
 
-    const files = args.positionals;
+    const files = parsed_args.positionals;
 
     if (files.len == 0) {
         try stderr_writer.print("{s}: missing file operand\n", .{prog_name});
-        return common.ExitCode.general_error;
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
-    return try createLinks(allocator, files, options, stdout_writer, stderr_writer);
+    const exit_code = try createLinks(allocator, files, options, stdout_writer, stderr_writer);
+    return @intFromEnum(exit_code);
 }
 
 /// Print help information to provided writer

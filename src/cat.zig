@@ -54,7 +54,7 @@ fn printVersion(writer: anytype) !void {
 /// Main entry point for cat utility with stdout and stderr writer parameters
 pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser
-    const parsed_args = common.argparse.ArgParser.parseArgs(CatArgs, args, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(stderr_writer, "cat", "invalid argument", .{});
@@ -112,7 +112,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
             }
         }
     }
-    return common.ExitCode.Success;
+    return @intFromEnum(common.ExitCode.success);
 }
 
 /// Process files or stdin with the specified formatting options
@@ -121,68 +121,15 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Create stdout writer once at the top to pass to all functions
-    const stdout = std.io.getStdOut().writer();
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
-    // Parse arguments using new parser
-    const args = common.argparse.ArgParser.parseProcess(CatArgs, allocator) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                const stderr = std.io.getStdErr().writer();
-                common.fatalWithWriter(stderr, "invalid argument", .{});
-            },
-            else => return err,
-        }
-    };
-    defer allocator.free(args.positionals);
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
 
-    // Handle help
-    if (args.help) {
-        try printHelp(stdout);
-        return;
-    }
-
-    // Handle version
-    if (args.version) {
-        try printVersion(stdout);
-        return;
-    }
-
-    // Create options struct with proper flag combinations
-    // -A is equivalent to -vET, -e is equivalent to -vE, -t is equivalent to -vT
-    const options = CatOptions{
-        .number_lines = args.number,
-        .number_nonblank = args.number_nonblank,
-        .squeeze_blank = args.squeeze_blank,
-        .show_ends = args.show_ends or args.show_all or args.e,
-        .show_tabs = args.show_tabs or args.show_all or args.t,
-        .show_nonprinting = args.show_nonprinting or args.show_all or args.e or args.t,
-    };
-
-    const stdin = std.io.getStdIn().reader();
-
-    var line_state = LineNumberState{};
-
-    if (args.positionals.len == 0) {
-        // No files specified, read from stdin
-        try processInput(stdin, stdout, options, &line_state);
-    } else {
-        // Process each file in order
-        for (args.positionals) |file_path| {
-            if (std.mem.eql(u8, file_path, "-")) {
-                // "-" means read from stdin
-                try processInput(stdin, stdout, options, &line_state);
-            } else {
-                // Open and process regular file
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    const stderr = std.io.getStdErr().writer();
-                    common.fatalWithWriter(stderr, "{s}: {}", .{ file_path, err });
-                };
-                defer file.close();
-                try processInput(file.reader(), stdout, options, &line_state);
-            }
-        }
-    }
+    const exit_code = try runCat(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
 }
 
 /// Print usage information to the specified writer

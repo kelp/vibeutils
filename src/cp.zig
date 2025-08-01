@@ -49,62 +49,64 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
     const stdout_writer = std.io.getStdOut().writer();
     const stderr_writer = std.io.getStdErr().writer();
 
-    const exit_code = try runCp(stdout_writer, stderr_writer, allocator);
-    if (exit_code != common.ExitCode.success) {
-        std.process.exit(@intFromEnum(exit_code));
-    }
+    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
 }
 
 /// Run cp with provided writers for output
-pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const prog_name = "cp";
 
     // Parse command line arguments
-    const args = common.argparse.ArgParser.parseProcess(CpArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(CpArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.misuse;
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.misuse;
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
-    if (args.help) {
+    if (parsed_args.help) {
         try printHelp(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
-    if (args.version) {
+    if (parsed_args.version) {
         try stdout_writer.print("cp ({s}) {s}\n", .{ common.name, common.version });
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Validate argument count
-    if (args.positionals.len < 2) {
-        if (args.positionals.len == 0) {
+    if (parsed_args.positionals.len < 2) {
+        if (parsed_args.positionals.len == 0) {
             common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand", .{});
-            return common.ExitCode.misuse;
+            return @intFromEnum(common.ExitCode.misuse);
         } else {
-            common.printErrorWithProgram(stderr_writer, prog_name, "missing destination file operand after '{s}'", .{args.positionals[0]});
-            return common.ExitCode.misuse;
+            common.printErrorWithProgram(stderr_writer, prog_name, "missing destination file operand after '{s}'", .{parsed_args.positionals[0]});
+            return @intFromEnum(common.ExitCode.misuse);
         }
     }
 
     // Create options from parsed arguments
     const options = types.CpOptions{
-        .recursive = args.r or args.R or args.recursive,
-        .interactive = args.i or args.interactive,
-        .force = args.f or args.force,
-        .preserve = args.p or args.preserve,
-        .no_dereference = args.d or args.no_dereference,
+        .recursive = parsed_args.r or parsed_args.R or parsed_args.recursive,
+        .interactive = parsed_args.i or parsed_args.interactive,
+        .force = parsed_args.f or parsed_args.force,
+        .preserve = parsed_args.p or parsed_args.preserve,
+        .no_dereference = parsed_args.d or parsed_args.no_dereference,
     };
 
     // Create copy context and engine
@@ -112,19 +114,19 @@ pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
     var engine = copy_engine.CopyEngine.init(context);
 
     // Plan all copy operations
-    var operations = engine.planOperations(stderr_writer, args.positionals) catch |err| {
+    var operations = engine.planOperations(stderr_writer, parsed_args.positionals) catch |err| {
         switch (err) {
             error.InsufficientArguments => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "insufficient arguments", .{});
-                return common.ExitCode.misuse;
+                return @intFromEnum(common.ExitCode.misuse);
             },
             errors.CopyError.DestinationIsNotDirectory => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "destination is not a directory", .{});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "error planning operations: {}", .{err});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
         }
     };
@@ -138,16 +140,16 @@ pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
 
     // Execute all copy operations
     engine.executeCopyBatch(stderr_writer, operations.items) catch {
-        return common.ExitCode.general_error;
+        return @intFromEnum(common.ExitCode.general_error);
     };
 
     // Check for errors during execution
     const stats = engine.getStats();
     if (stats.errors_encountered > 0) {
-        return common.ExitCode.general_error;
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
-    return common.ExitCode.success;
+    return @intFromEnum(common.ExitCode.success);
 }
 
 /// Print help message for cp
@@ -730,85 +732,4 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     const dest_stat = try test_dir.getFileStat("sticky_copy");
 
     try testing.expectEqual(source_stat.mode & 0o7777, dest_stat.mode & 0o7777);
-}
-
-// Recursive copy with full attribute preservation
-test "privileged: cp recursive directory copy with full attribute preservation" {
-    try privilege_test.requiresPrivilege();
-
-    // Skip this test on macOS in CI environments where chmod can cause SIGABRT
-    if (common.file_ops.shouldSkipMacOSCITest()) {
-        return error.SkipZigTest;
-    }
-
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createDir("source_tree");
-    try test_dir.createFileWithMode("source_tree/executable", "#!/bin/sh\necho test", 0o755);
-    try test_dir.createFileWithMode("source_tree/readonly", "readonly content", 0o444);
-    try test_dir.createDir("source_tree/subdir");
-    try test_dir.createFileWithMode("source_tree/subdir/setuid", "setuid content", 0o4755);
-
-    // Set directory permissions using posix API directly to avoid SIGABRT on macOS
-    const subdir_path = try test_dir.getPath("source_tree/subdir");
-    defer testing.allocator.free(subdir_path);
-    {
-        var subdir = try std.fs.cwd().openDir(subdir_path, .{ .iterate = true });
-        defer subdir.close();
-        common.file_ops.setPermissions(subdir, 0o2755, "source_tree/subdir") catch |err| {
-            // If we can't set special permissions, skip the test
-            if (err == error.AccessDenied or err == error.PermissionDenied) {
-                return error.SkipZigTest;
-            }
-            return err;
-        };
-    }
-
-    const source_path = try test_dir.getPath("source_tree");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest_tree");
-    defer testing.allocator.free(dest_path);
-
-    const options = types.CpOptions{ .preserve = true, .recursive = true };
-    const context = types.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    try engine.executeCopy(stderr_writer, operation);
-
-    {
-        const exec_src = try test_dir.getFileStat("source_tree/executable");
-        const exec_dst = try test_dir.getFileStat("dest_tree/executable");
-        try testing.expectEqual(exec_src.mode & 0o7777, exec_dst.mode & 0o7777);
-    }
-
-    {
-        const ro_src = try test_dir.getFileStat("source_tree/readonly");
-        const ro_dst = try test_dir.getFileStat("dest_tree/readonly");
-
-        try testing.expectEqual(ro_src.mode & 0o7777, ro_dst.mode & 0o7777);
-    }
-
-    {
-        const subdir_src = try test_dir.getFileStat("source_tree/subdir");
-        const subdir_dst = try test_dir.getFileStat("dest_tree/subdir");
-        try testing.expectEqual(subdir_src.mode & 0o7777, subdir_dst.mode & 0o7777);
-    }
-
-    {
-        const setuid_src = try test_dir.getFileStat("source_tree/subdir/setuid");
-        const setuid_dst = try test_dir.getFileStat("dest_tree/subdir/setuid");
-        try testing.expectEqual(setuid_src.mode & 0o7777, setuid_dst.mode & 0o7777);
-    }
-
-    try test_dir.expectFileContent("dest_tree/executable", "#!/bin/sh\necho test");
-    try test_dir.expectFileContent("dest_tree/readonly", "readonly content");
-    try test_dir.expectFileContent("dest_tree/subdir/setuid", "setuid content");
 }

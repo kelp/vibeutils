@@ -31,50 +31,42 @@ const ChmodArgs = struct {
     };
 };
 
-/// Main entry point for chmod
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-    defer _ = gpa.deinit();
-
-    const allocator = gpa.allocator();
-
-    const args = common.argparse.ArgParser.parseProcess(ChmodArgs, allocator) catch |err| {
+/// Main entry point for chmod utility
+pub fn runChmod(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const parsed_args = common.argparse.ArgParser.parse(ChmodArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                const stderr = std.io.getStdErr().writer();
-                common.fatalWithWriter(stderr, "invalid argument\nTry 'chmod --help' for more information.", .{});
+                common.printErrorWithProgram(stderr_writer, "chmod", "invalid argument\nTry 'chmod --help' for more information.", .{});
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
-    const stdout = std.io.getStdOut().writer();
-
-    if (args.help) {
-        try printHelp(stdout);
-        return;
+    if (parsed_args.help) {
+        try printHelp(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
-    if (args.version) {
-        try printVersion(stdout);
-        return;
+    if (parsed_args.version) {
+        try printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
-    const positionals = args.positionals;
+    const positionals = parsed_args.positionals;
 
     // --reference requires only file arguments
-    const using_reference = args.reference != null;
+    const using_reference = parsed_args.reference != null;
     if (using_reference) {
         if (positionals.len < 1) {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "missing file operand\nTry 'chmod --help' for more information.", .{});
+            common.printErrorWithProgram(stderr_writer, "chmod", "missing file operand\nTry 'chmod --help' for more information.", .{});
+            return @intFromEnum(common.ExitCode.general_error);
         }
     } else {
         if (positionals.len < 2) {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "missing operand\nTry 'chmod --help' for more information.", .{});
+            common.printErrorWithProgram(stderr_writer, "chmod", "missing operand\nTry 'chmod --help' for more information.", .{});
+            return @intFromEnum(common.ExitCode.general_error);
         }
     }
 
@@ -83,14 +75,38 @@ pub fn main() !void {
     const files = if (using_reference) positionals else positionals[1..];
 
     const options = ChmodOptions{
-        .changes_only = args.changes,
-        .quiet = args.silent,
-        .verbose = args.verbose,
-        .recursive = args.recursive,
-        .reference_file = args.reference,
+        .changes_only = parsed_args.changes,
+        .quiet = parsed_args.silent,
+        .verbose = parsed_args.verbose,
+        .recursive = parsed_args.recursive,
+        .reference_file = parsed_args.reference,
     };
 
-    try chmodFiles(allocator, mode_str, files, stdout, options);
+    chmodFiles(allocator, mode_str, files, stdout_writer, stderr_writer, options) catch |err| {
+        if (!options.quiet) {
+            common.printErrorWithProgram(stderr_writer, "chmod", "operation failed: {s}", .{@errorName(err)});
+        }
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Main entry point for chmod
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
+
+    const exit_code = try runChmod(allocator, args[1..], stdout, stderr);
+    std.process.exit(exit_code);
 }
 
 /// Print usage information and examples
@@ -182,16 +198,15 @@ const ChmodError = error{
 
 /// Apply chmod operations to files
 /// Handles both single files and recursive directory operations
-fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const []const u8, writer: anytype, options: ChmodOptions) !void {
+fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const []const u8, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     // Handle reference file mode if specified
     var reference_mode: ?Mode = null;
     if (options.reference_file) |ref_file| {
         const ref_stat = std.fs.cwd().statFile(ref_file) catch |err| {
             if (!options.quiet) {
-                const stderr = std.io.getStdErr().writer();
-                common.printErrorWithProgram(stderr, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, @errorName(err) });
+                common.printErrorWithProgram(stderr_writer, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, @errorName(err) });
             }
-            std.process.exit(@intFromEnum(common.ExitCode.general_error));
+            return err;
         };
         reference_mode = Mode.fromOctal(@as(u32, @intCast(ref_stat.mode & 0o7777)));
     }
@@ -222,8 +237,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
         // Safety check for critical system paths
         if (isCriticalSystemPath(normalized)) {
             if (!options.quiet) {
-                const stderr = std.io.getStdErr().writer();
-                common.printErrorWithProgram(stderr, "chmod", "cannot modify '{s}': Operation not permitted", .{file_path});
+                common.printErrorWithProgram(stderr_writer, "chmod", "cannot modify '{s}': Operation not permitted", .{file_path});
             }
             continue;
         }
@@ -232,56 +246,51 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             // Check if path is a directory
             const stat_result = std.fs.cwd().statFile(file_path) catch |err| {
                 if (!options.quiet) {
-                    const stderr = std.io.getStdErr().writer();
-                    common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
                 }
                 continue;
             };
 
             if (stat_result.kind == .directory) {
-                try chmodRecursive(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, writer, options);
+                try chmodRecursive(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, writer, stderr_writer, options);
             } else {
                 if (use_reference) {
-                    try applyModeToFile(file_path, reference_mode.?, writer, options);
+                    try applyModeToFile(file_path, reference_mode.?, writer, stderr_writer, options);
                 } else if (is_symbolic) {
-                    try applySymbolicModeToFile(file_path, mode_str, writer, options);
+                    try applySymbolicModeToFile(file_path, mode_str, writer, stderr_writer, options);
                 } else {
                     const mode = try parseMode(mode_str);
-                    try applyModeToFile(file_path, mode, writer, options);
+                    try applyModeToFile(file_path, mode, writer, stderr_writer, options);
                 }
             }
         } else {
             // Non-recursive processing
             if (use_reference) {
-                applyModeToFile(file_path, reference_mode.?, writer, options) catch |err| {
+                applyModeToFile(file_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
                     if (!options.quiet) {
-                        const stderr = std.io.getStdErr().writer();
-                        common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+                        common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
                     }
                 };
             } else if (is_symbolic) {
-                applySymbolicModeToFile(file_path, mode_str, writer, options) catch |err| {
+                applySymbolicModeToFile(file_path, mode_str, writer, stderr_writer, options) catch |err| {
                     if (!options.quiet) {
-                        const stderr = std.io.getStdErr().writer();
-                        common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+                        common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
                     }
                 };
             } else {
                 const mode = parseMode(mode_str) catch |err| switch (err) {
                     ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "invalid mode: '{s}'", .{mode_str});
+                            common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
                         }
-                        std.process.exit(@intFromEnum(common.ExitCode.general_error));
+                        return err;
                     },
                     else => return err,
                 };
 
-                applyModeToFile(file_path, mode, writer, options) catch |err| {
+                applyModeToFile(file_path, mode, writer, stderr_writer, options) catch |err| {
                     if (!options.quiet) {
-                        const stderr = std.io.getStdErr().writer();
-                        common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+                        common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
                     }
                 };
             }
@@ -291,15 +300,15 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
 
 /// Recursively apply chmod to a directory and all its contents
 /// Processes directories depth-first
-fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, writer: anytype, options: ChmodOptions) !void {
+fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     // Apply mode to the directory itself first
     if (use_reference) {
-        try applyModeToFile(dir_path, reference_mode.?, writer, options);
+        try applyModeToFile(dir_path, reference_mode.?, writer, stderr_writer, options);
     } else if (is_symbolic) {
-        try applySymbolicModeToFile(dir_path, mode_str, writer, options);
+        try applySymbolicModeToFile(dir_path, mode_str, writer, stderr_writer, options);
     } else {
         const mode = try parseMode(mode_str);
-        try applyModeToFile(dir_path, mode, writer, options);
+        try applyModeToFile(dir_path, mode, writer, stderr_writer, options);
     }
 
     // Path traversal protection for directory
@@ -308,8 +317,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
 
     if (isCriticalSystemPath(normalized)) {
         if (!options.quiet) {
-            const stderr = std.io.getStdErr().writer();
-            common.printErrorWithProgram(stderr, "chmod", "cannot modify '{s}': Operation not permitted", .{dir_path});
+            common.printErrorWithProgram(stderr_writer, "chmod", "cannot modify '{s}': Operation not permitted", .{dir_path});
         }
         return;
     }
@@ -317,8 +325,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
     // Open directory for iteration
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         if (!options.quiet) {
-            const stderr = std.io.getStdErr().writer();
-            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, @errorName(err) });
         }
         return;
     };
@@ -337,35 +344,31 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
         switch (entry.kind) {
             .directory => {
                 // Recursively process subdirectory
-                try chmodRecursive(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, writer, options);
+                try chmodRecursive(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, writer, stderr_writer, options);
             },
             .file, .sym_link => {
                 if (use_reference) {
-                    applyModeToFile(full_path, reference_mode.?, writer, options) catch |err| {
+                    applyModeToFile(full_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
                         }
                     };
                 } else if (is_symbolic) {
-                    applySymbolicModeToFile(full_path, mode_str, writer, options) catch |err| {
+                    applySymbolicModeToFile(full_path, mode_str, writer, stderr_writer, options) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
                         }
                     };
                 } else {
                     const mode = parseMode(mode_str) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "invalid mode: '{s}'", .{mode_str});
+                            common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
                         }
                         return err;
                     };
-                    applyModeToFile(full_path, mode, writer, options) catch |err| {
+                    applyModeToFile(full_path, mode, writer, stderr_writer, options) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
                         }
                     };
                 }
@@ -373,31 +376,27 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
             else => {
                 // Handle other file types (block device, character device, etc.)
                 if (use_reference) {
-                    applyModeToFile(full_path, reference_mode.?, writer, options) catch |err| {
+                    applyModeToFile(full_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
                         }
                     };
                 } else if (is_symbolic) {
-                    applySymbolicModeToFile(full_path, mode_str, writer, options) catch |err| {
+                    applySymbolicModeToFile(full_path, mode_str, writer, stderr_writer, options) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
                         }
                     };
                 } else {
                     const mode = parseMode(mode_str) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "invalid mode: '{s}'", .{mode_str});
+                            common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
                         }
                         return err;
                     };
-                    applyModeToFile(full_path, mode, writer, options) catch |err| {
+                    applyModeToFile(full_path, mode, writer, stderr_writer, options) catch |err| {
                         if (!options.quiet) {
-                            const stderr = std.io.getStdErr().writer();
-                            common.printErrorWithProgram(stderr, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
                         }
                     };
                 }
@@ -557,7 +556,7 @@ fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
 
 /// Apply a specific mode to a single file
 /// Reports changes if verbose or changes_only flags are set
-fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, options: ChmodOptions) !void {
+fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.PermissionDenied,
@@ -570,8 +569,7 @@ fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, options: 
     const new_mode = mode.toOctal();
 
     // Apply the new mode using the file's chmod method
-    const stderr = std.io.getStdErr().writer();
-    try common.file_ops.setPermissionsWithWriter(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, stderr);
+    try common.file_ops.setPermissionsWithWriter(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, stderr_writer);
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {
@@ -587,7 +585,7 @@ fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, options: 
 
 /// Apply a symbolic mode string to a file
 /// Preserves existing permissions and applies changes relative to them
-fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: anytype, options: ChmodOptions) !void {
+fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.PermissionDenied,
@@ -609,8 +607,7 @@ fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: 
     const new_mode = new_mode_struct.toOctal();
 
     // Apply the new mode using the file's chmod method
-    const stderr = std.io.getStdErr().writer();
-    try common.file_ops.setPermissionsWithWriter(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, stderr);
+    try common.file_ops.setPermissionsWithWriter(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, stderr_writer);
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {
@@ -691,7 +688,7 @@ fn isCriticalSystemPath(path: []const u8) bool {
 
 /// Helper function for testing chmod functionality
 /// Used in integration tests to simulate command-line usage
-fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !void {
+fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype, stderr_writer: anytype) !void {
     if (args.len < 2) {
         return error.InvalidArguments;
     }
@@ -700,7 +697,7 @@ fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype
     const files = args[1..];
     const options = ChmodOptions{};
 
-    try chmodFiles(allocator, mode_str, files, writer, options);
+    try chmodFiles(allocator, mode_str, files, writer, stderr_writer, options);
 }
 
 // Tests: Basic numeric mode parsing and application
@@ -779,8 +776,10 @@ test "privileged: applyModeToFile basic functionality" {
             defer test_file.close();
 
             // Test applying mode 644
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const mode = Mode.fromOctal(0o644);
             const options = ChmodOptions{ .verbose = true };
@@ -788,15 +787,15 @@ test "privileged: applyModeToFile basic functionality" {
             const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
             defer testing.allocator.free(abs_path);
 
-            try applyModeToFile(abs_path, mode, buffer.writer(), options);
+            try applyModeToFile(abs_path, mode, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
             // Verify the file mode changed
             const stat = try std.fs.cwd().statFile(abs_path);
             try testing.expectEqual(@as(u32, 0o644), @as(u32, @intCast(stat.mode & 0o777)));
 
             // Verify verbose output
-            try testing.expect(std.mem.indexOf(u8, buffer.items, "mode of") != null);
-            try testing.expect(std.mem.indexOf(u8, buffer.items, "test_file.txt") != null);
+            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mode of") != null);
+            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "test_file.txt") != null);
         }
     }.testFn);
 }
@@ -827,12 +826,14 @@ test "privileged: chmodFiles handles multiple files" {
                 try test_files_abs.append(abs_path);
             }
 
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const options = ChmodOptions{ .changes_only = true };
 
-            try chmodFiles(testing.allocator, "755", test_files_abs.items, buffer.writer(), options);
+            try chmodFiles(testing.allocator, "755", test_files_abs.items, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
             // Verify both files were processed
             for (test_files_abs.items) |abs_path| {
@@ -844,17 +845,19 @@ test "privileged: chmodFiles handles multiple files" {
 }
 
 test "chmodFiles handles nonexistent files gracefully" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
     const options = ChmodOptions{ .quiet = true };
 
     // Should not crash on nonexistent files
-    try chmodFiles(testing.allocator, "644", &nonexistent_files, buffer.writer(), options);
+    try chmodFiles(testing.allocator, "644", &nonexistent_files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
     // Should produce no output due to quiet mode
-    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
 }
 
 // Integration test using the chmod helper function
@@ -871,14 +874,16 @@ test "privileged: chmod integration test with octal mode" {
             const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
             defer test_file.close();
 
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, test_file_path);
             defer testing.allocator.free(abs_path);
 
             const args = [_][]const u8{ "755", abs_path };
-            try chmod(testing.allocator, &args, buffer.writer());
+            try chmod(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
 
             // Verify the mode was applied
             const stat = try std.fs.cwd().statFile(abs_path);
@@ -1099,16 +1104,18 @@ test "privileged: recursive chmod on directory structure" {
             const abs_root = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
             defer testing.allocator.free(abs_root);
 
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const options = ChmodOptions{ .recursive = true, .verbose = true };
             const files = [_][]const u8{abs_root};
 
-            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            try chmodFiles(testing.allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
             // Basic verification
-            try testing.expect(buffer.items.len > 0); // Should have verbose output
+            try testing.expect(stdout_buffer.items.len > 0); // Should have verbose output
         }
     }.testFn);
 }
@@ -1129,13 +1136,15 @@ test "privileged: recursive flag processes files and directories" {
             const abs_dir = try tmp_dir.dir.realpathAlloc(testing.allocator, "testdir");
             defer testing.allocator.free(abs_dir);
 
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const options = ChmodOptions{ .recursive = true, .changes_only = true };
             const files = [_][]const u8{abs_dir};
 
-            try chmodFiles(testing.allocator, "644", &files, buffer.writer(), options);
+            try chmodFiles(testing.allocator, "644", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
             // The test passes if no errors are thrown
         }
@@ -1159,18 +1168,20 @@ test "privileged: verbose flag outputs changes" {
             const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_verbose.txt");
             defer testing.allocator.free(abs_path);
 
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const options = ChmodOptions{ .verbose = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            try chmodFiles(testing.allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
             // Should have verbose output
-            try testing.expect(buffer.items.len > 0);
-            try testing.expect(std.mem.indexOf(u8, buffer.items, "mode of") != null);
-            try testing.expect(std.mem.indexOf(u8, buffer.items, "changed from") != null);
+            try testing.expect(stdout_buffer.items.len > 0);
+            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mode of") != null);
+            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "changed from") != null);
         }
     }.testFn);
 }
@@ -1190,43 +1201,50 @@ test "privileged: changes flag only outputs when mode changes" {
             const abs_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_changes.txt");
             defer testing.allocator.free(abs_path);
 
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
 
             const options = ChmodOptions{ .changes_only = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            try chmodFiles(testing.allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
             // Should have output when mode changes
-            try testing.expect(buffer.items.len > 0);
+            try testing.expect(stdout_buffer.items.len > 0);
 
             // Clear buffer and apply same mode again
-            buffer.clearRetainingCapacity();
-            try chmodFiles(testing.allocator, "755", &files, buffer.writer(), options);
+            stdout_buffer.clearRetainingCapacity();
+            stderr_buffer.clearRetainingCapacity();
+            try chmodFiles(testing.allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
-            try testing.expectEqual(@as(usize, 0), buffer.items.len);
+            try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
         }
     }.testFn);
 }
 
 test "quiet flag suppresses error messages" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     const nonexistent_files = [_][]const u8{"nonexistent_file.txt"};
     const options = ChmodOptions{ .quiet = true };
 
     // Should produce no output due to quiet mode
-    try chmodFiles(testing.allocator, "755", &nonexistent_files, buffer.writer(), options);
+    try chmodFiles(testing.allocator, "755", &nonexistent_files, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
     // Should produce no output due to quiet mode
-    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
 }
 
 test "path traversal protection" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test directory to simulate path traversal attempts
     var tmp_dir = std.testing.tmpDir(.{});
@@ -1241,7 +1259,7 @@ test "path traversal protection" {
     const options = ChmodOptions{ .quiet = true };
 
     // Test that chmod works on a valid file (should not produce errors)
-    try chmodFiles(testing.allocator, "755", &.{test_path}, buffer.writer(), options);
+    try chmodFiles(testing.allocator, "755", &.{test_path}, stdout_buffer.writer(), stderr_buffer.writer(), options);
 
     // For actual system paths, we expect permission errors to be caught
     // but we don't actually test them to avoid triggering OS dialogs

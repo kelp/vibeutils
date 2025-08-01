@@ -238,60 +238,62 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
     const stdout_writer = std.io.getStdOut().writer();
     const stderr_writer = std.io.getStdErr().writer();
 
-    const exit_code = try runRmdir(stdout_writer, stderr_writer, allocator);
-    if (exit_code != common.ExitCode.success) {
-        std.process.exit(@intFromEnum(exit_code));
-    }
+    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
 }
 
 /// Run rmdir with provided writers for output
-pub fn runRmdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const prog_name = "rmdir";
 
     // Parse arguments using new parser
-    const args = common.argparse.ArgParser.parseProcess(RmdirArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(RmdirArgs, allocator, args) catch |err| {
         // Handle parsing errors gracefully
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument", .{});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help request
-    if (args.help) {
+    if (parsed_args.help) {
         try printHelp(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version request
-    if (args.version) {
+    if (parsed_args.version) {
         try printVersion(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Validate that at least one directory was specified
-    const directories = args.positionals;
+    const directories = parsed_args.positionals;
     if (directories.len == 0) {
         common.printErrorWithProgram(stderr_writer, prog_name, "missing operand", .{});
-        return common.ExitCode.general_error;
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Create options structure from parsed arguments
     const options = RmdirOptions{
-        .parents = args.parents,
-        .verbose = args.verbose,
-        .ignore_fail_on_non_empty = args.ignore_fail_on_non_empty,
+        .parents = parsed_args.parents,
+        .verbose = parsed_args.verbose,
+        .ignore_fail_on_non_empty = parsed_args.ignore_fail_on_non_empty,
     };
 
     const exit_code = try removeDirectories(allocator, directories, stdout_writer, stderr_writer, options);
-    return exit_code;
+    return @intFromEnum(exit_code);
 }
 
 /// Print help information to provided writer.

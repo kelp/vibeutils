@@ -35,60 +35,70 @@ const RmError = error{
     UserCancelled,
 };
 
-/// Main entry point for the rm command.
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-    defer _ = gpa.deinit();
-
-    const allocator = gpa.allocator();
-
+/// Main entry point for the rm command with writer-based interface.
+pub fn runRm(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
-    const args = common.argparse.ArgParser.parseProcess(RmArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(RmArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                const stderr = std.io.getStdErr().writer();
-                common.fatalWithWriter(stderr, "invalid argument", .{});
+                common.printErrorWithProgram(stderr_writer, "rm", "invalid argument", .{});
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help flag - display usage information and exit
-    if (args.help) {
-        try printHelp();
-        return;
+    if (parsed_args.help) {
+        try printHelp(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version flag - display version and exit
-    if (args.version) {
-        try printVersion();
-        return;
+    if (parsed_args.version) {
+        try printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
-    const files = args.positionals;
+    const files = parsed_args.positionals;
     if (files.len == 0) {
-        const stderr = std.io.getStdErr().writer();
-        common.fatalWithWriter(stderr, "missing operand", .{});
+        common.printErrorWithProgram(stderr_writer, "rm", "missing operand", .{});
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Create options structure, merging -r and -R flags (both mean recursive)
     const options = RmOptions{
-        .force = args.force,
-        .interactive = args.i,
-        .interactive_once = args.I,
-        .recursive = args.recursive or args.R,
-        .verbose = args.verbose,
+        .force = parsed_args.force,
+        .interactive = parsed_args.i,
+        .interactive_once = parsed_args.I,
+        .recursive = parsed_args.recursive or parsed_args.R,
+        .verbose = parsed_args.verbose,
     };
+
+    const success = try removeFiles(allocator, files, stdout_writer, stderr_writer, options);
+    return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
+}
+
+/// Main entry point for the rm command.
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
-    try removeFiles(allocator, files, stdout, stderr, options);
+
+    const exit_code = try runRm(allocator, args[1..], stdout, stderr);
+    std.process.exit(exit_code);
 }
 
-/// Prints help information to stdout.
-fn printHelp() !void {
+/// Prints help information to the specified writer.
+fn printHelp(writer: anytype) !void {
     const help_text =
         \\Usage: rm [OPTION]... [FILE]...
         \\Remove (unlink) the FILE(s).
@@ -119,13 +129,13 @@ fn printHelp() !void {
         \\Report rm bugs to <bugs@example.com>
         \\
     ;
-    try std.io.getStdOut().writer().print("{s}", .{help_text});
+    try writer.print("{s}", .{help_text});
 }
 
-/// Prints version information to stdout.
-fn printVersion() !void {
+/// Prints version information to the specified writer.
+fn printVersion(writer: anytype) !void {
     const build_options = @import("build_options");
-    try std.io.getStdOut().writer().print("rm (vibeutils) {s}\n", .{build_options.version});
+    try writer.print("rm (vibeutils) {s}\n", .{build_options.version});
 }
 
 /// Options controlling rm behavior.
@@ -276,34 +286,30 @@ fn supportsAtomicRemoval() bool {
 /// User interaction utilities for handling prompts and confirmations.
 const UserInteraction = struct {
     /// Prompts user for regular file removal confirmation.
-    pub fn shouldRemove(file_path: []const u8) !bool {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("rm: remove regular file '{s}'? ", .{file_path});
+    pub fn shouldRemove(file_path: []const u8, stderr_writer: anytype) !bool {
+        try stderr_writer.print("rm: remove regular file '{s}'? ", .{file_path});
 
         return try promptYesNo();
     }
 
     /// Prompts user for write-protected file removal.
-    pub fn shouldRemoveWriteProtected(file_path: []const u8, mode: std.fs.File.Mode) !bool {
+    pub fn shouldRemoveWriteProtected(file_path: []const u8, mode: std.fs.File.Mode, stderr_writer: anytype) !bool {
         _ = mode; // Mode might be used for more detailed permission display later
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("rm: remove write-protected regular file '{s}'? ", .{file_path});
+        try stderr_writer.print("rm: remove write-protected regular file '{s}'? ", .{file_path});
 
         return try promptYesNo();
     }
 
     /// Prompts user for directory removal confirmation.
-    pub fn shouldRemoveDirectory(dir_path: []const u8) !bool {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("rm: remove directory '{s}'? ", .{dir_path});
+    pub fn shouldRemoveDirectory(dir_path: []const u8, stderr_writer: anytype) !bool {
+        try stderr_writer.print("rm: remove directory '{s}'? ", .{dir_path});
 
         return try promptYesNo();
     }
 
     /// Prompts user when removing multiple files (interactive once mode).
-    pub fn shouldRemoveMultiple(count: usize) !bool {
-        const stderr = std.io.getStdErr().writer();
-        try stderr.print("rm: remove {d} arguments? ", .{count});
+    pub fn shouldRemoveMultiple(count: usize, stderr_writer: anytype) !bool {
+        try stderr_writer.print("rm: remove {d} arguments? ", .{count});
 
         return try promptYesNo();
     }
@@ -337,11 +343,12 @@ const UserInteraction = struct {
 /// - stdout_writer: Output writer for verbose messages
 /// - stderr_writer: Output writer for error messages
 /// - options: Configuration options controlling removal behavior
-fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
+/// Returns true if all files were successfully processed, false if any errors occurred
+fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !bool {
     // Handle interactive once mode (-I flag)
     if (options.interactive_once and files.len > 3) {
-        if (!try UserInteraction.shouldRemoveMultiple(files.len)) {
-            return; // User said no
+        if (!try UserInteraction.shouldRemoveMultiple(files.len, stderr_writer)) {
+            return true; // User said no, but no error occurred
         }
     }
 
@@ -349,10 +356,13 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
     var removed_inodes = std.AutoHashMap(std.fs.File.INode, void).init(allocator);
     defer removed_inodes.deinit();
 
+    var any_errors = false;
+
     for (files) |file| {
         // Perform safety checks on each file
         if (file.len == 0) {
             common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
+            any_errors = true;
             continue;
         }
 
@@ -360,6 +370,7 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
         if (std.mem.eql(u8, file, "/")) {
             common.printErrorWithProgram(stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
             common.printErrorWithProgram(stderr_writer, "rm", "use --no-preserve-root to override this failsafe", .{});
+            any_errors = true;
             continue;
         }
 
@@ -377,6 +388,7 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
         // Check against list of critical system paths
         if (isCriticalSystemPath(normalized)) {
             common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Operation not permitted", .{file});
+            any_errors = true;
             continue;
         }
 
@@ -385,10 +397,12 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
             error.FileNotFound => {
                 if (!options.force) {
                     common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{file});
+                    any_errors = true;
                 }
             },
             error.AccessDenied => {
                 common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
+                any_errors = true;
             },
             error.IsDir => {
                 // File is actually a directory - check if recursive flag is set
@@ -399,10 +413,12 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
                             // User said no to prompt, silently skip
                         } else {
                             common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                            any_errors = true;
                         }
                     };
                 } else {
                     common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Is a directory", .{file});
+                    any_errors = true;
                 }
             },
             error.UserCancelled => {
@@ -410,9 +426,12 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
             },
             else => {
                 common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
+                any_errors = true;
             },
         };
     }
+
+    return !any_errors;
 }
 
 /// Checks if a path is a critical system path that should not be removed.
@@ -541,7 +560,7 @@ fn removeDirectoryRecursiveWithContext(
 
     // Prompt user if in interactive mode
     if (options.interactive) {
-        if (!try UserInteraction.shouldRemoveDirectory(dir_path)) {
+        if (!try UserInteraction.shouldRemoveDirectory(dir_path, stderr_writer)) {
             return error.UserCancelled;
         }
     }
@@ -714,7 +733,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
 
     // Prompt user if in interactive mode
     if (options.interactive) {
-        if (!try UserInteraction.shouldRemoveDirectory(dir_path)) {
+        if (!try UserInteraction.shouldRemoveDirectory(dir_path, stderr_writer)) {
             return error.UserCancelled;
         }
     }
@@ -856,7 +875,6 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
 /// - parent_dir: Open directory handle containing the file
 fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void), parent_dir: std.fs.Dir) !void {
     _ = allocator;
-    _ = stderr_writer; // TODO: Use for error messages
 
     // First check if it's a symlink (without following it)
     const is_symlink = blk: {
@@ -891,14 +909,14 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, s
 
     // Handle interactive prompts
     if (options.interactive) {
-        if (!try UserInteraction.shouldRemove(file_name)) {
+        if (!try UserInteraction.shouldRemove(file_name, stderr_writer)) {
             return error.UserCancelled;
         }
     } else if (!options.force) {
         const mode = stat_result.mode;
         const user_write = (mode & 0o200) != 0;
         if (!user_write) {
-            if (!try UserInteraction.shouldRemoveWriteProtected(file_name, mode)) {
+            if (!try UserInteraction.shouldRemoveWriteProtected(file_name, mode, stderr_writer)) {
                 return error.UserCancelled;
             }
         }
@@ -947,7 +965,6 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, s
 /// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
 fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     _ = allocator;
-    _ = stderr_writer; // TODO: Use for error messages
 
     // First check if it's a symlink (without following it)
     const is_symlink = blk: {
@@ -983,7 +1000,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, stdout_
 
     // Handle interactive prompts - always prompt
     if (options.interactive) {
-        if (!try UserInteraction.shouldRemove(file_path)) {
+        if (!try UserInteraction.shouldRemove(file_path, stderr_writer)) {
             return error.UserCancelled;
         }
     } else if (!options.force) {
@@ -992,7 +1009,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, stdout_
         const user_write = (mode & 0o200) != 0;
         if (!user_write) {
             // Prompt user about write-protected file
-            if (!try UserInteraction.shouldRemoveWriteProtected(file_path, mode)) {
+            if (!try UserInteraction.shouldRemoveWriteProtected(file_path, mode, stderr_writer)) {
                 return error.UserCancelled;
             }
         }
@@ -1092,16 +1109,17 @@ const TestDir = struct {
 
 test "rm: basic functionality test" {
     // Test the basic rm functions without TestDir to avoid segfaults
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    // Test with non-existent file and force mode
-    const options = RmOptions{ .force = true, .interactive = false, .interactive_once = false, .recursive = false, .verbose = false };
+    // Test with non-existent file and force mode using runRm
+    const args = [_][]const u8{ "-f", "definitely_nonexistent_file_12345.txt" };
+    const exit_code = runRm(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer()) catch 1;
 
-    // This should not error with -f flag for non-existent file
-    removeFiles(testing.allocator, &.{"definitely_nonexistent_file_12345.txt"}, buffer.writer(), common.null_writer, options) catch {};
-
-    // Test completed successfully if we get here
+    // Should succeed (exit code 0) with -f flag for non-existent file
+    try testing.expect(exit_code == 0);
 }
 
 test "rm: non-existent file with force" {
@@ -1140,18 +1158,17 @@ test "rm: force mode bypasses prompts" {
 test "rm: no-preserve-root protection" {
     // Test root protection by checking the protection logic directly
     // without actually calling removeFiles on "/" to avoid permission dialogs
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    // The protection is in removeFiles function at lines 356-360
+    // The protection is in removeFiles function
     // It has special handling for "/" that's separate from isCriticalSystemPath
     // We verify some actual critical paths:
     try testing.expect(isCriticalSystemPath("/etc"));
     try testing.expect(isCriticalSystemPath("/bin"));
     try testing.expect(!isCriticalSystemPath("/home/user"));
-
-    // Test configuration
-    const options = RmOptions{ .force = false, .interactive = false, .interactive_once = false, .recursive = true, .verbose = false };
 
     // Create a temporary test directory to avoid permission issues
     var tmp_dir = testing.tmpDir(.{});
@@ -1168,7 +1185,9 @@ test "rm: no-preserve-root protection" {
     const test_file_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
     defer testing.allocator.free(test_file_path);
 
-    try removeFiles(testing.allocator, &.{test_file_path}, buffer.writer(), common.null_writer, options);
+    const args = [_][]const u8{ "-r", test_file_path };
+    const exit_code = runRm(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer()) catch 1;
+    try testing.expect(exit_code == 0);
 }
 
 test "rm: same-file detection" {
@@ -1177,20 +1196,26 @@ test "rm: same-file detection" {
 }
 
 test "rm: empty path handling" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    const options = RmOptions{ .force = false, .interactive = false, .interactive_once = false, .recursive = false, .verbose = false };
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     // Should handle empty path gracefully
-    removeFiles(testing.allocator, &.{""}, buffer.writer(), common.null_writer, options) catch {};
+    const args = [_][]const u8{""};
+    const exit_code = runRm(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer()) catch 1;
 
-    // Test passes if we get here without crashing
+    // Should fail with error (empty path is invalid)
+    try testing.expect(exit_code != 0);
+    // Should have error message in stderr
+    try testing.expect(stderr_buffer.items.len > 0);
 }
 
 test "rm: path traversal attack prevention" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    const options = RmOptions{ .force = false, .interactive = false, .interactive_once = false, .recursive = false, .verbose = false };
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     // Create a test directory to simulate path traversal attempts
     var tmp_dir = std.testing.tmpDir(.{});
@@ -1204,7 +1229,9 @@ test "rm: path traversal attack prevention" {
     const test_path = try tmp_dir.dir.realpath("test_file.txt", &path_buf);
 
     // Test removing a valid file (should work)
-    removeFiles(testing.allocator, &.{test_path}, buffer.writer(), common.null_writer, options) catch {};
+    const args = [_][]const u8{test_path};
+    const exit_code = runRm(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer()) catch 1;
+    try testing.expect(exit_code == 0);
 
     // For actual malicious paths, we expect errors to be caught
     // but we don't test them to avoid triggering OS dialogs
@@ -1227,16 +1254,18 @@ test "rm: recursive directory removal option parsing" {
 
 test "rm: directory handling without recursive flag" {
     // Test that the function properly handles directory error
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    const options = RmOptions{ .force = false, .interactive = false, .interactive_once = false, .recursive = false, .verbose = false };
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     // Should handle directories correctly by checking the recursive flag
     // This tests the logic path without actually creating directories
-    removeFiles(testing.allocator, &.{"nonexistent_directory"}, buffer.writer(), common.null_writer, options) catch {};
+    const args = [_][]const u8{"nonexistent_directory"};
+    const exit_code = runRm(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer()) catch 1;
 
-    // Test passes if we get here without crashing
+    // Should either fail or produce error message since file doesn't exist and not in force mode
+    try testing.expect(exit_code != 0 or stderr_buffer.items.len > 0);
 }
 
 test "rm: recursive logic verification" {
@@ -1395,25 +1424,22 @@ test "privileged: remove write-protected file with force" {
             // but rm should still handle the case properly
 
             // Test removal with force flag
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
 
-            const options = RmOptions{
-                .force = true,
-                .interactive = false,
-                .interactive_once = false,
-                .recursive = false,
-                .verbose = true,
-            };
+            const args = [_][]const u8{ "-f", "-v", file_path };
+            const exit_code = try runRm(allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
 
             // Should succeed with force flag
-            try removeFiles(allocator, &.{file_path}, buffer.writer(), common.null_writer, options);
+            try testing.expect(exit_code == 0);
 
             // Verify file was removed
             try testing.expect(!test_dir.fileExists("protected.txt"));
 
             // Verify verbose output
-            try testing.expect(std.mem.indexOf(u8, buffer.items, "removed") != null);
+            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "removed") != null);
         }
     }.testFn);
 }
@@ -1440,8 +1466,10 @@ test "privileged: prompt for write-protected file removal" {
             try common.file_ops.setPermissions(file, stat.mode & ~@as(std.fs.File.Mode, 0o200), file_path);
 
             // Test removal without force flag (would normally prompt)
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
 
             // Mock user interaction to say 'no' - file should not be removed
             // Since we can't easily mock stdin in tests, we test that the function
@@ -1470,28 +1498,25 @@ test "privileged: recursive removal of write-protected directories" {
             try test_dir.createFile("protected_dir/file2.txt", "content2");
 
             // Test recursive removal with force flag
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
 
             const dir_path = try test_dir.getPath("protected_dir");
             defer allocator.free(dir_path);
 
-            const options = RmOptions{
-                .force = true,
-                .interactive = false,
-                .interactive_once = false,
-                .recursive = true,
-                .verbose = true,
-            };
+            const args = [_][]const u8{ "-f", "-r", "-v", dir_path };
+            const exit_code = try runRm(allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
 
             // The force flag should handle permission issues automatically
-            try removeFiles(allocator, &.{dir_path}, buffer.writer(), common.null_writer, options);
+            try testing.expect(exit_code == 0);
 
             // Verify directory was removed
             try testing.expect(!test_dir.fileExists("protected_dir"));
 
             // Verify verbose output shows removal
-            try testing.expect(std.mem.indexOf(u8, buffer.items, "removed") != null);
+            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "removed") != null);
         }
     }.testFn);
 }
@@ -1522,26 +1547,22 @@ test "privileged: force flag changes permissions to allow removal" {
             file.close();
 
             // Test force removal of files
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
 
-            const options = RmOptions{
-                .force = true,
-                .interactive = false,
-                .interactive_once = false,
-                .recursive = false,
-                .verbose = true,
-            };
+            const args = [_][]const u8{ "-f", "-v", no_write_path, no_read_path };
+            const exit_code = try runRm(allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
 
-            const paths = [_][]const u8{ no_write_path, no_read_path };
-            try removeFiles(allocator, &paths, buffer.writer(), common.null_writer, options);
+            try testing.expect(exit_code == 0);
 
             // Verify all items were removed
             try testing.expect(!test_dir.fileExists("no_write.txt"));
             try testing.expect(!test_dir.fileExists("no_read.txt"));
 
             // Verify verbose output
-            const output = buffer.items;
+            const output = stdout_buffer.items;
             try testing.expect(std.mem.indexOf(u8, output, "removed") != null);
         }
     }.testFn);

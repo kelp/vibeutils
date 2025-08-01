@@ -105,6 +105,7 @@ pub fn processSubdirectoriesRecursively(
     dir: std.fs.Dir,
     base_path: []const u8,
     writer: anytype,
+    stderr_writer: anytype,
     options: LsOptions,
     allocator: std.mem.Allocator,
     style: anytype,
@@ -134,22 +135,20 @@ pub fn processSubdirectoriesRecursively(
 
         // Open the subdirectory relative to the current directory
         var sub_dir = dir.openDir(subdir.name, .{ .iterate = true }) catch |err| {
-            const stderr = std.io.getStdErr().writer();
-            common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ subdir.path, err });
+            common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ subdir.path, err });
             continue;
         };
         defer sub_dir.close();
 
         // Check for cycles
         if (cycle_detector.hasVisited(sub_dir)) {
-            const stderr = std.io.getStdErr().writer();
-            common.printErrorWithProgram(stderr, "ls", "{s}: not following symlink cycle", .{subdir.path});
+            common.printErrorWithProgram(stderr_writer, "ls", "{s}: not following symlink cycle", .{subdir.path});
             continue;
         }
         try cycle_detector.markVisited(sub_dir);
 
         // Recurse using the shared implementation
-        try recurseIntoSubdirectory(sub_dir, subdir.path, writer, options, allocator, style, visited_inodes);
+        try recurseIntoSubdirectory(sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_inodes);
     }
 }
 
@@ -158,6 +157,7 @@ pub fn recurseIntoSubdirectory(
     sub_dir: std.fs.Dir,
     subdir_path: []const u8,
     writer: anytype,
+    stderr_writer: anytype,
     options: LsOptions,
     allocator: std.mem.Allocator,
     style: anytype,
@@ -165,7 +165,7 @@ pub fn recurseIntoSubdirectory(
 ) anyerror!void {
     // Forward to main module to avoid circular dependency
     const main = @import("main.zig");
-    try main.recurseIntoSubdirectory(sub_dir, subdir_path, writer, options, allocator, style, visited_inodes);
+    try main.recurseIntoSubdirectory(sub_dir, subdir_path, writer, stderr_writer, options, allocator, style, visited_inodes);
 }
 
 /// Free allocated memory for entries

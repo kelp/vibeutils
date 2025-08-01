@@ -45,52 +45,54 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
     const stdout_writer = std.io.getStdOut().writer();
     const stderr_writer = std.io.getStdErr().writer();
 
-    const exit_code = try mainWithWriter(stdout_writer, stderr_writer, allocator);
-    if (exit_code != common.ExitCode.success) {
-        std.process.exit(@intFromEnum(exit_code));
-    }
+    const exit_code = try runTouch(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
 }
 
 /// Main implementation that accepts writers for output.
-pub fn mainWithWriter(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const prog_name = "touch";
 
     // Parse arguments using new parser
-    const args = common.argparse.ArgParser.parseProcess(TouchArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(TouchArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help
-    if (args.help) {
+    if (parsed_args.help) {
         try printHelp(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
-    if (args.version) {
+    if (parsed_args.version) {
         try stdout_writer.print("touch ({s}) {s}\n", .{ common.name, common.version });
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Map long form aliases to short form
-    const access_only = args.a;
-    const modify_only = args.m;
-    const no_create = args.c or args.no_create;
-    const no_dereference = args.h or args.no_dereference;
+    const access_only = parsed_args.a;
+    const modify_only = parsed_args.m;
+    const no_create = parsed_args.c or parsed_args.no_create;
+    const no_dereference = parsed_args.h or parsed_args.no_dereference;
 
     // Create options struct
     const options = TouchOptions{
@@ -98,18 +100,18 @@ pub fn mainWithWriter(stdout_writer: anytype, stderr_writer: anytype, allocator:
         .modify_only = modify_only,
         .no_create = no_create,
         .no_dereference = no_dereference,
-        .reference_file = args.reference,
-        .timestamp_str = args.t,
-        .date_str = args.date,
-        .time_arg = args.time,
+        .reference_file = parsed_args.reference,
+        .timestamp_str = parsed_args.t,
+        .date_str = parsed_args.date,
+        .time_arg = parsed_args.time,
     };
 
     // Access positionals
-    const files = args.positionals;
+    const files = parsed_args.positionals;
 
     if (files.len == 0) {
         common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
-        return common.ExitCode.general_error;
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Process files - continue even if one fails (GNU touch behavior)
@@ -145,7 +147,7 @@ pub fn mainWithWriter(stdout_writer: anytype, stderr_writer: anytype, allocator:
         };
     }
 
-    return if (has_error) common.ExitCode.general_error else common.ExitCode.success;
+    return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
 }
 
 /// Prints the help message using the provided writer.

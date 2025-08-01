@@ -604,58 +604,60 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
     const stdout_writer = std.io.getStdOut().writer();
     const stderr_writer = std.io.getStdErr().writer();
 
-    const exit_code = try runMv(stdout_writer, stderr_writer, allocator);
-    if (exit_code != common.ExitCode.success) {
-        std.process.exit(@intFromEnum(exit_code));
-    }
+    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
 }
 
 /// Run mv with provided writers for output
-pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !common.ExitCode {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const prog_name = "mv";
 
     // Parse arguments using new parser
-    const args = common.argparse.ArgParser.parseProcess(MvArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(MvArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help
-    if (args.help) {
+    if (parsed_args.help) {
         try printHelp(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
-    if (args.version) {
+    if (parsed_args.version) {
         try stdout_writer.print("mv ({s}) {s}\n", .{ common.name, common.version });
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
-    const files = args.positionals;
+    const files = parsed_args.positionals;
     if (files.len < 2) {
         common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
-        return common.ExitCode.general_error;
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     const options = MoveOptions{
-        .interactive = args.interactive,
-        .force = args.force,
-        .verbose = args.verbose,
-        .no_clobber = args.no_clobber,
+        .interactive = parsed_args.interactive,
+        .force = parsed_args.force,
+        .verbose = parsed_args.verbose,
+        .no_clobber = parsed_args.no_clobber,
     };
 
     // Handle multiple sources case
@@ -665,14 +667,14 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
                 common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
-                return common.ExitCode.general_error;
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         };
 
         if (dest_stat.kind != .directory) {
             common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
-            return common.ExitCode.general_error;
+            return @intFromEnum(common.ExitCode.general_error);
         }
 
         // Move each source to destination directory
@@ -695,7 +697,7 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
                 try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, full_dest });
             }
         }
-        return exit_code;
+        return @intFromEnum(exit_code);
     } else {
         // Single source case: simple rename or move
         const source = files[0];
@@ -703,12 +705,12 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
 
         moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |err| {
             common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, err });
-            return common.ExitCode.general_error;
+            return @intFromEnum(common.ExitCode.general_error);
         };
 
         if (options.verbose) {
             try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
         }
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 }

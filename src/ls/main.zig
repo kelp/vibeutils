@@ -71,7 +71,7 @@ const LsArgs = struct {
 };
 
 /// Main entry point for the ls command
-/// Parses arguments and delegates to lsMain
+/// Parses arguments and delegates to runLs
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -91,15 +91,22 @@ pub fn main() !void {
     };
     defer allocator.free(args.positionals);
 
-    // Create stdout writer once and pass it through
+    // Create stdout and stderr writers and pass them through
     const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
 
-    try lsMain(stdout, args, allocator);
+    try runLs(allocator, args, stdout, stderr);
+}
+
+/// Core ls functionality that accepts separate stdout and stderr writers
+/// This allows for testing and different output targets
+pub fn runLs(allocator: std.mem.Allocator, args: LsArgs, stdout_writer: anytype, stderr_writer: anytype) !void {
+    try lsMain(stdout_writer, stderr_writer, args, allocator);
 }
 
 /// Core ls functionality that accepts a writer parameter
 /// This allows for testing and different output targets
-fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
+fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     // Handle help
     if (args.help) {
         try printHelp(writer);
@@ -123,8 +130,7 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     var color_mode = ColorMode.auto;
     if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
+            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
         };
     }
 
@@ -133,8 +139,7 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     var icon_mode = common.icons.getIconModeFromEnv(allocator);
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
+            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
         };
     }
 
@@ -143,8 +148,7 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     var time_style = TimeStyle.relative;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
+            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
         };
     }
 
@@ -177,7 +181,7 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
 
     if (paths.len == 0) {
         // No paths specified, list current directory
-        try listDirectory(".", writer, options, allocator);
+        try listDirectory(".", writer, stderr_writer, options, allocator);
     } else {
         // List each specified path
         // When multiple paths are given, print headers between them
@@ -186,7 +190,7 @@ fn lsMain(writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
                 if (i > 0) try writer.writeAll("\n");
                 try writer.print("{s}:\n", .{path});
             }
-            try listDirectory(path, writer, options, allocator);
+            try listDirectory(path, writer, stderr_writer, options, allocator);
         }
     }
 }
@@ -269,14 +273,13 @@ fn printIconTest(writer: anytype) !void {
 
 /// List a directory or file, handling both files and directories appropriately
 /// Errors are printed but don't stop execution except for BrokenPipe
-fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator) anyerror!void {
+fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(writer, options.color_mode);
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ path, err });
         return;
     };
 
@@ -325,28 +328,27 @@ fn listDirectory(path: []const u8, writer: anytype, options: LsOptions, allocato
     }
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        const stderr = std.io.getStdErr().writer();
-        common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ path, err });
         return err;
     };
     defer dir.close();
 
     // Call the shared implementation
-    try listDirectoryImpl(dir, path, writer, options, allocator, style);
+    try listDirectoryImpl(dir, path, writer, stderr_writer, options, allocator, style);
 }
 
 /// Set up visited inode tracking for cycle detection in recursive mode
-fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) anyerror!void {
+fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) anyerror!void {
     // For recursive listing with symlinks, we need to track visited inodes
     var visited_inodes = std.AutoHashMap(u64, void).init(allocator);
     defer visited_inodes.deinit();
 
-    try listDirectoryImplWithVisited(dir, path, writer, options, allocator, style, &visited_inodes);
+    try listDirectoryImplWithVisited(dir, path, writer, stderr_writer, options, allocator, style, &visited_inodes);
 }
 
 /// Core directory listing logic with cycle detection
 /// Collects, sorts, and prints directory entries
-fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_inodes: *std.AutoHashMap(u64, void)) anyerror!void {
+fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_inodes: *std.AutoHashMap(u64, void)) anyerror!void {
     // Collect and filter entries based on options
     var entries = try entry_collector.collectFilteredEntries(dir, allocator, options);
     defer entries.deinit();
@@ -380,7 +382,7 @@ fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anyty
 
     // Handle recursive listing
     if (options.recursive) {
-        try entry_collector.processSubdirectoriesRecursively(entries.items, dir, path, writer, options, allocator, style, visited_inodes);
+        try entry_collector.processSubdirectoriesRecursively(entries.items, dir, path, writer, stderr_writer, options, allocator, style, visited_inodes);
     }
 }
 
@@ -390,16 +392,16 @@ pub fn recurseIntoSubdirectory(
     sub_dir: std.fs.Dir,
     subdir_path: []const u8,
     writer: anytype,
+    stderr_writer: anytype,
     options: LsOptions,
     allocator: std.mem.Allocator,
     style: anytype,
     visited_inodes: *std.AutoHashMap(u64, void),
 ) anyerror!void {
-    listDirectoryImplWithVisited(sub_dir, subdir_path, writer, options, allocator, style, visited_inodes) catch |err| switch (err) {
+    listDirectoryImplWithVisited(sub_dir, subdir_path, writer, stderr_writer, options, allocator, style, visited_inodes) catch |err| switch (err) {
         error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
         else => {
-            const stderr = std.io.getStdErr().writer();
-            common.printErrorWithProgram(stderr, "ls", "{s}: {}", .{ subdir_path, err });
+            common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ subdir_path, err });
             // Continue with other directories even if one fails
         },
     };
@@ -421,34 +423,63 @@ test {
 test "lsMain help works with different writers" {
     const testing = std.testing;
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     const args = LsArgs{
         .help = true,
         .positionals = &.{},
     };
 
-    try lsMain(buffer.writer(), args, testing.allocator);
+    try lsMain(stdout_buffer.writer(), stderr_buffer.writer(), args, testing.allocator);
 
     // Should contain help text
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: ls") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "--help") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--help") != null);
+    // stderr should be empty for help
+    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
 }
 
 test "lsMain version works with different writers" {
     const testing = std.testing;
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     const args = LsArgs{
         .version = true,
         .positionals = &.{},
     };
 
-    try lsMain(buffer.writer(), args, testing.allocator);
+    try lsMain(stdout_buffer.writer(), stderr_buffer.writer(), args, testing.allocator);
 
     // Should contain version info
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "ls (") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "ls (") != null);
+    // stderr should be empty for version
+    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+}
+
+test "runLs function works with separate writers" {
+    const testing = std.testing;
+
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = LsArgs{
+        .help = true,
+        .positionals = &.{},
+    };
+
+    try runLs(testing.allocator, args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should contain help text in stdout
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
+    // stderr should be empty for help
+    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
 }

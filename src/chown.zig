@@ -63,71 +63,77 @@ const ChownArgs = struct {
 /// Main entry point for chown utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
     defer _ = gpa.deinit();
-
     const allocator = gpa.allocator();
 
+    // Parse process arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    const stdout_writer = std.io.getStdOut().writer();
+    const stderr_writer = std.io.getStdErr().writer();
+
+    const exit_code = try runChown(allocator, args[1..], stdout_writer, stderr_writer);
+    std.process.exit(exit_code);
+}
+
+/// Main implementation that accepts writers for output
+pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
-    const args = common.argparse.ArgParser.parseProcess(ChownArgs, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(ChownArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                const stderr = std.io.getStdErr().writer();
-                common.fatalWithWriter(stderr, "invalid argument", .{});
+                common.fatalWithWriter(stderr_writer, "invalid argument", .{});
             },
             else => return err,
         }
     };
-    defer allocator.free(args.positionals);
-
-    const stdout = std.io.getStdOut().writer();
+    defer allocator.free(parsed_args.positionals);
 
     // Handle information requests (help/version) - these exit immediately
-    if (args.help) {
-        try printHelp(stdout);
-        return;
+    if (parsed_args.help) {
+        try printHelp(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
-    if (args.version) {
-        try printVersion(stdout);
-        return;
+    if (parsed_args.version) {
+        try printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Get positional arguments for further processing
-    const positionals = args.positionals;
+    const positionals = parsed_args.positionals;
 
     // Convert arguments to internal options
     const options = ChownOptions{
-        .changes = args.changes,
-        .silent = args.silent or args.quiet,
-        .verbose = args.verbose,
-        .no_dereference = args.no_dereference,
-        .traverse_command_line_symlinks = args.H,
-        .traverse_all_symlinks = args.L,
-        .no_traverse_symlinks = args.P,
-        .recursive = args.recursive,
-        .reference_file = args.reference,
+        .changes = parsed_args.changes,
+        .silent = parsed_args.silent or parsed_args.quiet,
+        .verbose = parsed_args.verbose,
+        .no_dereference = parsed_args.no_dereference,
+        .traverse_command_line_symlinks = parsed_args.H,
+        .traverse_all_symlinks = parsed_args.L,
+        .no_traverse_symlinks = parsed_args.P,
+        .recursive = parsed_args.recursive,
+        .reference_file = parsed_args.reference,
     };
 
     // Extract owner spec and files based on whether --reference is used
-    const owner_spec: []const u8 = if (args.reference != null) blk: {
+    const owner_spec: []const u8 = if (parsed_args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "missing file operand", .{});
+            common.fatalWithWriter(stderr_writer, "missing file operand", .{});
         }
         break :blk "";
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
-            const stderr = std.io.getStdErr().writer();
-            common.fatalWithWriter(stderr, "missing operand", .{});
+            common.fatalWithWriter(stderr_writer, "missing operand", .{});
         }
         break :blk positionals[0];
     };
 
     // Extract file list based on mode
-    const files: []const []const u8 = if (args.reference != null)
+    const files: []const []const u8 = if (parsed_args.reference != null)
         positionals
     else
         positionals[1..];
@@ -135,13 +141,13 @@ pub fn main() !void {
     // Process each file, accumulating error status
     var exit_code: u8 = 0;
     for (files) |file_path| {
-        chownFile(file_path, owner_spec, options, allocator, stdout) catch |err| {
-            handleError(file_path, err, options);
+        chownFile(file_path, owner_spec, options, allocator, stdout_writer, stderr_writer) catch |err| {
+            handleError(file_path, err, options, stderr_writer);
             exit_code = @intFromEnum(common.ExitCode.general_error);
         };
     }
 
-    std.process.exit(exit_code);
+    return exit_code;
 }
 
 /// Print help message
@@ -221,7 +227,8 @@ fn chownFile(
     owner_spec: []const u8,
     options: ChownOptions,
     allocator: std.mem.Allocator,
-    writer: anytype,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
 ) !void {
     // Parse ownership specification
     var ownership: common.user_group.OwnershipSpec = undefined;
@@ -236,14 +243,15 @@ fn chownFile(
 
     // Apply ownership change
     if (options.recursive) {
-        try chownRecursive(path, ownership, options, allocator, writer);
+        try chownRecursive(path, ownership, options, allocator, stdout_writer, stderr_writer);
     } else {
-        try chownSingle(path, ownership, options, writer);
+        try chownSingle(path, ownership, options, stdout_writer, stderr_writer);
     }
 }
 
 /// Change ownership of a single file (non-recursive)
-fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions, writer: anytype) !void {
+fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    _ = stderr_writer; // For API consistency, not used directly in this function
     // Get current ownership for comparison
     const stat_info = try common.file.FileInfo.stat(path);
     const current_uid = @as(common.user_group.uid_t, @intCast(stat_info.uid));
@@ -262,11 +270,11 @@ fn chownSingle(path: []const u8, ownership: common.user_group.OwnershipSpec, opt
 
         // Report change if requested
         if (options.verbose or options.changes) {
-            try reportChange(writer, path, current_uid, current_gid, new_uid, new_gid);
+            try reportChange(stdout_writer, path, current_uid, current_gid, new_uid, new_gid);
         }
     } else if (options.verbose) {
         // Report no change in verbose mode
-        try reportNoChange(writer, path);
+        try reportNoChange(stdout_writer, path);
     }
 }
 
@@ -277,10 +285,11 @@ fn chownRecursive(
     ownership: common.user_group.OwnershipSpec,
     options: ChownOptions,
     allocator: std.mem.Allocator,
-    writer: anytype,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
 ) !void {
     // First change the directory/file itself
-    try chownSingle(path, ownership, options, writer);
+    try chownSingle(path, ownership, options, stdout_writer, stderr_writer);
 
     // Check if it's a directory to recurse into
     const stat_info = common.file.FileInfo.stat(path) catch return;
@@ -297,7 +306,7 @@ fn chownRecursive(
             defer allocator.free(full_path);
 
             // Recurse into subdirectory or change file
-            try chownRecursive(full_path, ownership, options, allocator, writer);
+            try chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer);
         }
     }
 }
@@ -354,25 +363,24 @@ fn reportNoChange(writer: anytype, path: []const u8) !void {
 }
 
 /// Handle and report errors
-fn handleError(path: []const u8, err: anyerror, options: ChownOptions) void {
+fn handleError(path: []const u8, err: anyerror, options: ChownOptions, stderr_writer: anytype) void {
     if (options.silent) return; // Suppress errors in silent mode
-    const stderr = std.io.getStdErr().writer();
 
     switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': No such file or directory", .{path}),
-        error.PermissionDenied => common.printErrorWithProgram(stderr, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
-        error.NotDir => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': File name too long", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(stderr, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Invalid argument", .{path}),
-        error.InputOutputError => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Input/output error", .{path}),
-        error.UserNotFound => common.printErrorWithProgram(stderr, "chown", "invalid user: '{s}'", .{path}),
-        error.GroupNotFound => common.printErrorWithProgram(stderr, "chown", "invalid group: '{s}'", .{path}),
-        error.InvalidFormat => common.printErrorWithProgram(stderr, "chown", "invalid owner specification: '{s}'", .{path}),
-        error.SystemResources => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
-        error.Unexpected => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': Unexpected error", .{path}),
-        else => common.printErrorWithProgram(stderr, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': No such file or directory", .{path}),
+        error.PermissionDenied => common.printErrorWithProgram(stderr_writer, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
+        error.NotDir => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
+        error.NameTooLong => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': File name too long", .{path}),
+        error.ReadOnlyFileSystem => common.printErrorWithProgram(stderr_writer, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
+        error.InvalidValue => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Invalid argument", .{path}),
+        error.InputOutputError => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Input/output error", .{path}),
+        error.UserNotFound => common.printErrorWithProgram(stderr_writer, "chown", "invalid user: '{s}'", .{path}),
+        error.GroupNotFound => common.printErrorWithProgram(stderr_writer, "chown", "invalid group: '{s}'", .{path}),
+        error.InvalidFormat => common.printErrorWithProgram(stderr_writer, "chown", "invalid owner specification: '{s}'", .{path}),
+        error.SystemResources => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
+        error.Unexpected => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Unexpected error", .{path}),
+        else => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
     }
 }
 
@@ -412,9 +420,11 @@ test "privileged: chown basic functionality" {
             const options = ChownOptions{};
 
             // This should work for changing to the same ownership
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -435,9 +445,11 @@ test "chown with invalid owner specification" {
     const options = ChownOptions{};
 
     // Empty specification should fail
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    try testing.expectError(error.InvalidFormat, chownFile(test_file, "", options, testing.allocator, buffer.writer()));
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+    try testing.expectError(error.InvalidFormat, chownFile(test_file, "", options, testing.allocator, stdout_buffer.writer(), stderr_buffer.writer()));
 }
 
 test "privileged: chown user only specification" {
@@ -466,9 +478,11 @@ test "privileged: chown user only specification" {
             const options = ChownOptions{};
 
             // Should work for user-only specification
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -499,9 +513,11 @@ test "privileged: chown group only specification" {
             const options = ChownOptions{};
 
             // Should work for group-only specification
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -535,9 +551,11 @@ test "privileged: chown with reference file" {
             const options = ChownOptions{ .reference_file = ref_path };
 
             // Should use reference file's ownership
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(target_path, "", options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(target_path, "", options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -549,9 +567,11 @@ test "chown nonexistent file" {
     defer testing.allocator.free(owner_spec);
 
     // Should fail for nonexistent file
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    try testing.expectError(error.FileNotFound, chownFile("/nonexistent/file", owner_spec, options, testing.allocator, buffer.writer()));
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+    try testing.expectError(error.FileNotFound, chownFile("/nonexistent/file", owner_spec, options, testing.allocator, stdout_buffer.writer(), stderr_buffer.writer()));
 }
 
 test "OwnershipSpec parsing" {
@@ -653,9 +673,11 @@ test "privileged: chownSingle basic operation" {
             const options = ChownOptions{};
 
             // Should work for same ownership
-            var buffer = std.ArrayList(u8).init(testing.allocator);
-            defer buffer.deinit();
-            try chownSingle(test_file, ownership, options, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            defer stderr_buffer.deinit();
+            try chownSingle(test_file, ownership, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -690,9 +712,11 @@ test "privileged: chown recursive option" {
             const options = ChownOptions{ .recursive = true };
 
             // Should work recursively
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_dir, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_dir, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -723,9 +747,11 @@ test "privileged: chown with verbose option" {
             const options = ChownOptions{ .verbose = true };
 
             // Should work with verbose output
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -756,9 +782,11 @@ test "privileged: chown with changes option" {
             const options = ChownOptions{ .changes = true };
 
             // Should work with changes option
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_file, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_file, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -795,9 +823,11 @@ test "privileged: chown with no-dereference option" {
             const options = ChownOptions{ .no_dereference = true };
 
             // Should work with no-dereference option
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
-            try chownFile(test_link, owner_spec, options, allocator, buffer.writer());
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
+            try chownFile(test_link, owner_spec, options, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -810,9 +840,11 @@ test "chown with silent option suppresses errors" {
     const options = ChownOptions{ .silent = true };
 
     // Should not panic or output errors for nonexistent file in silent mode
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    const result = chownFile("/nonexistent/path", owner_spec, options, testing.allocator, buffer.writer());
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+    const result = chownFile("/nonexistent/path", owner_spec, options, testing.allocator, stdout_buffer.writer(), stderr_buffer.writer());
     try testing.expectError(error.FileNotFound, result);
 }
 
@@ -839,20 +871,22 @@ test "privileged: chown traverse options" {
             const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
             defer allocator.free(owner_spec);
 
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
+            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            defer stdout_buffer.deinit();
+            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            defer stderr_buffer.deinit();
 
             // Test traverse command line symlinks
             const options_h = ChownOptions{ .traverse_command_line_symlinks = true };
-            try chownFile(test_file, owner_spec, options_h, allocator, buffer.writer());
+            try chownFile(test_file, owner_spec, options_h, allocator, stdout_buffer.writer(), stderr_buffer.writer());
 
             // Test traverse all symlinks
             const options_l = ChownOptions{ .traverse_all_symlinks = true };
-            try chownFile(test_file, owner_spec, options_l, allocator, buffer.writer());
+            try chownFile(test_file, owner_spec, options_l, allocator, stdout_buffer.writer(), stderr_buffer.writer());
 
             // Test no traverse symlinks (default)
             const options_p = ChownOptions{ .no_traverse_symlinks = true };
-            try chownFile(test_file, owner_spec, options_p, allocator, buffer.writer());
+            try chownFile(test_file, owner_spec, options_p, allocator, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -860,11 +894,13 @@ test "privileged: chown traverse options" {
 test "error handling different error types" {
     const options = ChownOptions{};
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
     // Test invalid owner specification
-    const result1 = chownFile("/tmp/test", "", options, testing.allocator, buffer.writer());
+    const result1 = chownFile("/tmp/test", "", options, testing.allocator, stdout_buffer.writer(), stderr_buffer.writer());
     try testing.expectError(error.InvalidFormat, result1);
 
     // Test nonexistent file (with valid owner spec)
@@ -872,20 +908,20 @@ test "error handling different error types" {
     const owner_spec = try std.fmt.allocPrint(testing.allocator, "{d}", .{current_uid});
     defer testing.allocator.free(owner_spec);
 
-    const result2 = chownFile("/nonexistent/file", owner_spec, options, testing.allocator, buffer.writer());
+    const result2 = chownFile("/nonexistent/file", owner_spec, options, testing.allocator, stdout_buffer.writer(), stderr_buffer.writer());
     try testing.expectError(error.FileNotFound, result2);
 }
 
 test "reportChange function" {
     // The reportChange and reportNoChange functions now accept writer: anytype
     // and return !void. This is verified by compilation.
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
 
     // Test that the functions can be called without error
-    try reportChange(buffer.writer(), "/test", 1000, 100, 1001, 101);
-    try reportNoChange(buffer.writer(), "/test");
+    try reportChange(stdout_buffer.writer(), "/test", 1000, 100, 1001, 101);
+    try reportNoChange(stdout_buffer.writer(), "/test");
 
     // Verify output was written
-    try testing.expect(buffer.items.len > 0);
+    try testing.expect(stdout_buffer.items.len > 0);
 }
