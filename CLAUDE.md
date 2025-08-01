@@ -196,7 +196,15 @@ Each utility requires:
 
 ### context7 MCP Tool
 
-The `context7` MCP (Model Context Protocol) tool provides instant access to up-to-date documentation for any library, including Zig. **Always use context7 when looking up Zig standard library functions, language features, or implementation details** instead of guessing or searching the web.
+The `context7` MCP (Model Context Protocol) tool provides instant access to up-to-date documentation for any library, including Zig. 
+
+**CRITICAL: Zig changes regularly between versions. ALWAYS use context7 liberally when:**
+- Looking up any Zig standard library function or type
+- Checking function signatures, parameters, or error sets
+- Verifying if a feature exists in Zig 0.14.1
+- Understanding memory allocator behavior
+- Implementing any new functionality
+- **Even when you think you know the answer** - Zig's APIs evolve frequently
 
 Available commands:
 - `mcp__context7__resolve-library-id` - Search for and get the Context7-compatible library ID
@@ -243,14 +251,14 @@ When implementing file operations:
 // - topic: "std.heap" for heap allocators (note: SmpAllocator is recommended in 0.14.1)
 ```
 
-**Important**: Always consult context7 when:
-- Implementing new functionality that requires standard library calls
-- Unsure about function signatures, parameters, or error sets
-- Looking for the idiomatic Zig way to accomplish a task
-- Needing code examples and usage patterns
-- Working with any Zig version (context7 has up-to-date documentation)
+**Best Practices for Using context7:**
+1. **Check early and often** - Don't wait until you're stuck
+2. **Verify assumptions** - What worked in Zig 0.13 may have changed in 0.14.1
+3. **Look for examples** - Request code snippets showing actual usage
+4. **Check multiple sources** - Try different library IDs if needed
+5. **Be specific with topics** - Use precise module names like "std.fs.File" not just "file"
 
-The tool returns actual code snippets from real Zig projects, making it more reliable than generic documentation.
+The tool returns actual code snippets from real Zig projects, making it more reliable than memory or outdated documentation.
 
 ## Claude Code Agent Usage
 
@@ -296,6 +304,30 @@ Example: "Use the optimizer agent to improve the performance of sorting large di
 
 ## Code Style and Conventions
 
+### Writer Pattern
+All utilities should accept `writer: anytype` for flexible output handling:
+```zig
+// Good: Generic writer allows testing and different output targets
+pub fn main(allocator: Allocator, args: []const []const u8, writer: anytype) !u8 {
+    try writer.print("Hello, world!\n", .{});
+    return common.ExitCode.Success;
+}
+
+// Testing with ArrayList writer
+test "output test" {
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+    
+    const result = try main(testing.allocator, &.{}, buffer.writer());
+    try testing.expectEqualStrings("Hello, world!\n", buffer.items);
+}
+```
+
+This pattern enables:
+- Easy unit testing with buffer writers
+- Redirection to files or other outputs
+- Consistent interface across all utilities
+
 ### Error Handling
 ```zig
 // Use common.printError for consistent error messages
@@ -306,13 +338,21 @@ return common.ExitCode.Failure;
 ```
 
 ### Memory Management
-- Always use provided allocator (usually from args)
+- **CLI Tools**: Use Arena allocator (preferred) - all memory freed at once
+  ```zig
+  var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+  defer arena.deinit();
+  const allocator = arena.allocator();
+  ```
+- **Testing**: Always use `testing.allocator` to detect memory leaks
+- **Debug builds**: GeneralPurposeAllocator for leak detection
+  ```zig
+  const gpa = std.heap.GeneralPurposeAllocator(.{}){};
+  defer _ = gpa.deinit();
+  const allocator = gpa.allocator();
+  ```
 - Use `defer` for cleanup immediately after allocation
-- Test with `testing.allocator` to detect leaks
-- For application code, prefer `std.heap.SmpAllocator` over `GeneralPurposeAllocator`
-  - GeneralPurposeAllocator is now just an alias for DebugAllocator and has known flaws
-  - SmpAllocator is the recommended general-purpose allocator in Zig 0.14.0+
-  - Still use `testing.allocator` for tests to detect memory leaks
+- Pass allocator as first parameter to functions that allocate
 
 ### Argument Parsing
 - Use zig-clap for consistent GNU-style argument parsing
@@ -327,32 +367,55 @@ return common.ExitCode.Failure;
 ### Idiomatic Zig Practices
 
 #### Documentation Comments
-Zig uses special doc comments (`///`) for generating documentation. Always document:
-- Public functions and types
-- Complex algorithms or non-obvious code
-- Error conditions and return values
-- Usage examples for public APIs
+Zig uses special doc comments (`///`) for generating documentation. Follow these guidelines:
 
+**Required Documentation:**
+- All public functions, types, and constants
+- Error sets with descriptions of when each error occurs
+- Complex algorithms or non-obvious implementation details
+- Parameters and return values for public functions
+
+**Documentation Format:**
 ```zig
-/// Copies a file from source to destination with optional progress reporting.
-/// Returns an error if the source doesn't exist or destination cannot be written.
-/// 
-/// Example:
-/// ```
-/// try copyFile(allocator, "input.txt", "output.txt", .{ .progress = true });
-/// ```
-pub fn copyFile(allocator: Allocator, src: []const u8, dst: []const u8, options: CopyOptions) !void {
+/// Process file at given path and return its content.
+/// The file is read entirely into memory using the provided allocator.
+/// Returns error if file cannot be read or memory allocation fails.
+pub fn processFile(allocator: Allocator, path: []const u8, options: FileOptions) ![]u8 {
     // Implementation
 }
 
-/// Options for file copying operations.
-pub const CopyOptions = struct {
-    /// Display progress bar for large files
-    progress: bool = false,
-    /// Preserve file permissions and timestamps
-    preserve_attrs: bool = true,
+/// Copy file attributes including permissions and timestamps.
+/// Requires appropriate permissions on both source and destination.
+pub fn copyAttributes(source: []const u8, dest: []const u8) !void {
+    // Implementation
+}
+
+/// Configuration options for file processing.
+pub const FileOptions = struct {
+    /// Skip files larger than this size in bytes (0 = no limit)
+    max_size: usize = 0,
+    
+    /// Follow symbolic links when traversing directories
+    follow_symlinks: bool = true,
+    
+    /// Validation mode for input data
+    validation: enum {
+        /// No validation performed
+        none,
+        /// Basic syntax checking
+        basic,
+        /// Full validation with schema
+        strict,
+    } = .basic,
 };
 ```
+
+**Best Practices:**
+- Start with a brief sentence that could stand alone
+- Use present tense ("Returns" not "Will return")
+- Document assumptions and preconditions
+- Include examples for non-trivial usage
+- Cross-reference related functions with `see also:`
 
 #### Common Zig Idioms
 - **Comptime**: Use `comptime` for compile-time computation and type generation
@@ -397,6 +460,63 @@ zig build docs
 # Documentation will be in zig-out/docs/
 # Can be served locally or published to GitHub Pages
 ```
+
+### Zig Style Guide Quick Reference
+
+**Naming Conventions:**
+- `camelCase`: Functions (`copyFile`, `printError`, `shouldOverwrite`)
+- `snake_case`: Variables (`file_path`, `dest_exists`, `buffer_size`)
+- `PascalCase`: Types (structs, unions, enums) and error sets
+- `UPPER_SNAKE_CASE`: True constants only (rarely used, prefer `const`)
+- Acronyms: Treat as words (`HttpServer` not `HTTPServer`)
+
+**Code Organization:**
+```zig
+// 1. Imports (std first, then third-party, then local)
+const std = @import("std");
+const clap = @import("clap");
+const common = @import("common");
+
+// 2. Type aliases
+const Allocator = std.mem.Allocator;
+
+// 3. Constants and globals
+const MAX_PATH_SIZE = 4096;
+
+// 4. Error sets
+const FileError = error{ NotFound, PermissionDenied };
+
+// 5. Types (structs, enums, unions)
+pub const Options = struct { ... };
+
+// 6. Public functions
+pub fn processFile(...) !void { ... }
+
+// 7. Private functions
+fn helperFunction(...) void { ... }
+
+// 8. Tests (at end of file)
+test "description" { ... }
+```
+
+**Formatting Rules:**
+- 4 spaces for indentation (enforced by `zig fmt`)
+- Opening braces on same line
+- Max line length: 100 characters (recommended)
+- Blank line between function definitions
+- Group related declarations
+
+**Error Handling:**
+- Use error unions (`!T`) for fallible operations
+- Define specific error sets when possible
+- Handle all possible errors explicitly
+- Use `try` for propagation, `catch` for handling
+
+**Testing:**
+- Test names describe what is being tested
+- Use `testing.allocator` to detect memory leaks
+- Test both success and error cases
+- Keep tests close to implementation
 
 ## Privileged Testing Infrastructure
 
@@ -463,3 +583,34 @@ make test-privileged-local # Graceful fallback
 - **BSD**: Limited support (may require doas/sudo)
 
 The infrastructure gracefully handles missing tools and provides clear error messages when privilege simulation is not available.
+
+## Cross-Platform Testing
+
+### macOS Development with Linux Testing
+
+For macOS developers, the project includes Docker-based Linux testing infrastructure:
+
+```bash
+# Run Linux tests from macOS
+make test-linux         # Run tests in Ubuntu container
+make test-linux-alpine  # Run tests in Alpine container
+
+# Interactive Linux environment
+make shell-linux        # Ubuntu shell with project mounted
+make shell-linux-alpine # Alpine shell with project mounted
+
+# Full CI simulation
+make ci-linux          # Run complete CI pipeline locally
+```
+
+### Docker Infrastructure
+- **Dockerfile.ubuntu**: Ubuntu-based testing with kcov support
+- **Dockerfile.alpine**: Minimal Alpine Linux testing
+- Containers automatically mount project at `/workspace`
+- Pre-installed with Zig 0.14.1 and testing tools
+
+### Platform-Specific Considerations
+- **File permissions**: Linux containers preserve Unix permissions better than macOS
+- **Path separators**: Always use forward slashes for cross-platform compatibility
+- **Line endings**: Ensure LF line endings (not CRLF) for Linux compatibility
+- **System calls**: Some syscalls behave differently between macOS and Linux
