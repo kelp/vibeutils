@@ -51,14 +51,14 @@ fn printVersion(writer: anytype) !void {
     try writer.print("cat ({s}) {s}\n", .{ common.name, common.version });
 }
 
-/// Main entry point for cat utility with writer parameter
-pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !u8 {
+/// Main entry point for cat utility with stdout and stderr writer parameters
+pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parseArgs(CatArgs, args, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                try writer.writeAll("cat: invalid argument\n");
-                return common.ExitCode.Failure;
+                common.printErrorWithProgram(stderr_writer, "cat", "invalid argument", .{});
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
@@ -67,14 +67,14 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, writer: an
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(writer);
-        return common.ExitCode.Success;
+        try printHelp(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
     if (parsed_args.version) {
-        try printVersion(writer);
-        return common.ExitCode.Success;
+        try printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Create options struct with proper flag combinations
@@ -94,21 +94,21 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, writer: an
 
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        try processInput(stdin, writer, options, &line_state);
+        try processInput(stdin, stdout_writer, options, &line_state);
     } else {
         // Process each file in order
         for (parsed_args.positionals) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 // "-" means read from stdin
-                try processInput(stdin, writer, options, &line_state);
+                try processInput(stdin, stdout_writer, options, &line_state);
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    try writer.print("cat: {s}: {}\n", .{ file_path, err });
-                    return common.ExitCode.Failure;
+                    common.printErrorWithProgram(stderr_writer, "cat", "{s}: {}", .{ file_path, err });
+                    return @intFromEnum(common.ExitCode.general_error);
                 };
                 defer file.close();
-                try processInput(file.reader(), writer, options, &line_state);
+                try processInput(file.reader(), stdout_writer, options, &line_state);
             }
         }
     }

@@ -33,30 +33,30 @@ const EchoArgs = struct {
     };
 };
 
-/// Main entry point for the echo utility with writer parameter
-pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !u8 {
+/// Main entry point for the echo utility with UtilityContext
+pub fn runEchoWithContext(ctx: anytype, args: []const []const u8) !u8 {
     // Parse arguments using new parser
-    const parsed_args = common.argparse.ArgParser.parseArgs(EchoArgs, args, allocator) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parseArgs(EchoArgs, args, ctx.allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                try writer.writeAll("echo: invalid argument\n");
-                return common.ExitCode.Failure;
+                common.printErrorWithProgram(ctx.stderr_writer, "echo", "invalid argument", .{});
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
     };
-    defer allocator.free(parsed_args.positionals);
+    defer ctx.allocator.free(parsed_args.positionals);
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(writer);
-        return common.ExitCode.Success;
+        try printHelp(ctx.stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
     if (parsed_args.version) {
-        try printVersion(writer);
-        return common.ExitCode.Success;
+        try printVersion(ctx.stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Create options (handle -E flag which disables -e)
@@ -66,8 +66,15 @@ pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, writer: a
         .interpret_escapes = parsed_args.e and !parsed_args.E,
     };
 
-    try echoStrings(parsed_args.positionals, writer, options);
-    return common.ExitCode.Success;
+    try echoStrings(parsed_args.positionals, ctx.stdout_writer, options);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Main entry point for the echo utility with stdout and stderr writer parameters (backwards compatibility)
+pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const ContextType = common.UtilityContext(@TypeOf(stdout_writer), @TypeOf(stderr_writer));
+    const ctx = ContextType.init(stdout_writer, stderr_writer, "echo", allocator);
+    return runEchoWithContext(ctx, args);
 }
 
 /// Main entry point for the echo utility
@@ -76,11 +83,14 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Create utility context with standard writers
+    const ctx = common.initStandardUtilityContext(allocator);
+
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(EchoArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatal("invalid argument", .{});
+                common.fatalWithWriter(ctx.stderr_writer, "invalid argument", .{});
             },
             else => return err,
         }
@@ -89,15 +99,13 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        const stdout = std.io.getStdOut().writer();
-        try printHelp(stdout);
+        try printHelp(ctx.stdout_writer);
         return;
     }
 
     // Handle version
     if (args.version) {
-        const stdout = std.io.getStdOut().writer();
-        try printVersion(stdout);
+        try printVersion(ctx.stdout_writer);
         return;
     }
 
@@ -108,8 +116,7 @@ pub fn main() !void {
         .interpret_escapes = args.e and !args.E,
     };
 
-    const stdout = std.io.getStdOut().writer();
-    try echoStrings(args.positionals, stdout, options);
+    try echoStrings(args.positionals, ctx.stdout_writer, options);
 }
 
 /// Print help message to the specified writer

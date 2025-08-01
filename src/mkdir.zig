@@ -59,7 +59,7 @@ pub fn runMkdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.m
         switch (err) {
             // Handle argument parsing errors with appropriate error messages
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                try stderr_writer.print("{s}: invalid argument\n", .{prog_name});
+                common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument", .{});
                 return common.ExitCode.general_error;
             },
             else => return err,
@@ -82,7 +82,7 @@ pub fn runMkdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.m
     // Check if we have directories to create
     const dirs = args.positionals;
     if (dirs.len == 0) {
-        try stderr_writer.print("{s}: missing operand\n", .{prog_name});
+        common.printErrorWithProgram(stderr_writer, prog_name, "missing operand", .{});
         return common.ExitCode.general_error;
     }
 
@@ -95,7 +95,7 @@ pub fn runMkdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.m
     // Parse mode if provided
     if (args.mode) |mode_str| {
         options.mode = parseMode(mode_str) catch {
-            try stderr_writer.print("{s}: invalid mode '{s}'\n", .{ prog_name, mode_str });
+            common.printErrorWithProgram(stderr_writer, prog_name, "invalid mode '{s}'", .{mode_str});
             return common.ExitCode.general_error;
         };
     }
@@ -154,7 +154,7 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, stderr_writer: any
 
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
-        try stderr_writer.print("{s}: warning: mode flag (-m) is not supported on Windows\n", .{prog_name});
+        common.printWarningWithProgram(stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
         return;
     }
 
@@ -165,7 +165,7 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, stderr_writer: any
     const result = std.c.chmod(path_z, mode);
     if (result != 0) {
         const err = std.posix.errno(result);
-        try stderr_writer.print("{s}: cannot set mode on '{s}': {s}\n", .{ prog_name, path, @tagName(err) });
+        common.printErrorWithProgram(stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
         return error.ChmodFailed;
     }
 }
@@ -204,7 +204,7 @@ fn createDirectory(path: []const u8, options: MkdirOptions, stdout_writer: anyty
     const normalized_path = std.mem.trimRight(u8, path, "/");
     if (normalized_path.len == 0) {
         // Special case: root directory
-        try stderr_writer.print("{s}: cannot create directory '/': File exists\n", .{prog_name});
+        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '/': File exists", .{});
         return error.AlreadyExists;
     }
 
@@ -222,19 +222,19 @@ fn createSingleDirectory(path: []const u8, options: MkdirOptions, stdout_writer:
     // Create directory
     std.fs.cwd().makeDir(path) catch |err| switch (err) {
         error.PathAlreadyExists => {
-            try stderr_writer.print("{s}: cannot create directory '{s}': File exists\n", .{ prog_name, path });
+            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': File exists", .{path});
             return err;
         },
         error.FileNotFound => {
-            try stderr_writer.print("{s}: cannot create directory '{s}': No such file or directory\n", .{ prog_name, path });
+            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': No such file or directory", .{path});
             return err;
         },
         error.AccessDenied => {
-            try stderr_writer.print("{s}: cannot create directory '{s}': Permission denied\n", .{ prog_name, path });
+            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': Permission denied", .{path});
             return err;
         },
         else => {
-            try stderr_writer.print("{s}: cannot create directory '{s}': {s}\n", .{ prog_name, path, @errorName(err) });
+            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
             return err;
         },
     };

@@ -256,7 +256,7 @@ pub fn runRmdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.m
         // Handle parsing errors gracefully
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                try stderr_writer.print("{s}: invalid argument\n", .{prog_name});
+                common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument", .{});
                 return common.ExitCode.general_error;
             },
             else => return err,
@@ -279,7 +279,7 @@ pub fn runRmdir(stdout_writer: anytype, stderr_writer: anytype, allocator: std.m
     // Validate that at least one directory was specified
     const directories = args.positionals;
     if (directories.len == 0) {
-        try stderr_writer.print("{s}: missing operand\n", .{prog_name});
+        common.printErrorWithProgram(stderr_writer, prog_name, "missing operand", .{});
         return common.ExitCode.general_error;
     }
 
@@ -428,7 +428,7 @@ fn handleError(err: anyerror, path: []const u8, stderr_writer: anytype, options:
 
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
     const msg = ErrorMessages.format(err, path);
-    try stderr_writer.print("{s}: failed to remove '{s}': {s}\n", .{ prog_name, path, msg });
+    common.printErrorWithProgram(stderr_writer, prog_name, "failed to remove '{s}': {s}", .{ path, msg });
 }
 
 // ===== TESTS =====

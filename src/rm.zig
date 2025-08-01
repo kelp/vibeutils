@@ -81,7 +81,8 @@ pub fn main() !void {
     };
 
     const stdout = std.io.getStdOut().writer();
-    try removeFiles(allocator, files, stdout, options);
+    const stderr = std.io.getStdErr().writer();
+    try removeFiles(allocator, files, stdout, stderr, options);
 }
 
 /// Prints help information to stdout.
@@ -331,9 +332,10 @@ const UserInteraction = struct {
 /// Parameters:
 /// - allocator: Memory allocator for temporary allocations
 /// - files: Array of file/directory paths to remove
-/// - writer: Output writer for verbose messages
+/// - stdout_writer: Output writer for verbose messages
+/// - stderr_writer: Output writer for error messages
 /// - options: Configuration options controlling removal behavior
-fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, writer: anytype, options: RmOptions) !void {
+fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
     // Handle interactive once mode (-I flag)
     if (options.interactive_once and files.len > 3) {
         if (!try UserInteraction.shouldRemoveMultiple(files.len)) {
@@ -348,14 +350,14 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, writer: 
     for (files) |file| {
         // Perform safety checks on each file
         if (file.len == 0) {
-            common.printError("cannot remove '': No such file or directory", .{});
+            common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
             continue;
         }
 
         // Special check for root directory - never allow removal
         if (std.mem.eql(u8, file, "/")) {
-            common.printError("it is dangerous to operate recursively on '/'", .{});
-            common.printError("use --no-preserve-root to override this failsafe", .{});
+            common.printErrorWithProgram(stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
+            common.printErrorWithProgram(stderr_writer, "rm", "use --no-preserve-root to override this failsafe", .{});
             continue;
         }
 
@@ -372,40 +374,40 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, writer: 
 
         // Check against list of critical system paths
         if (isCriticalSystemPath(normalized)) {
-            common.printError("cannot remove '{s}': Operation not permitted", .{file});
+            common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Operation not permitted", .{file});
             continue;
         }
 
         // Attempt to remove the file, handling various error conditions
-        removeSingleFile(allocator, file, writer, options, &removed_inodes) catch |err| switch (err) {
+        removeSingleFile(allocator, file, stdout_writer, stderr_writer, options, &removed_inodes) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!options.force) {
-                    common.printError("cannot remove '{s}': No such file or directory", .{file});
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{file});
                 }
             },
             error.AccessDenied => {
-                common.printError("cannot remove '{s}': Permission denied", .{file});
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
             },
             error.IsDir => {
                 // File is actually a directory - check if recursive flag is set
                 if (options.recursive) {
                     // Recursively remove directory with all safety features
-                    removeDirectoryRecursiveAtomic(allocator, file, writer, options, &removed_inodes) catch |dir_err| {
+                    removeDirectoryRecursiveAtomic(allocator, file, stdout_writer, stderr_writer, options, &removed_inodes) catch |dir_err| {
                         if (dir_err == error.UserCancelled) {
                             // User said no to prompt, silently skip
                         } else {
-                            common.printError("cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                            common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
                         }
                     };
                 } else {
-                    common.printError("cannot remove '{s}': Is a directory", .{file});
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Is a directory", .{file});
                 }
             },
             error.UserCancelled => {
                 // User said no to prompt, silently skip
             },
             else => {
-                common.printError("cannot remove '{s}': {s}", .{ file, @errorName(err) });
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
             },
         };
     }
@@ -446,10 +448,11 @@ fn isCriticalSystemPath(path: []const u8) bool {
 /// Parameters:
 /// - allocator: Memory allocator for temporary allocations
 /// - dir_path: Path to directory to remove recursively
-/// - writer: Output writer for verbose messages
+/// - stdout_writer: Output writer for verbose messages
+/// - stderr_writer: Output writer for error messages
 /// - options: Configuration options controlling removal behavior
 /// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
-fn removeDirectoryRecursiveAtomic(allocator: std.mem.Allocator, dir_path: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
+fn removeDirectoryRecursiveAtomic(allocator: std.mem.Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     // Initialize atomic removal context if supported
     if (supportsAtomicRemoval()) {
         var atomic_ctx = AtomicRemovalContext.init(allocator);
@@ -458,10 +461,10 @@ fn removeDirectoryRecursiveAtomic(allocator: std.mem.Allocator, dir_path: []cons
         var symlink_tracker = SymlinkTracker.init(allocator);
         defer symlink_tracker.deinit();
 
-        return removeDirectoryRecursiveWithContext(allocator, dir_path, writer, options, removed_inodes, &atomic_ctx, &symlink_tracker, null);
+        return removeDirectoryRecursiveWithContext(allocator, dir_path, stdout_writer, stderr_writer, options, removed_inodes, &atomic_ctx, &symlink_tracker, null);
     } else {
         // Fall back to non-atomic removal on unsupported systems
-        return removeDirectoryRecursive(allocator, dir_path, writer, options, removed_inodes);
+        return removeDirectoryRecursive(allocator, dir_path, stdout_writer, stderr_writer, options, removed_inodes);
     }
 }
 
@@ -469,7 +472,8 @@ fn removeDirectoryRecursiveAtomic(allocator: std.mem.Allocator, dir_path: []cons
 fn removeDirectoryRecursiveWithContext(
     allocator: std.mem.Allocator,
     dir_path: []const u8,
-    writer: anytype,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
     options: RmOptions,
     removed_inodes: *std.AutoHashMap(std.fs.File.INode, void),
     atomic_ctx: *AtomicRemovalContext,
@@ -501,7 +505,7 @@ fn removeDirectoryRecursiveWithContext(
     // Prevent crossing filesystem boundaries (future --one-file-system support)
     if (!atomic_ctx.isBaseDevice(stat_result.inode)) {
         if (options.verbose) {
-            try writer.print("skipping '{s}': different filesystem\n", .{dir_path});
+            try stdout_writer.print("skipping '{s}': different filesystem\n", .{dir_path});
         }
         return;
     }
@@ -514,7 +518,7 @@ fn removeDirectoryRecursiveWithContext(
     // Check if this inode was already removed (handles hardlinks)
     if (removed_inodes.contains(stat_result.inode)) {
         if (options.verbose) {
-            try writer.print("removed directory '{s}'\n", .{dir_path});
+            try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
         }
         return;
     }
@@ -525,7 +529,7 @@ fn removeDirectoryRecursiveWithContext(
 
     if (symlink_tracker.contains(real_path)) {
         // Detected a symlink cycle - prevent infinite recursion
-        common.printError("cannot remove '{s}': symlink cycle detected", .{dir_path});
+        common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': symlink cycle detected", .{dir_path});
         return;
     }
 
@@ -621,16 +625,16 @@ fn removeDirectoryRecursiveWithContext(
             defer allocator.free(entry_path);
 
             // Recursively remove subdirectory with parent dir context
-            removeDirectoryRecursiveWithContext(allocator, entry_path, writer, options, removed_inodes, atomic_ctx, symlink_tracker, dir) catch |err| {
+            removeDirectoryRecursiveWithContext(allocator, entry_path, stdout_writer, stderr_writer, options, removed_inodes, atomic_ctx, symlink_tracker, dir) catch |err| {
                 if (err == error.UserCancelled) {
                     // User cancelled, continue with other entries
                 } else {
-                    common.printError("cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
                 }
             };
         } else {
             // Remove file atomically using dir handle
-            removeSingleFileAtomic(allocator, entry.name, writer, options, removed_inodes, dir) catch |err| {
+            removeSingleFileAtomic(allocator, entry.name, stdout_writer, stderr_writer, options, removed_inodes, dir) catch |err| {
                 if (err == error.UserCancelled) {
                     // User cancelled, continue
                 } else if (err == error.FileNotFound) {
@@ -638,7 +642,7 @@ fn removeDirectoryRecursiveWithContext(
                 } else {
                     const entry_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
                     defer allocator.free(entry_path);
-                    common.printError("cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
                 }
             };
         }
@@ -652,11 +656,11 @@ fn removeDirectoryRecursiveWithContext(
                 // Already removed
             },
             error.DirNotEmpty => {
-                common.printError("cannot remove '{s}': Directory not empty", .{dir_path});
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{dir_path});
                 return;
             },
             else => {
-                common.printError("cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
                 return;
             },
         };
@@ -666,11 +670,11 @@ fn removeDirectoryRecursiveWithContext(
                 // Already removed
             },
             error.DirNotEmpty => {
-                common.printError("cannot remove '{s}': Directory not empty", .{dir_path});
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{dir_path});
                 return;
             },
             else => {
-                common.printError("cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
                 return;
             },
         };
@@ -680,12 +684,12 @@ fn removeDirectoryRecursiveWithContext(
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
-        try writer.print("removed directory '{s}'\n", .{dir_path});
+        try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
     }
 }
 
 /// Recursively removes a directory and all its contents (non-atomic fallback).
-fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
+fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     // Get directory stats, using parent dir handle if available for atomicity
     const stat_result = std.fs.cwd().statFile(dir_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
@@ -701,7 +705,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
     // Check if this inode was already removed (handles hardlinks)
     if (removed_inodes.contains(stat_result.inode)) {
         if (options.verbose) {
-            try writer.print("removed directory '{s}'\n", .{dir_path});
+            try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
         }
         return;
     }
@@ -766,22 +770,22 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
 
         if (entry.kind == .directory) {
             // Recursively remove subdirectory
-            removeDirectoryRecursive(allocator, entry_path, writer, options, removed_inodes) catch |err| {
+            removeDirectoryRecursive(allocator, entry_path, stdout_writer, stderr_writer, options, removed_inodes) catch |err| {
                 if (err == error.UserCancelled) {
                     // User cancelled, continue with other entries
                 } else {
-                    common.printError("cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
                 }
             };
         } else {
             // Remove file or symlink (don't follow symlinks)
-            removeSingleFile(allocator, entry_path, writer, options, removed_inodes) catch |err| {
+            removeSingleFile(allocator, entry_path, stdout_writer, stderr_writer, options, removed_inodes) catch |err| {
                 if (err == error.UserCancelled) {
                     // User cancelled, continue with other entries
                 } else if (err == error.FileNotFound) {
                     // File was already removed (race condition), ignore
                 } else {
-                    common.printError("cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry_path, @errorName(err) });
                 }
             };
         }
@@ -794,7 +798,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
         },
         error.DirNotEmpty => {
             // Some files couldn't be removed, but try anyway
-            common.printError("cannot remove '{s}': Directory not empty", .{dir_path});
+            common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{dir_path});
             return;
         },
         error.AccessDenied => {
@@ -802,7 +806,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
                 // Try to change parent directory permissions
                 const parent_dir_path = std.fs.path.dirname(dir_path) orelse ".";
                 var parent_dir = std.fs.cwd().openDir(parent_dir_path, .{}) catch |parent_err| {
-                    common.printError("cannot remove '{s}': {s}", .{ dir_path, @errorName(parent_err) });
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(parent_err) });
                     return;
                 };
                 defer parent_dir.close();
@@ -812,20 +816,20 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
 
                     // Retry deletion
                     std.fs.cwd().deleteDir(dir_path) catch {
-                        common.printError("cannot remove '{s}': Permission denied", .{dir_path});
+                        common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{dir_path});
                         return;
                     };
                 } else |_| {
-                    common.printError("cannot remove '{s}': Permission denied", .{dir_path});
+                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{dir_path});
                     return;
                 }
             } else {
-                common.printError("cannot remove '{s}': Permission denied", .{dir_path});
+                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{dir_path});
                 return;
             }
         },
         else => {
-            common.printError("cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
             return;
         },
     };
@@ -834,7 +838,7 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
-        try writer.print("removed directory '{s}'\n", .{dir_path});
+        try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
     }
 }
 
@@ -843,12 +847,14 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
 /// Parameters:
 /// - allocator: Memory allocator (currently unused but kept for consistency)
 /// - file_name: Name of file within parent directory to remove
-/// - writer: Output writer for verbose messages
+/// - stdout_writer: Output writer for verbose messages
+/// - stderr_writer: Output writer for error messages
 /// - options: Configuration options controlling removal behavior
 /// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
 /// - parent_dir: Open directory handle containing the file
-fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void), parent_dir: std.fs.Dir) !void {
+fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void), parent_dir: std.fs.Dir) !void {
     _ = allocator;
+    _ = stderr_writer; // TODO: Use for error messages
 
     // First check if it's a symlink (without following it)
     const is_symlink = blk: {
@@ -869,7 +875,7 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
     // Skip if we've already removed this inode (hardlink handling)
     if (removed_inodes.contains(stat_result.inode)) {
         if (options.verbose) {
-            try writer.print("removed '{s}'\n", .{file_name});
+            try stdout_writer.print("removed '{s}'\n", .{file_name});
         }
         return;
     }
@@ -924,7 +930,7 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
-        try writer.print("removed '{s}'\n", .{file_name});
+        try stdout_writer.print("removed '{s}'\n", .{file_name});
     }
 }
 
@@ -933,11 +939,13 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, w
 /// Parameters:
 /// - allocator: Memory allocator (currently unused but kept for consistency)
 /// - file_path: Full path to file to remove
-/// - writer: Output writer for verbose messages
+/// - stdout_writer: Output writer for verbose messages
+/// - stderr_writer: Output writer for error messages
 /// - options: Configuration options controlling removal behavior
 /// - removed_inodes: Map tracking already-removed inodes to prevent double-removal
-fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
+fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     _ = allocator;
+    _ = stderr_writer; // TODO: Use for error messages
 
     // First check if it's a symlink (without following it)
     const is_symlink = blk: {
@@ -959,7 +967,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
     if (removed_inodes.contains(stat_result.inode)) {
         // Already removed this file (hard link to same inode)
         if (options.verbose) {
-            try writer.print("removed '{s}'\n", .{file_path});
+            try stdout_writer.print("removed '{s}'\n", .{file_path});
         }
         return;
     }
@@ -1017,7 +1025,7 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, writer:
     try removed_inodes.put(stat_result.inode, {});
 
     if (options.verbose) {
-        try writer.print("removed '{s}'\n", .{file_path});
+        try stdout_writer.print("removed '{s}'\n", .{file_path});
     }
 }
 
@@ -1089,7 +1097,7 @@ test "rm: basic functionality test" {
     const options = RmOptions{ .force = true, .interactive = false, .interactive_once = false, .recursive = false, .verbose = false };
 
     // This should not error with -f flag for non-existent file
-    removeFiles(testing.allocator, &.{"definitely_nonexistent_file_12345.txt"}, buffer.writer(), options) catch {};
+    removeFiles(testing.allocator, &.{"definitely_nonexistent_file_12345.txt"}, buffer.writer(), common.null_writer, options) catch {};
 
     // Test completed successfully if we get here
 }
@@ -1158,7 +1166,7 @@ test "rm: no-preserve-root protection" {
     const test_file_path = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
     defer testing.allocator.free(test_file_path);
 
-    try removeFiles(testing.allocator, &.{test_file_path}, buffer.writer(), options);
+    try removeFiles(testing.allocator, &.{test_file_path}, buffer.writer(), common.null_writer, options);
 }
 
 test "rm: same-file detection" {
@@ -1172,7 +1180,7 @@ test "rm: empty path handling" {
     const options = RmOptions{ .force = false, .interactive = false, .interactive_once = false, .recursive = false, .verbose = false };
 
     // Should handle empty path gracefully
-    removeFiles(testing.allocator, &.{""}, buffer.writer(), options) catch {};
+    removeFiles(testing.allocator, &.{""}, buffer.writer(), common.null_writer, options) catch {};
 
     // Test passes if we get here without crashing
 }
@@ -1194,7 +1202,7 @@ test "rm: path traversal attack prevention" {
     const test_path = try tmp_dir.dir.realpath("test_file.txt", &path_buf);
 
     // Test removing a valid file (should work)
-    removeFiles(testing.allocator, &.{test_path}, buffer.writer(), options) catch {};
+    removeFiles(testing.allocator, &.{test_path}, buffer.writer(), common.null_writer, options) catch {};
 
     // For actual malicious paths, we expect errors to be caught
     // but we don't test them to avoid triggering OS dialogs
@@ -1224,7 +1232,7 @@ test "rm: directory handling without recursive flag" {
 
     // Should handle directories correctly by checking the recursive flag
     // This tests the logic path without actually creating directories
-    removeFiles(testing.allocator, &.{"nonexistent_directory"}, buffer.writer(), options) catch {};
+    removeFiles(testing.allocator, &.{"nonexistent_directory"}, buffer.writer(), common.null_writer, options) catch {};
 
     // Test passes if we get here without crashing
 }
@@ -1241,7 +1249,7 @@ test "rm: recursive logic verification" {
 
     // Test that recursive removal function exists and can be called
     // It will fail because the directory doesn't exist, but the logic is tested
-    removeDirectoryRecursive(testing.allocator, "nonexistent_dir", buffer.writer(), options, &removed_inodes) catch |err| {
+    removeDirectoryRecursive(testing.allocator, "nonexistent_dir", buffer.writer(), common.null_writer, options, &removed_inodes) catch |err| {
         // Expected to fail with FileNotFound, which confirms the function works
         try testing.expect(err == error.FileNotFound);
     };
@@ -1397,7 +1405,7 @@ test "privileged: remove write-protected file with force" {
             };
 
             // Should succeed with force flag
-            try removeFiles(allocator, &.{file_path}, buffer.writer(), options);
+            try removeFiles(allocator, &.{file_path}, buffer.writer(), common.null_writer, options);
 
             // Verify file was removed
             try testing.expect(!test_dir.fileExists("protected.txt"));
@@ -1475,7 +1483,7 @@ test "privileged: recursive removal of write-protected directories" {
             };
 
             // The force flag should handle permission issues automatically
-            try removeFiles(allocator, &.{dir_path}, buffer.writer(), options);
+            try removeFiles(allocator, &.{dir_path}, buffer.writer(), common.null_writer, options);
 
             // Verify directory was removed
             try testing.expect(!test_dir.fileExists("protected_dir"));
@@ -1524,7 +1532,7 @@ test "privileged: force flag changes permissions to allow removal" {
             };
 
             const paths = [_][]const u8{ no_write_path, no_read_path };
-            try removeFiles(allocator, &paths, buffer.writer(), options);
+            try removeFiles(allocator, &paths, buffer.writer(), common.null_writer, options);
 
             // Verify all items were removed
             try testing.expect(!test_dir.fileExists("no_write.txt"));

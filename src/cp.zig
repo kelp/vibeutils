@@ -66,11 +66,11 @@ pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
     const args = common.argparse.ArgParser.parseProcess(CpArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                try stderr_writer.print("{s}: unrecognized option\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
                 return common.ExitCode.misuse;
             },
             error.MissingValue => {
-                try stderr_writer.print("{s}: option requires an argument\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
                 return common.ExitCode.misuse;
             },
             else => return err,
@@ -90,10 +90,10 @@ pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
     // Validate argument count
     if (args.positionals.len < 2) {
         if (args.positionals.len == 0) {
-            try stderr_writer.print("{s}: missing file operand\n", .{prog_name});
+            common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand", .{});
             return common.ExitCode.misuse;
         } else {
-            try stderr_writer.print("{s}: missing destination file operand after '{s}'\n", .{ prog_name, args.positionals[0] });
+            common.printErrorWithProgram(stderr_writer, prog_name, "missing destination file operand after '{s}'", .{args.positionals[0]});
             return common.ExitCode.misuse;
         }
     }
@@ -115,15 +115,15 @@ pub fn runCp(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
     var operations = engine.planOperations(stderr_writer, args.positionals) catch |err| {
         switch (err) {
             error.InsufficientArguments => {
-                try stderr_writer.print("{s}: insufficient arguments\n", .{prog_name});
+                common.printErrorWithProgram(stderr_writer, prog_name, "insufficient arguments", .{});
                 return common.ExitCode.misuse;
             },
             errors.CopyError.DestinationIsNotDirectory => {
-                try stderr_writer.print("{s}: destination is not a directory\n", .{prog_name});
+                common.printErrorWithProgram(stderr_writer, prog_name, "destination is not a directory", .{});
                 return common.ExitCode.general_error;
             },
             else => {
-                try stderr_writer.print("{s}: error planning operations: {}\n", .{ prog_name, err });
+                common.printErrorWithProgram(stderr_writer, prog_name, "error planning operations: {}", .{err});
                 return common.ExitCode.general_error;
             },
         }

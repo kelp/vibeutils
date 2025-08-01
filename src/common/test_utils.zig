@@ -57,6 +57,14 @@
 const std = @import("std");
 const testing = std.testing;
 
+/// Null writer for tests - re-export from std.io for convenience
+pub const null_writer = std.io.null_writer;
+
+/// Get a null writer that discards all output - useful for suppressing error messages in tests
+pub fn nullWriter() @TypeOf(std.io.null_writer) {
+    return std.io.null_writer;
+}
+
 /// Generate a unique test file name based on test name, timestamp, and random number
 pub fn uniqueTestName(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
     // Use timestamp and random number for thread-safe uniqueness

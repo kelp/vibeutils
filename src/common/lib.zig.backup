@@ -102,45 +102,30 @@ pub fn getNullWriter() @TypeOf(std.io.null_writer) {
     return std.io.null_writer;
 }
 
-/// DEPRECATED: Use fatalWithWriter() instead
-/// This function will be removed in a future version
-pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
-    _ = fmt;
-    _ = fmt_args;
-    @compileError("fatal() is deprecated - use fatalWithWriter() with explicit stderr writer instead");
-}
-
-/// Print error message to stderr writer and exit with error code
+/// Print error message to stderr and exit with error code
 ///
 /// This function formats an error message with the program name prefix,
-/// prints it to the provided stderr writer, and exits with a general error code.
+/// prints it to stderr, and exits with a general error code.
 ///
 /// Example:
 /// ```zig
-/// const stderr = std.io.getStdErr().writer();
-/// common.fatalWithWriter(stderr, "cannot open file: {s}", .{filename});
+/// common.fatal("cannot open file: {s}", .{filename});
 /// // Output: myprogram: cannot open file: test.txt
 /// ```
-pub fn fatalWithWriter(stderr_writer: anytype, comptime fmt: []const u8, fmt_args: anytype) noreturn {
+pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
+    const stderr = std.io.getStdErr().writer();
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-    stderr_writer.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
+    stderr.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
     std.process.exit(@intFromEnum(ExitCode.general_error));
 }
 
-/// DEPRECATED: Use printErrorWithWriter() instead
-/// This function will be removed in a future version
-pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
-    _ = fmt;
-    _ = fmt_args;
-    @compileError("printError() is deprecated - use printErrorWithWriter() with explicit stderr writer instead");
-}
-
-/// Print error message to stderr writer without exiting
+/// Print error message to stderr without exiting
 ///
-/// Similar to fatalWithWriter() but allows the program to continue execution.
+/// Similar to fatal() but allows the program to continue execution.
 /// Useful for non-fatal warnings or when handling multiple errors.
-pub fn printErrorWithWriter(stderr_writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
-    printErrorTo(stderr_writer, fmt, fmt_args);
+pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
+    const stderr = std.io.getStdErr().writer();
+    printErrorTo(stderr, fmt, fmt_args);
 }
 
 /// Print error message to a specific writer without exiting
@@ -159,20 +144,13 @@ pub fn printErrorTo(writer: anytype, comptime fmt: []const u8, fmt_args: anytype
     writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
-/// DEPRECATED: Use printWarningWithWriter() instead
-/// This function will be removed in a future version
-pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
-    _ = fmt;
-    _ = fmt_args;
-    @compileError("printWarning() is deprecated - use printWarningWithWriter() with explicit stderr writer instead");
-}
-
-/// Print warning message to stderr writer without exiting
+/// Print warning message to stderr without exiting
 ///
 /// Used for non-fatal issues that should be reported but don't stop execution.
 /// Warnings are displayed in yellow to distinguish them from errors.
-pub fn printWarningWithWriter(stderr_writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
-    printWarningTo(stderr_writer, fmt, fmt_args);
+pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
+    const stderr = std.io.getStdErr().writer();
+    printWarningTo(stderr, fmt, fmt_args);
 }
 
 /// Print warning message to a specific writer
@@ -219,64 +197,7 @@ pub fn printWarningWithProgram(writer: anytype, prog_name: []const u8, comptime 
     writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
-/// Utility context for clean two-writer API patterns
-/// Contains both stdout and stderr writers for consistent utility interface
-pub fn UtilityContext(comptime StdoutWriter: type, comptime StderrWriter: type) type {
-    return struct {
-        stdout_writer: StdoutWriter,
-        stderr_writer: StderrWriter,
-        prog_name: []const u8,
-        allocator: std.mem.Allocator,
-
-        const Self = @This();
-
-        /// Initialize utility context with custom writers (useful for testing)
-        pub fn init(stdout_writer: StdoutWriter, stderr_writer: StderrWriter, prog_name: []const u8, allocator: std.mem.Allocator) Self {
-            return Self{
-                .stdout_writer = stdout_writer,
-                .stderr_writer = stderr_writer,
-                .prog_name = prog_name,
-                .allocator = allocator,
-            };
-        }
-
-        /// Print error message and exit with error code
-        pub fn fatal(self: Self, comptime fmt: []const u8, fmt_args: anytype) noreturn {
-            fatalWithWriter(self.stderr_writer, fmt, fmt_args);
-        }
-
-        /// Print error message without exiting
-        pub fn printError(self: Self, comptime fmt: []const u8, fmt_args: anytype) void {
-            printErrorWithProgram(self.stderr_writer, self.prog_name, fmt, fmt_args);
-        }
-
-        /// Print warning message without exiting
-        pub fn printWarning(self: Self, comptime fmt: []const u8, fmt_args: anytype) void {
-            printWarningWithProgram(self.stderr_writer, self.prog_name, fmt, fmt_args);
-        }
-
-        /// Print help message to stdout
-        pub fn printHelp(self: Self, comptime usage: []const u8, comptime description: []const u8) !void {
-            try self.stdout_writer.print("Usage: {s} {s}\n\n", .{ self.prog_name, usage });
-            try self.stdout_writer.print("{s}\n", .{description});
-        }
-
-        /// Print version information to stdout
-        pub fn printVersion(self: Self) !void {
-            try self.stdout_writer.print("{s} ({s}) {s}\n", .{ self.prog_name, name, version });
-        }
-    };
-}
-
-/// Standard utility context type for stdout/stderr writers
-pub const StandardUtilityContext = UtilityContext(@TypeOf(std.io.getStdOut().writer()), @TypeOf(std.io.getStdErr().writer()));
-
-/// Initialize standard utility context with stdout/stderr writers
-pub fn initStandardUtilityContext(allocator: std.mem.Allocator) StandardUtilityContext {
-    return StandardUtilityContext.init(std.io.getStdOut().writer(), std.io.getStdErr().writer(), std.fs.path.basename(std.mem.span(std.os.argv[0])), allocator);
-}
-
-/// Common command line options (DEPRECATED - use UtilityContext instead)
+/// Common command line options
 pub const CommonOpts = struct {
     help: bool = false,
     version: bool = false,
@@ -304,8 +225,7 @@ test "common library basics" {
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(ec));
 }
 
-// Import tests to ensure they are run as part of the test suite
+// Import buffering tests to ensure they are run as part of the test suite
 test {
     _ = @import("buffering_test.zig");
-    _ = @import("stderr_pollution_test.zig");
 }

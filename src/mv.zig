@@ -440,7 +440,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     user_interaction.UserInteraction.showProgress(stderr_writer, 0, 2, source_basename) catch |progress_err| {
         // Progress display is optional - continue if it fails
         if (options.verbose) {
-            try stderr_writer.print("mv: warning: failed to display progress: {}\n", .{progress_err});
+            common.printWarningWithProgram(stderr_writer, "mv", "failed to display progress: {}", .{progress_err});
         }
     };
 
@@ -449,10 +449,10 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         // Clear progress on error and provide error message
         user_interaction.UserInteraction.clearProgress(stderr_writer) catch |clear_err| {
             if (options.verbose) {
-                try stderr_writer.print("mv: warning: failed to clear progress display: {}\n", .{clear_err});
+                common.printWarningWithProgram(stderr_writer, "mv", "failed to clear progress display: {}", .{clear_err});
             }
         };
-        try stderr_writer.print("mv: error copying '{s}' to '{s}': {}\n", .{ source, dest, err });
+        common.printErrorWithProgram(stderr_writer, "mv", "error copying '{s}' to '{s}': {}", .{ source, dest, err });
         return err;
     };
 
@@ -460,7 +460,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     // Step 2 of 2: Removing source
     user_interaction.UserInteraction.showProgress(stderr_writer, 1, 2, source_basename) catch |progress_err| {
         if (options.verbose) {
-            try stderr_writer.print("mv: warning: failed to display progress: {}\n", .{progress_err});
+            common.printWarningWithProgram(stderr_writer, "mv", "failed to display progress: {}", .{progress_err});
         }
     };
 
@@ -476,7 +476,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     // Complete progress
     user_interaction.UserInteraction.showProgress(stderr_writer, 2, 2, source_basename) catch |progress_err| {
         if (options.verbose) {
-            try stderr_writer.print("mv: warning: failed to display progress: {}\n", .{progress_err});
+            common.printWarningWithProgram(stderr_writer, "mv", "failed to display progress: {}", .{progress_err});
         }
     };
 }
@@ -621,11 +621,11 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
     const args = common.argparse.ArgParser.parseProcess(MvArgs, allocator) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                try stderr_writer.print("{s}: unrecognized option\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
                 return common.ExitCode.general_error;
             },
             error.MissingValue => {
-                try stderr_writer.print("{s}: option requires an argument\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+                common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
                 return common.ExitCode.general_error;
             },
             else => return err,
@@ -647,7 +647,7 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
 
     const files = args.positionals;
     if (files.len < 2) {
-        try stderr_writer.print("{s}: missing file operand\nTry '{s} --help' for more information.\n", .{ prog_name, prog_name });
+        common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
         return common.ExitCode.general_error;
     }
 
@@ -664,14 +664,14 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
         const dest = files[files.len - 1];
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
-                try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, dest });
+                common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
                 return common.ExitCode.general_error;
             },
             else => return err,
         };
 
         if (dest_stat.kind != .directory) {
-            try stderr_writer.print("{s}: target '{s}' is not a directory\n", .{ prog_name, dest });
+            common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
             return common.ExitCode.general_error;
         }
 
@@ -686,7 +686,7 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
             defer allocator.free(full_dest);
 
             moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch |err| {
-                try stderr_writer.print("{s}: cannot move '{s}' to '{s}': {}\n", .{ prog_name, source, full_dest, err });
+                common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
                 exit_code = common.ExitCode.general_error;
                 continue;
             };
@@ -702,7 +702,7 @@ pub fn runMv(stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.
         const dest = files[1];
 
         moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |err| {
-            try stderr_writer.print("{s}: cannot move '{s}' to '{s}': {}\n", .{ prog_name, source, dest, err });
+            common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, err });
             return common.ExitCode.general_error;
         };
 

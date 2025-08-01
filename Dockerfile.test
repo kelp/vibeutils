@@ -36,7 +36,7 @@ RUN apt-get update && \
     libelf-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Zig (detect architecture)
+# Install Zig from GitHub releases (more reliable than ziglang.org)
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "aarch64" ]; then \
         ZIG_ARCH="aarch64"; \
@@ -45,8 +45,8 @@ RUN ARCH=$(uname -m) && \
     else \
         echo "Unsupported architecture: $ARCH" && exit 1; \
     fi && \
-    curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
-    ln -s /opt/zig-${ZIG_ARCH}-linux-${ZIG_VERSION}/zig /usr/local/bin/zig
+    curl -L https://github.com/ziglang/zig/releases/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig
 
 # Install kcov for coverage (build from source for better compatibility)
 RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
@@ -88,10 +88,21 @@ RUN apt-get update && \
     libdw-dev \
     libiberty-dev \
     zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
-    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    curl -L https://github.com/ziglang/zig/releases/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig
 
 RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
     cd /tmp/kcov && \
@@ -129,15 +140,31 @@ RUN apt-get update && \
     libdw-dev \
     libiberty-dev \
     zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
-    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    curl -L https://github.com/ziglang/zig/releases/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig
 
-# Debian has kcov in repos
-RUN apt-get update && \
-    apt-get install -y kcov && \
-    rm -rf /var/lib/apt/lists/*
+# Build kcov from source for Debian
+RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
+    cd /tmp/kcov && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/kcov
 
 WORKDIR /workspace
 ENV FORCE_COLOR=1
@@ -166,8 +193,16 @@ RUN apk add --no-cache \
     zlib-dev
 
 # Install Zig (Alpine uses musl, so we need the musl build)
-RUN curl -L https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
-    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    curl -L https://github.com/ziglang/zig/releases/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt && \
+    ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig
 
 # Note: kcov might have issues on Alpine/musl, so we skip it here
 # fakeroot is also not available on Alpine by default
