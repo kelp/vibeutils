@@ -33,6 +33,43 @@ const EchoArgs = struct {
     };
 };
 
+/// Main entry point for the echo utility with writer parameter
+pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !u8 {
+    // Parse arguments using new parser
+    const parsed_args = common.argparse.ArgParser.parseArgs(EchoArgs, args, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                try writer.writeAll("echo: invalid argument\n");
+                return common.ExitCode.Failure;
+            },
+            else => return err,
+        }
+    };
+    defer allocator.free(parsed_args.positionals);
+
+    // Handle help
+    if (parsed_args.help) {
+        try printHelp(writer);
+        return common.ExitCode.Success;
+    }
+
+    // Handle version
+    if (parsed_args.version) {
+        try printVersion(writer);
+        return common.ExitCode.Success;
+    }
+
+    // Create options (handle -E flag which disables -e)
+    // Note: -E takes precedence over -e when both are specified
+    const options = EchoOptions{
+        .suppress_newline = parsed_args.n,
+        .interpret_escapes = parsed_args.e and !parsed_args.E,
+    };
+
+    try echoStrings(parsed_args.positionals, writer, options);
+    return common.ExitCode.Success;
+}
+
 /// Main entry point for the echo utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -52,13 +89,15 @@ pub fn main() !void {
 
     // Handle help
     if (args.help) {
-        try printHelp();
+        const stdout = std.io.getStdOut().writer();
+        try printHelp(stdout);
         return;
     }
 
     // Handle version
     if (args.version) {
-        try printVersion();
+        const stdout = std.io.getStdOut().writer();
+        try printVersion(stdout);
         return;
     }
 
@@ -73,10 +112,9 @@ pub fn main() !void {
     try echoStrings(args.positionals, stdout, options);
 }
 
-/// Print help message to stdout
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(
+/// Print help message to the specified writer
+fn printHelp(writer: anytype) !void {
+    try writer.writeAll(
         \\Usage: echo [OPTION]... [STRING]...
         \\Echo the STRING(s) to standard output.
         \\
@@ -98,10 +136,9 @@ fn printHelp() !void {
     );
 }
 
-/// Print version information to stdout
-fn printVersion() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print("echo ({s}) {s}\n", .{ common.name, common.version });
+/// Print version information to the specified writer
+fn printVersion(writer: anytype) !void {
+    try writer.print("echo ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Options for echo behavior
@@ -112,11 +149,9 @@ const EchoOptions = struct {
     interpret_escapes: bool = false,
 };
 
-/// Echo strings to the provided writer with the specified options
-///
-/// This function handles the core echo functionality, writing each string
-/// separated by spaces and optionally interpreting escape sequences.
-fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOptions) !void {
+/// Echo strings to the provided writer with the specified options.
+/// Writes each string separated by spaces and optionally interprets escape sequences.
+pub fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOptions) !void {
     for (strings, 0..) |str, i| {
         if (i > 0) try writer.writeAll(" ");
 

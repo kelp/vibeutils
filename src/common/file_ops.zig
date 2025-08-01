@@ -5,8 +5,9 @@ const lib = @import("lib.zig");
 /// Set file permissions using the most reliable method available
 ///
 /// On macOS in CI environments, File.chmod() can cause SIGABRT errors under fakeroot.
-/// This function uses std.posix.fchmod() directly on the file descriptor as a more
-/// reliable approach. For directories, it accepts either a Dir or File handle.
+/// On Linux under fakeroot, setting special permissions (setuid, setgid, sticky) can hang.
+/// This function uses std.posix.fchmod() directly on the file descriptor and handles
+/// platform-specific limitations gracefully.
 ///
 /// # Why posix.fchmod instead of File.chmod?
 /// File.chmod() can fail with EFAULT on macOS in certain environments (like GitHub Actions
@@ -19,8 +20,8 @@ const lib = @import("lib.zig");
 /// - context: Optional context for error reporting (e.g., file path)
 ///
 /// # Returns
-/// Returns an error if the operation fails on non-macOS platforms or if the
-/// macOS fallback also fails.
+/// Returns an error if the operation fails on supported platforms, or warns and continues
+/// on platforms with known limitations (macOS CI, Linux fakeroot with special permissions).
 pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8) !void {
     const handle_type = @TypeOf(handle);
 
@@ -32,7 +33,21 @@ pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const
     else
         @compileError("setPermissions expects std.fs.File or std.fs.Dir");
 
-    std.posix.fchmod(fd, mode) catch |err| {
+    // Check for special permissions (setuid, setgid, sticky bit)
+    const has_special_bits = (mode & 0o7000) != 0;
+
+    // On Linux under fakeroot, setting special permissions can cause hangs
+    // Strip special bits and warn the user
+    const effective_mode = if (isRunningUnderLinuxFakeroot() and has_special_bits) blk: {
+        if (context) |ctx| {
+            lib.printWarning("Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
+        } else {
+            lib.printWarning("Stripped special permissions (Linux fakeroot limitation)", .{});
+        }
+        break :blk mode & 0o0777; // Keep only regular permissions
+    } else mode;
+
+    std.posix.fchmod(fd, effective_mode) catch |err| {
         // On macOS, especially in CI environments with fakeroot, permission
         // operations may fail. We report this as a warning but don't fail
         // the operation since the file operation itself succeeded.
@@ -82,6 +97,28 @@ pub fn isRunningInCI() bool {
     return false;
 }
 
+/// Check if running under fakeroot on Linux
+///
+/// Fakeroot sets the FAKEROOTKEY environment variable when active.
+/// This is used to detect when special permission operations might hang.
+///
+/// # Returns
+/// true if running under fakeroot on Linux, false otherwise
+pub fn isRunningUnderLinuxFakeroot() bool {
+    if (builtin.os.tag != .linux) return false;
+
+    // Use a small stack buffer to avoid allocation issues
+    var buffer: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+
+    if (std.process.getEnvVarOwned(fba.allocator(), "FAKEROOTKEY")) |val| {
+        defer fba.allocator().free(val);
+        return true;
+    } else |_| {
+        return false;
+    }
+}
+
 /// Check if should skip privileged tests on macOS CI
 ///
 /// Some privileged operations can cause SIGABRT on macOS in CI environments
@@ -95,7 +132,7 @@ pub fn shouldSkipMacOSCITest() bool {
 }
 
 test "setPermissions with file" {
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const file = try tmp_dir.dir.createFile("test.txt", .{});
@@ -109,7 +146,7 @@ test "setPermissions with file" {
 }
 
 test "setPermissions with directory" {
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     try tmp_dir.dir.makeDir("subdir");
@@ -131,4 +168,16 @@ test "CI detection" {
 
     const should_skip = shouldSkipMacOSCITest();
     _ = should_skip;
+}
+
+test "Linux fakeroot detection" {
+    // This test just verifies the function compiles and runs
+    // Actual result depends on environment
+    const under_fakeroot = isRunningUnderLinuxFakeroot();
+
+    // On non-Linux platforms, should always return false
+    if (builtin.os.tag != .linux) {
+        try std.testing.expectEqual(false, under_fakeroot);
+    }
+    // On Linux platforms, the function should run without error regardless of result
 }

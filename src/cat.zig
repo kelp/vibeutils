@@ -51,6 +51,70 @@ fn printVersion(writer: anytype) !void {
     try writer.print("cat ({s}) {s}\n", .{ common.name, common.version });
 }
 
+/// Main entry point for cat utility with writer parameter
+pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !u8 {
+    // Parse arguments using new parser
+    const parsed_args = common.argparse.ArgParser.parseArgs(CatArgs, args, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                try writer.writeAll("cat: invalid argument\n");
+                return common.ExitCode.Failure;
+            },
+            else => return err,
+        }
+    };
+    defer allocator.free(parsed_args.positionals);
+
+    // Handle help
+    if (parsed_args.help) {
+        try printHelp(writer);
+        return common.ExitCode.Success;
+    }
+
+    // Handle version
+    if (parsed_args.version) {
+        try printVersion(writer);
+        return common.ExitCode.Success;
+    }
+
+    // Create options struct with proper flag combinations
+    // -A is equivalent to -vET, -e is equivalent to -vE, -t is equivalent to -vT
+    const options = CatOptions{
+        .number_lines = parsed_args.number,
+        .number_nonblank = parsed_args.number_nonblank,
+        .squeeze_blank = parsed_args.squeeze_blank,
+        .show_ends = parsed_args.show_ends or parsed_args.show_all or parsed_args.e,
+        .show_tabs = parsed_args.show_tabs or parsed_args.show_all or parsed_args.t,
+        .show_nonprinting = parsed_args.show_nonprinting or parsed_args.show_all or parsed_args.e or parsed_args.t,
+    };
+
+    const stdin = std.io.getStdIn().reader();
+
+    var line_state = LineNumberState{};
+
+    if (parsed_args.positionals.len == 0) {
+        // No files specified, read from stdin
+        try processInput(stdin, writer, options, &line_state);
+    } else {
+        // Process each file in order
+        for (parsed_args.positionals) |file_path| {
+            if (std.mem.eql(u8, file_path, "-")) {
+                // "-" means read from stdin
+                try processInput(stdin, writer, options, &line_state);
+            } else {
+                // Open and process regular file
+                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                    try writer.print("cat: {s}: {}\n", .{ file_path, err });
+                    return common.ExitCode.Failure;
+                };
+                defer file.close();
+                try processInput(file.reader(), writer, options, &line_state);
+            }
+        }
+    }
+    return common.ExitCode.Success;
+}
+
 /// Process files or stdin with the specified formatting options
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -165,7 +229,7 @@ const LineNumberState = struct {
 
 /// Format output according to the specified options.
 /// Maintains line numbering state across multiple files.
-fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
+pub fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
     var buf_reader = std.io.bufferedReader(reader);
     var input = buf_reader.reader();
 

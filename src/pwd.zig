@@ -34,6 +34,58 @@ const PwdOptions = struct {
     physical: bool = true,
 };
 
+/// Main entry point for pwd utility with writer parameter
+pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype) !u8 {
+    // Parse command-line arguments using the common argument parser
+    const parsed_args = common.argparse.ArgParser.parseArgs(PwdArgs, args, allocator) catch |err| {
+        switch (err) {
+            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
+                try writer.writeAll("pwd: invalid argument\n");
+                return common.ExitCode.Failure;
+            },
+            else => return err,
+        }
+    };
+    defer allocator.free(parsed_args.positionals);
+
+    // Handle help flag - display usage information and exit
+    if (parsed_args.help) {
+        try printHelp(writer);
+        return common.ExitCode.Success;
+    }
+
+    // Handle version flag - display version and exit
+    if (parsed_args.version) {
+        try writer.print("pwd ({s}) {s}\n", .{ common.name, common.version });
+        return common.ExitCode.Success;
+    }
+
+    // Initialize options with defaults (physical mode)
+    var options = PwdOptions{};
+
+    // Process mode flags - when both -L and -P are given, the last one wins
+    // This behavior matches POSIX specifications
+    if (parsed_args.logical) {
+        options.logical = true;
+        options.physical = false;
+    }
+    if (parsed_args.physical) {
+        options.logical = false;
+        options.physical = true;
+    }
+
+    // Retrieve the current working directory based on the selected mode
+    const cwd = getWorkingDirectory(allocator, options) catch |err| {
+        try writer.print("pwd: failed to get current directory: {s}\n", .{@errorName(err)});
+        return common.ExitCode.Failure;
+    };
+    defer allocator.free(cwd);
+
+    // Print the directory path followed by a newline
+    try writer.print("{s}\n", .{cwd});
+    return common.ExitCode.Success;
+}
+
 /// Main entry point for pwd utility
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -55,7 +107,8 @@ pub fn main() !void {
 
     // Handle help flag - display usage information and exit
     if (args.help) {
-        try printHelp();
+        const stdout = std.io.getStdOut().writer();
+        try printHelp(stdout);
         return;
     }
 
@@ -92,10 +145,9 @@ pub fn main() !void {
     };
 }
 
-/// Print help message to stdout
-fn printHelp() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.writeAll(
+/// Print help message to the specified writer
+fn printHelp(writer: anytype) !void {
+    try writer.writeAll(
         \\Usage: pwd [OPTION]...
         \\Print the full filename of the current working directory.
         \\
@@ -117,7 +169,7 @@ fn printHelp() !void {
 }
 
 /// Get current working directory according to options
-fn getWorkingDirectory(allocator: std.mem.Allocator, options: PwdOptions) ![]const u8 {
+pub fn getWorkingDirectory(allocator: std.mem.Allocator, options: PwdOptions) ![]const u8 {
     if (options.logical) {
         // Attempt to use PWD environment variable in logical mode
         if (std.process.getEnvVarOwned(allocator, "PWD")) |pwd_env| {
