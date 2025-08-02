@@ -314,6 +314,20 @@ jobs:
           exit 1
         }
         
+    - name: Install documentation tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mandoc
+        
+    - name: Lint man pages
+      run: |
+        echo "Checking man page quality..."
+        chmod +x scripts/lint-man-pages.sh
+        ./scripts/lint-man-pages.sh --ci || {
+          echo "::error::Man page linting failed"
+          exit 1
+        }
+        
     - name: Check for code quality issues
       run: |
         echo "Checking for code quality issues..."

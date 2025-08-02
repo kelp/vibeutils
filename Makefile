@@ -1,5 +1,5 @@
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check ci-validate docs help \
-        test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help \
+        test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open
 
 # Default target
 all: build
@@ -107,6 +107,19 @@ fmt:
 fmt-check:
 	zig build fmt-check
 
+# Man page linting
+lint-man:
+	@echo "Linting man pages..."
+	@./scripts/lint-man-pages.sh
+
+lint-man-strict:
+	@echo "Linting man pages (strict mode)..."
+	@./scripts/lint-man-pages.sh --fail-on-warnings
+
+lint-man-verbose:
+	@echo "Linting man pages (verbose)..."
+	@./scripts/lint-man-pages.sh --verbose
+
 # CI validation
 ci-validate:
 	zig build ci-validate -Dci=true
@@ -200,5 +213,13 @@ help:
 	@echo "  make run-<utility>       - Run utility (e.g., make run-echo ARGS='hello')"
 	@echo "  make fmt                 - Format source code"
 	@echo "  make fmt-check           - Check code formatting"
+	@echo "  make lint-man            - Lint all man pages"
+	@echo "  make lint-man-strict     - Lint man pages (fail on warnings)"
+	@echo "  make lint-man-verbose    - Lint man pages with detailed output"
 	@echo "  make ci-validate         - Run CI validation checks"
+	@echo ""
+	@echo "Documentation:"
 	@echo "  make docs                - Generate API documentation"
+	@echo "  make docs-html           - Generate full HTML documentation site"
+	@echo "  make docs-serve          - Start local documentation server"
+	@echo "  make docs-open           - Open documentation in browser"

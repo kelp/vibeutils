@@ -58,23 +58,11 @@ jobs:
         
     - name: Validate man pages
       run: |
-        echo "Validating man pages..."
-        
-        # Check that man pages exist for all utilities
-        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
-          if [ -f "src/${utility}.zig" ] || [ -f "src/${utility}/main.zig" ]; then
-            if [ -f "man/man1/${utility}.1" ]; then
-              echo "✅ Man page exists for ${utility}"
-              
-              # Validate man page syntax
-              mandoc -T lint "man/man1/${utility}.1" || {
-                echo "::warning::Man page syntax issues in ${utility}.1"
-              }
-            else
-              echo "::warning::Missing man page for ${utility}"
-            fi
-          fi
-        done
+        echo "Linting man pages with comprehensive checks..."
+        ./scripts/lint-man-pages.sh --ci --verbose || {
+          echo "::error::Man page linting failed"
+          exit 1
+        }
         
     - name: Generate documentation
       run: |
