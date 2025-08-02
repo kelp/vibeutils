@@ -66,9 +66,7 @@ pub const Entry = struct {
         }
 
         // Add filename width (using actual display width for Unicode)
-        // TODO: Implement proper Unicode display width calculation
-        // For now, use byte length as approximation
-        width += self.name.len;
+        width += common.unicode.displayWidth(self.name);
 
         // Add file type indicator if enabled
         if (file_type_indicators) {

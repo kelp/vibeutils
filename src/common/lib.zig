@@ -60,6 +60,9 @@ pub const copy_engine = @import("copy_engine.zig");
 /// Copy options and types for file copying operations
 pub const copy_options = @import("copy_options.zig");
 
+/// Unicode display width calculation for terminal output
+pub const unicode = @import("unicode.zig");
+
 /// Version information from build configuration
 pub const version = build_options.version;
 
