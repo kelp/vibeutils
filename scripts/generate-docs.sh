@@ -87,39 +87,79 @@ done
 echo ""
 
 # Create CSS file
-echo "Creating stylesheet..."
+echo "Creating stylesheet with auto dark/light mode..."
 cat > docs/html/style.css << 'EOF'
+/* Light mode colors (default) */
+:root {
+    --bg-color: #ffffff;
+    --text-color: #333333;
+    --heading-color: #2c3e50;
+    --link-color: #0066cc;
+    --code-bg: #f4f4f4;
+    --pre-bg: #f8f8f8;
+    --border-color: #dddddd;
+    --blockquote-border: #3498db;
+    --footer-color: #666666;
+    --card-bg: #ffffff;
+    --th-bg: #f2f2f2;
+}
+
+/* Dark mode colors */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-color: #1a1a1a;
+        --text-color: #e0e0e0;
+        --heading-color: #69b7f0;
+        --link-color: #69b7f0;
+        --code-bg: #2d2d2d;
+        --pre-bg: #262626;
+        --border-color: #404040;
+        --blockquote-border: #69b7f0;
+        --footer-color: #999999;
+        --card-bg: #242424;
+        --th-bg: #2d2d2d;
+    }
+}
+
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     line-height: 1.6;
     max-width: 800px;
     margin: 0 auto;
     padding: 20px;
-    color: #333;
+    color: var(--text-color);
+    background-color: var(--bg-color);
+    transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-h1, h2, h3 { color: #2c3e50; }
+h1, h2, h3 { 
+    color: var(--heading-color);
+    transition: color 0.3s ease;
+}
 
 code {
-    background-color: #f4f4f4;
+    background-color: var(--code-bg);
     padding: 2px 4px;
     border-radius: 3px;
     font-family: 'Monaco', 'Consolas', monospace;
+    transition: background-color 0.3s ease;
 }
 
 pre {
-    background-color: #f8f8f8;
-    border: 1px solid #ddd;
+    background-color: var(--pre-bg);
+    border: 1px solid var(--border-color);
     border-radius: 5px;
     padding: 15px;
     overflow-x: auto;
+    transition: background-color 0.3s ease, border-color 0.3s ease;
 }
 
 blockquote {
-    border-left: 4px solid #3498db;
+    border-left: 4px solid var(--blockquote-border);
     margin: 0;
     padding-left: 20px;
     font-style: italic;
+    transition: border-color 0.3s ease;
 }
 
 table {
@@ -128,13 +168,15 @@ table {
 }
 
 th, td {
-    border: 1px solid #ddd;
+    border: 1px solid var(--border-color);
     padding: 8px;
     text-align: left;
+    transition: border-color 0.3s ease;
 }
 
 th {
-    background-color: #f2f2f2;
+    background-color: var(--th-bg);
+    transition: background-color 0.3s ease;
 }
 
 .utility-list {
@@ -144,9 +186,11 @@ th {
 }
 
 .utility-card {
-    border: 1px solid #ddd;
+    border: 1px solid var(--border-color);
     padding: 10px;
     border-radius: 5px;
+    background-color: var(--card-bg);
+    transition: background-color 0.3s ease, border-color 0.3s ease;
 }
 
 .utility-card h3 {
@@ -154,8 +198,9 @@ th {
 }
 
 a {
-    color: #0066cc;
+    color: var(--link-color);
     text-decoration: none;
+    transition: color 0.3s ease;
 }
 
 a:hover {
@@ -165,9 +210,10 @@ a:hover {
 footer {
     margin-top: 50px;
     padding-top: 20px;
-    border-top: 1px solid #ddd;
-    color: #666;
+    border-top: 1px solid var(--border-color);
+    color: var(--footer-color);
     font-size: 0.9em;
+    transition: border-color 0.3s ease, color 0.3s ease;
 }
 EOF
 echo -e "${GREEN}✅ Stylesheet created${NC}"
