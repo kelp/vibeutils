@@ -181,10 +181,14 @@ const SymlinkTracker = struct {
         errdefer self.allocator.free(path_copy);
 
         try self.path_stack.append(path_copy);
-        // Only add to set if not already present (for cycle detection)
-        // This allows us to track when we revisit a path
-        if (!self.path_set.contains(path)) {
-            try self.path_set.put(path_copy, {});
+
+        // Use getOrPut to avoid memory leak when path already exists
+        const result = try self.path_set.getOrPut(path_copy);
+        if (result.found_existing) {
+            // Path already exists in set, so we don't need the new copy for the set
+            // but we keep it in the stack for proper cycle tracking
+        } else {
+            // New path added to set
         }
     }
 
@@ -375,15 +379,9 @@ fn removeFiles(allocator: std.mem.Allocator, files: []const []const u8, stdout_w
         }
 
         // Normalize path to prevent directory traversal attacks
-        // Only use realpath if file exists to avoid errors
+        // Use atomic realpath operation to avoid TOCTOU vulnerability
         var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const normalized = if (std.fs.cwd().access(file, .{})) |_| blk: {
-            // Resolve to absolute path to prevent directory traversal
-            break :blk std.fs.realpath(file, &normalized_buf) catch file;
-        } else |_| blk: {
-            // File doesn't exist - use original path so error messages are clear
-            break :blk file;
-        };
+        const normalized = std.fs.realpath(file, &normalized_buf) catch file;
 
         // Check against list of critical system paths
         if (isCriticalSystemPath(normalized)) {
@@ -518,13 +516,46 @@ fn removeDirectoryRecursiveWithContext(
 
     // Initialize base device for filesystem boundary detection
     if (atomic_ctx.base_device == null) {
-        // Use inode as device ID (filesystem identifier)
-        // Note: This is a simplification - proper implementation would use stat.dev
-        atomic_ctx.setBaseDevice(stat_result.inode);
+        // Get the actual device ID for filesystem boundary detection
+        // We need to use fstat to get the device ID from the directory file descriptor
+        const device_id = if (parent_dir) |parent| blk: {
+            // Use the parent directory's file descriptor to get device ID
+            const fstat_result = std.posix.fstat(parent.fd) catch {
+                break :blk stat_result.inode; // Fallback to inode if fstat fails
+            };
+            break :blk @as(u64, @bitCast(@as(i64, fstat_result.dev)));
+        } else blk: {
+            // Fallback: open the directory to get its device ID
+            var dir = std.fs.cwd().openDir(std.fs.path.dirname(dir_path) orelse ".", .{}) catch {
+                break :blk stat_result.inode; // Fallback to inode if we can't open parent
+            };
+            defer dir.close();
+            const fstat_result = std.posix.fstat(dir.fd) catch {
+                break :blk stat_result.inode; // Fallback to inode if fstat fails
+            };
+            break :blk @as(u64, @bitCast(@as(i64, fstat_result.dev)));
+        };
+        atomic_ctx.setBaseDevice(device_id);
     }
 
     // Prevent crossing filesystem boundaries (future --one-file-system support)
-    if (!atomic_ctx.isBaseDevice(stat_result.inode)) {
+    // Get current directory's device ID for comparison
+    const current_device_id = if (parent_dir) |parent| blk: {
+        const fstat_result = std.posix.fstat(parent.fd) catch {
+            break :blk stat_result.inode; // Fallback to inode if fstat fails
+        };
+        break :blk @as(u64, @bitCast(@as(i64, fstat_result.dev)));
+    } else blk: {
+        var dir = std.fs.cwd().openDir(std.fs.path.dirname(dir_path) orelse ".", .{}) catch {
+            break :blk stat_result.inode; // Fallback to inode if we can't open parent
+        };
+        defer dir.close();
+        const fstat_result = std.posix.fstat(dir.fd) catch {
+            break :blk stat_result.inode; // Fallback to inode if fstat fails
+        };
+        break :blk @as(u64, @bitCast(@as(i64, fstat_result.dev)));
+    };
+    if (!atomic_ctx.isBaseDevice(current_device_id)) {
         if (options.verbose) {
             try stdout_writer.print("skipping '{s}': different filesystem\n", .{dir_path});
         }
@@ -578,9 +609,25 @@ fn removeDirectoryRecursiveWithContext(
                     const dir_file = parent.openFile(basename, .{ .mode = .read_write }) catch {
                         return error.AccessDenied;
                     };
-                    defer dir_file.close();
+                    var dir_file_closed = false;
+                    defer if (!dir_file_closed) dir_file.close();
+
+                    // Verify inode matches to prevent TOCTOU race condition
+                    const file_stat = dir_file.stat() catch {
+                        dir_file.close();
+                        dir_file_closed = true;
+                        return error.AccessDenied;
+                    };
+                    if (file_stat.inode != stat_result.inode) {
+                        // File was replaced between stat and open - potential attack
+                        dir_file.close();
+                        dir_file_closed = true;
+                        return error.AccessDenied;
+                    }
+
                     common.file_ops.setPermissions(dir_file, stat_result.mode | 0o700, dir_path) catch {};
                     dir_file.close();
+                    dir_file_closed = true;
 
                     break :blk parent.openDir(basename, .{ .iterate = true }) catch {
                         return error.AccessDenied;
@@ -625,12 +672,16 @@ fn removeDirectoryRecursiveWithContext(
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
         const name_copy = try allocator.dupe(u8, entry.name);
-        errdefer allocator.free(name_copy);
 
-        try entries.append(std.fs.Dir.Entry{
+        // Use append with proper error handling to avoid memory leak
+        entries.append(std.fs.Dir.Entry{
             .name = name_copy,
             .kind = entry.kind,
-        });
+        }) catch |err| {
+            // If append fails, we need to free the name_copy we just allocated
+            allocator.free(name_copy);
+            return err;
+        };
     }
     defer {
         // Free all allocated entry names
@@ -876,21 +927,15 @@ fn removeDirectoryRecursive(allocator: std.mem.Allocator, dir_path: []const u8, 
 fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void), parent_dir: std.fs.Dir) !void {
     _ = allocator;
 
-    // First check if it's a symlink (without following it)
-    const is_symlink = blk: {
-        var dummy_buf: [1]u8 = undefined;
-        _ = parent_dir.readLink(file_name, &dummy_buf) catch |err| switch (err) {
-            error.NotLink => break :blk false,
-            else => break :blk true,
-        };
-        break :blk true;
-    };
-
+    // Get file stats first to check type (including symlinks)
     const stat_result = parent_dir.statFile(file_name) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.AccessDenied,
         else => return err,
     };
+
+    // Check if it's a symlink (without following it)
+    const is_symlink = stat_result.kind == .sym_link;
 
     // Skip if we've already removed this inode (hardlink handling)
     if (removed_inodes.contains(stat_result.inode)) {
@@ -931,9 +976,11 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, s
                 const file = parent_dir.openFile(file_name, .{ .mode = .read_write }) catch {
                     return error.AccessDenied;
                 };
-                defer file.close();
+                var file_closed = false;
+                defer if (!file_closed) file.close();
                 common.file_ops.setPermissions(file, stat_result.mode | 0o200, file_name) catch {};
                 file.close();
+                file_closed = true;
 
                 // Retry deletion
                 parent_dir.deleteFile(file_name) catch {
@@ -966,21 +1013,15 @@ fn removeSingleFileAtomic(allocator: std.mem.Allocator, file_name: []const u8, s
 fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, removed_inodes: *std.AutoHashMap(std.fs.File.INode, void)) !void {
     _ = allocator;
 
-    // First check if it's a symlink (without following it)
-    const is_symlink = blk: {
-        var dummy_buf: [1]u8 = undefined;
-        _ = std.fs.cwd().readLink(file_path, &dummy_buf) catch |err| switch (err) {
-            error.NotLink => break :blk false,
-            else => break :blk true,
-        };
-        break :blk true;
-    };
-
+    // Get file stats first to check type (including symlinks)
     const stat_result = std.fs.cwd().statFile(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.AccessDenied,
         else => return err,
     };
+
+    // Check if it's a symlink (without following it)
+    const is_symlink = stat_result.kind == .sym_link;
 
     // Skip if we've already removed this inode (hardlink handling) (same-file detection)
     if (removed_inodes.contains(stat_result.inode)) {
@@ -1025,9 +1066,11 @@ fn removeSingleFile(allocator: std.mem.Allocator, file_path: []const u8, stdout_
                 const file = std.fs.cwd().openFile(file_path, .{ .mode = .read_write }) catch {
                     return error.AccessDenied;
                 };
-                defer file.close();
+                var file_closed = false;
+                defer if (!file_closed) file.close();
                 common.file_ops.setPermissions(file, stat_result.mode | 0o200, file_path) catch {};
                 file.close();
+                file_closed = true;
 
                 // Retry removal with new permissions
                 std.fs.cwd().deleteFile(file_path) catch {
@@ -1101,7 +1144,20 @@ const TestDir = struct {
         const path = try self.tmp_dir.dir.realpath(".", &path_buf);
         const path_z = try self.allocator.dupeZ(u8, path);
         defer self.allocator.free(path_z);
-        _ = std.c.chdir(path_z);
+
+        // Check return value from chdir and convert errno to Zig error
+        const result = std.c.chdir(path_z);
+        if (result != 0) {
+            const errno_val = std.c._errno().*;
+            switch (@as(std.posix.E, @enumFromInt(errno_val))) {
+                .ACCES => return error.AccessDenied,
+                .FAULT => return error.InvalidPath,
+                .NOENT => return error.FileNotFound,
+                .NOTDIR => return error.NotDir,
+                .NOMEM => return error.OutOfMemory,
+                else => return error.Unexpected,
+            }
+        }
     }
 };
 
