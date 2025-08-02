@@ -1,0 +1,154 @@
+.\" OpenBSD-style concise man page
+.Dd August 2, 2025
+.Dt CHMOD 1
+.Os
+.Sh NAME
+.Nm chmod
+.Nd change file mode bits
+.Sh SYNOPSIS
+.Nm
+.Op Fl Rv
+.Ar mode
+.Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility modifies the file mode bits of the listed files
+as specified by the
+.Ar mode
+operand.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl R
+Recursively change file mode bits.
+For each
+.Ar file
+operand that names a directory,
+.Nm
+changes the file mode bits of the directory
+and all files in the file hierarchy below it.
+.It Fl v
+Verbose mode.
+Explain what is being done.
+.El
+.Pp
+The
+.Ar mode
+may be either an octal number or a symbolic value.
+.Pp
+An octal mode is specified with three or four octal digits (0-7):
+.Bl -tag -width "4000" -compact
+.It Li 4000
+Set-user-ID on execution
+.It Li 2000
+Set-group-ID on execution
+.It Li 1000
+Sticky bit
+.It Li 0400
+Read by owner
+.It Li 0200
+Write by owner
+.It Li 0100
+Execute by owner
+.It Li 0040
+Read by group
+.It Li 0020
+Write by group
+.It Li 0010
+Execute by group
+.It Li 0004
+Read by others
+.It Li 0002
+Write by others
+.It Li 0001
+Execute by others
+.El
+.Pp
+A symbolic mode has the form:
+.Bd -literal -offset indent
+[who] op [perm]
+.Ed
+.Pp
+The
+.Ar who
+symbols are:
+.Bl -tag -width Ds -compact
+.It Li u
+User (owner) permissions
+.It Li g
+Group permissions
+.It Li o
+Other permissions
+.It Li a
+All permissions (equivalent to
+.Li ugo )
+.El
+.Pp
+The
+.Ar op
+symbols are:
+.Bl -tag -width Ds -compact
+.It Li +
+Add permissions
+.It Li -
+Remove permissions
+.It Li =
+Set permissions explicitly
+.El
+.Pp
+The
+.Ar perm
+symbols are:
+.Bl -tag -width Ds -compact
+.It Li r
+Read permission
+.It Li w
+Write permission
+.It Li x
+Execute permission
+.It Li X
+Execute only if file is a directory or already has execute permission
+.It Li s
+Set-user-ID or set-group-ID
+.It Li t
+Sticky bit
+.El
+.Sh EXAMPLES
+Make a file executable by the owner:
+.Dl $ chmod u+x script.sh
+.Pp
+Remove write permission for group and others:
+.Dl $ chmod go-w document.txt
+.Pp
+Set specific permissions using octal notation:
+.Dl $ chmod 755 program
+.Pp
+Recursively make all files in a directory tree readable by everyone:
+.Dl $ chmod -R a+r project/
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr chown 1 ,
+.Xr ls 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Sh HISTORY
+A
+.Nm
+command appeared in
+.At v1 .
+.Sh AUTHORS
+.An vibeutils
+implementation by
+.An Travis Cole
+.Sh CAVEATS
+Only the file's owner or the superuser may change a file's mode.
+.Pp
+The
+.Fl R
+option does not follow symbolic links.

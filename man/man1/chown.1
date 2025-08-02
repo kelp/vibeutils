@@ -1,0 +1,120 @@
+.\" OpenBSD-style concise man page
+.Dd August 2, 2025
+.Dt CHOWN 1
+.Os
+.Sh NAME
+.Nm chown
+.Nd change file owner and group
+.Sh SYNOPSIS
+.Nm
+.Op Fl Rhv
+.Ar owner Ns Op : Ns Ar group
+.Ar file ...
+.Nm
+.Op Fl Rhv
+: Ns Ar group
+.Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility changes the user ID and/or the group ID of the specified files.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl R
+Recursively change ownership of files.
+For each
+.Ar file
+operand that names a directory,
+.Nm
+changes the user ID and/or group ID of the directory
+and all files in the file hierarchy below it.
+.It Fl h
+Change the ownership of symbolic links themselves,
+rather than the files they point to.
+.It Fl v
+Verbose mode.
+Explain what is being done.
+.El
+.Pp
+The
+.Ar owner
+and
+.Ar group
+operands are both optional;
+however, at least one must be specified.
+If the
+.Ar group
+operand is specified,
+it must be preceded by a colon
+.Pq Sq \&:
+character.
+.Pp
+The
+.Ar owner
+may be either a numeric user ID or a user name.
+If a user name is also a numeric user ID,
+the operand is used as a user name.
+.Pp
+The
+.Ar group
+may be either a numeric group ID or a group name.
+If a group name is also a numeric group ID,
+the operand is used as a group name.
+.Pp
+For obvious security reasons,
+the ownership of a file may only be altered by a superuser.
+.Sh EXAMPLES
+Change the owner of file.txt to user alice:
+.Dl $ chown alice file.txt
+.Pp
+Change the owner to bob and group to staff:
+.Dl $ chown bob:staff document.pdf
+.Pp
+Change only the group to developers:
+.Dl $ chown :developers project.c
+.Pp
+Recursively change ownership of all files in a directory:
+.Dl $ chown -R alice:alice /home/alice/
+.Pp
+Change ownership using numeric IDs:
+.Dl $ chown 1001:1001 data.db
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr chmod 1 ,
+.Xr ls 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The use of the
+.Fl h
+flag is an extension to that specification.
+.Sh HISTORY
+A
+.Nm
+command appeared in
+.At v1 .
+.Sh AUTHORS
+.An vibeutils
+implementation by
+.An Travis Cole
+.Sh CAVEATS
+Previous versions of the
+.Nm
+utility used the dot
+.Pq Sq \&.
+character to distinguish the group name.
+This has been changed to comply with the POSIX specification.
+.Pp
+Only the superuser is permitted to change the ownership of files.
+.Pp
+The
+.Fl R
+option does not follow symbolic links unless the
+.Fl h
+option is also specified.
