@@ -60,19 +60,8 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Initialize options with defaults (physical mode)
-    var options = PwdOptions{};
-
-    // Process mode flags - when both -L and -P are given, the last one wins
-    // This behavior matches POSIX specifications
-    if (parsed_args.logical) {
-        options.logical = true;
-        options.physical = false;
-    }
-    if (parsed_args.physical) {
-        options.logical = false;
-        options.physical = true;
-    }
+    // Process command line flags to determine operation mode
+    const options = processModeFlags(parsed_args);
 
     // Retrieve the current working directory based on the selected mode
     const cwd = getWorkingDirectory(allocator, options) catch |err| {
@@ -101,6 +90,25 @@ pub fn main() !void {
 
     const exit_code = try runPwd(allocator, args[1..], stdout, stderr);
     std.process.exit(exit_code);
+}
+
+/// Process command line flags and return appropriate options
+/// When both -L and -P are given, the last one wins (POSIX behavior)
+fn processModeFlags(parsed_args: PwdArgs) PwdOptions {
+    var options = PwdOptions{};
+
+    // Process mode flags - when both -L and -P are given, the last one wins
+    // This behavior matches POSIX specifications
+    if (parsed_args.logical) {
+        options.logical = true;
+        options.physical = false;
+    }
+    if (parsed_args.physical) {
+        options.logical = false;
+        options.physical = true;
+    }
+
+    return options;
 }
 
 /// Print help message to the specified writer
@@ -289,4 +297,169 @@ test "pwd output format" {
         if (c == '\n') newline_count += 1;
     }
     try testing.expectEqual(@as(usize, 1), newline_count);
+}
+
+test "runPwd with help flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"--help"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print help to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: pwd") != null);
+
+    // Should not print anything to stderr
+    try testing.expectEqualStrings("", stderr_buffer.items);
+}
+
+test "runPwd with version flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"--version"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print version to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "pwd") != null);
+
+    // Should not print anything to stderr
+    try testing.expectEqualStrings("", stderr_buffer.items);
+}
+
+test "runPwd with short help flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"-h"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print help to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: pwd") != null);
+}
+
+test "runPwd with short version flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"-V"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print version to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "pwd") != null);
+}
+
+test "runPwd with no arguments" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print current directory to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(stdout_buffer.items[0] == '/'); // Should be absolute path
+    try testing.expect(stdout_buffer.items[stdout_buffer.items.len - 1] == '\n'); // Should end with newline
+
+    // Should not print anything to stderr
+    try testing.expectEqualStrings("", stderr_buffer.items);
+}
+
+test "runPwd with -L flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"-L"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print current directory to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(stdout_buffer.items[0] == '/'); // Should be absolute path
+    try testing.expect(stdout_buffer.items[stdout_buffer.items.len - 1] == '\n'); // Should end with newline
+
+    // Should not print anything to stderr
+    try testing.expectEqualStrings("", stderr_buffer.items);
+}
+
+test "runPwd with -P flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"-P"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return success exit code
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should print current directory to stdout
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(stdout_buffer.items[0] == '/'); // Should be absolute path
+    try testing.expect(stdout_buffer.items[stdout_buffer.items.len - 1] == '\n'); // Should end with newline
+
+    // Should not print anything to stderr
+    try testing.expectEqualStrings("", stderr_buffer.items);
+}
+
+test "runPwd with invalid flag" {
+    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stdout_buffer.deinit();
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{"--invalid"};
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+
+    // Should return error exit code
+    try testing.expectEqual(@as(u8, 1), result);
+
+    // Should not print anything to stdout
+    try testing.expectEqualStrings("", stdout_buffer.items);
+
+    // Should print error to stderr
+    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd: invalid argument") != null);
 }

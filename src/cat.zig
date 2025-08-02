@@ -14,6 +14,9 @@ const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 
+/// ASCII DEL character (0x7F)
+const ASCII_DEL = 127;
+
 /// Command-line arguments for cat
 const CatArgs = struct {
     help: bool = false,
@@ -104,7 +107,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(stderr_writer, "cat", "{s}: {}", .{ file_path, err });
+                    common.printErrorWithProgram(stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 defer file.close();
@@ -232,7 +235,7 @@ fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions)
         } else if (options.show_nonprinting and ch < 32 and ch != '\t' and ch != '\n') {
             // Control characters
             try writer.print("^{c}", .{ch + 64});
-        } else if (options.show_nonprinting and ch == 127) {
+        } else if (options.show_nonprinting and ch == ASCII_DEL) {
             try writer.writeAll("^?");
         } else if (options.show_nonprinting and ch >= 128) {
             // High bit set - use M- notation
@@ -241,7 +244,7 @@ fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions)
             if (ch_low < 32) {
                 // Control character in high range
                 try writer.print("^{c}", .{ch_low + 64});
-            } else if (ch_low == 127) {
+            } else if (ch_low == ASCII_DEL) {
                 // DEL character
                 try writer.writeAll("^?");
             } else {

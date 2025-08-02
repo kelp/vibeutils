@@ -59,11 +59,45 @@ pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Create options (handle -E flag which disables -e)
-    // Note: -E takes precedence over -e when both are specified
+    // Create options with correct flag precedence
+    // When both -e and -E are specified, the last one should win (GNU behavior)
+    const interpret_escapes = blk: {
+        if (!parsed_args.e and !parsed_args.E) {
+            // Neither flag specified, default to false
+            break :blk false;
+        } else if (parsed_args.e and !parsed_args.E) {
+            // Only -e specified
+            break :blk true;
+        } else if (!parsed_args.e and parsed_args.E) {
+            // Only -E specified
+            break :blk false;
+        } else {
+            // Both flags specified, need to determine which came last
+            // Check the raw arguments to find the last occurrence
+            var last_e_pos: ?usize = null;
+            var last_E_pos: ?usize = null;
+            for (args, 0..) |arg, i| {
+                if (std.mem.eql(u8, arg, "-e")) {
+                    last_e_pos = i;
+                } else if (std.mem.eql(u8, arg, "-E")) {
+                    last_E_pos = i;
+                }
+            }
+
+            if (last_e_pos != null and last_E_pos != null) {
+                // Both found, use the one that appeared last
+                break :blk last_e_pos.? > last_E_pos.?;
+            } else if (last_e_pos != null) {
+                break :blk true;
+            } else {
+                break :blk false;
+            }
+        }
+    };
+
     const options = EchoOptions{
         .suppress_newline = parsed_args.n,
-        .interpret_escapes = parsed_args.e and !parsed_args.E,
+        .interpret_escapes = interpret_escapes,
     };
 
     try echoStrings(parsed_args.positionals, stdout_writer, options);
@@ -142,44 +176,6 @@ pub fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOp
     }
 }
 
-/// Test helper that simulates echo command behavior
-fn echo(args: []const []const u8, writer: anytype) !void {
-    var suppress_newline = false;
-    var interpret_escapes = false;
-    var start_index: usize = 0;
-
-    // Parse flags
-    while (start_index < args.len and args[start_index].len > 0 and args[start_index][0] == '-') {
-        const flag = args[start_index];
-        if (std.mem.eql(u8, flag, "-n")) {
-            suppress_newline = true;
-            start_index += 1;
-        } else if (std.mem.eql(u8, flag, "-e")) {
-            interpret_escapes = true;
-            start_index += 1;
-        } else if (std.mem.eql(u8, flag, "-E")) {
-            interpret_escapes = false;
-            start_index += 1;
-        } else if (std.mem.eql(u8, flag, "-en") or std.mem.eql(u8, flag, "-ne")) {
-            suppress_newline = true;
-            interpret_escapes = true;
-            start_index += 1;
-        } else if (std.mem.eql(u8, flag, "--")) {
-            start_index += 1;
-            break;
-        } else {
-            break;
-        }
-    }
-
-    const options = EchoOptions{
-        .suppress_newline = suppress_newline,
-        .interpret_escapes = interpret_escapes,
-    };
-
-    try echoStrings(args[start_index..], writer, options);
-}
-
 /// Write string while interpreting backslash escape sequences
 /// Invalid escape sequences are passed through literally
 ///
@@ -248,7 +244,7 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
                 },
                 'x' => {
                     // Hex sequence: \xHH (exactly 2 hex digits)
-                    if (i + 3 < s.len) {
+                    if (i + 3 <= s.len) {
                         // Try to parse the next 2 characters as hex
                         const hex_value = std.fmt.parseInt(u8, s[i + 2 .. i + 4], 16) catch {
                             // Invalid hex sequence, output literally
@@ -284,8 +280,8 @@ test "echo outputs single argument" {
     defer buffer.deinit();
 
     const args = [_][]const u8{"hello"};
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\n", buffer.items);
 }
 
@@ -294,8 +290,8 @@ test "echo outputs multiple arguments with spaces" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "hello", "world" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello world\n", buffer.items);
 }
 
@@ -304,8 +300,8 @@ test "echo -n suppresses newline" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-n", "hello" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello", buffer.items);
 }
 
@@ -314,8 +310,8 @@ test "echo handles empty input" {
     defer buffer.deinit();
 
     const args = [_][]const u8{};
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\n", buffer.items);
 }
 
@@ -324,8 +320,8 @@ test "echo with -n and multiple arguments" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-n", "hello", "world", "test" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello world test", buffer.items);
 }
 
@@ -334,8 +330,8 @@ test "echo preserves empty strings" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "hello", "", "world" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello  world\n", buffer.items);
 }
 
@@ -344,8 +340,8 @@ test "echo handles special characters" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "hello\tworld", "test\nline" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\tworld test\nline\n", buffer.items);
 }
 
@@ -354,8 +350,8 @@ test "echo -e interprets escape sequences" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "hello\\nworld" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\n", buffer.items);
 }
 
@@ -364,8 +360,8 @@ test "echo -e handles multiple escape sequences" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\t\\tindented\\nline\\ttwo\\\\backslash" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\t\tindented\nline\ttwo\\backslash\n", buffer.items);
 }
 
@@ -374,8 +370,8 @@ test "echo -e with octal sequences" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\101\\040\\102" }; // A B in octal
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A B\n", buffer.items);
 }
 
@@ -384,8 +380,8 @@ test "echo -e with hex sequences" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\x41\\x20\\x42" }; // A B in hex
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A B\n", buffer.items);
 }
 
@@ -394,8 +390,8 @@ test "echo -en combines flags" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-en", "hello\\nworld" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld", buffer.items);
 }
 
@@ -404,8 +400,8 @@ test "echo -ne combines flags (different order)" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-ne", "hello\\nworld" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld", buffer.items);
 }
 
@@ -414,8 +410,8 @@ test "echo -E disables escape sequences" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-E", "hello\\nworld" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\\nworld\n", buffer.items);
 }
 
@@ -424,8 +420,8 @@ test "echo -E overrides previous -e" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "-E", "hello\\nworld" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\\nworld\n", buffer.items);
 }
 
@@ -434,7 +430,7 @@ test "echo -e overrides previous -E" {
     defer buffer.deinit();
 
     const args = [_][]const u8{ "-E", "-e", "hello\\nworld" };
-    try echo(&args, buffer.writer());
-
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\n", buffer.items);
 }
