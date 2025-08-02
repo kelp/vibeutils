@@ -25,6 +25,13 @@ pub const TestUtils = struct {
             try file.writeAll(content);
         }
 
+        /// Create a test file from byte array (for binary data)
+        pub fn createFileFromBytes(self: *TestDir, name: []const u8, data: []const u8) !void {
+            const file = try self.tmp_dir.dir.createFile(name, .{});
+            defer file.close();
+            try file.writeAll(data);
+        }
+
         /// Create a test file with specific permissions
         pub fn createFileWithMode(self: *TestDir, name: []const u8, content: []const u8, mode: std.fs.File.Mode) !void {
             const file = try self.tmp_dir.dir.createFile(name, .{ .mode = mode });
@@ -69,6 +76,17 @@ pub const TestUtils = struct {
             var buffer: [1024]u8 = undefined;
             const bytes_read = try file.read(&buffer);
             try testing.expectEqualStrings(expected, buffer[0..bytes_read]);
+        }
+
+        /// Read entire file content into allocated memory
+        pub fn readFileAlloc(self: *TestDir, name: []const u8) ![]u8 {
+            const file = try self.tmp_dir.dir.openFile(name, .{});
+            defer file.close();
+
+            const file_size = try file.getEndPos();
+            const contents = try self.allocator.alloc(u8, file_size);
+            _ = try file.readAll(contents);
+            return contents;
         }
 
         /// Check if a file is a symlink

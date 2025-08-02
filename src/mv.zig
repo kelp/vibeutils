@@ -408,10 +408,9 @@ test "mv: empty file" {
 
 /// Move across filesystems using copy-then-delete
 fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
-    // Import cp modules for cross-filesystem copy
-    const cp_types = @import("cp/types.zig");
-    const cp_engine = @import("cp/copy_engine.zig");
-    const user_interaction = @import("cp/user_interaction.zig");
+    // DEAD CODE CLEANUP FIX: Use new common modules instead of old cp/ modules
+    const copy_options = common.copy_options;
+    const copy_engine = common.copy_engine;
 
     if (options.verbose) {
         try stdout_writer.print("mv: moving '{s}' to '{s}' (cross-filesystem)\n", .{ source, dest });
@@ -419,50 +418,36 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 
     // Create cp options from mv options
     // We always use recursive mode for cross-filesystem moves to handle directories
-    const cp_options = cp_types.CpOptions{
+    const cp_options = copy_options.CpOptions{
         .recursive = true, // Always recursive for directories
         .preserve = true, // Preserve attributes
         .force = options.force,
         .interactive = options.interactive,
+        .no_dereference = false, // Follow symlinks by default for mv
     };
 
-    // Use cp's copy engine
-    const cp_context = cp_types.CopyContext.create(allocator, cp_options);
-    var engine = cp_engine.CopyEngine.init(cp_context);
+    // Use the new unified copy engine
+    const cp_context = copy_engine.CopyContext.create(allocator, cp_options);
+    var engine = copy_engine.CopyEngine.init(cp_context);
 
     // Plan and execute the copy
     var operation = try cp_context.planOperation(source, dest);
     defer operation.deinit(allocator);
 
-    // Show progress for cross-filesystem moves
-    // Step 1 of 2: Copying files
-    const source_basename = std.fs.path.basename(source);
-    user_interaction.UserInteraction.showProgress(stderr_writer, 0, 2, source_basename) catch |progress_err| {
-        // Progress display is optional - continue if it fails
-        if (options.verbose) {
-            common.printWarningWithProgram(stderr_writer, "mv", "failed to display progress: {}", .{progress_err});
-        }
-    };
+    // Show progress for cross-filesystem moves (simplified progress)
+    if (options.verbose) {
+        try stderr_writer.print("mv: copying '{s}' to '{s}'\n", .{ source, dest });
+    }
 
     // Execute copy with proper error handling
     engine.executeCopy(stderr_writer, operation) catch |err| {
-        // Clear progress on error and provide error message
-        user_interaction.UserInteraction.clearProgress(stderr_writer) catch |clear_err| {
-            if (options.verbose) {
-                common.printWarningWithProgram(stderr_writer, "mv", "failed to clear progress display: {}", .{clear_err});
-            }
-        };
         common.printErrorWithProgram(stderr_writer, "mv", "error copying '{s}' to '{s}': {}", .{ source, dest, err });
         return err;
     };
 
-    // Update progress after copy
-    // Step 2 of 2: Removing source
-    user_interaction.UserInteraction.showProgress(stderr_writer, 1, 2, source_basename) catch |progress_err| {
-        if (options.verbose) {
-            common.printWarningWithProgram(stderr_writer, "mv", "failed to display progress: {}", .{progress_err});
-        }
-    };
+    if (options.verbose) {
+        try stderr_writer.print("mv: removing source '{s}'\n", .{source});
+    }
 
     // If copy succeeded, remove the source
     // We need to check if it's a directory to use the appropriate delete method
@@ -473,12 +458,9 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         try std.fs.cwd().deleteFile(source);
     }
 
-    // Complete progress
-    user_interaction.UserInteraction.showProgress(stderr_writer, 2, 2, source_basename) catch |progress_err| {
-        if (options.verbose) {
-            common.printWarningWithProgram(stderr_writer, "mv", "failed to display progress: {}", .{progress_err});
-        }
-    };
+    if (options.verbose) {
+        try stderr_writer.print("mv: completed cross-filesystem move\n", .{});
+    }
 }
 
 /// Remove destination file or directory

@@ -54,6 +54,12 @@ pub const test_utils_privilege = @import("test_utils_privilege.zig");
 /// File operation helpers with platform-specific workarounds
 pub const file_ops = @import("file_ops.zig");
 
+/// Copy engine for cp and mv utilities
+pub const copy_engine = @import("copy_engine.zig");
+
+/// Copy options and types for file copying operations
+pub const copy_options = @import("copy_options.zig");
+
 /// Version information from build configuration
 pub const version = build_options.version;
 
