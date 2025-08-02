@@ -443,7 +443,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     }
 
     // Execute copy with proper error handling
-    engine.executeCopy(stderr_writer, operation) catch |err| {
+    _ = engine.executeCopy(stderr_writer, stderr_writer, operation) catch |err| {
         common.printErrorWithProgram(stderr_writer, "mv", "error copying '{s}' to '{s}': {}", .{ source, dest, err });
         return err;
     };
