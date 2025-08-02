@@ -8,7 +8,8 @@ const display = @import("display.zig");
 const entry_collector = @import("entry_collector.zig");
 const sorter = @import("sorter.zig");
 const formatter = @import("formatter.zig");
-const git_integration = @import("git_integration.zig");
+const recursive = @import("recursive.zig");
+const core = @import("core.zig");
 
 const LsOptions = types.LsOptions;
 const Entry = types.Entry;
@@ -73,21 +74,31 @@ const LsArgs = struct {
 /// Main entry point for the ls command
 /// Parses arguments and delegates to runLs
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    // Use Arena allocator for better resource management in CLI tools
+    // Keep GPA only for debug builds to detect memory leaks
+    if (std.debug.runtime_safety) {
+        // Debug build: use GPA to detect memory leaks
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+        return mainWithAllocator(allocator);
+    } else {
+        // Release build: use Arena allocator for better performance
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        return mainWithAllocator(allocator);
+    }
+}
 
-    defer _ = gpa.deinit();
-
-    const allocator = gpa.allocator();
+/// Main implementation that accepts an allocator
+fn mainWithAllocator(allocator: std.mem.Allocator) !void {
 
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                const stderr = std.io.getStdErr().writer();
-                common.fatalWithWriter(stderr, "invalid argument", .{});
-            },
-            else => return err,
-        }
+        // Use specific error information instead of generic "invalid argument"
+        const stderr = std.io.getStdErr().writer();
+        common.fatalWithWriter(stderr, "argument parsing failed: {s}", .{@errorName(err)});
     };
     defer allocator.free(args.positionals);
 
@@ -176,12 +187,19 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .show_git_status = args.git,
     };
 
+    // Initialize GitContext once if git status is requested
+    var git_context: ?types.GitContext = null;
+    if (options.show_git_status) {
+        git_context = types.GitContext.init(allocator, ".");
+    }
+    defer if (git_context) |*ctx| ctx.deinit();
+
     // Access positionals (the paths to list)
     const paths = args.positionals;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
-        try listDirectory(".", writer, stderr_writer, options, allocator);
+        try listDirectory(".", writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
     } else {
         // List each specified path
         // When multiple paths are given, print headers between them
@@ -190,7 +208,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
                 if (i > 0) try writer.writeAll("\n");
                 try writer.print("{s}:\n", .{path});
             }
-            try listDirectory(path, writer, stderr_writer, options, allocator);
+            try listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
         }
     }
 }
@@ -273,7 +291,7 @@ fn printIconTest(writer: anytype) !void {
 
 /// List a directory or file, handling both files and directories appropriately
 /// Errors are printed but don't stop execution except for BrokenPipe
-fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator) anyerror!void {
+fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*const types.GitContext) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(writer, options.color_mode);
 
@@ -293,16 +311,12 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
         };
 
         // Get Git status for the file if requested
-        // We initialize the git repo at the current directory and check the file's status
-        if (options.show_git_status) {
-            var git_repo = git_integration.initGitRepo(allocator, ".");
-            defer if (git_repo) |*repo| repo.deinit();
-
-            entry.git_status = git_integration.getFileGitStatus(if (git_repo) |*repo| repo else null, entry.name);
+        if (options.show_git_status and git_context != null) {
+            entry.git_status = git_context.?.getFileStatus(entry.name) orelse .not_in_repo;
         }
 
         if (options.long_format) {
-            try formatter.printLongFormatEntry(entry, writer, options, style);
+            try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
         } else {
             try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
         }
@@ -320,7 +334,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
                 .symlink_target = null,
             };
 
-            try formatter.printLongFormatEntry(entry, writer, options, style);
+            try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
         } else {
             try writer.print("{s}\n", .{path});
         }
@@ -334,77 +348,21 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     defer dir.close();
 
     // Call the shared implementation
-    try listDirectoryImpl(dir, path, writer, stderr_writer, options, allocator, style);
+    try listDirectoryImpl(dir, path, writer, stderr_writer, options, allocator, style, git_context);
 }
 
-/// Set up visited inode tracking for cycle detection in recursive mode
-fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype) anyerror!void {
-    // For recursive listing with symlinks, we need to track visited inodes
-    var visited_inodes = std.AutoHashMap(u64, void).init(allocator);
-    defer visited_inodes.deinit();
+/// Set up visited filesystem ID tracking for secure cycle detection in recursive mode
+fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*const types.GitContext) anyerror!void {
+    // For recursive listing with symlinks, we need to track visited (device, inode) pairs for security
+    var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
+    defer visited_fs_ids.deinit();
 
-    try listDirectoryImplWithVisited(dir, path, writer, stderr_writer, options, allocator, style, &visited_inodes);
+    try core.listDirectoryImplWithVisited(dir, path, writer, stderr_writer, options, allocator, style, &visited_fs_ids, git_context);
 }
 
-/// Core directory listing logic with cycle detection
-/// Collects, sorts, and prints directory entries
-fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_inodes: *std.AutoHashMap(u64, void)) anyerror!void {
-    // Collect and filter entries based on options
-    var entries = try entry_collector.collectFilteredEntries(dir, allocator, options);
-    defer entries.deinit();
-    defer {
-        // Free any allocated memory within entries (e.g., symlink targets)
-        entry_collector.freeEntries(entries.items, allocator);
-    }
-
-    // Enhance with metadata if needed for sorting or display
-    if (entry_collector.needsMetadata(options)) {
-        try entry_collector.enhanceEntriesWithMetadata(entries.items, dir, options, allocator);
-    }
-
-    // Sort entries based on options
-    const sort_config = types.SortConfig{
-        .by_time = options.sort_by_time,
-        .by_size = options.sort_by_size,
-        .dirs_first = options.group_directories_first,
-        .reverse = options.reverse_sort,
-    };
-
-    sorter.sortEntries(entries.items, sort_config);
-
-    // Print directory header for recursive mode
-    if (options.recursive) {
-        try writer.print("{s}:\n", .{path});
-    }
-
-    // Print entries using the appropriate formatter
-    _ = try formatter.printEntries(entries.items, writer, options, style);
-
-    // Handle recursive listing
-    if (options.recursive) {
-        try entry_collector.processSubdirectoriesRecursively(entries.items, dir, path, writer, stderr_writer, options, allocator, style, visited_inodes);
-    }
-}
-
-/// Recursively list a subdirectory with proper error handling
-/// BrokenPipe errors are propagated, others are printed but don't stop processing
-pub fn recurseIntoSubdirectory(
-    sub_dir: std.fs.Dir,
-    subdir_path: []const u8,
-    writer: anytype,
-    stderr_writer: anytype,
-    options: LsOptions,
-    allocator: std.mem.Allocator,
-    style: anytype,
-    visited_inodes: *std.AutoHashMap(u64, void),
-) anyerror!void {
-    listDirectoryImplWithVisited(sub_dir, subdir_path, writer, stderr_writer, options, allocator, style, visited_inodes) catch |err| switch (err) {
-        error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
-        else => {
-            common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ subdir_path, err });
-            // Continue with other directories even if one fails
-        },
-    };
+// Include security tests
+test {
+    _ = @import("security_test.zig");
 }
 
 // Import all module tests for comprehensive test coverage
@@ -412,7 +370,6 @@ test {
     _ = @import("display.zig");
     _ = @import("entry_collector.zig");
     _ = @import("formatter.zig");
-    _ = @import("git_integration.zig");
     _ = @import("sorter.zig");
     _ = @import("test_utils.zig");
     _ = @import("types.zig");

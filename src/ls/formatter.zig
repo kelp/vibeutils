@@ -21,8 +21,13 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
             const relative_str = try common.relative_date.formatRelativeDate(mtime_ns, config, allocator);
             defer allocator.free(relative_str);
 
-            // Copy to buffer since caller expects stack-allocated result
-            if (relative_str.len >= buf.len) return error.BufferTooSmall;
+            // Truncation with ellipsis for very long strings - trust compile-time buffer sizing
+            if (relative_str.len >= buf.len) {
+                const truncate_len = buf.len - 3;
+                @memcpy(buf[0..truncate_len], relative_str[0..truncate_len]);
+                @memcpy(buf[truncate_len .. truncate_len + 3], "...");
+                return buf[0..buf.len];
+            }
             @memcpy(buf[0..relative_str.len], relative_str);
             return buf[0..relative_str.len];
         },
@@ -65,7 +70,7 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
 }
 
 /// Print a single entry in long format
-pub fn printLongFormatEntry(entry: Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printLongFormatEntry(allocator: std.mem.Allocator, entry: Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     // Permission string
     var perm_buf: [10]u8 = undefined;
     const perms = if (entry.stat) |stat|
@@ -122,7 +127,7 @@ pub fn printLongFormatEntry(entry: Entry, writer: anytype, options: LsOptions, s
     // Date/time
     if (entry.stat) |stat| {
         var time_buf: [128]u8 = undefined; // Larger buffer for long-iso format
-        const time_str = try formatTimeWithStyle(stat.mtime, options.time_style, std.heap.page_allocator, &time_buf);
+        const time_str = try formatTimeWithStyle(stat.mtime, options.time_style, allocator, &time_buf);
         try writer.print("{s} ", .{time_str});
     } else {
         try writer.writeAll("??? ?? ??:?? ");
@@ -139,16 +144,16 @@ pub fn printLongFormatEntry(entry: Entry, writer: anytype, options: LsOptions, s
 }
 
 /// Print entries in columnar format
-pub fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printColumnar(entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
 
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth() catch 80;
 
-    // Calculate the width needed for each entry
+    // Calculate the width needed for each entry using cached values
     var max_width: usize = 0;
-    for (entries) |entry| {
-        const width = display.getEntryDisplayWidth(entry, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+    for (entries) |*entry| {
+        const width = entry.getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
         max_width = @max(max_width, width);
     }
 
@@ -174,7 +179,7 @@ pub fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions
 
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
-                const width = display.getEntryDisplayWidth(entry, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+                const width = entries[idx].getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
                 const padding = col_width - width;
                 for (0..padding) |_| {
                     try writer.writeByte(' ');
@@ -187,7 +192,8 @@ pub fn printColumnar(entries: []const Entry, writer: anytype, options: LsOptions
 
 /// Print entries in the appropriate format based on options
 pub fn printEntries(
-    entries: []const Entry,
+    allocator: std.mem.Allocator,
+    entries: []Entry,
     writer: anytype,
     options: LsOptions,
     style: anytype,
@@ -222,7 +228,7 @@ pub fn printEntries(
 
         // Print each entry in long format
         for (entries) |entry| {
-            try printLongFormatEntry(entry, writer, options, style);
+            try printLongFormatEntry(allocator, entry, writer, options, style);
         }
     } else if (options.comma_format) {
         // Comma-separated format
@@ -274,7 +280,7 @@ test "formatter - printColumnar basic" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const entries = [_]Entry{
+    var entries = [_]Entry{
         .{ .name = "file1", .kind = .file },
         .{ .name = "file2", .kind = .file },
         .{ .name = "file3", .kind = .file },

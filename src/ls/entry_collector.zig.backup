@@ -5,21 +5,11 @@ const types = @import("types.zig");
 const Entry = types.Entry;
 const LsOptions = types.LsOptions;
 
-/// Collect directory entries with filtering and resource limits
+/// Collect directory entries with filtering based on options
 pub fn collectFilteredEntries(
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
     options: LsOptions,
-) anyerror!std.ArrayList(Entry) {
-    return collectFilteredEntriesWithLimits(allocator, dir, options, common.directory.DirectoryLimits.defaults());
-}
-
-/// Collect directory entries with custom resource limits
-pub fn collectFilteredEntriesWithLimits(
-    allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
-    options: LsOptions,
-    limits: common.directory.DirectoryLimits,
 ) anyerror!std.ArrayList(Entry) {
     var entries = std.ArrayList(Entry).init(allocator);
     errdefer {
@@ -40,11 +30,7 @@ pub fn collectFilteredEntriesWithLimits(
         .skip_dots = options.almost_all,
     };
 
-    // Track memory usage for resource exhaustion protection
-    var memory_usage: usize = 0;
-    var entry_count: usize = 0;
-
-    // Collect entries with periodic limit checks
+    // Collect entries
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         // Apply filtering
@@ -52,28 +38,14 @@ pub fn collectFilteredEntriesWithLimits(
             continue;
         }
 
-        // Check resource limits periodically (every 1000 entries)
-        if (entry_count % 1000 == 0) {
-            try limits.checkLimits(entry_count, memory_usage);
-        }
-
-        const name_copy = try allocator.dupe(u8, entry.name);
-        errdefer allocator.free(name_copy);
-
-        memory_usage += name_copy.len;
-
         const e = Entry{
-            .name = name_copy,
+            .name = try allocator.dupe(u8, entry.name),
             .kind = entry.kind,
         };
+        errdefer allocator.free(e.name);
 
         try entries.append(e);
-        entry_count += 1;
-        memory_usage += @sizeOf(Entry);
     }
-
-    // Final limit check
-    try limits.checkLimits(entry_count, memory_usage);
 
     return entries;
 }
@@ -85,20 +57,51 @@ pub fn needsMetadata(options: LsOptions) bool {
         options.show_git_status;
 }
 
-/// Simplified symlink reading that trusts OS readLink syscall completely
+/// Enhanced symlink reading with comprehensive safety checks and error reporting
 fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, stderr_writer: anytype) !?[]u8 {
     var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-
+    
     const target = dir.readLink(name, &target_buf) catch |err| switch (err) {
         error.NotLink => return null,
-        // For all other errors, use OS error message directly - no custom categories
+        error.FileNotFound => {
+            common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: file disappeared during processing", .{name});
+            return null;
+        },
+        error.AccessDenied => {
+            common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: permission denied", .{name});
+            return null;
+        },
+        error.NameTooLong => {
+            common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: path too long", .{name});
+            return null;
+        },
+        error.SystemResources => {
+            common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: system resources exhausted", .{name});
+            return null;
+        },
         else => {
             common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: {s}", .{ name, @errorName(err) });
-            return null; // Continue processing other entries rather than failing completely
+            return err;
         },
     };
-
-    // Trust OS completely - no post-readLink validation needed
+    
+    // Validate target length (readLink should never return a target that's too long, but be defensive)
+    if (target.len == 0) {
+        common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: empty target", .{name});
+        return null;
+    }
+    if (target.len >= std.fs.max_path_bytes) {
+        // This should never happen with readLink, but being extra safe
+        common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: target path too long ({d} bytes)", .{ name, target.len });
+        return null;
+    }
+    
+    // Additional safety: ensure target doesn't contain null bytes in the middle
+    if (std.mem.indexOfScalar(u8, target, 0) != null) {
+        common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: invalid path contains null bytes", .{name});
+        return null;
+    }
+    
     return try allocator.dupe(u8, target);
 }
 
@@ -187,7 +190,7 @@ pub fn processSubdirectoriesRecursively(
     options: LsOptions,
     allocator: std.mem.Allocator,
     style: anytype,
-    visited_fs_ids: *common.directory.FileSystemIdSet,
+    visited_inodes: *std.AutoHashMap(u64, void),
     git_context: ?*const types.GitContext,
 ) anyerror!void {
     // Collect subdirectories using the common utility
@@ -198,7 +201,7 @@ pub fn processSubdirectoriesRecursively(
     }
 
     // Create cycle detector
-    var cycle_detector = common.directory.CycleDetector.init(visited_fs_ids);
+    var cycle_detector = common.directory.CycleDetector.init(visited_inodes);
 
     // Recurse into subdirectories
     for (subdirs.items) |subdir| {
@@ -219,22 +222,19 @@ pub fn processSubdirectoriesRecursively(
         };
         defer sub_dir.close();
 
-        // Atomically check for cycles and mark as visited (TOCTOU-safe)
-        const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
-            common.printErrorWithProgram(stderr_writer, "ls", "{s}: unable to check for cycles: {}", .{ subdir.path, err });
-            continue;
-        };
-
-        if (is_cycle) {
+        // Check for cycles
+        if (cycle_detector.hasVisited(sub_dir)) {
             common.printErrorWithProgram(stderr_writer, "ls", "{s}: not following symlink cycle", .{subdir.path});
             continue;
         }
+        try cycle_detector.markVisited(sub_dir);
 
         // Recurse using the recursive module implementation
         const recursive = @import("recursive.zig");
-        try recursive.recurseIntoSubdirectory(sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context);
+        try recursive.recurseIntoSubdirectory(sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_inodes, git_context);
     }
 }
+
 
 /// Free allocated memory for entries
 pub fn freeEntries(entries: []Entry, allocator: std.mem.Allocator) void {

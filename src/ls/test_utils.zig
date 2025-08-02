@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("common");
 const types = @import("types.zig");
 const display = @import("display.zig");
 const entry_collector = @import("entry_collector.zig");
@@ -24,7 +25,7 @@ pub fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, a
     }
 
     // Collect and filter entries
-    var entries = try entry_collector.collectFilteredEntries(dir, allocator, test_options);
+    var entries = try entry_collector.collectFilteredEntries(allocator, dir, test_options);
     defer entries.deinit();
     defer {
         entry_collector.freeEntries(entries.items, allocator);
@@ -32,7 +33,7 @@ pub fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, a
 
     // Enhance with metadata if needed
     if (entry_collector.needsMetadata(test_options)) {
-        try entry_collector.enhanceEntriesWithMetadata(entries.items, dir, test_options, allocator);
+        try entry_collector.enhanceEntriesWithMetadata(allocator, entries.items, dir, test_options, null, common.null_writer);
     }
 
     // Sort entries based on options
@@ -46,65 +47,15 @@ pub fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, a
     sorter.sortEntries(entries.items, sort_config);
 
     // Print entries
-    _ = try formatter.printEntries(entries.items, writer, test_options, style);
+    _ = try formatter.printEntries(allocator, entries.items, writer, test_options, style);
 
     // Handle recursive listing
     if (test_options.recursive) {
         // For test purposes, we'll implement a simple recursive handler
-        var visited_inodes = std.AutoHashMap(u64, void).init(allocator);
-        defer visited_inodes.deinit();
+        var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
+        defer visited_fs_ids.deinit();
 
-        try processSubdirectoriesRecursivelyTest(entries.items, dir, ".", writer, test_options, allocator, style, &visited_inodes);
-    }
-}
-
-fn processSubdirectoriesRecursivelyTest(
-    entries: []const types.Entry,
-    parent_dir: std.fs.Dir,
-    parent_path: []const u8,
-    writer: anytype,
-    options: LsOptions,
-    allocator: std.mem.Allocator,
-    style: anytype,
-    visited_inodes: *std.AutoHashMap(u64, void),
-) anyerror!void {
-    for (entries) |entry| {
-        if (entry.kind != .directory) continue;
-
-        // Skip . and ..
-        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
-
-        // Open subdirectory
-        var sub_dir = parent_dir.openDir(entry.name, .{ .iterate = true }) catch {
-            // Skip directories we can't open (permissions, etc)
-            continue;
-        };
-        defer sub_dir.close();
-
-        // Build path
-        const subdir_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ parent_path, entry.name });
-        defer allocator.free(subdir_path);
-
-        // Print directory header
-        try writer.print("\n{s}:\n", .{subdir_path});
-
-        // List subdirectory contents recursively
-        var sub_options = options;
-        sub_options.recursive = false; // Prevent infinite recursion - we handle it manually
-        try listDirectoryTest(sub_dir, writer, sub_options, allocator);
-
-        // Now recurse into subdirectories of this subdirectory
-        var sub_entries = try entry_collector.collectFilteredEntries(sub_dir, allocator, options);
-        defer sub_entries.deinit();
-        defer {
-            entry_collector.freeEntries(sub_entries.items, allocator);
-        }
-
-        if (entry_collector.needsMetadata(options)) {
-            try entry_collector.enhanceEntriesWithMetadata(sub_entries.items, sub_dir, options, allocator);
-        }
-
-        try processSubdirectoriesRecursivelyTest(sub_entries.items, sub_dir, subdir_path, writer, options, allocator, style, visited_inodes);
+        try entry_collector.processSubdirectoriesRecursively(entries.items, dir, ".", writer, common.null_writer, test_options, allocator, style, &visited_fs_ids, null);
     }
 }
 
