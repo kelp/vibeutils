@@ -1,0 +1,38 @@
+name: 'Setup Documentation Tools'
+description: 'Install mandoc and optionally other documentation tools for vibeutils'
+inputs:
+  include-pandoc:
+    description: 'Install pandoc for README HTML conversion'
+    required: false
+    default: 'false'
+  include-groff:
+    description: 'Install groff-base for fallback man page processing'
+    required: false
+    default: 'false'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install documentation tools
+      shell: bash
+      run: |
+        echo "Installing documentation tools..."
+        sudo apt-get update
+        
+        # Always install mandoc (required for all man page operations)
+        echo "Installing mandoc..."
+        sudo apt-get install -y mandoc
+        
+        # Conditionally install groff
+        if [ "${{ inputs.include-groff }}" = "true" ]; then
+          echo "Installing groff-base..."
+          sudo apt-get install -y groff-base
+        fi
+        
+        # Conditionally install pandoc
+        if [ "${{ inputs.include-pandoc }}" = "true" ]; then
+          echo "Installing pandoc..."
+          sudo apt-get install -y pandoc
+        fi
+        
+        echo "Documentation tools installation complete"

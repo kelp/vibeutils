@@ -47,10 +47,11 @@ jobs:
           ${{ runner.os }}-zig-docs-${{ env.ZIG_VERSION }}-
           ${{ runner.os }}-zig-
         
-    - name: Install documentation tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y mandoc groff-base pandoc
+    - name: Setup documentation tools
+      uses: ./.github/actions/setup-doc-tools
+      with:
+        include-groff: true
+        include-pandoc: true
         
     - name: Make scripts executable
       run: |
