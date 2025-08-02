@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<!-- This is an automatically generated file.  Do not edit.
+   OpenBSD-style concise man page
+ -->
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="../style.css" type="text/css" media="all"/>
+  <title>CHMOD(1)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">CHMOD(1)</td>
+    <td class="head-vol">General Commands Manual</td>
+    <td class="head-rtitle">CHMOD(1)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">chmod</code> &#x2014; <span class="Nd">change
+    file mode bits</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<table class="Nm">
+  <tr>
+    <td><code class="Nm">chmod</code></td>
+    <td>[<code class="Fl">-Rv</code>] <var class="Ar">mode</var>
+      <var class="Ar">file ...</var></td>
+  </tr>
+</table>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<p class="Pp">The <code class="Nm">chmod</code> utility modifies the file mode
+    bits of the listed files as specified by the <var class="Ar">mode</var>
+    operand.</p>
+<p class="Pp">The options are as follows:</p>
+<dl class="Bl-tag">
+  <dt id="R"><a class="permalink" href="#R"><code class="Fl">-R</code></a></dt>
+  <dd>Recursively change file mode bits. For each <var class="Ar">file</var>
+      operand that names a directory, <code class="Nm">chmod</code> changes the
+      file mode bits of the directory and all files in the file hierarchy below
+      it.</dd>
+  <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
+  <dd>Verbose mode. Explain what is being done.</dd>
+</dl>
+<p class="Pp">The <var class="Ar">mode</var> may be either an octal number or a
+    symbolic value.</p>
+<p class="Pp">An octal mode is specified with three or four octal digits
+  (0-7):</p>
+<dl class="Bl-tag Bl-compact">
+  <dt id="4000"><a class="permalink" href="#4000"><code class="Li">4000</code></a></dt>
+  <dd>Set-user-ID on execution</dd>
+  <dt id="2000"><a class="permalink" href="#2000"><code class="Li">2000</code></a></dt>
+  <dd>Set-group-ID on execution</dd>
+  <dt id="1000"><a class="permalink" href="#1000"><code class="Li">1000</code></a></dt>
+  <dd>Sticky bit</dd>
+  <dt id="0400"><a class="permalink" href="#0400"><code class="Li">0400</code></a></dt>
+  <dd>Read by owner</dd>
+  <dt id="0200"><a class="permalink" href="#0200"><code class="Li">0200</code></a></dt>
+  <dd>Write by owner</dd>
+  <dt id="0100"><a class="permalink" href="#0100"><code class="Li">0100</code></a></dt>
+  <dd>Execute by owner</dd>
+  <dt id="0040"><a class="permalink" href="#0040"><code class="Li">0040</code></a></dt>
+  <dd>Read by group</dd>
+  <dt id="0020"><a class="permalink" href="#0020"><code class="Li">0020</code></a></dt>
+  <dd>Write by group</dd>
+  <dt id="0010"><a class="permalink" href="#0010"><code class="Li">0010</code></a></dt>
+  <dd>Execute by group</dd>
+  <dt id="0004"><a class="permalink" href="#0004"><code class="Li">0004</code></a></dt>
+  <dd>Read by others</dd>
+  <dt id="0002"><a class="permalink" href="#0002"><code class="Li">0002</code></a></dt>
+  <dd>Write by others</dd>
+  <dt id="0001"><a class="permalink" href="#0001"><code class="Li">0001</code></a></dt>
+  <dd>Execute by others</dd>
+</dl>
+<p class="Pp">A symbolic mode has the form:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>[who] op [perm]</pre>
+</div>
+<p class="Pp">The <var class="Ar">who</var> symbols are:</p>
+<dl class="Bl-tag Bl-compact">
+  <dt id="u"><a class="permalink" href="#u"><code class="Li">u</code></a></dt>
+  <dd>User (owner) permissions</dd>
+  <dt id="g"><a class="permalink" href="#g"><code class="Li">g</code></a></dt>
+  <dd>Group permissions</dd>
+  <dt id="o"><a class="permalink" href="#o"><code class="Li">o</code></a></dt>
+  <dd>Other permissions</dd>
+  <dt id="a"><a class="permalink" href="#a"><code class="Li">a</code></a></dt>
+  <dd>All permissions (equivalent to <code class="Li">ugo</code>)</dd>
+</dl>
+<p class="Pp">The <var class="Ar">op</var> symbols are:</p>
+<dl class="Bl-tag Bl-compact">
+  <dt id="+"><a class="permalink" href="#+"><code class="Li">+</code></a></dt>
+  <dd>Add permissions</dd>
+  <dt><code class="Li">-</code></dt>
+  <dd>Remove permissions</dd>
+  <dt id="="><a class="permalink" href="#="><code class="Li">=</code></a></dt>
+  <dd>Set permissions explicitly</dd>
+</dl>
+<p class="Pp">The <var class="Ar">perm</var> symbols are:</p>
+<dl class="Bl-tag Bl-compact">
+  <dt id="r"><a class="permalink" href="#r"><code class="Li">r</code></a></dt>
+  <dd>Read permission</dd>
+  <dt id="w"><a class="permalink" href="#w"><code class="Li">w</code></a></dt>
+  <dd>Write permission</dd>
+  <dt id="x"><a class="permalink" href="#x"><code class="Li">x</code></a></dt>
+  <dd>Execute permission</dd>
+  <dt id="X"><a class="permalink" href="#X"><code class="Li">X</code></a></dt>
+  <dd>Execute only if file is a directory or already has execute permission</dd>
+  <dt id="s"><a class="permalink" href="#s"><code class="Li">s</code></a></dt>
+  <dd>Set-user-ID or set-group-ID</dd>
+  <dt id="t"><a class="permalink" href="#t"><code class="Li">t</code></a></dt>
+  <dd>Sticky bit</dd>
+</dl>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
+<p class="Pp">Make a file executable by the owner:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chmod u+x script.sh</code></div>
+<p class="Pp">Remove write permission for group and others:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chmod go-w
+  document.txt</code></div>
+<p class="Pp">Set specific permissions using octal notation:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chmod 755 program</code></div>
+<p class="Pp">Recursively make all files in a directory tree readable by
+    everyone:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chmod -R a+r project/</code></div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
+  STATUS</a></h1>
+<p class="Pp">The <code class="Nm">chmod</code> utility exits&#x00A0;0 on
+    success, and&#x00A0;&gt;0 if an error occurs.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr">chown(1)</a>, <a class="Xr">ls(1)</a></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="STANDARDS"><a class="permalink" href="#STANDARDS">STANDARDS</a></h1>
+<p class="Pp">The <code class="Nm">chmod</code> utility is compliant with the
+    <span class="St">IEEE Std 1003.1-2008 (&#x201C;POSIX.1&#x201D;)</span>
+    specification.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="HISTORY"><a class="permalink" href="#HISTORY">HISTORY</a></h1>
+<p class="Pp">A <code class="Nm">chmod</code> command appeared in
+    <span class="Ux">Version&#x00A0;1 AT&amp;T UNIX</span>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="AUTHORS"><a class="permalink" href="#AUTHORS">AUTHORS</a></h1>
+<p class="Pp"><span class="An">vibeutils</span> implementation by
+  <br/>
+  <span class="An">Travis Cole</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="CAVEATS"><a class="permalink" href="#CAVEATS">CAVEATS</a></h1>
+<p class="Pp">Only the file's owner or the superuser may change a file's
+  mode.</p>
+<p class="Pp">The <code class="Fl">-R</code> option does not follow symbolic
+    links.</p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">August 2, 2025</td>
+    <td class="foot-os">macOS 15.6</td>
+  </tr>
+</table>
+</body>
+</html>

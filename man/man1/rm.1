@@ -21,6 +21,44 @@ Use the
 or
 .Fl R
 option to remove directories and their contents recursively.
+.Sh EXAMPLES
+Remove a single file:
+.Bd -literal -offset indent
+$ rm file.txt
+.Ed
+.Pp
+Remove multiple files with confirmation:
+.Bd -literal -offset indent
+$ rm -i *.log
+rm: remove regular file 'error.log'? y
+rm: remove regular file 'access.log'? n
+.Ed
+.Pp
+Remove a directory and all its contents:
+.Bd -literal -offset indent
+$ rm -rf old_project/
+.Ed
+.Sh DIAGNOSTICS
+The
+.Nm
+utility exits 0 on success, and >0 if an error occurs.
+.Sh SEE ALSO
+.Xr rmdir 1 ,
+.Xr unlink 2
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The flags
+.Op Fl I
+and
+.Op Fl v
+are extensions to that specification.
+.Sh AUTHORS
+.An Travis Cole
 .Sh OPTIONS
 .Bl -tag -width Ds
 .It Fl f , Fl Fl force
@@ -42,23 +80,6 @@ Display help and exit.
 .It Fl Fl version
 Output version information and exit.
 .El
-.Sh EXAMPLES
-Remove a single file:
-.Bd -literal -offset indent
-$ rm file.txt
-.Ed
-.Pp
-Remove multiple files with confirmation:
-.Bd -literal -offset indent
-$ rm -i *.log
-rm: remove regular file 'error.log'? y
-rm: remove regular file 'access.log'? n
-.Ed
-.Pp
-Remove a directory and all its contents:
-.Bd -literal -offset indent
-$ rm -rf old_project/
-.Ed
 .Sh SAFETY FEATURES
 The
 .Nm
@@ -75,24 +96,3 @@ Cross-filesystem boundary detection
 .It
 Same-file detection for hard links
 .El
-.Sh DIAGNOSTICS
-The
-.Nm
-utility exits 0 on success, and >0 if an error occurs.
-.Sh SEE ALSO
-.Xr rmdir 1 ,
-.Xr unlink 2
-.Sh STANDARDS
-The
-.Nm
-utility is compliant with the
-.St -p1003.1-2017
-specification.
-.Pp
-The flags
-.Op Fl I
-and
-.Op Fl v
-are extensions to that specification.
-.Sh AUTHORS
-.An Travis Cole

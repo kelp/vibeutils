@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<!-- This is an automatically generated file.  Do not edit.
+   OpenBSD-style concise man page
+ -->
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="../style.css" type="text/css" media="all"/>
+  <title>CHOWN(1)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">CHOWN(1)</td>
+    <td class="head-vol">General Commands Manual</td>
+    <td class="head-rtitle">CHOWN(1)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">chown</code> &#x2014; <span class="Nd">change
+    file owner and group</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<table class="Nm">
+  <tr>
+    <td><code class="Nm">chown</code></td>
+    <td>[<code class="Fl">-Rhv</code>]
+      <var class="Ar">owner</var>[:<var class="Ar">group</var>]
+      <var class="Ar">file ...</var></td>
+  </tr>
+</table>
+<br/>
+<table class="Nm">
+  <tr>
+    <td><code class="Nm">chown</code></td>
+    <td>[<code class="Fl">-Rhv</code>] : Ns Ar group <var class="Ar">file
+      ...</var></td>
+  </tr>
+</table>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<p class="Pp">The <code class="Nm">chown</code> utility changes the user ID
+    and/or the group ID of the specified files.</p>
+<p class="Pp">The options are as follows:</p>
+<dl class="Bl-tag">
+  <dt id="R"><a class="permalink" href="#R"><code class="Fl">-R</code></a></dt>
+  <dd>Recursively change ownership of files. For each <var class="Ar">file</var>
+      operand that names a directory, <code class="Nm">chown</code> changes the
+      user ID and/or group ID of the directory and all files in the file
+      hierarchy below it.</dd>
+  <dt id="h"><a class="permalink" href="#h"><code class="Fl">-h</code></a></dt>
+  <dd>Change the ownership of symbolic links themselves, rather than the files
+      they point to.</dd>
+  <dt id="v"><a class="permalink" href="#v"><code class="Fl">-v</code></a></dt>
+  <dd>Verbose mode. Explain what is being done.</dd>
+</dl>
+<p class="Pp">The <var class="Ar">owner</var> and <var class="Ar">group</var>
+    operands are both optional; however, at least one must be specified. If the
+    <var class="Ar">group</var> operand is specified, it must be preceded by a
+    colon (&#x2018;:&#x2019;) character.</p>
+<p class="Pp">The <var class="Ar">owner</var> may be either a numeric user ID or
+    a user name. If a user name is also a numeric user ID, the operand is used
+    as a user name.</p>
+<p class="Pp">The <var class="Ar">group</var> may be either a numeric group ID
+    or a group name. If a group name is also a numeric group ID, the operand is
+    used as a group name.</p>
+<p class="Pp">For obvious security reasons, the ownership of a file may only be
+    altered by a superuser.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
+<p class="Pp">Change the owner of file.txt to user alice:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chown alice file.txt</code></div>
+<p class="Pp">Change the owner to bob and group to staff:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chown bob:staff
+  document.pdf</code></div>
+<p class="Pp">Change only the group to developers:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chown :developers
+  project.c</code></div>
+<p class="Pp">Recursively change ownership of all files in a directory:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chown -R alice:alice
+  /home/alice/</code></div>
+<p class="Pp">Change ownership using numeric IDs:</p>
+<div class="Bd Bd-indent"><code class="Li">$ chown 1001:1001
+  data.db</code></div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
+  STATUS</a></h1>
+<p class="Pp">The <code class="Nm">chown</code> utility exits&#x00A0;0 on
+    success, and&#x00A0;&gt;0 if an error occurs.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr">chmod(1)</a>, <a class="Xr">ls(1)</a></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="STANDARDS"><a class="permalink" href="#STANDARDS">STANDARDS</a></h1>
+<p class="Pp">The <code class="Nm">chown</code> utility is compliant with the
+    <span class="St">IEEE Std 1003.1-2008 (&#x201C;POSIX.1&#x201D;)</span>
+    specification.</p>
+<p class="Pp">The use of the <code class="Fl">-h</code> flag is an extension to
+    that specification.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="HISTORY"><a class="permalink" href="#HISTORY">HISTORY</a></h1>
+<p class="Pp">A <code class="Nm">chown</code> command appeared in
+    <span class="Ux">Version&#x00A0;1 AT&amp;T UNIX</span>.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="AUTHORS"><a class="permalink" href="#AUTHORS">AUTHORS</a></h1>
+<p class="Pp"><span class="An">vibeutils</span> implementation by
+  <br/>
+  <span class="An">Travis Cole</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="CAVEATS"><a class="permalink" href="#CAVEATS">CAVEATS</a></h1>
+<p class="Pp">Previous versions of the <code class="Nm">chown</code> utility
+    used the dot (&#x2018;.&#x2019;) character to distinguish the group name.
+    This has been changed to comply with the POSIX specification.</p>
+<p class="Pp">Only the superuser is permitted to change the ownership of
+  files.</p>
+<p class="Pp">The <code class="Fl">-R</code> option does not follow symbolic
+    links unless the <code class="Fl">-h</code> option is also specified.</p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">August 2, 2025</td>
+    <td class="foot-os">macOS 15.6</td>
+  </tr>
+</table>
+</body>
+</html>

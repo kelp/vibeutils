@@ -7,7 +7,7 @@
 .Nd change file mode bits
 .Sh SYNOPSIS
 .Nm
-.Op Fl Rv
+.Op Fl R Fl v
 .Ar mode
 .Ar file ...
 .Sh DESCRIPTION
@@ -114,6 +114,8 @@ Set-user-ID or set-group-ID
 .It Li t
 Sticky bit
 .El
+.Sh EXIT STATUS
+.Ex -std
 .Sh EXAMPLES
 Make a file executable by the owner:
 .Dl $ chmod u+x script.sh
@@ -126,8 +128,6 @@ Set specific permissions using octal notation:
 .Pp
 Recursively make all files in a directory tree readable by everyone:
 .Dl $ chmod -R a+r project/
-.Sh EXIT STATUS
-.Ex -std
 .Sh SEE ALSO
 .Xr chown 1 ,
 .Xr ls 1

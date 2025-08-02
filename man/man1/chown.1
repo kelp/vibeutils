@@ -64,6 +64,8 @@ the operand is used as a group name.
 .Pp
 For obvious security reasons,
 the ownership of a file may only be altered by a superuser.
+.Sh EXIT STATUS
+.Ex -std
 .Sh EXAMPLES
 Change the owner of file.txt to user alice:
 .Dl $ chown alice file.txt
@@ -79,8 +81,6 @@ Recursively change ownership of all files in a directory:
 .Pp
 Change ownership using numeric IDs:
 .Dl $ chown 1001:1001 data.db
-.Sh EXIT STATUS
-.Ex -std
 .Sh SEE ALSO
 .Xr chmod 1 ,
 .Xr ls 1

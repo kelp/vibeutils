@@ -56,7 +56,7 @@ option), and display tab characters as
 The
 .Fl u
 option is ignored for
-.Tn POSIX
+POSIX
 compatibility.
 .It Fl v
 Display non-printing characters so they are visible.
@@ -68,6 +68,8 @@ Non-ASCII characters (with the high bit set) are printed as
 .Ql M-
 (for meta) followed by the character for the low 7 bits.
 .El
+.Sh EXIT STATUS
+.Ex -std cat
 .Sh EXAMPLES
 Print the contents of
 .Pa file1
@@ -91,8 +93,6 @@ Number the lines of
 .Bd -literal -offset indent
 $ cat -n file1
 .Ed
-.Sh EXIT STATUS
-.Ex -std cat
 .Sh SEE ALSO
 .Xr head 1 ,
 .Xr less 1 ,

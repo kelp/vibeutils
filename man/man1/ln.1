@@ -65,7 +65,10 @@ Print the name of each file as it is linked.
 .El
 .Pp
 Hard links cannot span file systems and cannot reference directories.
-Symbolic links can reference any file or directory and are resolved at the time of access.
+Symbolic links can reference any file or directory
+and are resolved at the time of access.
+.Sh EXIT STATUS
+.Ex -std ln
 .Sh EXAMPLES
 Create a hard link:
 .Bd -literal -offset indent
@@ -88,8 +91,6 @@ $ ln -sr /home/user/file.txt /home/user/docs/link
 $ ls -l /home/user/docs/link
 lrwxrwxrwx 1 user user 11 Jul 26 08:45 link -> ../file.txt
 .Ed
-.Sh EXIT STATUS
-.Ex -std ln
 .Sh DIAGNOSTICS
 .Bl -diag
 .It "cross-device link"
@@ -104,10 +105,10 @@ to overwrite.
 Hard links cannot reference directories.
 .El
 .Sh SEE ALSO
-.Xr link 2 ,
-.Xr symlink 2 ,
+.Xr readlink 1 ,
 .Xr rm 1 ,
-.Xr readlink 1
+.Xr link 2 ,
+.Xr symlink 2
 .Sh STANDARDS
 The
 .Nm
