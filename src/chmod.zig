@@ -502,7 +502,8 @@ fn applyModeToFile(file_path: []const u8, mode: Mode, writer: anytype, stderr_wr
     const new_mode = mode.toOctal();
 
     // Apply the new mode using the file's chmod method
-    try common.file_ops.setPermissionsWithWriter(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, stderr_writer);
+    const result = try common.file_ops.setPermissions(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, "chmod", stderr_writer);
+    if (result != 0) return error.PermissionError;
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {
@@ -540,7 +541,8 @@ fn applySymbolicModeToFile(file_path: []const u8, mode_str: []const u8, writer: 
     const new_mode = new_mode_struct.toOctal();
 
     // Apply the new mode using the file's chmod method
-    try common.file_ops.setPermissionsWithWriter(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, stderr_writer);
+    const result = try common.file_ops.setPermissions(file, @as(std.fs.File.Mode, @intCast(new_mode)), file_path, "chmod", stderr_writer);
+    if (result != 0) return error.PermissionError;
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {

@@ -18,17 +18,13 @@ const lib = @import("lib.zig");
 /// - handle: Either a std.fs.File or std.fs.Dir
 /// - mode: The file mode (permissions) to set
 /// - context: Optional context for error reporting (e.g., file path)
-/// - stderr_writer: Writer for warning messages (optional, uses std.io.getStdErr().writer() if null)
+/// - program_name: Name of the calling program for error messages
+/// - stderr_writer: Writer for warning messages
 ///
 /// # Returns
-/// Returns an error if the operation fails on supported platforms, or warns and continues
-/// on platforms with known limitations (macOS CI, Linux fakeroot with special permissions).
-pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8) !void {
-    try setPermissionsWithWriter(handle, mode, context, null);
-}
-
-/// Set file permissions with explicit stderr writer for warnings
-pub fn setPermissionsWithWriter(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8, stderr_writer: anytype) !void {
+/// Returns success (0) if the operation succeeds, or general_error (1) if it fails
+/// after issuing warnings for platform-specific limitations.
+pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8, program_name: []const u8, stderr_writer: anytype) !u8 {
     const handle_type = @TypeOf(handle);
 
     // Get the file descriptor based on handle type
@@ -45,19 +41,10 @@ pub fn setPermissionsWithWriter(handle: anytype, mode: std.fs.File.Mode, context
     // On Linux under fakeroot, setting special permissions can cause hangs
     // Strip special bits and warn the user
     const effective_mode = if (isRunningUnderLinuxFakeroot() and has_special_bits) blk: {
-        if (@TypeOf(stderr_writer) == @TypeOf(null)) {
-            const writer = std.io.getStdErr().writer();
-            if (context) |ctx| {
-                lib.printWarningWithProgram(writer, "chmod", "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
-            } else {
-                lib.printWarningWithProgram(writer, "chmod", "Stripped special permissions (Linux fakeroot limitation)", .{});
-            }
+        if (context) |ctx| {
+            lib.printWarningWithProgram(stderr_writer, program_name, "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
         } else {
-            if (context) |ctx| {
-                lib.printWarningWithProgram(stderr_writer, "chmod", "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
-            } else {
-                lib.printWarningWithProgram(stderr_writer, "chmod", "Stripped special permissions (Linux fakeroot limitation)", .{});
-            }
+            lib.printWarningWithProgram(stderr_writer, program_name, "Stripped special permissions (Linux fakeroot limitation)", .{});
         }
         break :blk mode & 0o0777; // Keep only regular permissions
     } else mode;
@@ -67,24 +54,17 @@ pub fn setPermissionsWithWriter(handle: anytype, mode: std.fs.File.Mode, context
         // operations may fail. We report this as a warning but don't fail
         // the operation since the file operation itself succeeded.
         if (builtin.os.tag == .macos) {
-            if (@TypeOf(stderr_writer) == @TypeOf(null)) {
-                const writer = std.io.getStdErr().writer();
-                if (context) |ctx| {
-                    lib.printWarningWithProgram(writer, "chmod", "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
-                } else {
-                    lib.printWarningWithProgram(writer, "chmod", "Failed to set permissions on macOS: {s}", .{@errorName(err)});
-                }
+            if (context) |ctx| {
+                lib.printWarningWithProgram(stderr_writer, program_name, "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
             } else {
-                if (context) |ctx| {
-                    lib.printWarningWithProgram(stderr_writer, "chmod", "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
-                } else {
-                    lib.printWarningWithProgram(stderr_writer, "chmod", "Failed to set permissions on macOS: {s}", .{@errorName(err)});
-                }
+                lib.printWarningWithProgram(stderr_writer, program_name, "Failed to set permissions on macOS: {s}", .{@errorName(err)});
             }
-            return;
+            return @intFromEnum(lib.ExitCode.success);
         }
-        return err;
+        return @intFromEnum(lib.ExitCode.general_error);
     };
+
+    return @intFromEnum(lib.ExitCode.success);
 }
 
 /// Check if running in a CI environment
@@ -95,12 +75,6 @@ pub fn setPermissionsWithWriter(handle: anytype, mode: std.fs.File.Mode, context
 /// # Returns
 /// true if running in a CI environment, false otherwise
 pub fn isRunningInCI() bool {
-    // Check for the most common CI environment variable
-    // Use a temporary allocator for the check and free immediately
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
     // Common CI environment variables to check
     const ci_vars = [_][]const u8{
         "CI", // Generic CI variable used by many systems
@@ -113,9 +87,9 @@ pub fn isRunningInCI() bool {
     };
 
     for (ci_vars) |var_name| {
-        if (std.process.getEnvVarOwned(allocator, var_name)) |_| {
+        if (std.posix.getenv(var_name)) |_| {
             return true;
-        } else |_| {}
+        }
     }
 
     return false;
@@ -131,16 +105,7 @@ pub fn isRunningInCI() bool {
 pub fn isRunningUnderLinuxFakeroot() bool {
     if (builtin.os.tag != .linux) return false;
 
-    // Use a small stack buffer to avoid allocation issues
-    var buffer: [256]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buffer);
-
-    if (std.process.getEnvVarOwned(fba.allocator(), "FAKEROOTKEY")) |val| {
-        defer fba.allocator().free(val);
-        return true;
-    } else |_| {
-        return false;
-    }
+    return std.posix.getenv("FAKEROOTKEY") != null;
 }
 
 /// Check if should skip privileged tests on macOS CI
@@ -163,7 +128,8 @@ test "setPermissions with file" {
     defer file.close();
 
     // This should work on all platforms
-    try setPermissions(file, 0o644, "test.txt");
+    const result = try setPermissions(file, 0o644, "test.txt", "test", lib.null_writer);
+    try std.testing.expectEqual(@as(u8, 0), result);
 
     const stat = try file.stat();
     try std.testing.expectEqual(@as(std.fs.File.Mode, 0o644), stat.mode & 0o777);
@@ -178,7 +144,8 @@ test "setPermissions with directory" {
     defer dir.close();
 
     // This should work on all platforms
-    try setPermissions(dir, 0o755, "subdir");
+    const result = try setPermissions(dir, 0o755, "subdir", "test", lib.null_writer);
+    try std.testing.expectEqual(@as(u8, 0), result);
 
     const stat = try dir.stat();
     try std.testing.expectEqual(@as(std.fs.File.Mode, 0o755), stat.mode & 0o777);
