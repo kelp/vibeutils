@@ -199,11 +199,12 @@ cat > docs/html/index.html << 'EOF'
     <div class="utility-list">
 EOF
 
-# Add utility cards
-for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
-    if [ -f "man/man1/${utility}.1" ]; then
+# Add utility cards (only for utilities with man pages)
+for manpage in man/man1/*.1; do
+    if [ -f "$manpage" ]; then
+        utility=$(basename "$manpage" .1)
         # Extract description from man page
-        description=$(grep "^\.Nd" "man/man1/${utility}.1" | sed 's/^\.Nd //' || echo "Core utility")
+        description=$(grep "^\.Nd" "$manpage" | sed 's/^\.Nd //' || echo "Core utility")
         
         cat >> docs/html/index.html << EOF
         <div class="utility-card">
