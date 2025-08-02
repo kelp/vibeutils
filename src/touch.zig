@@ -195,9 +195,6 @@ const TouchOptions = struct {
 
 /// Touches a single file with the specified options.
 fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator) !void {
-    // Validate path
-    try validatePath(path);
-
     // Get the timestamps to use
     var times: [2]c.timespec = undefined;
 
@@ -432,19 +429,6 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
         .sec = @intCast(total_seconds),
         .nsec = 0,
     };
-}
-
-/// Validates that a path is safe to use.
-pub fn validatePath(path: []const u8) !void {
-    // Check for null bytes
-    if (std.mem.indexOfScalar(u8, path, 0) != null) {
-        return error.BadPathName;
-    }
-
-    // Check for excessive length
-    if (path.len > fs.max_path_bytes) {
-        return error.NameTooLong;
-    }
 }
 
 /// Creates a file atomically to avoid race conditions.
