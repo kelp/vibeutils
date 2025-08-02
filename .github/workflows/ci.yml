@@ -391,47 +391,47 @@ jobs:
           benchmark_results/
         retention-days: 90
 
-  # Windows support (experimental)
-  windows-build:
-    name: Windows Build (Experimental)
-    runs-on: windows-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    continue-on-error: true
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup Zig
-      uses: mlugg/setup-zig@v2
-      with:
-        version: ${{ env.ZIG_VERSION }}
-        
-    - name: Cache Zig artifacts
-      uses: actions/cache@v4
-      with:
-        path: |
-          zig-cache
-          zig-out
-        key: windows-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
-        
-    - name: Build utilities (Windows)
-      run: |
-        echo "Building utilities for Windows..."
-        zig build -Doptimize=ReleaseSafe
-        
-    - name: Test basic functionality (Windows)
-      run: |
-        echo "Testing basic functionality on Windows..."
-        .\zig-out\bin\echo.exe "Hello from Windows!"
-        .\zig-out\bin\pwd.exe
-        
-    - name: Upload Windows artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: windows-build
-        path: zig-out/bin/
-        retention-days: 7
+  # Windows support (disabled - not yet implemented)
+  # windows-build:
+  #   name: Windows Build (Experimental)
+  #   runs-on: windows-latest
+  #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  #   continue-on-error: true
+  #   
+  #   steps:
+  #   - name: Checkout code
+  #     uses: actions/checkout@v4
+  #     
+  #   - name: Setup Zig
+  #     uses: mlugg/setup-zig@v2
+  #     with:
+  #       version: ${{ env.ZIG_VERSION }}
+  #       
+  #   - name: Cache Zig artifacts
+  #     uses: actions/cache@v4
+  #     with:
+  #       path: |
+  #         zig-cache
+  #         zig-out
+  #       key: windows-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+  #       
+  #   - name: Build utilities (Windows)
+  #     run: |
+  #       echo "Building utilities for Windows..."
+  #       zig build -Doptimize=ReleaseSafe
+  #       
+  #   - name: Test basic functionality (Windows)
+  #     run: |
+  #       echo "Testing basic functionality on Windows..."
+  #       .\zig-out\bin\echo.exe "Hello from Windows!"
+  #       .\zig-out\bin\pwd.exe
+  #       
+  #   - name: Upload Windows artifacts
+  #     uses: actions/upload-artifact@v4
+  #     with:
+  #       name: windows-build
+  #       path: zig-out/bin/
+  #       retention-days: 7
 
   # Integration tests
   integration-tests:
