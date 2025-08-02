@@ -1,7 +1,6 @@
 //! chmod - Change file mode (permissions) utility
 //!
-//! Supports both numeric (octal) and symbolic mode specifications, recursive operations,
-//! and includes safety features to prevent accidental system damage.
+//! Supports both numeric (octal) and symbolic mode specifications and recursive operations.
 
 const std = @import("std");
 const common = @import("common");
@@ -190,8 +189,6 @@ const ChmodError = error{
     InvalidOctalMode,
     /// Reference file not found
     ReferenceFileNotFound,
-    /// Path traversal attempt detected
-    PathTraversal,
     /// User cancelled operation
     UserCancelled,
 };
@@ -214,34 +211,36 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
     // Determine mode to use - reference mode takes precedence
     const use_reference = reference_mode != null;
 
-    // Check if this is a symbolic mode
-    const is_symbolic = if (use_reference) false else blk: {
-        for (mode_str) |c| {
-            if (std.ascii.isAlphabetic(c) or c == '+' or c == '-' or c == '=' or c == ',') {
-                break :blk true;
-            }
-        }
-        break :blk false;
-    };
+    // Pre-parse mode once for performance optimization
+    var parsed_octal_mode: ?Mode = null;
+    var is_symbolic = false;
 
-    for (files) |file_path| {
-        // Path traversal protection - normalize the path
-        var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const normalized = if (std.fs.cwd().access(file_path, .{})) |_| blk: {
-            break :blk std.fs.realpath(file_path, &normalized_buf) catch file_path;
-        } else |_| blk: {
-            // File doesn't exist
-            break :blk file_path;
+    if (!use_reference) {
+        // Check if this is a symbolic mode
+        is_symbolic = blk: {
+            for (mode_str) |c| {
+                if (std.ascii.isAlphabetic(c) or c == '+' or c == '-' or c == '=' or c == ',') {
+                    break :blk true;
+                }
+            }
+            break :blk false;
         };
 
-        // Safety check for critical system paths
-        if (isCriticalSystemPath(normalized)) {
-            if (!options.quiet) {
-                common.printErrorWithProgram(stderr_writer, "chmod", "cannot modify '{s}': Operation not permitted", .{file_path});
-            }
-            continue;
+        // Pre-parse octal mode if it's not symbolic
+        if (!is_symbolic) {
+            parsed_octal_mode = parseMode(mode_str) catch |err| switch (err) {
+                ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
+                    if (!options.quiet) {
+                        common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
+                    }
+                    return err;
+                },
+                else => return err,
+            };
         }
+    }
 
+    for (files) |file_path| {
         if (options.recursive) {
             // Check if path is a directory
             const stat_result = std.fs.cwd().statFile(file_path) catch |err| {
@@ -252,74 +251,59 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             };
 
             if (stat_result.kind == .directory) {
-                try chmodRecursive(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, writer, stderr_writer, options);
+                try chmodRecursive(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options);
             } else {
+                // For recursive processing of files, we want to propagate errors
                 if (use_reference) {
                     try applyModeToFile(file_path, reference_mode.?, writer, stderr_writer, options);
                 } else if (is_symbolic) {
                     try applySymbolicModeToFile(file_path, mode_str, writer, stderr_writer, options);
                 } else {
-                    const mode = try parseMode(mode_str);
-                    try applyModeToFile(file_path, mode, writer, stderr_writer, options);
+                    try applyModeToFile(file_path, parsed_octal_mode.?, writer, stderr_writer, options);
                 }
             }
         } else {
-            // Non-recursive processing
-            if (use_reference) {
-                applyModeToFile(file_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
-                    if (!options.quiet) {
-                        common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
-                    }
-                };
-            } else if (is_symbolic) {
-                applySymbolicModeToFile(file_path, mode_str, writer, stderr_writer, options) catch |err| {
-                    if (!options.quiet) {
-                        common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
-                    }
-                };
-            } else {
-                const mode = parseMode(mode_str) catch |err| switch (err) {
-                    ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
-                        }
-                        return err;
-                    },
-                    else => return err,
-                };
-
-                applyModeToFile(file_path, mode, writer, stderr_writer, options) catch |err| {
-                    if (!options.quiet) {
-                        common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
-                    }
-                };
-            }
+            // Non-recursive processing - use helper function for consistent error handling
+            applyModeToPath(file_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options);
         }
+    }
+}
+
+/// Apply mode to a single path with proper error handling
+/// Handles reference mode, symbolic mode, and octal mode cases
+fn applyModeToPath(file_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, parsed_octal_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) void {
+    if (use_reference) {
+        applyModeToFile(file_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
+            if (!options.quiet) {
+                common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+            }
+        };
+    } else if (is_symbolic) {
+        applySymbolicModeToFile(file_path, mode_str, writer, stderr_writer, options) catch |err| {
+            if (!options.quiet) {
+                common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+            }
+        };
+    } else {
+        applyModeToFile(file_path, parsed_octal_mode.?, writer, stderr_writer, options) catch |err| {
+            if (!options.quiet) {
+                common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, @errorName(err) });
+            }
+        };
     }
 }
 
 /// Recursively apply chmod to a directory and all its contents
 /// Processes directories depth-first
-fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
+fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, parsed_octal_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     // Apply mode to the directory itself first
+    // For directories, we want to propagate errors, so call the individual functions
     if (use_reference) {
         try applyModeToFile(dir_path, reference_mode.?, writer, stderr_writer, options);
     } else if (is_symbolic) {
         try applySymbolicModeToFile(dir_path, mode_str, writer, stderr_writer, options);
     } else {
-        const mode = try parseMode(mode_str);
-        try applyModeToFile(dir_path, mode, writer, stderr_writer, options);
-    }
-
-    // Path traversal protection for directory
-    var normalized_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const normalized = std.fs.realpath(dir_path, &normalized_buf) catch dir_path;
-
-    if (isCriticalSystemPath(normalized)) {
-        if (!options.quiet) {
-            common.printErrorWithProgram(stderr_writer, "chmod", "cannot modify '{s}': Operation not permitted", .{dir_path});
-        }
-        return;
+        try applyModeToFile(dir_path, parsed_octal_mode.?, writer, stderr_writer, options);
     }
 
     // Open directory for iteration
@@ -344,62 +328,11 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
         switch (entry.kind) {
             .directory => {
                 // Recursively process subdirectory
-                try chmodRecursive(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, writer, stderr_writer, options);
-            },
-            .file, .sym_link => {
-                if (use_reference) {
-                    applyModeToFile(full_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
-                        }
-                    };
-                } else if (is_symbolic) {
-                    applySymbolicModeToFile(full_path, mode_str, writer, stderr_writer, options) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
-                        }
-                    };
-                } else {
-                    const mode = parseMode(mode_str) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
-                        }
-                        return err;
-                    };
-                    applyModeToFile(full_path, mode, writer, stderr_writer, options) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
-                        }
-                    };
-                }
+                try chmodRecursive(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options);
             },
             else => {
-                // Handle other file types (block device, character device, etc.)
-                if (use_reference) {
-                    applyModeToFile(full_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
-                        }
-                    };
-                } else if (is_symbolic) {
-                    applySymbolicModeToFile(full_path, mode_str, writer, stderr_writer, options) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
-                        }
-                    };
-                } else {
-                    const mode = parseMode(mode_str) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
-                        }
-                        return err;
-                    };
-                    applyModeToFile(full_path, mode, writer, stderr_writer, options) catch |err| {
-                        if (!options.quiet) {
-                            common.printErrorWithProgram(stderr_writer, "chmod", "cannot access '{s}': {s}", .{ full_path, @errorName(err) });
-                        }
-                    };
-                }
+                // Handle all file types uniformly (files, symlinks, devices, etc.)
+                applyModeToPath(full_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options);
             },
         }
     }
@@ -655,37 +588,6 @@ fn modeToString(mode: u32) [9]u8 {
     return result;
 }
 
-/// Check if a path is a critical system path that should not be modified
-/// Security feature to prevent accidental system damage
-fn isCriticalSystemPath(path: []const u8) bool {
-    const critical_paths = [_][]const u8{
-        "/bin",
-        "/boot",
-        "/dev",
-        "/etc",
-        "/lib",
-        "/lib32",
-        "/lib64",
-        "/proc",
-        "/root",
-        "/sbin",
-        "/sys",
-        "/usr",
-        "/var",
-    };
-
-    for (critical_paths) |critical| {
-        if (std.mem.eql(u8, path, critical)) {
-            return true;
-        }
-        // Check if path starts with critical path
-        if (path.len > critical.len and path[critical.len] == '/' and std.mem.startsWith(u8, path, critical)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /// Helper function for testing chmod functionality
 /// Used in integration tests to simulate command-line usage
 fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype, stderr_writer: anytype) !void {
@@ -902,21 +804,7 @@ test "chmod handles invalid mode strings" {
     }
 }
 
-// Tests: Security and Safety Features
-
-test "isCriticalSystemPath detects system paths" {
-    // Test critical system path detection
-    try testing.expect(isCriticalSystemPath("/etc"));
-    try testing.expect(isCriticalSystemPath("/bin"));
-    try testing.expect(isCriticalSystemPath("/usr"));
-    try testing.expect(isCriticalSystemPath("/etc/passwd"));
-    try testing.expect(isCriticalSystemPath("/bin/sh"));
-
-    try testing.expect(!isCriticalSystemPath("/home/user/test"));
-    try testing.expect(!isCriticalSystemPath("/tmp/test"));
-    try testing.expect(!isCriticalSystemPath("/opt/myapp"));
-    try testing.expect(!isCriticalSystemPath("./test"));
-}
+// Tests: Advanced Features
 
 test "Mode struct supports special permissions" {
     const mode_with_setuid = Mode{
@@ -1238,32 +1126,6 @@ test "quiet flag suppresses error messages" {
 
     // Should produce no output due to quiet mode
     try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
-}
-
-test "path traversal protection" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-
-    // Create a test directory to simulate path traversal attempts
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create test files
-    try tmp_dir.dir.writeFile(.{ .sub_path = "test_file.txt", .data = "test" });
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test_file.txt", &path_buf);
-
-    const options = ChmodOptions{ .quiet = true };
-
-    // Test that chmod works on a valid file (should not produce errors)
-    try chmodFiles(testing.allocator, "755", &.{test_path}, stdout_buffer.writer(), stderr_buffer.writer(), options);
-
-    // For actual system paths, we expect permission errors to be caught
-    // but we don't actually test them to avoid triggering OS dialogs
-    // The production code already handles these cases safely
 }
 
 test "error handling consistency" {
