@@ -76,8 +76,9 @@ const ErrorMessages = struct {
 const PathValidator = struct {
     allocator: std.mem.Allocator,
 
-    /// System paths that should never be removed.
+    /// System paths that should never be removed - cross-platform critical directories.
     const protected_paths = [_][]const u8{
+        // Unix/Linux root and essential directories
         "/",
         "/bin",
         "/boot",
@@ -100,6 +101,51 @@ const PathValidator = struct {
         "/tmp",
         "/usr",
         "/var",
+
+        // macOS specific critical paths
+        "/Applications",
+        "/Library",
+        "/System",
+        "/Users",
+        "/Volumes",
+        "/private",
+        "/cores",
+
+        // Additional Unix variants (BSD, Solaris, etc.)
+        "/kernel",
+        "/platform",
+        "/devices",
+        "/export",
+
+        // Common single character paths that are often critical
+        ".",
+        "..",
+
+        // Windows drive roots (in case of cross-compilation or WSL)
+        "C:\\",
+        "D:\\",
+        "E:\\",
+        "F:\\",
+        "G:\\",
+        "H:\\",
+        "I:\\",
+        "J:\\",
+        "K:\\",
+        "L:\\",
+        "M:\\",
+        "N:\\",
+        "O:\\",
+        "P:\\",
+        "Q:\\",
+        "R:\\",
+        "S:\\",
+        "T:\\",
+        "U:\\",
+        "V:\\",
+        "W:\\",
+        "X:\\",
+        "Y:\\",
+        "Z:\\",
     };
 
     /// Initialize a new PathValidator with the given allocator.
@@ -114,9 +160,19 @@ const PathValidator = struct {
             return error.InvalidPath;
         }
 
-        // Check for path traversal attempts
-        // Both "../" anywhere in the path and ".." as the entire path are dangerous
-        if (std.mem.indexOf(u8, path, "../") != null or std.mem.eql(u8, path, "..")) {
+        // Check for path traversal attempts - comprehensive protection
+        if (std.mem.indexOf(u8, path, "../") != null or
+            std.mem.indexOf(u8, path, "..\\") != null or // Windows path separator
+            std.mem.eql(u8, path, "..") or
+            std.mem.startsWith(u8, path, "../") or
+            std.mem.startsWith(u8, path, "..\\") or
+            std.mem.endsWith(u8, path, "/..") or
+            std.mem.endsWith(u8, path, "\\..") or
+            std.mem.indexOf(u8, path, "/.../") != null or // triple dots
+            std.mem.indexOf(u8, path, "\\.../") != null or
+            std.mem.indexOf(u8, path, "/./") != null or // current dir references
+            std.mem.indexOf(u8, path, "\\.\\") != null)
+        {
             return error.PathTraversalAttempt;
         }
 
@@ -264,6 +320,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             else => return err,
         }
     };
+    // Only defer after successful parsing to avoid leaking on parsing errors
     defer allocator.free(parsed_args.positionals);
 
     // Handle help request
@@ -338,8 +395,7 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
 
         if (options.parents) {
             // Remove directory and its parents
-            const err = removeDirectoryWithParents(allocator, dir, stdout_writer, options, validator);
-            if (err) |e| {
+            if (removeDirectoryWithParents(allocator, dir, stdout_writer, options, validator)) |e| {
                 had_error = true;
                 handleError(e, dir, stderr_writer, options) catch |write_err| {
                     // If we can't write to stderr, return the write error
@@ -348,8 +404,7 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
             }
         } else {
             // Remove single directory
-            const err = removeSingleDirectory(dir, stdout_writer, options, validator);
-            if (err) |e| {
+            if (removeSingleDirectory(dir, stdout_writer, options, validator)) |e| {
                 had_error = true;
                 handleError(e, dir, stderr_writer, options) catch |write_err| {
                     // If we can't write to stderr, return the write error
@@ -384,11 +439,11 @@ fn removeSingleDirectory(path: []const u8, writer: anytype, options: RmdirOption
     };
 
     if (options.verbose) {
-        // Use styled output for better readability
+        // Use styled output for better readability, but don't fail on styling errors
         const style = common.style.Style(@TypeOf(writer)).init(writer);
-        style.setColor(.green) catch |err| return err;
+        style.setColor(.green) catch {};
         writer.print("rmdir: ", .{}) catch |err| return err;
-        style.reset() catch |err| return err;
+        style.reset() catch {};
         writer.print("removing directory, '{s}'\n", .{path}) catch |err| return err;
     }
 
@@ -428,7 +483,7 @@ fn handleError(err: anyerror, path: []const u8, stderr_writer: anytype, options:
         return;
     }
 
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+    const prog_name = "rmdir";
     const msg = ErrorMessages.format(err, path);
     common.printErrorWithProgram(stderr_writer, prog_name, "failed to remove '{s}': {s}", .{ path, msg });
 }

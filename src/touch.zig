@@ -152,7 +152,7 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
 /// Prints the help message using the provided writer.
 fn printHelp(writer: anytype) !void {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
+    const prog_name = "touch";
 
     try writer.print(
         \\Usage: {s} [OPTION]... FILE...
@@ -195,6 +195,8 @@ const TouchOptions = struct {
 
 /// Touches a single file with the specified options.
 fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator) !void {
+    // Validate path
+    try validatePath(path);
 
     // Get the timestamps to use
     var times: [2]c.timespec = undefined;
@@ -202,14 +204,8 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
     if (options.reference_file) |ref_path| {
         // Use timestamps from reference file
         const ref_info = try common.file.FileInfo.stat(ref_path);
-        times[0] = c.timespec{
-            .sec = @intCast(@divFloor(ref_info.atime, std.time.ns_per_s)),
-            .nsec = @intCast(@mod(ref_info.atime, std.time.ns_per_s)),
-        };
-        times[1] = c.timespec{
-            .sec = @intCast(@divFloor(ref_info.mtime, std.time.ns_per_s)),
-            .nsec = @intCast(@mod(ref_info.mtime, std.time.ns_per_s)),
-        };
+        times[0] = nsToTimespec(ref_info.atime);
+        times[1] = nsToTimespec(ref_info.mtime);
     } else if (options.timestamp_str) |timestamp| {
         // Parse -t format
         const parsed_time = try parseTimestamp(timestamp);
@@ -221,11 +217,7 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
     } else {
         // Use current time with nanosecond precision
         const now_ns = std.time.nanoTimestamp();
-        const now = c.timespec{
-            // Convert nanoseconds to seconds and remainder
-            .sec = @intCast(@divFloor(now_ns, std.time.ns_per_s)),
-            .nsec = @intCast(@mod(now_ns, std.time.ns_per_s)),
-        };
+        const now = nsToTimespec(now_ns);
         times[0] = now;
         times[1] = now;
     }
@@ -270,9 +262,15 @@ fn touchFileWithTimes(
                 // Don't create it - not an error
                 return;
             }
-            // Create the file and try updating times again
-            const new_file = try fs.cwd().createFile(path, .{ .exclusive = false });
-            new_file.close();
+            // Create the file atomically
+            createFileAtomic(path) catch |create_err| {
+                // If creation fails due to race condition, try updating times anyway
+                if (create_err == error.PathAlreadyExists) {
+                    try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator);
+                    return;
+                }
+                return create_err;
+            };
 
             // Now update times on the newly created file
             try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator);
@@ -299,17 +297,11 @@ fn updateFileTimes(
         const info = try common.file.FileInfo.stat(path);
         if (access_only) {
             // preserve modification time
-            actual_times[1] = c.timespec{
-                .sec = @intCast(@divFloor(info.mtime, std.time.ns_per_s)),
-                .nsec = @intCast(@mod(info.mtime, std.time.ns_per_s)),
-            };
+            actual_times[1] = nsToTimespec(info.mtime);
         }
         if (modify_only) {
             // preserve access time
-            actual_times[0] = c.timespec{
-                .sec = @intCast(@divFloor(info.atime, std.time.ns_per_s)),
-                .nsec = @intCast(@mod(info.atime, std.time.ns_per_s)),
-            };
+            actual_times[0] = nsToTimespec(info.atime);
         }
     }
 
@@ -323,7 +315,7 @@ fn updateFileTimes(
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
     const result = c.utimensat(dirfd, path_z, &actual_times, flags);
-    if (result != 0) {
+    if (result == -1) {
         const err = std.posix.errno(result);
         return switch (err) {
             .ACCES => error.AccessDenied,
@@ -427,7 +419,7 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     const max_days = std.math.maxInt(i64) / 86400;
     if (days_since_epoch > max_days) return error.InvalidTimestamp;
 
-    const day_seconds = days_since_epoch * 86400;
+    const day_seconds = std.math.mul(i64, days_since_epoch, 86400) catch return error.InvalidTimestamp;
     // Convert time components to seconds (3600 = 60 * 60 seconds per hour)
     const time_seconds = @as(i64, hour) * 3600 + @as(i64, minute) * 60 + @as(i64, second);
 
@@ -439,6 +431,41 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     return c.timespec{
         .sec = @intCast(total_seconds),
         .nsec = 0,
+    };
+}
+
+/// Validates that a path is safe to use.
+pub fn validatePath(path: []const u8) !void {
+    // Check for null bytes
+    if (std.mem.indexOfScalar(u8, path, 0) != null) {
+        return error.BadPathName;
+    }
+
+    // Check for excessive length
+    if (path.len > fs.max_path_bytes) {
+        return error.NameTooLong;
+    }
+}
+
+/// Creates a file atomically to avoid race conditions.
+fn createFileAtomic(path: []const u8) !void {
+    const file = fs.cwd().createFile(path, .{
+        .exclusive = true, // Fail if file already exists
+        .truncate = false, // Don't truncate if it somehow exists
+    }) catch |err| {
+        return switch (err) {
+            error.PathAlreadyExists => err, // Let caller handle this
+            else => err,
+        };
+    };
+    file.close();
+}
+
+/// Helper function to convert nanoseconds to timespec.
+fn nsToTimespec(ns: i128) c.timespec {
+    return c.timespec{
+        .sec = @intCast(@divFloor(ns, std.time.ns_per_s)),
+        .nsec = @intCast(@mod(ns, std.time.ns_per_s)),
     };
 }
 
