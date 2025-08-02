@@ -685,13 +685,47 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         const source = files[0];
         const dest = files[1];
 
-        moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |err| {
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, err });
-            return @intFromEnum(common.ExitCode.general_error);
+        // Check if destination is a directory
+        const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
+            error.FileNotFound => {
+                // Destination doesn't exist, proceed with normal rename
+                moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |move_err| {
+                    common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, move_err });
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+
+                if (options.verbose) {
+                    try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
+                }
+                return @intFromEnum(common.ExitCode.success);
+            },
+            else => return err,
         };
 
-        if (options.verbose) {
-            try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
+        // If destination is a directory, move source into it
+        if (dest_stat.kind == .directory) {
+            const base_name = std.fs.path.basename(source);
+            const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
+            defer allocator.free(full_dest);
+
+            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch |move_err| {
+                common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, full_dest, move_err });
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+
+            if (options.verbose) {
+                try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, full_dest });
+            }
+        } else {
+            // Destination is a file, proceed with normal move/overwrite logic
+            moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |move_err| {
+                common.printErrorWithProgram(stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, move_err });
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+
+            if (options.verbose) {
+                try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
+            }
         }
         return @intFromEnum(common.ExitCode.success);
     }
