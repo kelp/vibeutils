@@ -96,21 +96,6 @@ pub const ExitCode = enum(u8) {
 /// Null writer for suppressing output (commonly used in tests)
 pub const null_writer = std.io.null_writer;
 
-/// Get the standard error writer
-pub fn getStderrWriter() @TypeOf(std.io.getStdErr().writer()) {
-    return std.io.getStdErr().writer();
-}
-
-/// Get the standard output writer
-pub fn getStdoutWriter() @TypeOf(std.io.getStdOut().writer()) {
-    return std.io.getStdOut().writer();
-}
-
-/// Get a null writer that discards all output
-pub fn getNullWriter() @TypeOf(std.io.null_writer) {
-    return std.io.null_writer;
-}
-
 /// DEPRECATED: Use fatalWithWriter() instead
 /// This function will be removed in a future version
 pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
@@ -144,60 +129,12 @@ pub fn printError(comptime fmt: []const u8, fmt_args: anytype) void {
     @compileError("printError() is deprecated - use printErrorWithWriter() with explicit stderr writer instead");
 }
 
-/// Print error message to stderr writer without exiting
-///
-/// Similar to fatalWithWriter() but allows the program to continue execution.
-/// Useful for non-fatal warnings or when handling multiple errors.
-pub fn printErrorWithWriter(stderr_writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
-    printErrorTo(stderr_writer, fmt, fmt_args);
-}
-
-/// Print error message to a specific writer without exiting
-///
-/// Like printError() but allows specifying the writer to use.
-/// Useful for testing or when redirecting error output.
-pub fn printErrorTo(writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-
-    // Try to use color for errors
-    const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(writer);
-    s.setColor(.bright_red) catch {};
-    writer.print("{s}: ", .{prog_name}) catch return;
-    s.reset() catch {};
-    writer.print(fmt ++ "\n", fmt_args) catch return;
-}
-
 /// DEPRECATED: Use printWarningWithWriter() instead
 /// This function will be removed in a future version
 pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
     _ = fmt;
     _ = fmt_args;
     @compileError("printWarning() is deprecated - use printWarningWithWriter() with explicit stderr writer instead");
-}
-
-/// Print warning message to stderr writer without exiting
-///
-/// Used for non-fatal issues that should be reported but don't stop execution.
-/// Warnings are displayed in yellow to distinguish them from errors.
-pub fn printWarningWithWriter(stderr_writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
-    printWarningTo(stderr_writer, fmt, fmt_args);
-}
-
-/// Print warning message to a specific writer
-///
-/// Used for non-fatal issues that should be reported but don't stop execution.
-/// Warnings are displayed in yellow to distinguish them from errors.
-pub fn printWarningTo(writer: anytype, comptime fmt: []const u8, fmt_args: anytype) void {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-
-    // Try to use color for warnings
-    const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(writer);
-    s.setColor(.bright_yellow) catch {};
-    writer.print("{s}: warning: ", .{prog_name}) catch return;
-    s.reset() catch {};
-    writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
 /// Print error message with custom program name to a specific writer
@@ -227,28 +164,6 @@ pub fn printWarningWithProgram(writer: anytype, prog_name: []const u8, comptime 
     s.reset() catch {};
     writer.print(fmt ++ "\n", fmt_args) catch return;
 }
-
-/// Common command line options (DEPRECATED)
-pub const CommonOpts = struct {
-    help: bool = false,
-    version: bool = false,
-
-    /// Print help message
-    pub fn printHelp(comptime usage: []const u8, comptime description: []const u8) void {
-        const stdout = std.io.getStdOut().writer();
-        const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-
-        stdout.print("Usage: {s} {s}\n\n", .{ prog_name, usage }) catch return;
-        stdout.print("{s}\n", .{description}) catch return;
-    }
-
-    /// Print version
-    pub fn printVersion() void {
-        const stdout = std.io.getStdOut().writer();
-        const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-        stdout.print("{s} ({s}) {s}\n", .{ prog_name, name, version }) catch return;
-    }
-};
 
 test "common library basics" {
     // Test that we can import and use basic functionality
