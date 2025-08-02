@@ -42,6 +42,8 @@ pub const Error = error{
 };
 
 /// Represents a user lookup result
+/// Note: The caller owns the name slice and must free it with the same allocator
+/// used to obtain the UserInfo.
 pub const UserInfo = struct {
     uid: uid_t,
     gid: gid_t,
@@ -49,6 +51,8 @@ pub const UserInfo = struct {
 };
 
 /// Represents a group lookup result
+/// Note: The caller owns the name slice and must free it with the same allocator
+/// used to obtain the GroupInfo.
 pub const GroupInfo = struct {
     gid: gid_t,
     name: []const u8,
@@ -112,53 +116,47 @@ pub fn parseGroup(group_spec: []const u8, allocator: std.mem.Allocator) Error!gi
 }
 
 /// Look up user by name using getpwnam
+/// This function ONLY performs name lookups - use parseUser for numeric ID parsing
 pub fn lookupUserByName(name: []const u8, allocator: std.mem.Allocator) Error!uid_t {
-    // Try to parse as numeric ID first
-    if (std.fmt.parseInt(uid_t, name, 10)) |uid| {
-        return uid;
-    } else |_| {
-        // Not numeric, look up by name using getpwnam
-        const name_z = allocator.dupeZ(u8, name) catch return Error.OutOfMemory;
-        defer allocator.free(name_z);
+    const name_z = allocator.dupeZ(u8, name) catch return Error.OutOfMemory;
+    defer allocator.free(name_z);
 
-        const passwd = getpwnam(name_z.ptr) orelse return Error.UserNotFound;
-        return passwd.pw_uid;
-    }
+    const passwd = getpwnam(name_z.ptr) orelse return Error.UserNotFound;
+    return passwd.pw_uid;
 }
 
 /// Look up group by name using getgrnam
+/// This function ONLY performs name lookups - use parseGroup for numeric ID parsing
 pub fn lookupGroupByName(name: []const u8, allocator: std.mem.Allocator) Error!gid_t {
-    // Try to parse as numeric ID first
-    if (std.fmt.parseInt(gid_t, name, 10)) |gid| {
-        return gid;
-    } else |_| {
-        // Not numeric, look up by name using getgrnam
-        const name_z = allocator.dupeZ(u8, name) catch return Error.OutOfMemory;
-        defer allocator.free(name_z);
+    const name_z = allocator.dupeZ(u8, name) catch return Error.OutOfMemory;
+    defer allocator.free(name_z);
 
-        const group = getgrnam(name_z.ptr) orelse return Error.GroupNotFound;
-        return group.gr_gid;
-    }
+    const group = getgrnam(name_z.ptr) orelse return Error.GroupNotFound;
+    return group.gr_gid;
 }
 
 /// Get user information by UID
-pub fn getUserById(uid: uid_t) Error!UserInfo {
+/// Caller owns the returned name slice and must free it with the provided allocator
+pub fn getUserById(uid: uid_t, allocator: std.mem.Allocator) Error!UserInfo {
     const passwd = getpwuid(uid) orelse return Error.UserNotFound;
     const name = std.mem.span(passwd.pw_name);
+    const owned_name = allocator.dupe(u8, name) catch return Error.OutOfMemory;
     return UserInfo{
         .uid = passwd.pw_uid,
         .gid = passwd.pw_gid,
-        .name = name,
+        .name = owned_name,
     };
 }
 
 /// Get group information by GID
-pub fn getGroupById(gid: gid_t) Error!GroupInfo {
+/// Caller owns the returned name slice and must free it with the provided allocator
+pub fn getGroupById(gid: gid_t, allocator: std.mem.Allocator) Error!GroupInfo {
     const group = getgrgid(gid) orelse return Error.GroupNotFound;
     const name = std.mem.span(group.gr_name);
+    const owned_name = allocator.dupe(u8, name) catch return Error.OutOfMemory;
     return GroupInfo{
         .gid = group.gr_gid,
-        .name = name,
+        .name = owned_name,
     };
 }
 
@@ -184,13 +182,13 @@ test "parseGroup with numeric ID" {
     try testing.expectEqual(@as(gid_t, 100), gid);
 }
 
-test "parseUser with invalid numeric ID" {
-    // Test overflow
+test "parseUser with numeric overflow falls back to name lookup" {
+    // Test numeric overflow - parseUser falls back to name lookup which fails
     try testing.expectError(Error.UserNotFound, parseUser("999999999999999999999", testing.allocator));
 }
 
-test "parseGroup with invalid numeric ID" {
-    // Test overflow
+test "parseGroup with numeric overflow falls back to name lookup" {
+    // Test numeric overflow - parseGroup falls back to name lookup which fails
     try testing.expectError(Error.GroupNotFound, parseGroup("999999999999999999999", testing.allocator));
 }
 
@@ -234,14 +232,16 @@ test "getCurrentGroupId returns valid GID" {
 
 test "getUserById with current user" {
     const current_uid = getCurrentUserId();
-    const user_info = try getUserById(current_uid);
+    const user_info = try getUserById(current_uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
     try testing.expectEqual(current_uid, user_info.uid);
     try testing.expect(user_info.name.len > 0);
 }
 
 test "getGroupById with current group" {
     const current_gid = getCurrentGroupId();
-    const group_info = try getGroupById(current_gid);
+    const group_info = try getGroupById(current_gid, testing.allocator);
+    defer testing.allocator.free(group_info.name);
     try testing.expectEqual(current_gid, group_info.gid);
     try testing.expect(group_info.name.len > 0);
 }
