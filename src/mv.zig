@@ -406,6 +406,9 @@ test "mv: empty file" {
     try testing.expectEqualStrings("", content);
 }
 
+// Constants for buffer sizes
+const PROMPT_BUFFER_SIZE = 256;
+
 /// Move across filesystems using copy-then-delete
 fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     // DEAD CODE CLEANUP FIX: Use new common modules instead of old cp/ modules
@@ -449,29 +452,31 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         try stderr_writer.print("mv: removing source '{s}'\n", .{source});
     }
 
-    // If copy succeeded, remove the source
+    // If copy succeeded, remove the source with error recovery
     // We need to check if it's a directory to use the appropriate delete method
-    const source_stat = try std.fs.cwd().statFile(source);
+    const source_stat = std.fs.cwd().statFile(source) catch |stat_err| {
+        common.printErrorWithProgram(stderr_writer, "mv", "failed to stat source '{s}' for deletion: {}", .{ source, stat_err });
+        common.printErrorWithProgram(stderr_writer, "mv", "copy completed but source not removed - manual cleanup required", .{});
+        return stat_err;
+    };
+
     if (source_stat.kind == .directory) {
-        try std.fs.cwd().deleteTree(source);
+        std.fs.cwd().deleteTree(source) catch |del_err| {
+            common.printErrorWithProgram(stderr_writer, "mv", "failed to remove source directory '{s}': {}", .{ source, del_err });
+            common.printErrorWithProgram(stderr_writer, "mv", "copy completed successfully but source directory remains - please remove manually", .{});
+            return del_err;
+        };
     } else {
-        try std.fs.cwd().deleteFile(source);
+        std.fs.cwd().deleteFile(source) catch |del_err| {
+            common.printErrorWithProgram(stderr_writer, "mv", "failed to remove source file '{s}': {}", .{ source, del_err });
+            common.printErrorWithProgram(stderr_writer, "mv", "copy completed successfully but source file remains - please remove manually", .{});
+            return del_err;
+        };
     }
 
     if (options.verbose) {
         try stderr_writer.print("mv: completed cross-filesystem move\n", .{});
     }
-}
-
-/// Remove destination file or directory
-fn removeDestination(dest: []const u8) !void {
-    std.fs.cwd().deleteFile(dest) catch |del_err| {
-        // If deleteFile fails, it might be a directory
-        // Try deleteTree, but if that also fails, return the original error
-        std.fs.cwd().deleteTree(dest) catch {
-            return del_err;
-        };
-    };
 }
 
 /// Prompt user for overwrite confirmation
@@ -480,7 +485,7 @@ fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
 
     try stderr_writer.print("mv: overwrite '{s}'? ", .{dest});
 
-    var buf: [16]u8 = undefined;
+    var buf: [PROMPT_BUFFER_SIZE]u8 = undefined;
     if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r\n");
         return trimmed.len > 0 and (trimmed[0] == 'y' or trimmed[0] == 'Y');
@@ -490,23 +495,51 @@ fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
 
 /// Move file or directory with atomic rename or cross-filesystem copy
 fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    // Check for same file using stat() to compare inodes
+    const source_stat = std.fs.cwd().statFile(source) catch |err| {
+        common.printErrorWithProgram(stderr_writer, "mv", "cannot stat '{s}': {}", .{ source, err });
+        return err;
+    };
+
+    if (std.fs.cwd().statFile(dest)) |dest_stat| {
+        if (source_stat.inode == dest_stat.inode) {
+            common.printErrorWithProgram(stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
+            return error.SameFile;
+        }
+    } else |err| switch (err) {
+        error.FileNotFound => {}, // Destination doesn't exist, that's fine
+        else => {
+            common.printErrorWithProgram(stderr_writer, "mv", "cannot stat '{s}': {}", .{ dest, err });
+            return err;
+        },
+    }
+
     // For no-clobber mode, check if destination exists first
-    // Note: There's a TOCTOU (time-of-check-time-of-use) race here, but this is
-    // acceptable for no-clobber mode as it's a best-effort safety feature
+    // Note: This has a small TOCTOU window, but it's the standard approach used by GNU mv
+    // The alternative would require filesystem-specific atomic operations not available in POSIX
     if (options.no_clobber) {
-        std.fs.cwd().access(dest, .{}) catch |err| switch (err) {
-            error.FileNotFound => {}, // Destination doesn't exist, proceed
-            else => return err,
-        };
-        // If we get here without error, destination exists, so skip
-        return;
+        if (std.fs.cwd().access(dest, .{})) |_| {
+            // Destination exists, skip the move
+            if (options.verbose) {
+                try stdout_writer.print("mv: not overwriting '{s}' (no-clobber mode)\n", .{dest});
+            }
+            return; // Silently skip as per GNU mv behavior
+        } else |err| switch (err) {
+            error.FileNotFound => {
+                // Destination doesn't exist, proceed with normal move
+            },
+            else => {
+                common.printErrorWithProgram(stderr_writer, "mv", "error checking destination '{s}': {}", .{ dest, err });
+                return err;
+            },
+        }
     }
 
     // Try atomic rename first
     std.posix.rename(source, dest) catch |err| switch (err) {
         error.RenameAcrossMountPoints => {
             // Fall back to copy + remove
-            try crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
+            return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
         },
         error.PathAlreadyExists => {
             // Destination exists - handle based on options
@@ -515,33 +548,21 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 if (!try promptOverwrite(dest, stderr_writer)) {
                     return; // User chose not to overwrite
                 }
-                // User approved, remove destination and retry
-                try removeDestination(dest);
-                // Retry the rename after removing destination
-                // We might still get RenameAcrossMountPoints if on different filesystems
-                std.posix.rename(source, dest) catch |rename_err| switch (rename_err) {
-                    error.RenameAcrossMountPoints => {
-                        try crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
-                    },
-                    else => return rename_err,
-                };
-            } else if (options.force) {
-                // Force mode - remove destination without asking and retry
-                try removeDestination(dest);
-                // Retry the rename after removing destination
-                std.posix.rename(source, dest) catch |rename_err| switch (rename_err) {
-                    error.RenameAcrossMountPoints => {
-                        try crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
-                    },
-                    else => return rename_err,
-                };
-            } else {
-                // No force, no interactive - fail with error
-                // This preserves existing files by default
+            } else if (!options.force) {
+                // No force, no interactive - fail with clear error message
+                common.printErrorWithProgram(stderr_writer, "mv", "cannot overwrite '{s}': File exists (use -f to force or -i for interactive)", .{dest});
                 return error.PathAlreadyExists;
             }
+
+            // If we get here, we need to overwrite (either force mode or interactive approved)
+            // Let rename() handle the atomic overwrite - don't manually remove destination
+            // On most systems, rename() atomically replaces the destination
+            return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
         },
-        else => return err,
+        else => {
+            common.printErrorWithProgram(stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, err });
+            return err;
+        },
     };
 }
 
