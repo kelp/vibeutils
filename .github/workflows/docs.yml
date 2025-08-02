@@ -52,20 +52,9 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y mandoc groff-base pandoc
         
-    - name: Setup Zig cache directories
+    - name: Make scripts executable
       run: |
-        echo "Setting up Zig cache directories..."
-        # Zig expects these directories to exist when running build commands
-        # Set up the cache directory based on the OS default location
-        ZIG_LOCAL_CACHE_DIR="${HOME}/.cache/zig"
-        echo "Creating Zig cache directories at: ${ZIG_LOCAL_CACHE_DIR}"
-        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/b"
-        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/c"
-        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/o"
-        mkdir -p "${ZIG_LOCAL_CACHE_DIR}/p"
-        # Also create the local zig-cache directory for the project
-        mkdir -p zig-cache
-        echo "Zig cache directories created successfully"
+        chmod +x scripts/*.sh
         
     - name: Validate man pages
       run: |
@@ -87,168 +76,20 @@ jobs:
           fi
         done
         
-    - name: Convert man pages to HTML
+    - name: Generate documentation
       run: |
-        echo "Converting man pages to HTML..."
-        mkdir -p docs/html/man/
+        echo "Generating documentation using shared script..."
+        ./scripts/generate-docs.sh --ci
         
-        for manpage in man/man1/*.1; do
-          if [ -f "$manpage" ]; then
-            utility=$(basename "$manpage" .1)
-            echo "Converting ${utility}.1 to HTML..."
-            
-            # Use mandoc for HTML output
-            mandoc -T html -O style=../style.css "$manpage" > "docs/html/man/${utility}.html"
-            
-            # Verify the HTML file was created and has content
-            if [ -f "docs/html/man/${utility}.html" ]; then
-              file_size=$(stat -c%s "docs/html/man/${utility}.html" 2>/dev/null || stat -f%z "docs/html/man/${utility}.html" 2>/dev/null || echo "0")
-              if [ "$file_size" -eq "0" ]; then
-                echo "::error::Generated HTML for ${utility} is empty"
-                exit 1
-              else
-                echo "✅ Successfully generated ${utility}.html (${file_size} bytes)"
-              fi
-            else
-              echo "::error::Failed to create HTML file for ${utility}"
-              exit 1
-            fi
-          fi
-        done
-        
-    - name: Generate README variants
+    - name: Generate README HTML (additional for CI)
       run: |
-        echo "Generating README variants..."
-        mkdir -p docs/html/
-        
-        # Convert README to HTML
+        echo "Generating README HTML for GitHub Pages..."
+        # Convert README to HTML (pandoc only available in CI)
         if command -v pandoc > /dev/null; then
           pandoc README.md -o docs/html/README.html --standalone --css=style.css || {
             echo "::warning::Failed to convert README to HTML"
           }
         fi
-        
-    - name: Generate Zig documentation
-      run: |
-        echo "Generating Zig documentation..."
-        zig build docs
-        
-        # Copy generated docs to the output directory
-        if [ -d "zig-out/docs" ]; then
-          cp -r zig-out/docs/* docs/html/
-        fi
-        
-    - name: Create documentation index
-      run: |
-        echo "Creating documentation index..."
-        
-        cat > docs/html/index.html << 'EOF'
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>vibeutils Documentation</title>
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-                h1, h2 { color: #333; }
-                .utility-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-                .utility-card { border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
-                .utility-card h3 { margin-top: 0; }
-                a { color: #0066cc; text-decoration: none; }
-                a:hover { text-decoration: underline; }
-            </style>
-        </head>
-        <body>
-            <h1>vibeutils Documentation</h1>
-            <p>Modern Zig implementation of GNU coreutils with enhanced UX features.</p>
-            
-            <h2>Quick Links</h2>
-            <ul>
-                <li><a href="README.html">README</a></li>
-                <li><a href="https://github.com/kelp/vibeutils">Source Code</a></li>
-                <li><a href="common/index.html">Common Library API</a></li>
-            </ul>
-            
-            <h2>Utilities</h2>
-            <div class="utility-list">
-        EOF
-        
-        # Add utility cards
-        for utility in echo cat ls cp mv rm mkdir rmdir touch pwd chmod chown ln; do
-          if [ -f "man/man1/${utility}.1" ]; then
-            description=$(grep -o "\.Nd.*" "man/man1/${utility}.1" | sed 's/\.Nd //' || echo "Core utility")
-            cat >> docs/html/index.html << EOF
-                <div class="utility-card">
-                    <h3><a href="man/${utility}.html">${utility}</a></h3>
-                    <p>${description}</p>
-                    <small><a href="${utility}/index.html">API Documentation</a></small>
-                </div>
-        EOF
-          fi
-        done
-        
-        cat >> docs/html/index.html << EOF
-            </div>
-            
-            <footer>
-                <p><em>Documentation generated on $(date)</em></p>
-            </footer>
-        </body>
-        </html>
-        EOF
-        
-    - name: Create simple CSS
-      run: |
-        cat > docs/html/style.css << 'EOF'
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            color: #333;
-        }
-        
-        h1, h2, h3 { color: #2c3e50; }
-        
-        code {
-            background-color: #f4f4f4;
-            padding: 2px 4px;
-            border-radius: 3px;
-            font-family: 'Monaco', 'Consolas', monospace;
-        }
-        
-        pre {
-            background-color: #f8f8f8;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 15px;
-            overflow-x: auto;
-        }
-        
-        blockquote {
-            border-left: 4px solid #3498db;
-            margin: 0;
-            padding-left: 20px;
-            font-style: italic;
-        }
-        
-        table {
-            border-collapse: collapse;
-            width: 100%;
-        }
-        
-        th, td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-        }
-        
-        th {
-            background-color: #f2f2f2;
-        }
-        EOF
         
     - name: Validate generated documentation
       run: |

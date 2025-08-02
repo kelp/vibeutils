@@ -1,16 +1,30 @@
 #!/bin/bash
 # Generate documentation locally for testing and debugging
-# This script mimics the GitHub Actions documentation workflow
+# This script is used both locally and in GitHub Actions CI
 
 set -e  # Exit on error
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Check if running in CI
+CI_MODE=false
+if [ "$1" = "--ci" ] || [ "$CI" = "true" ]; then
+    CI_MODE=true
+fi
+
+# Colors for output (disable in CI for cleaner logs)
+if [ "$CI_MODE" = true ]; then
+    RED=""
+    GREEN=""
+    YELLOW=""
+    NC=""
+else
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m' # No Color
+fi
 
 echo -e "${GREEN}=== vibeutils Documentation Generator ===${NC}"
+echo "Mode: $([ "$CI_MODE" = true ] && echo "CI" || echo "Local")"
 echo ""
 
 # Check for required tools
@@ -217,22 +231,28 @@ echo ""
 # Summary
 echo -e "${GREEN}=== Documentation Generation Complete ===${NC}"
 echo ""
-echo "Documentation has been generated in: docs/html/"
-echo ""
-echo "To view the documentation locally:"
-echo "  1. Open docs/html/index.html in your browser"
-echo "  2. Or run a local server:"
-echo "     cd docs/html && python3 -m http.server 8000"
-echo "     Then visit http://localhost:8000"
-echo ""
 
-# Check if we should open in browser
-if [ "$1" = "--open" ]; then
-    if command -v open &> /dev/null; then
-        echo "Opening documentation in browser..."
-        open docs/html/index.html
-    elif command -v xdg-open &> /dev/null; then
-        echo "Opening documentation in browser..."
-        xdg-open docs/html/index.html
+if [ "$CI_MODE" = true ]; then
+    echo "Documentation has been generated in: docs/html/"
+    echo "Files will be uploaded as artifacts and deployed to GitHub Pages"
+else
+    echo "Documentation has been generated in: docs/html/"
+    echo ""
+    echo "To view the documentation locally:"
+    echo "  1. Open docs/html/index.html in your browser"
+    echo "  2. Or run a local server:"
+    echo "     cd docs/html && python3 -m http.server 8000"
+    echo "     Then visit http://localhost:8000"
+    echo ""
+    
+    # Check if we should open in browser
+    if [ "$1" = "--open" ]; then
+        if command -v open &> /dev/null; then
+            echo "Opening documentation in browser..."
+            open docs/html/index.html
+        elif command -v xdg-open &> /dev/null; then
+            echo "Opening documentation in browser..."
+            xdg-open docs/html/index.html
+        fi
     fi
 fi
