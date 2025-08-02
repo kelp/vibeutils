@@ -151,13 +151,13 @@ pub const CopyContext = struct {
             break :blk true;
         };
 
-        return CopyOperation{
-            .source = source,
-            .dest = dest,
-            .source_type = source_type,
-            .dest_exists = dest_exists,
-            .final_dest_path = final_dest_path,
-        };
+        return CopyOperation.initWithOwnedPath(
+            source,
+            dest,
+            source_type,
+            dest_exists,
+            final_dest_path,
+        );
     }
 };
 
@@ -260,7 +260,6 @@ pub const CopyEngine = struct {
             for (operations.items) |*op| {
                 op.deinit(self.ctx.allocator);
             }
-            operations.deinit();
         }
 
         const dest = args[args.len - 1];

@@ -28,50 +28,10 @@ pub const CopyOperation = struct {
     dest: []const u8,
     source_type: FileType,
     dest_exists: bool,
-    final_dest_path: []const u8,
-    owns_final_dest_path: bool, // Tracks if we allocated final_dest_path memory
+    final_dest_path: []const u8, // resolved destination path
 
-    /// Initialize CopyOperation with owned final_dest_path (we allocated the memory)
-    pub fn initWithOwnedPath(
-        source: []const u8,
-        dest: []const u8,
-        source_type: FileType,
-        dest_exists: bool,
-        final_dest_path: []const u8,
-    ) CopyOperation {
-        return CopyOperation{
-            .source = source,
-            .dest = dest,
-            .source_type = source_type,
-            .dest_exists = dest_exists,
-            .final_dest_path = final_dest_path,
-            .owns_final_dest_path = true,
-        };
-    }
-
-    /// Initialize CopyOperation with borrowed final_dest_path (we don't own the memory)
-    pub fn initWithBorrowedPath(
-        source: []const u8,
-        dest: []const u8,
-        source_type: FileType,
-        dest_exists: bool,
-        final_dest_path: []const u8,
-    ) CopyOperation {
-        return CopyOperation{
-            .source = source,
-            .dest = dest,
-            .source_type = source_type,
-            .dest_exists = dest_exists,
-            .final_dest_path = final_dest_path,
-            .owns_final_dest_path = false,
-        };
-    }
-
-    /// Clean up resources if we own them
     pub fn deinit(self: *CopyOperation, allocator: std.mem.Allocator) void {
-        if (self.owns_final_dest_path) {
-            allocator.free(self.final_dest_path);
-        }
+        allocator.free(self.final_dest_path);
     }
 };
 
@@ -191,43 +151,4 @@ test "CopyStats: basic functionality" {
     try testing.expectEqual(@as(u64, 300), stats.bytes_copied);
     try testing.expectEqual(@as(usize, 1), stats.errors_encountered);
     try testing.expectEqual(@as(usize, 4), stats.totalItems());
-}
-
-test "CopyOperation: initWithOwnedPath and deinit" {
-    // Test with owned path
-    const owned_path = try testing.allocator.dupe(u8, "/dest/file.txt");
-    var op = CopyOperation.initWithOwnedPath(
-        "source.txt",
-        "/dest",
-        .regular_file,
-        false,
-        owned_path,
-    );
-
-    try testing.expect(op.owns_final_dest_path);
-    try testing.expectEqualStrings("source.txt", op.source);
-    try testing.expectEqualStrings("/dest", op.dest);
-    try testing.expectEqualStrings("/dest/file.txt", op.final_dest_path);
-
-    // deinit should free the owned memory
-    op.deinit(testing.allocator);
-}
-
-test "CopyOperation: initWithBorrowedPath and deinit" {
-    const borrowed_path = "/dest/file.txt"; // This is stack memory, not allocated
-    var op = CopyOperation.initWithBorrowedPath(
-        "source.txt",
-        "/dest",
-        .regular_file,
-        false,
-        borrowed_path,
-    );
-
-    try testing.expect(!op.owns_final_dest_path);
-    try testing.expectEqualStrings("source.txt", op.source);
-    try testing.expectEqualStrings("/dest", op.dest);
-    try testing.expectEqualStrings("/dest/file.txt", op.final_dest_path);
-
-    // deinit should NOT free borrowed memory (no-op)
-    op.deinit(testing.allocator);
 }
