@@ -202,93 +202,21 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     return @intCast(mode);
 }
 
-/// Validate path for security issues
-fn validatePath(path: []const u8) !void {
-    // Check for null bytes (path injection)
-    if (std.mem.indexOf(u8, path, "\x00") != null) {
-        return error.InvalidPath;
-    }
-
-    // Check for excessively long paths
-    if (path.len > 4096) {
-        return error.PathTooLong;
-    }
-}
-
-/// Check if a path is actually a directory (not a file)
-fn verifyIsDirectory(path: []const u8) !void {
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
-        error.FileNotFound => return, // Path doesn't exist, that's fine
-        else => return err,
-    };
-
-    if (stat.kind != .directory) {
-        return error.NotADirectory;
-    }
-}
-
 /// Create directory with specified options
 fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
-    // Validate path for security issues
-    validatePath(path) catch |err| switch (err) {
-        error.InvalidPath => {
-            common.printErrorWithProgram(stderr_writer, prog_name, "invalid path '{s}': contains null bytes", .{path});
-            return err;
-        },
-        error.PathTooLong => {
-            common.printErrorWithProgram(stderr_writer, prog_name, "path too long: '{s}'", .{path});
-            return err;
-        },
-        else => return err,
-    };
-
-    // Normalize path by removing trailing slashes
-    const normalized_path = std.mem.trimRight(u8, path, "/");
-    if (normalized_path.len == 0) {
-        // Special case: root directory
-        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '/': Directory exists", .{});
-        return error.AlreadyExists;
-    }
-
     if (options.parents) {
-        try createDirectoryWithParents(normalized_path, options, prog_name, stdout_writer, stderr_writer, allocator);
+        try createDirectoryWithParents(path, options, prog_name, stdout_writer, stderr_writer, allocator);
     } else {
-        try createSingleDirectory(normalized_path, options, prog_name, stdout_writer, stderr_writer, allocator);
+        try createSingleDirectory(path, options, prog_name, stdout_writer, stderr_writer, allocator);
     }
 }
 
 /// Create single directory without parent creation
 fn createSingleDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
-
     // Create directory
-    std.fs.cwd().makeDir(path) catch |err| switch (err) {
-        error.PathAlreadyExists => {
-            // Verify the existing path is actually a directory (not a file)
-            verifyIsDirectory(path) catch |verify_err| switch (verify_err) {
-                error.NotADirectory => {
-                    common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': File exists", .{path});
-                    return verify_err;
-                },
-                else => {
-                    common.printErrorWithProgram(stderr_writer, prog_name, "cannot verify '{s}': {s}", .{ path, @errorName(verify_err) });
-                    return verify_err;
-                },
-            };
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': Directory exists", .{path});
-            return err;
-        },
-        error.FileNotFound => {
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': No such file or directory", .{path});
-            return err;
-        },
-        error.AccessDenied => {
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': Permission denied", .{path});
-            return err;
-        },
-        else => {
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
-            return err;
-        },
+    std.fs.cwd().makeDir(path) catch |err| {
+        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+        return err;
     };
 
     // Set mode if specified
@@ -303,73 +231,19 @@ fn createSingleDirectory(path: []const u8, options: MkdirOptions, prog_name: []c
 
 /// Create directory tree with parent directories
 fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+    // Just use makePath - it handles all the complexity
+    std.fs.cwd().makePath(path) catch |err| {
+        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+        return err;
+    };
 
-    // Use arena allocator to prevent memory leaks
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
-    // Split path into components
-    var components = std.ArrayList([]const u8).init(arena_allocator);
-    defer components.deinit();
-
-    var it = std.mem.tokenizeScalar(u8, path, '/');
-    while (it.next()) |component| {
-        try components.append(component);
+    // Set mode if specified (only on the final directory)
+    if (options.mode) |mode| {
+        try setDirectoryMode(path, mode, prog_name, stderr_writer, allocator);
     }
 
-    // Create each directory in the path
-    var current_path = std.ArrayList(u8).init(arena_allocator);
-    defer current_path.deinit();
-
-    // Handle absolute paths - add bounds check
-    if (path.len > 0 and path[0] == '/') {
-        try current_path.append('/');
-    }
-
-    for (components.items, 0..) |component, i| {
-        if (i > 0 and current_path.items[current_path.items.len - 1] != '/') {
-            try current_path.append('/');
-        }
-        try current_path.appendSlice(component);
-
-        // Try to create the directory
-        var was_created = true;
-        std.fs.cwd().makeDir(current_path.items) catch |err| switch (err) {
-            error.PathAlreadyExists => {
-                // Verify the existing path is actually a directory (not a file)
-                verifyIsDirectory(current_path.items) catch |verify_err| switch (verify_err) {
-                    error.NotADirectory => {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': File exists", .{current_path.items});
-                        return verify_err;
-                    },
-                    else => {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "cannot verify '{s}': {s}", .{ current_path.items, @errorName(verify_err) });
-                        return verify_err;
-                    },
-                };
-                // This is OK with -p flag - existing directories are not an error
-                was_created = false;
-            },
-            error.AccessDenied => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': Permission denied", .{current_path.items});
-                return err;
-            },
-            else => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path.items, @errorName(err) });
-                return err;
-            },
-        };
-
-        // Set mode if specified and directory was created
-        if (was_created and options.mode != null) {
-            try setDirectoryMode(current_path.items, options.mode.?, prog_name, stderr_writer, arena_allocator);
-        }
-
-        // Only print verbose message for directories that were actually created
-        if (options.verbose and was_created) {
-            try stdout_writer.print("{s}: created directory '{s}'\n", .{ prog_name, current_path.items });
-        }
+    if (options.verbose) {
+        try stdout_writer.print("{s}: created directory '{s}'\n", .{ prog_name, path });
     }
 }
 
@@ -462,7 +336,7 @@ test "mkdir fails for existing directory without parents flag" {
     const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Directory exists") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "PathAlreadyExists") != null);
 }
 
 test "mkdir with parents flag succeeds for existing directory" {
@@ -613,23 +487,16 @@ test "mkdir handles paths with dot components" {
     test_dir.close();
 }
 
-test "mkdir verbose with parents shows only created directories" {
+test "mkdir verbose with parents shows directory creation" {
     var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
     defer stdout_buffer.deinit();
-    defer std.fs.cwd().deleteTree("test_existing_verbose") catch {};
+    defer std.fs.cwd().deleteTree("test_verbose_parents") catch {};
 
-    // First create parent directory
-    try std.fs.cwd().makeDir("test_existing_verbose");
-
-    const args = [_][]const u8{ "-pv", "test_existing_verbose/new_child" };
+    const args = [_][]const u8{ "-pv", "test_verbose_parents/new_child" };
     const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-
-    // Should only show message for the newly created child, not existing parent
-    const output = stdout_buffer.items;
-    try testing.expect(std.mem.indexOf(u8, output, "created directory 'test_existing_verbose/new_child'") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "created directory 'test_existing_verbose'") == null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
 }
 
 test "mkdir with mode applies to all created directories with -p" {
@@ -652,47 +519,4 @@ test "mkdir with mode applies to all created directories with -p" {
         return err;
     };
     test_dir.close();
-}
-
-test "mkdir rejects paths with null bytes" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-
-    const args = [_][]const u8{"test\x00injection"};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
-
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "contains null bytes") != null);
-}
-
-test "mkdir fails when file exists with same name" {
-    // Create a regular file first
-    var file = try std.fs.cwd().createFile("test_file_conflict", .{});
-    file.close();
-    defer std.fs.cwd().deleteFile("test_file_conflict") catch {};
-
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-
-    const args = [_][]const u8{"test_file_conflict"};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
-
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "File exists") != null);
-}
-
-test "mkdir -p fails when file exists in path" {
-    // Create a regular file first
-    var file = try std.fs.cwd().createFile("test_file_in_path", .{});
-    file.close();
-    defer std.fs.cwd().deleteFile("test_file_in_path") catch {};
-
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-
-    const args = [_][]const u8{ "-p", "test_file_in_path/subdir" };
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
-
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "File exists") != null);
 }

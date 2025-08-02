@@ -472,6 +472,106 @@ Example: "Use the optimizer agent to improve the performance of sorting large di
 
 **Best Practice**: Use these agents in sequence - architect for design, programmer for implementation, reviewer for quality checks, and optimizer for performance improvements.
 
+## CRITICAL: Trust the OS for Security (Don't Add Security Theater)
+
+**System utilities must trust the OS kernel to handle security. Do NOT add unnecessary validation that belongs in the kernel.**
+
+### What NOT to Do (Security Theater)
+```zig
+// ❌ WRONG: Don't check for path traversal in system utilities
+fn validatePath(path: []const u8) !void {
+    if (std.mem.indexOf(u8, path, "../") != null) {
+        return error.PathTraversal;  // WRONG!
+    }
+}
+
+// ❌ WRONG: Don't maintain lists of "protected" paths
+const PROTECTED_PATHS = [_][]const u8{
+    "/", "/etc", "/usr", "/bin", // WRONG!
+};
+
+// ❌ WRONG: Don't prevent legitimate operations
+if (std.mem.startsWith(u8, path, "/etc/")) {
+    return error.ProtectedPath;  // WRONG!
+}
+```
+
+### Why This is Wrong
+1. **The OS already handles this**: File permissions, directory access, and security are enforced by the kernel
+2. **Prevents legitimate use**: Users should be able to `rm ../old-file` or `mv /etc/config.old /etc/config` if they have permission
+3. **Not our job**: System utilities are not a security layer - the kernel is
+4. **Added complexity**: Security theater makes code harder to maintain and more likely to have bugs
+
+### What System Utilities SHOULD Do
+```zig
+// ✅ CORRECT: Let the OS handle security
+pub fn removeFile(path: []const u8) !void {
+    // Just try the operation - let the OS decide if it's allowed
+    std.fs.cwd().deleteFile(path) catch |err| {
+        // OS said no - report the error
+        return err;
+    };
+}
+
+// ✅ CORRECT: Focus on correctness, not security
+pub fn moveFile(source: []const u8, dest: []const u8) !void {
+    // Check for same file (correctness issue, not security)
+    const source_stat = try std.fs.cwd().statFile(source);
+    const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Destination doesn't exist, that's fine
+            return std.posix.rename(source, dest);
+        },
+        else => return err,
+    };
+    
+    if (source_stat.inode == dest_stat.inode) {
+        return error.SameFile;  // Prevent data loss, not security issue
+    }
+    
+    // Let the OS handle the actual move
+    try std.posix.rename(source, dest);
+}
+```
+
+### What Validation IS Appropriate
+
+Only validate for **correctness** and **technical limitations**:
+
+1. **Same file detection** - Prevent `mv file file` (would lose data)
+2. **Buffer sizes** - Prevent overflow in user input buffers
+3. **Atomic operations** - Ensure operations complete fully or not at all
+
+### Examples from Real Issues
+
+**WRONG (from old rmdir.zig):**
+```zig
+// 70+ lines of "protected" paths
+const PROTECTED_PATHS = [_][]const u8{
+    "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64",
+    "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys",
+    "/tmp", "/usr", "/var", "C:\\", "D:\\", // ... and 30 more
+};
+```
+
+**RIGHT (simplified rmdir.zig):**
+```zig
+pub fn removeDir(path: []const u8) !void {
+    // Just try it - the OS will prevent removing /etc if not allowed
+    try std.fs.cwd().deleteDir(path);
+}
+```
+
+### The Principle
+
+> **"System utilities implement functionality, the OS kernel enforces security."**
+
+When implementing utilities:
+1. Try the operation the user requested
+2. Report any errors the OS returns
+3. Don't try to be smarter than the OS
+4. Focus on correctness, not security
+
 ## Code Style and Conventions
 
 ### Simple Writer-Based Error Handling
