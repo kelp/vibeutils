@@ -191,6 +191,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     var git_context: ?types.GitContext = null;
     if (options.show_git_status) {
         git_context = types.GitContext.init(allocator, ".");
+        // Report any git initialization issues only when git features were explicitly requested
+        if (git_context) |*ctx| {
+            ctx.reportInitializationIssues(stderr_writer, "ls", options.show_git_status);
+        }
     }
     defer if (git_context) |*ctx| ctx.deinit();
 

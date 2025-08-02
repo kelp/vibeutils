@@ -42,14 +42,29 @@ pub fn getFileColor(entry: Entry) common.style.Style(std.fs.File.Writer).Color {
         .unix_domain_socket => Color.magenta,
         .file => blk: {
             // Check if executable
-            if (entry.stat) |stat| {
-                if ((stat.mode & common.constants.EXECUTE_BIT) != 0) {
-                    break :blk Color.bright_green;
-                }
+            if (isExecutable(entry)) {
+                break :blk Color.bright_green;
             }
             break :blk Color.default;
         },
         else => Color.default,
+    };
+}
+
+/// Get appropriate color for git status
+pub fn getGitStatusColor(git_status: common.git.GitStatus) common.style.Style(std.fs.File.Writer).Color {
+    const Color = common.style.Style(std.fs.File.Writer).Color;
+    return switch (git_status) {
+        .untracked => Color.red,
+        .modified => Color.yellow,
+        .added => Color.green,
+        .deleted => Color.red,
+        .renamed => Color.cyan,
+        .copied => Color.cyan,
+        .updated => Color.magenta,
+        .ignored => Color.bright_black,
+        .clean => Color.default,
+        .not_in_repo => Color.default,
     };
 }
 
@@ -63,11 +78,8 @@ pub fn getFileTypeIndicator(entry: Entry) u8 {
         .unix_domain_socket => return '=',
         .file => {
             // Check if executable
-            if (entry.stat) |stat| {
-                // Check if any execute bit is set
-                if ((stat.mode & common.constants.EXECUTE_BIT) != 0) {
-                    return '*';
-                }
+            if (isExecutable(entry)) {
+                return '*';
             }
             return 0; // No indicator for regular files
         },
@@ -99,8 +111,10 @@ pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indica
     if (show_git_status and entry.git_status != .not_in_repo) {
         const git_indicator = entry.git_status.getIndicator();
         if (style.color_mode != .none and entry.git_status != .clean) {
-            const git_color = entry.git_status.getColor();
-            try writer.print("{s}{s}\x1b[0m ", .{ git_color, git_indicator });
+            const git_color = getGitStatusColor(entry.git_status);
+            try style.setColor(git_color);
+            try writer.print("{s} ", .{git_indicator});
+            try style.reset();
         } else {
             try writer.print("{s} ", .{git_indicator});
         }

@@ -48,13 +48,10 @@ pub const Entry = struct {
     symlink_target: ?[]const u8 = null,
     git_status: common.git.GitStatus = .not_in_repo,
     display_width: ?usize = null, // Cached display width for performance
+    file_type_indicator: ?u8 = null, // Cached file type indicator for performance
 
-    /// Get the display width of this entry, caching the result for future calls
-    pub fn getDisplayWidth(self: *Entry, file_type_indicators: bool, show_icons: bool, show_git_status: bool) usize {
-        if (self.display_width) |cached_width| {
-            return cached_width;
-        }
-
+    /// Calculate the display width of this entry without caching
+    pub fn calculateDisplayWidth(self: *const Entry, file_type_indicators: bool, show_icons: bool, show_git_status: bool) usize {
         // Calculate display width based on entry properties
         var width: usize = 0;
 
@@ -69,31 +66,68 @@ pub const Entry = struct {
         }
 
         // Add filename width (using actual display width for Unicode)
+        // TODO: Implement proper Unicode display width calculation
+        // For now, use byte length as approximation
         width += self.name.len;
 
         // Add file type indicator if enabled
         if (file_type_indicators) {
-            switch (self.kind) {
-                .directory => width += 1, // '/'
-                .sym_link => width += 1, // '@'
-                .file => {
-                    // Check if executable from stat info
-                    if (self.stat) |stat| {
-                        if ((stat.mode & common.constants.EXECUTE_BIT) != 0) {
-                            width += 1; // '*'
-                        }
-                    }
-                },
-                else => {},
+            // Use cached file type indicator calculation
+            var mutable_self = @constCast(self);
+            const indicator = mutable_self.getFileTypeIndicator();
+            if (indicator != 0) {
+                width += 1;
             }
         }
+
+        return width;
+    }
+
+    /// Get the display width of this entry, caching the result for future calls
+    pub fn getDisplayWidth(self: *Entry, file_type_indicators: bool, show_icons: bool, show_git_status: bool) usize {
+        if (self.display_width) |cached_width| {
+            return cached_width;
+        }
+
+        const width = self.calculateDisplayWidth(file_type_indicators, show_icons, show_git_status);
 
         // Cache the calculated width
         self.display_width = width;
         return width;
     }
 
+    /// Get cached file type indicator, calculating and caching if needed
+    pub fn getFileTypeIndicator(self: *Entry) u8 {
+        if (self.file_type_indicator) |cached_indicator| {
+            return cached_indicator;
+        }
+
+        // Calculate file type indicator based on file kind and permissions
+        const indicator: u8 = switch (self.kind) {
+            .directory => '/',
+            .sym_link => '@',
+            .named_pipe => '|',
+            .unix_domain_socket => '=',
+            .file => if (self.stat) |stat|
+                if ((stat.mode & common.constants.EXECUTE_BIT) != 0) '*' else 0
+            else
+                0,
+            else => 0,
+        };
+
+        // Cache the calculated indicator
+        self.file_type_indicator = indicator;
+        return indicator;
+    }
+
+    /// Reset cached values (call when entry properties change)
+    pub fn resetCache(self: *Entry) void {
+        self.display_width = null;
+        self.file_type_indicator = null;
+    }
+
     /// Reset cached display width (call when entry properties change)
+    /// @deprecated Use resetCache() instead
     pub fn resetDisplayWidth(self: *Entry) void {
         self.display_width = null;
     }
@@ -185,9 +219,11 @@ pub const GitContext = struct {
     }
 
     /// Report initialization issues if git operations were requested but unavailable
-    pub fn reportInitializationIssues(self: *const GitContext, stderr_writer: anytype, prog_name: []const u8) void {
-        if (self.init_error) |err| {
-            common.printWarningWithProgram(stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
+    pub fn reportInitializationIssues(self: *const GitContext, stderr_writer: anytype, prog_name: []const u8, git_features_requested: bool) void {
+        if (git_features_requested and self.init_error != null) {
+            if (self.init_error) |err| {
+                common.printWarningWithProgram(stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
+            }
         }
     }
 };

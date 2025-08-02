@@ -34,7 +34,7 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
         .iso => {
             // ISO format: 2024-01-15 15:30
             const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_s) };
+            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
             const year_day = epoch_seconds.getEpochDay().calculateYearDay();
             const month_day = year_day.calculateMonthDay();
             const day_seconds = epoch_seconds.getDaySeconds();
@@ -51,7 +51,7 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
             // Long ISO format: 2024-01-15 15:30:45.123456789 +0000
             const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
             const nano_remainder = @mod(mtime_ns, std.time.ns_per_s);
-            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_s) };
+            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
             const year_day = epoch_seconds.getEpochDay().calculateYearDay();
             const month_day = year_day.calculateMonthDay();
             const day_seconds = epoch_seconds.getDaySeconds();
@@ -150,7 +150,8 @@ pub fn printColumnar(entries: []Entry, writer: anytype, options: LsOptions, styl
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth() catch 80;
 
-    // Calculate the width needed for each entry using cached values
+    // Pre-calculate display widths for all entries in a single pass
+    // This ensures all widths are cached and finds the maximum width
     var max_width: usize = 0;
     for (entries) |*entry| {
         const width = entry.getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
@@ -179,6 +180,7 @@ pub fn printColumnar(entries: []Entry, writer: anytype, options: LsOptions, styl
 
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
+                // This uses cached width from the pre-calculation pass above
                 const width = entries[idx].getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
                 const padding = col_width - width;
                 for (0..padding) |_| {
