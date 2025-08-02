@@ -5,21 +5,11 @@ const types = @import("types.zig");
 const Entry = types.Entry;
 const LsOptions = types.LsOptions;
 
-/// Collect directory entries with filtering and resource limits
+/// Collect directory entries with filtering
 pub fn collectFilteredEntries(
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
     options: LsOptions,
-) anyerror!std.ArrayList(Entry) {
-    return collectFilteredEntriesWithLimits(allocator, dir, options, common.directory.DirectoryLimits.defaults());
-}
-
-/// Collect directory entries with custom resource limits
-pub fn collectFilteredEntriesWithLimits(
-    allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
-    options: LsOptions,
-    limits: common.directory.DirectoryLimits,
 ) anyerror!std.ArrayList(Entry) {
     var entries = std.ArrayList(Entry).init(allocator);
     errdefer {
@@ -40,11 +30,7 @@ pub fn collectFilteredEntriesWithLimits(
         .skip_dots = options.almost_all,
     };
 
-    // Track memory usage for resource exhaustion protection
-    var memory_usage: usize = 0;
-    var entry_count: usize = 0;
-
-    // Collect entries with periodic limit checks
+    // Collect entries
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         // Apply filtering
@@ -52,15 +38,8 @@ pub fn collectFilteredEntriesWithLimits(
             continue;
         }
 
-        // Check resource limits periodically (every 1000 entries)
-        if (entry_count % 1000 == 0) {
-            try limits.checkLimits(entry_count, memory_usage);
-        }
-
         const name_copy = try allocator.dupe(u8, entry.name);
         errdefer allocator.free(name_copy);
-
-        memory_usage += name_copy.len;
 
         const e = Entry{
             .name = name_copy,
@@ -68,12 +47,7 @@ pub fn collectFilteredEntriesWithLimits(
         };
 
         try entries.append(e);
-        entry_count += 1;
-        memory_usage += @sizeOf(Entry);
     }
-
-    // Final limit check
-    try limits.checkLimits(entry_count, memory_usage);
 
     return entries;
 }

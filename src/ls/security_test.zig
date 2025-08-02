@@ -1,5 +1,5 @@
 //! Security tests for the ls utility
-//! Tests for cycle detection, resource limits, and TOCTOU prevention
+//! Tests for cycle detection and TOCTOU prevention
 
 const std = @import("std");
 const testing = std.testing;
@@ -45,62 +45,6 @@ test "FileSystemId - same filesystem same inode" {
 
     // They should have the same hash
     try testing.expectEqual(ctx.hash(fs_id1), ctx.hash(fs_id2));
-}
-
-// Test directory entry collection with resource limits
-test "DirectoryLimits - entry count enforcement" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create a few test files (less than limit)
-    for (0..5) |i| {
-        var name_buf: [32]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "file{d}.txt", .{i}) catch unreachable;
-        const file = try tmp_dir.dir.createFile(name, .{});
-        file.close();
-    }
-
-    // Test with normal limits (should pass)
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-
-    const normal_limits = common.directory.DirectoryLimits.defaults();
-    var entries = try entry_collector.collectFilteredEntriesWithLimits(testing.allocator, test_dir, types.LsOptions{}, normal_limits);
-    defer {
-        entry_collector.freeEntries(entries.items, testing.allocator);
-        entries.deinit();
-    }
-
-    // Should succeed and contain our files
-    try testing.expect(entries.items.len >= 5);
-}
-
-// Test directory entry collection with very restrictive limits
-test "DirectoryLimits - entry count limit exceeded" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create more files than our restrictive limit allows
-    for (0..10) |i| {
-        var name_buf: [32]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "file{d}.txt", .{i}) catch unreachable;
-        const file = try tmp_dir.dir.createFile(name, .{});
-        file.close();
-    }
-
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-
-    // Create very restrictive limits (only 3 entries allowed)
-    const restrictive_limits = common.directory.DirectoryLimits{
-        .max_entries = 3,
-        .max_memory_bytes = 1024 * 1024, // 1MB should be enough for memory
-    };
-
-    // Should fail due to entry count limit
-    const result = entry_collector.collectFilteredEntriesWithLimits(testing.allocator, test_dir, types.LsOptions{}, restrictive_limits);
-
-    try testing.expectError(error.TooManyEntries, result);
 }
 
 // Test CycleDetector with FileSystemIdSet
