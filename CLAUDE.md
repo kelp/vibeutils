@@ -61,6 +61,11 @@ make install
 # Format source code
 make fmt
 
+# Lint man pages
+make lint-man            # Check man page quality
+make lint-man-strict     # Fail on warnings
+make lint-man-verbose    # Show detailed output
+
 # Generate documentation
 zig build docs
 make docs
@@ -158,8 +163,154 @@ The styling system (`src/common/style.zig`) automatically detects:
    - Add to test step
 3. Write failing tests first (see echo.zig for examples)
 4. Implement using common library functions
-5. Create man page in `man/man1/<utility>.1` (OpenBSD style)
+5. Create man page in `man/man1/<utility>.1` (see Man Page Style Guide below)
 6. Update TODO.md to mark tasks complete
+
+### Man Page Style Guide
+
+All vibeutils man pages must follow consistent mdoc formatting and section ordering:
+
+#### Required Sections (in this order)
+
+1. **NAME** - Utility name and brief description
+   ```troff
+   .Sh NAME
+   .Nm utility
+   .Nd brief description of what it does
+   ```
+
+2. **SYNOPSIS** - Command syntax with flags
+   ```troff
+   .Sh SYNOPSIS
+   .Nm
+   .Op Fl abc
+   .Op Fl d Ar argument
+   .Ar file ...
+   ```
+
+3. **DESCRIPTION** - Detailed explanation with options list
+   ```troff
+   .Sh DESCRIPTION
+   The
+   .Nm
+   utility does something useful.
+   .Pp
+   The options are as follows:
+   .Bl -tag -width Ds
+   .It Fl a
+   Enable feature A.
+   .It Fl b , Fl Fl long-form
+   Enable feature B.
+   .El
+   ```
+
+4. **Special Sections** (optional, in logical order):
+   - **ENVIRONMENT** - Environment variables (before EXIT STATUS)
+   - **SAFETY FEATURES** - Security/safety features (after DESCRIPTION)
+   - Other utility-specific sections as needed
+
+5. **EXIT STATUS** - Exit codes
+   ```troff
+   .Sh EXIT STATUS
+   .Ex -std utility
+   ```
+
+6. **EXAMPLES** - Practical usage examples
+   ```troff
+   .Sh EXAMPLES
+   Basic usage:
+   .Bd -literal -offset indent
+   $ utility file.txt
+   .Ed
+   ```
+
+7. **DIAGNOSTICS** (optional) - Error messages
+   ```troff
+   .Sh DIAGNOSTICS
+   .Bl -diag
+   .It "error message"
+   Explanation of when this occurs.
+   .El
+   ```
+
+8. **SEE ALSO** - Related commands
+   ```troff
+   .Sh SEE ALSO
+   .Xr related 1 ,
+   .Xr command 2
+   ```
+
+9. **STANDARDS** - POSIX compliance
+   ```troff
+   .Sh STANDARDS
+   The
+   .Nm
+   utility is compliant with the
+   .St -p1003.1-2008
+   specification.
+   ```
+
+10. **AUTHORS** - Always include, same format for all
+    ```troff
+    .Sh AUTHORS
+    .An "vibeutils implementation by Travis Cole"
+    ```
+
+11. **CAVEATS** or **BUGS** (optional) - Known limitations
+
+#### Important Notes
+
+- **No HISTORY section** - vibeutils is a clean room implementation with no code lineage from original Unix
+- **Use mdoc format** exclusively (not man or groff)
+- **Validate with**: `mandoc -T lint man/man1/utility.1`
+- **Cross-references**: Order by section number (1 before 2), then alphabetically
+- **Line length**: Keep under 80 characters where possible
+- **Examples**: Include 2-3 practical, real-world examples
+- **FLAGS**: Document both short (`-f`) and long (`--force`) forms where applicable
+
+#### Example Template
+
+```troff
+.\" utility(1) manual page
+.\" This is part of the vibeutils project
+.Dd $Mdocdate$
+.Dt UTILITY 1
+.Os
+.Sh NAME
+.Nm utility
+.Nd brief description
+.Sh SYNOPSIS
+.Nm
+.Op Fl options
+.Ar arguments
+.Sh DESCRIPTION
+The
+.Nm
+utility performs its function.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl h , Fl Fl help
+Display help and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Example usage:
+.Bd -literal -offset indent
+$ utility input.txt
+.Ed
+.Sh SEE ALSO
+.Xr related 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
+```
 
 ### Referencing Man Pages
 
