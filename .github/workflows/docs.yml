@@ -97,10 +97,22 @@ jobs:
             utility=$(basename "$manpage" .1)
             echo "Converting ${utility}.1 to HTML..."
             
-            # Convert to HTML using groff
-            groff -man -T html "$manpage" > "docs/html/man/${utility}.html" || {
-              echo "::warning::Failed to convert ${utility}.1 to HTML"
-            }
+            # Use mandoc for HTML output
+            mandoc -T html -O style=../style.css "$manpage" > "docs/html/man/${utility}.html"
+            
+            # Verify the HTML file was created and has content
+            if [ -f "docs/html/man/${utility}.html" ]; then
+              file_size=$(stat -c%s "docs/html/man/${utility}.html" 2>/dev/null || stat -f%z "docs/html/man/${utility}.html" 2>/dev/null || echo "0")
+              if [ "$file_size" -eq "0" ]; then
+                echo "::error::Generated HTML for ${utility} is empty"
+                exit 1
+              else
+                echo "✅ Successfully generated ${utility}.html (${file_size} bytes)"
+              fi
+            else
+              echo "::error::Failed to create HTML file for ${utility}"
+              exit 1
+            fi
           fi
         done
         
@@ -176,7 +188,7 @@ jobs:
           fi
         done
         
-        cat >> docs/html/index.html << 'EOF'
+        cat >> docs/html/index.html << EOF
             </div>
             
             <footer>

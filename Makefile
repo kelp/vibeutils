@@ -114,8 +114,20 @@ ci-validate:
 # Generate documentation
 docs:
 	zig build docs
-	@echo "Documentation generated in zig-out/docs/"
+	@echo "API documentation generated in zig-out/docs/"
 	@echo "Open zig-out/docs/*/index.html in a browser to view."
+
+docs-html: docs
+	@echo "Generating full HTML documentation site..."
+	@./scripts/generate-docs.sh
+
+docs-serve: docs-html
+	@echo "Starting local documentation server on http://localhost:8000"
+	@cd docs/html && python3 -m http.server 8000
+
+docs-open: docs-html
+	@echo "Opening documentation in browser..."
+	@./scripts/generate-docs.sh --open
 
 # Docker-based Linux testing targets (for macOS development)
 test-linux:

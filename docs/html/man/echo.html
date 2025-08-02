@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<!-- This is an automatically generated file.  Do not edit.
+   OpenBSD-style concise man page
+ -->
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <link rel="stylesheet" href="../style.css" type="text/css" media="all"/>
+  <title>ECHO(1)</title>
+</head>
+<body>
+<table class="head">
+  <tr>
+    <td class="head-ltitle">ECHO(1)</td>
+    <td class="head-vol">General Commands Manual</td>
+    <td class="head-rtitle">ECHO(1)</td>
+  </tr>
+</table>
+<div class="manual-text">
+<section class="Sh">
+<h1 class="Sh" id="NAME"><a class="permalink" href="#NAME">NAME</a></h1>
+<p class="Pp"><code class="Nm">echo</code> &#x2014; <span class="Nd">write
+    arguments to standard output</span></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SYNOPSIS"><a class="permalink" href="#SYNOPSIS">SYNOPSIS</a></h1>
+<table class="Nm">
+  <tr>
+    <td><code class="Nm">echo</code></td>
+    <td>[<code class="Fl">-enE</code>] [<var class="Ar">string ...</var>]</td>
+  </tr>
+</table>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="DESCRIPTION"><a class="permalink" href="#DESCRIPTION">DESCRIPTION</a></h1>
+<p class="Pp">The <code class="Nm">echo</code> utility writes its arguments to
+    standard output, separated by spaces and terminated with a newline.</p>
+<p class="Pp">The options are as follows:</p>
+<dl class="Bl-tag">
+  <dt id="e"><a class="permalink" href="#e"><code class="Fl">-e</code></a></dt>
+  <dd>Enable interpretation of backslash escapes.</dd>
+  <dt id="E"><a class="permalink" href="#E"><code class="Fl">-E</code></a></dt>
+  <dd>Disable interpretation of backslash escapes (default).</dd>
+  <dt id="n"><a class="permalink" href="#n"><code class="Fl">-n</code></a></dt>
+  <dd>Do not print the trailing newline character.</dd>
+</dl>
+<p class="Pp">If <code class="Fl">-e</code> is in effect, the following
+    sequences are recognized:</p>
+<dl class="Bl-tag Bl-compact">
+  <dt id="a"><a class="permalink" href="#a"><code class="Li">\a</code></a></dt>
+  <dd>Alert (bell)</dd>
+  <dt id="b"><a class="permalink" href="#b"><code class="Li">\b</code></a></dt>
+  <dd>Backspace</dd>
+  <dt id="c"><a class="permalink" href="#c"><code class="Li">\c</code></a></dt>
+  <dd>Suppress further output</dd>
+  <dt id="e~2"><a class="permalink" href="#e~2"><code class="Li">\e</code></a></dt>
+  <dd>Escape character</dd>
+  <dt id="f"><a class="permalink" href="#f"><code class="Li">\f</code></a></dt>
+  <dd>Form feed</dd>
+  <dt id="n~2"><a class="permalink" href="#n~2"><code class="Li">\n</code></a></dt>
+  <dd>New line</dd>
+  <dt id="r"><a class="permalink" href="#r"><code class="Li">\r</code></a></dt>
+  <dd>Carriage return</dd>
+  <dt id="t"><a class="permalink" href="#t"><code class="Li">\t</code></a></dt>
+  <dd>Horizontal tab</dd>
+  <dt id="v"><a class="permalink" href="#v"><code class="Li">\v</code></a></dt>
+  <dd>Vertical tab</dd>
+  <dt><code class="Li">\\</code></dt>
+  <dd>Backslash</dd>
+  <dt id="0nnn"><a class="permalink" href="#0nnn"><code class="Li">\0nnn</code></a></dt>
+  <dd>Character with octal value nnn (1-3 digits)</dd>
+  <dt id="xhh"><a class="permalink" href="#xhh"><code class="Li">\xhh</code></a></dt>
+  <dd>Character with hex value hh (2 digits)</dd>
+</dl>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXAMPLES"><a class="permalink" href="#EXAMPLES">EXAMPLES</a></h1>
+<p class="Pp">Print a simple message:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>$ echo Hello world
+Hello world</pre>
+</div>
+<p class="Pp">Print without newline:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>$ echo -n prompt:
+prompt:$</pre>
+</div>
+<p class="Pp">Print multiple arguments:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>$ echo one two three
+one two three</pre>
+</div>
+<p class="Pp">Print with escape sequences:</p>
+<div class="Bd Pp Bd-indent Li">
+<pre>$ echo -e &quot;Line 1\nLine 2\tTabbed&quot;
+Line 1
+Line 2	Tabbed</pre>
+</div>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="EXIT_STATUS"><a class="permalink" href="#EXIT_STATUS">EXIT
+  STATUS</a></h1>
+<p class="Pp">The <code class="Nm">echo</code> utility exits&#x00A0;0 on
+    success, and&#x00A0;&gt;0 if an error occurs.</p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="SEE_ALSO"><a class="permalink" href="#SEE_ALSO">SEE
+  ALSO</a></h1>
+<p class="Pp"><a class="Xr">printf(1)</a></p>
+</section>
+<section class="Sh">
+<h1 class="Sh" id="STANDARDS"><a class="permalink" href="#STANDARDS">STANDARDS</a></h1>
+<p class="Pp">The <code class="Nm">echo</code> utility is compliant with the
+    <span class="St">IEEE Std 1003.1-2008 (&#x201C;POSIX.1&#x201D;)</span>
+    specification.</p>
+</section>
+</div>
+<table class="foot">
+  <tr>
+    <td class="foot-date">August 2, 2025</td>
+    <td class="foot-os">macOS 15.6</td>
+  </tr>
+</table>
+</body>
+</html>
