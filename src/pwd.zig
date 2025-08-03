@@ -461,5 +461,7 @@ test "runPwd with invalid flag" {
 
     // Should print error to stderr
     try testing.expect(stderr_buffer.items.len > 0);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd: invalid argument") != null);
+    // Check for program name and error message separately to handle ANSI color codes
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd:") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
 }
