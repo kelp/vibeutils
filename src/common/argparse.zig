@@ -17,7 +17,7 @@ const testing = std.testing;
 ///     count: ?u32 = null,
 ///     output: ?[]const u8 = null,
 ///     mode: ?enum { fast, slow, auto } = null,
-///     files: []const []const u8 = &.{},
+///     positionals: []const []const u8 = &.{},
 ///
 ///     pub const meta = .{
 ///         .help = .{ .short = 'h', .desc = "Show this help message" },
@@ -28,7 +28,7 @@ const testing = std.testing;
 /// };
 ///
 /// const args = try ArgParser.parse(Args, allocator, &[_][]const u8{"--count=5", "-m", "fast", "file.txt"});
-/// defer allocator.free(args.files);
+/// defer allocator.free(args.positionals);
 /// ```
 pub const ArgParser = struct {
     pub const ParseError = error{
@@ -39,30 +39,11 @@ pub const ArgParser = struct {
         OutOfMemory,
     };
 
-    /// Error context for better error messages
-    pub const ErrorContext = struct {
-        flag: []const u8,
-        position: usize,
-        message: []const u8,
-    };
-
-    pub const ParseResult = struct {
-        allocator: std.mem.Allocator,
-        positionals: []const []const u8,
-
-        pub fn deinit(self: *@This()) void {
-            self.allocator.free(self.positionals);
-        }
-    };
-
     const ValueUsage = enum {
         Unknown,
         NoValue,
         ValueUsed,
     };
-
-    /// Validator function type for custom validation
-    pub const ValidatorFn = fn (value: []const u8) ParseError!void;
 
     /// Parse arguments from a slice of strings
     /// Returns a parsed struct with all fields populated according to the command-line arguments
@@ -175,31 +156,10 @@ pub const ArgParser = struct {
                     const positionals_slice = try positionals.toOwnedSlice();
                     @field(result, "positionals") = positionals_slice;
                 }
-            } else if (comptime std.mem.eql(u8, field.name, "files")) {
-                // Alternative name for positionals
-                if (field.type == []const []const u8) {
-                    const positionals_slice = try positionals.toOwnedSlice();
-                    @field(result, "files") = positionals_slice;
-                }
             }
         }
 
         return result;
-    }
-
-    /// Parse arguments from argv (excluding program name)
-    pub fn parseArgv(comptime T: type, allocator: std.mem.Allocator) !T {
-        var args = std.ArrayList([]const u8).init(allocator);
-        defer args.deinit();
-
-        // Skip program name (argv[0])
-        var i: usize = 1;
-        while (i < std.os.argv.len) : (i += 1) {
-            const arg = std.mem.span(std.os.argv[i]);
-            try args.append(arg);
-        }
-
-        return parse(T, allocator, args.items);
     }
 
     /// Parse arguments from process.args() iterator
@@ -225,10 +185,10 @@ pub const ArgParser = struct {
     pub fn printHelp(comptime T: type, prog_name: []const u8, writer: anytype) !void {
         try writer.print("Usage: {s} [OPTIONS]", .{prog_name});
 
-        // Check if type has positionals or files field
+        // Check if type has positionals field
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
-            if (comptime (std.mem.eql(u8, field.name, "positionals") or std.mem.eql(u8, field.name, "files"))) {
+            if (comptime std.mem.eql(u8, field.name, "positionals")) {
                 try writer.print(" [ARGS]...", .{});
             }
         }
@@ -241,8 +201,7 @@ pub const ArgParser = struct {
             // Auto-generate help text from struct fields
             try writer.print("Options:\n", .{});
             inline for (type_info.@"struct".fields) |field| {
-                if (comptime (std.mem.eql(u8, field.name, "positionals") or
-                    std.mem.eql(u8, field.name, "files"))) continue;
+                if (comptime std.mem.eql(u8, field.name, "positionals")) continue;
 
                 const field_type_info = @typeInfo(field.type);
                 const is_supported = isSupportedFieldType(field.type);
@@ -349,10 +308,6 @@ pub const ArgParser = struct {
 
                     try parseValue(field_type_info.optional.child, &@field(obj, field.name), value_str, flag_name, position);
                     return if (provided_value != null) .NoValue else .ValueUsed;
-                } else if (isSliceType(field.type)) {
-                    // Handle slices for multiple values
-                    // This would require additional state tracking, skip for now
-                    return .Unknown;
                 }
             }
         }
@@ -551,12 +506,6 @@ pub const ArgParser = struct {
         }
 
         return "VALUE";
-    }
-
-    /// Check if a type is a slice type
-    fn isSliceType(comptime T: type) bool {
-        const type_info = @typeInfo(T);
-        return type_info == .pointer and type_info.pointer.size == .slice;
     }
 };
 
@@ -1019,7 +968,7 @@ test "mixed types complex scenario" {
         timeout: ?f32 = null,
         mode: ?enum { sequential, parallel, auto } = null,
         output: ?[]const u8 = null,
-        files: []const []const u8 = &.{},
+        positionals: []const []const u8 = &.{},
     };
 
     const args = [_][]const u8{
@@ -1036,7 +985,7 @@ test "mixed types complex scenario" {
     };
 
     const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
-    defer testing.allocator.free(result.files);
+    defer testing.allocator.free(result.positionals);
 
     try testing.expect(result.verbose == true);
     try testing.expect(result.debug == true);
@@ -1048,28 +997,28 @@ test "mixed types complex scenario" {
     try testing.expectEqual(.parallel, result.mode.?);
     try testing.expect(result.output != null);
     try testing.expectEqualStrings("result.txt", result.output.?);
-    try testing.expectEqual(@as(usize, 3), result.files.len);
-    try testing.expectEqualStrings("input1.txt", result.files[0]);
-    try testing.expectEqualStrings("input2.txt", result.files[1]);
-    try testing.expectEqualStrings("input3.txt", result.files[2]);
+    try testing.expectEqual(@as(usize, 3), result.positionals.len);
+    try testing.expectEqualStrings("input1.txt", result.positionals[0]);
+    try testing.expectEqualStrings("input2.txt", result.positionals[1]);
+    try testing.expectEqualStrings("input3.txt", result.positionals[2]);
 }
 
 // Edge case tests
 test "unicode in arguments" {
     const TestArgs = struct {
         message: ?[]const u8 = null,
-        files: []const []const u8 = &.{},
+        positionals: []const []const u8 = &.{},
     };
 
     const args = [_][]const u8{ "--message=Hello 世界! 🌍", "файл.txt", "文件.txt" };
     const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
-    defer testing.allocator.free(result.files);
+    defer testing.allocator.free(result.positionals);
 
     try testing.expect(result.message != null);
     try testing.expectEqualStrings("Hello 世界! 🌍", result.message.?);
-    try testing.expectEqual(@as(usize, 2), result.files.len);
-    try testing.expectEqualStrings("файл.txt", result.files[0]);
-    try testing.expectEqualStrings("文件.txt", result.files[1]);
+    try testing.expectEqual(@as(usize, 2), result.positionals.len);
+    try testing.expectEqualStrings("файл.txt", result.positionals[0]);
+    try testing.expectEqualStrings("文件.txt", result.positionals[1]);
 }
 
 test "very long argument strings" {
