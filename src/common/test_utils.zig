@@ -39,19 +39,6 @@
 //! // Capture output from a function call
 //! const output = try captureOutput(allocator, my_function, .{arg1, arg2});
 //! defer allocator.free(output);
-//!
-//! // Capture and strip ANSI codes in one call
-//! const clean_output = try captureOutputStripped(allocator, colored_function, .{args});
-//! defer allocator.free(clean_output);
-//! ```
-//!
-//! ## MockEnv
-//! Environment variable mocking for testing environment-dependent code:
-//! ```zig
-//! var mock_env = MockEnv.init(testing.allocator);
-//! defer mock_env.deinit();
-//! try mock_env.setVar("NO_COLOR", "1");
-//! // Test code that depends on NO_COLOR being set
 //! ```
 
 const std = @import("std");
@@ -59,11 +46,6 @@ const testing = std.testing;
 
 /// Null writer for tests - re-export from std.io for convenience
 pub const null_writer = std.io.null_writer;
-
-/// Get a null writer that discards all output - useful for suppressing error messages in tests
-pub fn nullWriter() @TypeOf(std.io.null_writer) {
-    return std.io.null_writer;
-}
 
 /// Generate a unique test file name based on test name, timestamp, and random number
 pub fn uniqueTestName(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
@@ -86,13 +68,6 @@ pub fn createUniqueTestFile(dir: std.fs.Dir, allocator: std.mem.Allocator, base_
     const unique_name = try uniqueTestName(allocator, base_name);
     try createTestFile(dir, unique_name, content);
     return unique_name;
-}
-
-/// Create an executable test file
-pub fn createExecutableFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(name, .{ .mode = 0o755 });
-    defer file.close();
-    try file.writeAll(content);
 }
 
 /// A test writer that captures output to a buffer for testing
@@ -220,18 +195,14 @@ pub const StdoutCapture = struct {
     /// Assert stdout contains substring
     pub fn expectStdoutContains(self: *const Self, needle: []const u8) !void {
         if (std.mem.indexOf(u8, self.output.items, needle) == null) {
-            std.debug.print("Expected stdout to contain: '{s}'\n", .{needle});
-            std.debug.print("Actual stdout: '{s}'\n", .{self.output.items});
-            return testing.expectEqual(true, false); // This will fail with a proper test failure message
+            try testing.expect(false); // Will fail with proper test context
         }
     }
 
     /// Assert stderr contains substring
     pub fn expectStderrContains(self: *const Self, needle: []const u8) !void {
         if (std.mem.indexOf(u8, self.error_output.items, needle) == null) {
-            std.debug.print("Expected stderr to contain: '{s}'\n", .{needle});
-            std.debug.print("Actual stderr: '{s}'\n", .{self.error_output.items});
-            return testing.expectEqual(true, false); // This will fail with a proper test failure message
+            try testing.expect(false); // Will fail with proper test context
         }
     }
 
@@ -358,109 +329,6 @@ pub fn captureOutput(
 
     return allocator.dupe(u8, test_writer.getContent());
 }
-
-/// Convenient function to create a TestWriter and run a function with it, stripping ANSI codes
-pub fn captureOutputStripped(
-    allocator: std.mem.Allocator,
-    comptime func: anytype,
-    args: anytype,
-) ![]u8 {
-    var test_writer = TestWriter.init(allocator);
-    defer test_writer.deinit();
-
-    try @call(.auto, func, .{test_writer.writer()} ++ args);
-
-    return stripAnsiCodes(allocator, test_writer.getContent());
-}
-
-/// Test assertion helper for comparing output
-pub fn expectOutput(expected: []const u8, actual: []const u8) !void {
-    if (!std.mem.eql(u8, expected, actual)) {
-        std.debug.print("Expected output:\n'{s}'\n", .{expected});
-        std.debug.print("Actual output:\n'{s}'\n", .{actual});
-        std.debug.print("Expected bytes: {any}\n", .{expected});
-        std.debug.print("Actual bytes:   {any}\n", .{actual});
-    }
-    try testing.expectEqualStrings(expected, actual);
-}
-
-/// Test assertion helper for comparing output with ANSI stripping
-pub fn expectOutputStripped(allocator: std.mem.Allocator, expected: []const u8, actual: []const u8) !void {
-    const stripped = try stripAnsiCodes(allocator, actual);
-    defer allocator.free(stripped);
-    try expectOutput(expected, stripped);
-}
-
-/// Mock environment variable setter for testing
-/// Note: This is a simplified mock that doesn't actually modify the process environment
-/// It's mainly useful for testing environment-related logic in isolation
-pub const MockEnv = struct {
-    allocator: std.mem.Allocator,
-    env_map: std.StringHashMap([]const u8),
-
-    const Self = @This();
-
-    pub fn init(allocator: std.mem.Allocator) Self {
-        return Self{
-            .allocator = allocator,
-            .env_map = std.StringHashMap([]const u8).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *Self) void {
-        // Free all keys and values before deinit
-        var iterator = self.env_map.iterator();
-        while (iterator.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-        self.env_map.deinit();
-    }
-
-    /// Set a mock environment variable
-    pub fn setVar(self: *Self, key: []const u8, value: []const u8) !void {
-        // Check if key already exists and free old values if it does
-        if (self.env_map.fetchRemove(key)) |kv| {
-            self.allocator.free(kv.key);
-            self.allocator.free(kv.value);
-        }
-
-        const key_owned = try self.allocator.dupe(u8, key);
-        const value_owned = try self.allocator.dupe(u8, value);
-        try self.env_map.put(key_owned, value_owned);
-    }
-
-    /// Remove a mock environment variable
-    pub fn unsetVar(self: *Self, key: []const u8) void {
-        if (self.env_map.fetchRemove(key)) |kv| {
-            self.allocator.free(kv.key);
-            self.allocator.free(kv.value);
-        }
-    }
-
-    /// Get a mock environment variable value
-    pub fn getVar(self: *const Self, key: []const u8) ?[]const u8 {
-        return self.env_map.get(key);
-    }
-
-    /// Check if a mock environment variable exists
-    pub fn hasVar(self: *const Self, key: []const u8) bool {
-        return self.env_map.contains(key);
-    }
-
-    /// Clear all mock environment variables
-    pub fn clear(self: *Self) void {
-        // Free all current entries
-        var iterator = self.env_map.iterator();
-        while (iterator.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            self.allocator.free(entry.value_ptr.*);
-        }
-
-        // Clear the map
-        self.env_map.clearAndFree();
-    }
-};
 
 // ============================================================================
 // Tests for the testing infrastructure
@@ -681,85 +549,6 @@ test "captureOutput helper function" {
     defer testing.allocator.free(output);
 
     try testing.expectEqualStrings("Hello, Zig!", output);
-}
-
-test "captureOutputStripped helper function" {
-    // Function that writes ANSI codes
-    const TestFunc = struct {
-        fn writeColored(writer: anytype, text: []const u8) !void {
-            try writer.print("\x1b[31m{s}\x1b[0m", .{text});
-        }
-    };
-
-    const output = try captureOutputStripped(testing.allocator, TestFunc.writeColored, .{"Test"});
-    defer testing.allocator.free(output);
-
-    try testing.expectEqualStrings("Test", output);
-}
-
-test "expectOutput helper function success" {
-    try expectOutput("expected", "expected");
-}
-
-test "expectOutputStripped helper function" {
-    const output = "Hello \x1b[31mRed\x1b[0m World";
-    try expectOutputStripped(testing.allocator, "Hello Red World", output);
-}
-
-test "MockEnv environment variable mocking" {
-    var mock_env = MockEnv.init(testing.allocator);
-    defer mock_env.deinit();
-
-    // Set a test environment variable
-    try mock_env.setVar("TEST_VAR", "test_value");
-
-    // Verify it was set in the mock
-    try testing.expect(mock_env.hasVar("TEST_VAR"));
-    const value = mock_env.getVar("TEST_VAR").?;
-    try testing.expectEqualStrings("test_value", value);
-
-    // Verify non-existent variable
-    try testing.expect(!mock_env.hasVar("NONEXISTENT"));
-    try testing.expect(mock_env.getVar("NONEXISTENT") == null);
-}
-
-test "MockEnv unset functionality" {
-    var mock_env = MockEnv.init(testing.allocator);
-    defer mock_env.deinit();
-
-    // First set a variable
-    try mock_env.setVar("TEMP_TEST_VAR", "initial_value");
-    try testing.expect(mock_env.hasVar("TEMP_TEST_VAR"));
-
-    // Then unset it
-    mock_env.unsetVar("TEMP_TEST_VAR");
-
-    // Verify it's unset
-    try testing.expect(!mock_env.hasVar("TEMP_TEST_VAR"));
-    try testing.expect(mock_env.getVar("TEMP_TEST_VAR") == null);
-}
-
-test "MockEnv clear functionality" {
-    var mock_env = MockEnv.init(testing.allocator);
-    defer mock_env.deinit();
-
-    // Set multiple variables
-    try mock_env.setVar("VAR1", "value1");
-    try mock_env.setVar("VAR2", "value2");
-    try mock_env.setVar("VAR3", "value3");
-
-    // Verify they exist
-    try testing.expect(mock_env.hasVar("VAR1"));
-    try testing.expect(mock_env.hasVar("VAR2"));
-    try testing.expect(mock_env.hasVar("VAR3"));
-
-    // Clear all
-    mock_env.clear();
-
-    // Verify they're all gone
-    try testing.expect(!mock_env.hasVar("VAR1"));
-    try testing.expect(!mock_env.hasVar("VAR2"));
-    try testing.expect(!mock_env.hasVar("VAR3"));
 }
 
 // Integration test demonstrating how to use the testing infrastructure
