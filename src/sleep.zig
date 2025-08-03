@@ -53,31 +53,29 @@ fn parseTimeString(time_str: []const u8) !u64 {
     var number_part = time_str;
     var unit = TimeUnit.seconds; // default unit
 
-    if (time_str.len > 0) {
-        const last_char = time_str[time_str.len - 1];
-        switch (last_char) {
-            's' => {
-                unit = .seconds;
-                number_part = time_str[0 .. time_str.len - 1];
-            },
-            'm' => {
-                unit = .minutes;
-                number_part = time_str[0 .. time_str.len - 1];
-            },
-            'h' => {
-                unit = .hours;
-                number_part = time_str[0 .. time_str.len - 1];
-            },
-            'd' => {
-                unit = .days;
-                number_part = time_str[0 .. time_str.len - 1];
-            },
-            else => {
-                // No unit suffix, treat as seconds
-                number_part = time_str;
-                unit = .seconds;
-            },
-        }
+    const last_char = time_str[time_str.len - 1];
+    switch (last_char) {
+        's' => {
+            unit = .seconds;
+            number_part = time_str[0 .. time_str.len - 1];
+        },
+        'm' => {
+            unit = .minutes;
+            number_part = time_str[0 .. time_str.len - 1];
+        },
+        'h' => {
+            unit = .hours;
+            number_part = time_str[0 .. time_str.len - 1];
+        },
+        'd' => {
+            unit = .days;
+            number_part = time_str[0 .. time_str.len - 1];
+        },
+        else => {
+            // No unit suffix, treat as seconds
+            number_part = time_str;
+            unit = .seconds;
+        },
     }
 
     if (number_part.len == 0) {
@@ -122,9 +120,7 @@ fn parseTotalTime(args: []const []const u8) !u64 {
     var total_nanos: u64 = 0;
 
     for (args) |arg| {
-        const nanos = parseTimeString(arg) catch |err| {
-            return err;
-        };
+        const nanos = try parseTimeString(arg);
 
         // Check for overflow when adding
         if (total_nanos > std.math.maxInt(u64) - nanos) {
