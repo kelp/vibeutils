@@ -14,7 +14,7 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 
 ## Project Status
 
-**Pre-1.0**: Expect breaking changes as we refine the design. 17 utilities implemented with comprehensive test coverage.
+**Pre-1.0**: Expect breaking changes as we refine the design. 19 utilities implemented with comprehensive test coverage.
 
 ### Implemented Utilities
 
@@ -25,6 +25,7 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 - ✅ `cp` - Copy files and directories with progress indication
 - ✅ `dirname` - Extract directory from path
 - ✅ `echo` - Display text
+- ✅ `false` - Return unsuccessful exit status
 - ✅ `ln` - Create links (hard and symbolic)
 - ✅ `ls` - List directory contents with colors and icons
 - ✅ `mkdir` - Create directories
@@ -34,6 +35,8 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 - ✅ `rmdir` - Remove empty directories
 - ✅ `sleep` - Delay for specified time
 - ✅ `touch` - Update file timestamps
+- ✅ `true` - Return successful exit status
+- ✅ `yes` - Output string repeatedly until killed
 
 ### Coming Soon
 Text processing utilities (head, tail, wc, sort, uniq) and file information tools (stat, du, df).

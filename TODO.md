@@ -1,7 +1,7 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 16/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, ln, ls, mkdir, mv, pwd, rm, rmdir, touch)
+- **Completed**: 19/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, touch, true, yes)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
@@ -383,22 +383,22 @@ For each utility:
 - [x] Implement: Multiple path handling
 - [x] Man page: Write concise man page with examples
 
-#### 16. sleep
-- [ ] Test: Sleep for seconds
-- [ ] Test: Sleep for decimal seconds (0.5)
-- [ ] Test: Sleep for minutes/hours/days suffix (5m, 2h, 1d)
-- [ ] Test: Multiple time arguments (sleep 1m 30s)
-- [ ] Test: Signal handling (interruptible)
-- [ ] Implement: Time parsing with units
-- [ ] Implement: High-precision sleep
-- [ ] Implement: Signal-safe sleep
-- [ ] Man page: Write concise man page with examples
+#### 16. sleep ✓
+- [x] Test: Sleep for seconds
+- [x] Test: Sleep for decimal seconds (0.5)
+- [x] Test: Sleep for minutes/hours/days suffix (5m, 2h, 1d)
+- [x] Test: Multiple time arguments (sleep 1m 30s)
+- [x] Test: Signal handling (interruptible)
+- [x] Implement: Time parsing with units
+- [x] Implement: High-precision sleep
+- [x] Implement: Signal-safe sleep
+- [x] Man page: Write concise man page with examples
 
-#### 17. true
-- [ ] Test: Always returns 0 exit code
-- [ ] Test: Ignores all arguments
-- [ ] Implement: Minimal implementation
-- [ ] Man page: Write concise man page
+#### 17. true ✓
+- [x] Test: Always returns 0 exit code
+- [x] Test: Ignores all arguments
+- [x] Implement: Minimal implementation
+- [x] Man page: Write concise man page
 
 #### 18. false ✓
 - [x] Test: Always returns 1 exit code
@@ -471,16 +471,16 @@ For each utility:
 - [ ] Implement: Error diagnosis
 - [ ] Man page: Write concise man page with examples
 
-#### 24. yes
-- [ ] Test: Repeat "y" infinitely
-- [ ] Test: Repeat custom string
-- [ ] Test: Multiple arguments joined with space
-- [ ] Test: Performance (must be fast)
-- [ ] Test: SIGPIPE handling
-- [ ] Implement: Efficient output loop
-- [ ] Implement: Buffer optimization
-- [ ] Implement: Signal handling
-- [ ] Man page: Write concise man page with examples
+#### 24. yes ✓
+- [x] Test: Repeat "y" infinitely
+- [x] Test: Repeat custom string
+- [x] Test: Multiple arguments joined with space
+- [x] Test: Performance (must be fast)
+- [x] Test: SIGPIPE handling
+- [x] Implement: Efficient output loop
+- [x] Implement: Buffer optimization
+- [x] Implement: Signal handling
+- [x] Man page: Write concise man page with examples
 
 #### 25. whoami
 - [ ] Test: Print effective username
