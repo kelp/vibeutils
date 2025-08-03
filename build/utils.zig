@@ -24,6 +24,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "chmod", .path = "src/chmod.zig", .needs_libc = true, .description = "Change file mode bits" },
     .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" },
     .{ .name = "ln", .path = "src/ln.zig", .needs_libc = true, .description = "Create hard and symbolic links" },
+    .{ .name = "basename", .path = "src/basename.zig", .needs_libc = true, .description = "Strip directory and suffix from filenames" },
 };
 
 /// Parse version from ZON content string

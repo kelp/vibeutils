@@ -1,0 +1,103 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt BASENAME 1
+.Os
+.Sh NAME
+.Nm basename
+.Nd strip directory and suffix from filenames
+.Sh SYNOPSIS
+.Nm basename
+.Ar name
+.Op Ar suffix
+.Nm basename
+.Op Fl az
+.Op Fl s Ar suffix
+.Ar name ...
+.Sh DESCRIPTION
+The
+.Nm
+utility strips any leading directory components from
+.Ar name .
+If
+.Ar suffix
+is specified and is identical to the end of
+.Ar name ,
+it is stripped from
+.Ar name .
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl a , Fl Fl multiple
+Support multiple arguments and treat each as a name.
+All arguments are processed, and each resulting basename is output on a separate line.
+.It Fl s Ar suffix , Fl Fl suffix Ns = Ns Ar suffix
+Remove a trailing
+.Ar suffix
+from each name argument.
+This option implies
+.Fl a
+(multiple mode).
+.It Fl z , Fl Fl zero
+End each output line with a null character instead of a newline.
+This is useful for processing filenames that may contain newlines.
+.El
+.Sh EXIT STATUS
+.Ex -std basename
+.Sh EXAMPLES
+Strip directory components:
+.Bd -literal -offset indent
+$ basename /usr/bin/sort
+sort
+.Ed
+.Pp
+Strip directory and suffix:
+.Bd -literal -offset indent
+$ basename include/stdio.h .h
+stdio
+.Ed
+.Pp
+Process multiple files with suffix removal:
+.Bd -literal -offset indent
+$ basename -s .c hello.c world.c test.h
+hello
+world
+test.h
+.Ed
+.Pp
+Process multiple files:
+.Bd -literal -offset indent
+$ basename -a /usr/bin/ls /home/user/file.txt simple
+ls
+file.txt
+simple
+.Ed
+.Pp
+Special cases for root directories:
+.Bd -literal -offset indent
+$ basename /
+/
+$ basename //
+/
+.Ed
+.Pp
+Handle trailing slashes:
+.Bd -literal -offset indent
+$ basename /usr/bin/
+bin
+.Ed
+.Sh SEE ALSO
+.Xr dirname 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+The
+.Fl a ,
+.Fl s ,
+and
+.Fl z
+options are extensions compatible with GNU coreutils.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
