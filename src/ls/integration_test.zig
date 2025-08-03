@@ -1,6 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const test_utils = @import("test_utils.zig");
+const common = @import("common");
 
 const LsOptions = @import("types.zig").LsOptions;
 const listDirectoryTest = test_utils.listDirectoryTest;
@@ -23,7 +24,7 @@ test "ls lists files in current directory" {
     defer test_dir.close();
 
     // List directory
-    try listDirectoryTest(test_dir, buffer.writer(), .{}, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{}, testing.allocator);
 
     // Should contain both files
     try testing.expect(std.mem.indexOf(u8, buffer.items, "file1.txt") != null);
@@ -47,7 +48,7 @@ test "ls ignores hidden files by default" {
     defer test_dir.close();
 
     // List without -a
-    try listDirectoryTest(test_dir, buffer.writer(), .{}, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{}, testing.allocator);
 
     // Should contain visible but not hidden
     try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
@@ -70,7 +71,7 @@ test "ls -a shows hidden files" {
     // List with -a
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .all = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .all = true }, testing.allocator);
 
     // Should contain both files
     try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
@@ -93,7 +94,7 @@ test "ls -1 lists one file per line" {
     // List with -1
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .one_per_line = true }, testing.allocator);
 
     // Should be one file per line
     try testing.expectEqualStrings("aaa.txt\nbbb.txt\n", buffer.items);
@@ -109,7 +110,7 @@ test "ls handles empty directory" {
     // List empty directory
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{}, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{}, testing.allocator);
 
     // Should be empty
     try testing.expectEqualStrings("", buffer.items);
@@ -130,7 +131,7 @@ test "ls with directories shows type indicator" {
     // List with -1 for predictable output
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .one_per_line = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .one_per_line = true }, testing.allocator);
 
     // Both should be listed
     try testing.expectEqualStrings("file.txt\nsubdir\n", buffer.items);
@@ -151,7 +152,7 @@ test "ls -l shows long format" {
     // List with -l
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true }, testing.allocator);
 
     // Should contain test.txt with permissions and size
     try testing.expect(std.mem.indexOf(u8, buffer.items, "test.txt") != null);
@@ -177,7 +178,7 @@ test "ls -lh shows human readable sizes" {
     // List with -lh
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true, .human_readable = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true, .human_readable = true }, testing.allocator);
 
     // Should show human readable size
     try testing.expect(std.mem.indexOf(u8, buffer.items, "2.0K") != null);
@@ -204,7 +205,7 @@ test "ls -lk shows kilobyte sizes" {
     // List with -lk
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true, .kilobytes = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true, .kilobytes = true }, testing.allocator);
 
     // Should show sizes in kilobytes
     try testing.expect(std.mem.indexOf(u8, buffer.items, "small.txt") != null);
@@ -238,7 +239,7 @@ test "ls -l shows symlink targets" {
     // List with -l
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true }, testing.allocator);
 
     // Check that symlinks show their targets
     try testing.expect(std.mem.indexOf(u8, buffer.items, "link_to_file -> target.txt") != null);
@@ -265,7 +266,7 @@ test "ls -A shows almost all files" {
     // List with -A (using -1 for predictable output)
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .almost_all = true, .one_per_line = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .almost_all = true, .one_per_line = true }, testing.allocator);
 
     // Should contain both visible and hidden files
     try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
@@ -293,7 +294,7 @@ test "ls -F adds file type indicators" {
     // List with -F and -1 for predictable output
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .file_type_indicators = true, .one_per_line = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .file_type_indicators = true, .one_per_line = true }, testing.allocator);
 
     // Check for type indicators
     try testing.expect(std.mem.indexOf(u8, buffer.items, "directory/") != null);
@@ -321,7 +322,7 @@ test "ls -d lists directory itself, not contents" {
     // List with -d (should show "." only)
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .directory = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .directory = true }, testing.allocator);
 
     // Should only contain "." and not the files
     try testing.expectEqualStrings(".\n", buffer.items);
@@ -358,7 +359,7 @@ test "ls recursive listing" {
     defer test_dir.close();
 
     // Use the test helper function
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .recursive = true, .one_per_line = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .recursive = true, .one_per_line = true }, testing.allocator);
 
     // Should contain all files and directory headers
     try testing.expect(std.mem.indexOf(u8, buffer.items, "file1.txt") != null);
@@ -384,7 +385,7 @@ test "ls multi-column output" {
     // List without -1 (should use columns)
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{
         .terminal_width = 40, // Force specific width for testing
     }, testing.allocator);
 
@@ -417,7 +418,7 @@ test "ls -R shows directory headers with proper formatting" {
 
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .recursive = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .recursive = true }, testing.allocator);
 
     // Should contain directory headers in the format "./dirname:"
     try testing.expect(std.mem.indexOf(u8, buffer.items, "./dir1:") != null);
@@ -444,7 +445,7 @@ test "ls -R detects and handles symlink cycles" {
     defer test_dir.close();
 
     // This should not cause infinite recursion
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .recursive = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .recursive = true }, testing.allocator);
 
     // Should contain the symlink but not recurse infinitely
     try testing.expect(std.mem.indexOf(u8, buffer.items, "parent_link") != null);
@@ -462,7 +463,7 @@ test "ls -i shows inode numbers before filenames" {
 
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .show_inodes = true, .one_per_line = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .show_inodes = true, .one_per_line = true }, testing.allocator);
 
     // Output should have inode number followed by filename
     // Format: "<inode> test.txt"
@@ -490,7 +491,7 @@ test "ls -n shows numeric user/group IDs instead of names" {
 
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .long_format = true, .numeric_ids = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true, .numeric_ids = true }, testing.allocator);
 
     // Output should contain numeric IDs instead of names
     const output = buffer.items;
@@ -519,7 +520,7 @@ test "ls -m produces comma-separated output" {
 
     var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
     defer test_dir.close();
-    try listDirectoryTest(test_dir, buffer.writer(), .{ .comma_format = true }, testing.allocator);
+    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .comma_format = true }, testing.allocator);
 
     // Should be comma-separated with trailing newline
     try testing.expectEqualStrings("aaa.txt, bbb.txt, ccc.txt\n", buffer.items);
