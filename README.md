@@ -109,7 +109,7 @@ rm -i important.txt
 # Build all utilities
 make build
 
-# Run all tests (240+ tests)
+# Run all tests
 make test
 
 # Run tests with coverage report
