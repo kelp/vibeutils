@@ -1,24 +1,17 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 15/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, pwd ✓, chmod ✓, chown ✓, ln ✓, basename ✓, dirname ✓)
-- **Utilities In Progress**: 0/47
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), pwd 100% (full GNU/POSIX compliance with secure PWD validation), chmod ~95% (full numeric/symbolic modes + special permissions + reference mode), chown ~95% (full ownership control + name resolution + symlink handling), ln ~95% (hard links + symbolic links + relative paths + security validation), basename ~95% (POSIX compliant + GNU extensions for multiple files and zero delimiter), dirname 100% (POSIX compliant with GNU -z flag)
-- **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration, privileged testing infrastructure, unified file operations, writer-based I/O)
-- **Documentation**: Design philosophy, Zig patterns, man page style, comprehensive testing strategy established, **Claude Code quality check command (/qc) added** ✓
-- **Build System**: Production-ready with comprehensive security fixes, modular architecture, automated formatting, privileged testing support, and GitHub Actions CI/CD
-- **Testing Infrastructure**: Privileged testing framework implemented with fakeroot/unshare support, chmod tests migrated, macOS SIGABRT fixes applied, **writer: anytype pattern implemented across all utilities to fix stdout buffering issues** ✓
-- **CI/CD**: GitHub Actions workflows for cross-platform testing (Ubuntu, macOS), coverage reporting, security scanning, release automation
-- **New Approach**: Balancing OpenBSD simplicity with GNU's most-used features + modern UX
+- **Completed**: 15/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, ln, ls, mkdir, mv, pwd, rm, rmdir, touch)
+- **Compatibility**: 90-100% GNU feature coverage for completed utilities
+- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O
+- **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
 
 ## Project Goals
-- **Practical GNU compatibility** - implement features people actually use
-- **OpenBSD-inspired simplicity** - clear, orthogonal options
-- **Modern enhancements** - better colors, icons, smart formatting, performance
-- **High test coverage** (90%+)
-- **Test-Driven Development** approach
-- **OpenBSD-style concise man pages** with practical examples
-- **Balance**: ~80% of GNU's usefulness with ~20% of the complexity
+- **Balance**: 80% of GNU's usefulness with 20% of the complexity
+- **High test coverage**: 90%+ with TDD approach
+- **Modern enhancements**: Colors, icons, smart formatting, performance
+- **OpenBSD-inspired**: Clear options, concise man pages with examples
+- **Practical compatibility**: Features people actually use
 
 ## TDD Development Cycle
 For each utility:
@@ -799,23 +792,9 @@ For each utility:
 - [ ] Man page: Write concise man page with examples
 
 ## Testing Strategy
-
-### Unit Tests
-- Test each flag individually
-- Test flag combinations
-- Test error conditions
-- Test edge cases (empty files, huge files, special characters)
-
-### Integration Tests
-- Test pipe compatibility
-- Test signal handling
-- Test GNU coreutils compatibility
-- Test performance benchmarks
-
-### Test Coverage Goals
-- Line coverage: 90%+
-- Branch coverage: 85%+
-- Error path coverage: 100%
+- **Coverage Goals**: 90%+ line, 85%+ branch, 100% error paths
+- **Unit Tests**: Individual flags, combinations, edge cases
+- **Integration Tests**: Pipes, signals, GNU compatibility, benchmarks
 
 ### Custom Argument Parser Implementation
 
@@ -979,12 +958,10 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 
 ## Architecture Decisions
 
-### Design Philosophy for ls
-- **Balance OpenBSD clarity with GNU usefulness**
-- **Start minimal, add features users actually use**
-- **Modern UX improvements neither BSD nor GNU have**
-- **Performance matters - parallel I/O where beneficial**
-- **Smart defaults: color auto, responsive columns, readable dates**
+### Design Philosophy
+- Balance OpenBSD clarity with GNU usefulness
+- Modern UX improvements (colors, icons, responsive layouts)
+- Smart defaults (auto-color, readable dates, parallel I/O)
 
 ### Shared Components
 - [x] Create common library for:
@@ -1148,11 +1125,10 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 - [ ] test-privileged-bsd: BSD VMs with available tools
 
 ### Fallback Strategies
-When privileged testing isn't possible:
 1. Test error paths (permission denied scenarios)
 2. Use dependency injection for mockable syscalls
-3. Focus on logic testing without actual privilege operations
-4. Document which tests require privileges
+3. Focus on logic testing without privilege operations
+4. Document privilege requirements
 
 ### Success Metrics
 - [x] All privilege-related tests pass on Linux with fakeroot (infrastructure ready)
@@ -1297,8 +1273,7 @@ Comprehensive performance tracking system to monitor improvements and regression
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
 - [ ] 90%+ test coverage
-- [ ] Clean cppcheck/valgrind reports
-- [ ] Successful fuzzing campaigns
-- [x] Privileged operations tested on supported platforms (Linux, macOS)
-- [ ] Comprehensive benchmarking system operational
-- [x] CI/CD pipeline operational with cross-platform support
+- [ ] Clean static analysis reports
+- [ ] Comprehensive benchmarking system
+- [x] Privileged operations tested (Linux, macOS)
+- [x] CI/CD pipeline operational

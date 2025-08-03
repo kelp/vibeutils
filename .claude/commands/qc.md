@@ -14,6 +14,16 @@
   - Security theater (unnecessary validation that belongs in the OS)
   - Non-idiomatic Zig patterns
   - Missing or incorrect documentation
+  
+  ### Writing Style Issues (per "The Elements of Style"):
+  - Passive voice in documentation or comments
+  - Needless words that should be omitted
+  - Negative form when positive would be clearer
+  - Non-parallel construction in lists
+  - Vague language instead of specific terms
+  - Unalphabetized lists (unless order matters logically)
+  - Repetitive information stated in multiple places
+  - Facts that could be single-sourced but are duplicated
 
   ### Project-Specific Requirements (vibeutils):
   - Must follow writer-based error handling pattern (stdout_writer, stderr_writer parameters)

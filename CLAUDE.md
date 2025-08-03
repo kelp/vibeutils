@@ -614,6 +614,56 @@ When implementing utilities:
 3. Don't try to be smarter than the OS
 4. Focus on correctness, not security
 
+## Writing Style Guidelines
+
+Follow "The Elements of Style" principles for all documentation and code comments:
+
+### Core Principles
+- **Brevity**: Omit needless words - every word should serve a purpose
+- **Active voice**: Prefer "The function validates input" over "Input is validated by the function"
+- **Avoid repetition**: State information once in the most logical location
+- **Parallel construction**: Keep lists and series grammatically consistent
+- **Positive form**: Say what something is, not what it isn't
+- **Specific over general**: Use concrete, specific language instead of abstract terms
+
+### List Organization
+- **Alphabetize lists** unless there's a logical reason not to (e.g., order of operations, priority)
+- Examples where alphabetization is appropriate:
+  - Import statements (after grouping by std/third-party/local)
+  - Error set members
+  - Struct field lists (unless grouped by functionality)
+  - Command-line flag documentation
+- Examples where order matters:
+  - Step-by-step instructions
+  - Priority-based lists
+  - Chronological sequences
+  - Build dependencies
+
+### Avoiding Repetition
+- **Single source of truth**: State facts once in the most appropriate location
+- **Cross-reference don't duplicate**: Link to information rather than restating it
+- **Maintenance burden**: Every repeated fact must be updated in multiple places
+- Examples of unnecessary repetition:
+  - Stating test count in multiple sections
+  - Listing features in both overview and details
+  - Repeating build commands in different contexts
+  - Duplicating flag descriptions across documents
+
+### Documentation Examples
+
+**Good (clear, active, specific, no repetition):**
+```zig
+/// Copies file from source to destination, preserving permissions.
+/// Returns error.DiskFull when destination volume lacks space.
+```
+
+**Poor (passive, vague, repetitive):**
+```zig
+/// The file is copied by this function and various attributes might be preserved.
+/// An error could be returned if issues are encountered.
+/// This function copies files. // Repetition of first line
+```
+
 ## Code Style and Conventions
 
 ### Simple Writer-Based Error Handling

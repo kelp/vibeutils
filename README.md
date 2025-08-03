@@ -1,67 +1,44 @@
 # vibeutils
 
-Modern, memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD.
+Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD.
 
 **MIT Licensed** • **Linux** • **macOS** • **BSD**
 
 ## Features
 
-- 🚀 Fast, memory-safe implementations
 - 🎨 Colored output with terminal detection
-- 📊 Progress bars for long operations  
+- 🚀 Fast, memory-safe implementations
+- 💻 GNU compatibility for scripts
 - 🔒 OpenBSD-inspired security and simplicity
-- 💻 Full GNU compatibility for scripts
+- 📊 Progress bars for long operations
 
 ## Project Status
 
-**Pre-1.0**: Breaking changes are expected as we refine the design. Currently at 17 utilities with 240+ tests.
+**Pre-1.0**: Expect breaking changes as we refine the design. 17 utilities implemented with comprehensive test coverage.
 
 ### Implemented Utilities
 
-- ✅ `echo` - Display text
+- ✅ `basename` - Strip directory and suffix from filenames
 - ✅ `cat` - Concatenate and display files
-- ✅ `ls` - List directory contents with colors and icons
-- ✅ `cp` - Copy files and directories with progress indication
-- ✅ `mv` - Move/rename files and directories
-- ✅ `rm` - Remove files and directories safely
-- ✅ `mkdir` - Create directories
-- ✅ `rmdir` - Remove empty directories
-- ✅ `touch` - Update file timestamps
-- ✅ `pwd` - Print working directory
 - ✅ `chmod` - Change file permissions
 - ✅ `chown` - Change file ownership
-- ✅ `ln` - Create links (hard and symbolic)
-- ✅ `basename` - Strip directory and suffix from filenames
+- ✅ `cp` - Copy files and directories with progress indication
 - ✅ `dirname` - Extract directory from path
+- ✅ `echo` - Display text
+- ✅ `ln` - Create links (hard and symbolic)
+- ✅ `ls` - List directory contents with colors and icons
+- ✅ `mkdir` - Create directories
+- ✅ `mv` - Move/rename files and directories
+- ✅ `pwd` - Print working directory
+- ✅ `rm` - Remove files and directories safely
+- ✅ `rmdir` - Remove empty directories
 - ✅ `sleep` - Delay for specified time
+- ✅ `touch` - Update file timestamps
 
 ### Coming Soon
 Text processing utilities (head, tail, wc, sort, uniq) and file information tools (stat, du, df).
 
 ## Installation
-
-### macOS (Homebrew)
-
-```bash
-# Coming soon!
-brew install kelp/tap/vibeutils
-```
-
-By default, commands are installed with a `v` prefix (vls, vcp, vmv, etc.) to avoid conflicts with system utilities.
-
-To use vibeutils commands without the prefix:
-```bash
-# Option 1: Add vibebin to your PATH
-export PATH="$(brew --prefix)/opt/vibeutils/libexec/vibebin:$PATH"
-
-# Option 2: Source the activation script
-source $(brew --prefix)/opt/vibeutils/libexec/activate.sh
-
-# Option 3: Create aliases
-alias ls='vls'
-alias cp='vcp'
-# ... etc
-```
 
 ### Build from source
 
@@ -73,7 +50,25 @@ cd vibeutils
 zig build -Doptimize=ReleaseSafe
 ```
 
-Binaries will be in `zig-out/bin/`.
+Find binaries in `zig-out/bin/`.
+
+### macOS (Homebrew) - Coming Soon
+
+```bash
+brew install kelp/tap/vibeutils
+```
+
+Commands install with a `v` prefix (vls, vcp, vmv) to avoid conflicts with system utilities.
+
+Use without prefix:
+```bash
+# Add vibebin to PATH
+export PATH="$(brew --prefix)/opt/vibeutils/libexec/vibebin:$PATH"
+
+# Or create aliases
+alias ls='vls'
+alias cp='vcp'
+```
 
 ### Install system-wide (macOS/Linux)
 
@@ -109,37 +104,31 @@ rm -i important.txt
 # Build all utilities
 make build
 
-# Run all tests
+# Run tests
 make test
 
-# Run tests with coverage report
-make coverage
-# View report at coverage/index.html
+# Run tests with coverage
+make coverage  # Report: coverage/index.html
 
 # Run privileged tests (requires fakeroot)
 make test-privileged-local
 
 # Run specific utility
 make run-echo ARGS="Hello, vibeutils!"
-make run-ls ARGS="-la"
 
 # Format code
 make fmt
 
-# Generate documentation
-make docs
-
-# See all available targets
+# See all targets
 make help
 ```
 
 ### Testing
 
-We maintain comprehensive test coverage with 240+ tests:
-- Unit tests embedded in each utility source file
-- Privileged operation tests for chmod/chown (run under fakeroot)
-- Cross-platform testing on Linux, macOS, and BSD
-- Coverage reports via kcov showing 90%+ coverage targets
+- Cross-platform testing on BSD, Linux, and macOS
+- Privileged operation tests using fakeroot
+- Target: 90%+ coverage via kcov
+- Unit tests embedded in source files
 
 ## License
 
