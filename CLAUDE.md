@@ -23,85 +23,20 @@ This philosophy allows us to iterate quickly and find the right abstractions bef
 
 ## Build and Test Commands
 
-```bash
-# Build all utilities
-zig build
-make build
-
-# Run tests
-zig build test
-make test
-
-# Run tests with coverage report (uses kcov)
-make coverage
-# Coverage report: coverage/index.html
-
-# Run privileged tests (requires fakeroot)
-./scripts/run-privileged-tests.sh
-# Or manually:
-fakeroot zig build test-privileged
-
-# Build and run specific utility
-zig build run-echo -- hello world
-make run-echo ARGS="hello world"
-
-# Build with specific optimization
-zig build -Doptimize=ReleaseFast
-zig build -Doptimize=ReleaseSmall
-zig build -Doptimize=Debug
-make debug      # Debug build
-make release    # Optimized for size
-
-# Clean build artifacts
-make clean
-
-# Install optimized binaries
-make install
-
-# Format source code
-make fmt
-
-# Lint man pages
-make lint-man            # Check man page quality
-make lint-man-strict     # Fail on warnings
-make lint-man-verbose    # Show detailed output
-
-# Generate documentation
-zig build docs
-make docs
-
-# Run a single test file
-zig test src/echo.zig
-zig test src/common/lib.zig
-```
-
-### Running Tests with Readable Output
-
-When working with Claude Code or debugging test failures, you need to see the actual test output. Here are the best methods:
+Run `make help` for all available commands. Key commands:
 
 ```bash
-# View test summary with pass/fail counts
-zig build test --summary all
-zig build test --summary new  # Only show new failures
+# Essential
+make build          # Build all utilities
+make test           # Run tests
+make coverage       # Generate coverage report
+make fmt            # Format code
 
-# Run tests with verbose output to see which commands are executed
-zig build test --verbose
-
-# To see test output when tests fail:
-# Tests only produce output when they fail. Passing tests are silent.
-# You can intentionally break a test to see its output format.
-
-# Alternative: Run tests for a single file with module dependencies
-# Note: This requires manually specifying module paths, so use build.zig instead
-zig build test  # Preferred method that handles all dependencies
+# Zig-specific
+zig build test --summary all     # Test summary
+zig build -Doptimize=ReleaseFast # Optimized build
+zig test src/echo.zig            # Test single file
 ```
-
-**Important Notes for Test Output:**
-- Zig tests follow the Unix philosophy: silence is success
-- Tests only produce output when they fail or when using `std.debug.print`
-- The `--summary` flag shows aggregate results without individual test details
-- Use `--verbose` to see which test commands are being executed
-- Test binaries are cached in `.zig-cache/o/*/test` but may have architecture-specific formats
 
 ## Git Hooks
 
@@ -112,31 +47,9 @@ The project includes a pre-commit hook that automatically:
 
 The hook is located at `.git/hooks/pre-commit` and is automatically set up for this repository.
 
-## Makefile Targets
-
-The project includes a comprehensive Makefile with the following targets:
-
-- `make build` - Build all utilities (default target)
-- `make test` - Run all tests
-- `make coverage` - Run tests with coverage analysis using kcov
-- `make clean` - Remove build artifacts and coverage files
-- `make install` - Build optimized binaries for production
-- `make run-<utility>` - Run specific utility (e.g., `make run-echo ARGS="hello"`)
-- `make debug` - Build with debug information
-- `make release` - Build optimized for smallest size
-- `make fmt` - Format all source code with `zig fmt`
-- `make docs` - Generate HTML API documentation
-- `make help` - Show all available targets
-
 ## Test Coverage
 
-The project has **74 tests** covering:
-- **echo.zig**: 16 tests (basic output, flags, escape sequences)
-- **cat.zig**: 10 tests (file reading, numbering, formatting)
-- **ls.zig**: 27 tests (listing, formatting, sorting, filtering)
-- **common modules**: 21 tests (utilities, file operations, styling)
-
-Coverage reports are generated using `kcov` and can be viewed at `coverage/index.html` after running `make coverage`.
+Target: 90%+ coverage. Run `make coverage` to generate reports.
 
 ### Privileged Tests
 
@@ -196,149 +109,16 @@ The styling system (`src/common/style.zig`) automatically detects:
 
 ### Man Page Style Guide
 
-All vibeutils man pages must follow consistent mdoc formatting and section ordering:
+Use mdoc format with consistent section ordering:
 
-#### Required Sections (in this order)
+**Required sections:** NAME, SYNOPSIS, DESCRIPTION, EXIT STATUS, EXAMPLES, SEE ALSO, STANDARDS, AUTHORS
 
-1. **NAME** - Utility name and brief description
-   ```troff
-   .Sh NAME
-   .Nm utility
-   .Nd brief description of what it does
-   ```
-
-2. **SYNOPSIS** - Command syntax with flags
-   ```troff
-   .Sh SYNOPSIS
-   .Nm
-   .Op Fl abc
-   .Op Fl d Ar argument
-   .Ar file ...
-   ```
-
-3. **DESCRIPTION** - Detailed explanation with options list
-   ```troff
-   .Sh DESCRIPTION
-   The
-   .Nm
-   utility does something useful.
-   .Pp
-   The options are as follows:
-   .Bl -tag -width Ds
-   .It Fl a
-   Enable feature A.
-   .It Fl b , Fl Fl long-form
-   Enable feature B.
-   .El
-   ```
-
-4. **Special Sections** (optional, in logical order):
-   - **ENVIRONMENT** - Environment variables (before EXIT STATUS)
-   - **SAFETY FEATURES** - Security/safety features (after DESCRIPTION)
-   - Other utility-specific sections as needed
-
-5. **EXIT STATUS** - Exit codes
-   ```troff
-   .Sh EXIT STATUS
-   .Ex -std utility
-   ```
-
-6. **EXAMPLES** - Practical usage examples
-   ```troff
-   .Sh EXAMPLES
-   Basic usage:
-   .Bd -literal -offset indent
-   $ utility file.txt
-   .Ed
-   ```
-
-7. **DIAGNOSTICS** (optional) - Error messages
-   ```troff
-   .Sh DIAGNOSTICS
-   .Bl -diag
-   .It "error message"
-   Explanation of when this occurs.
-   .El
-   ```
-
-8. **SEE ALSO** - Related commands
-   ```troff
-   .Sh SEE ALSO
-   .Xr related 1 ,
-   .Xr command 2
-   ```
-
-9. **STANDARDS** - POSIX compliance
-   ```troff
-   .Sh STANDARDS
-   The
-   .Nm
-   utility is compliant with the
-   .St -p1003.1-2008
-   specification.
-   ```
-
-10. **AUTHORS** - Always include, same format for all
-    ```troff
-    .Sh AUTHORS
-    .An "vibeutils implementation by Travis Cole"
-    ```
-
-11. **CAVEATS** or **BUGS** (optional) - Known limitations
-
-#### Important Notes
-
-- **No HISTORY section** - vibeutils is a clean room implementation with no code lineage from original Unix
-- **Use mdoc format** exclusively (not man or groff)
-- **Validate with**: `mandoc -T lint man/man1/utility.1`
-- **Cross-references**: Order by section number (1 before 2), then alphabetically
-- **Line length**: Keep under 80 characters where possible
-- **Examples**: Include 2-3 practical, real-world examples
-- **FLAGS**: Document both short (`-f`) and long (`--force`) forms where applicable
-
-#### Example Template
-
-```troff
-.\" utility(1) manual page
-.\" This is part of the vibeutils project
-.Dd $Mdocdate$
-.Dt UTILITY 1
-.Os
-.Sh NAME
-.Nm utility
-.Nd brief description
-.Sh SYNOPSIS
-.Nm
-.Op Fl options
-.Ar arguments
-.Sh DESCRIPTION
-The
-.Nm
-utility performs its function.
-.Pp
-The options are as follows:
-.Bl -tag -width Ds
-.It Fl h , Fl Fl help
-Display help and exit.
-.El
-.Sh EXIT STATUS
-.Ex -std
-.Sh EXAMPLES
-Example usage:
-.Bd -literal -offset indent
-$ utility input.txt
-.Ed
-.Sh SEE ALSO
-.Xr related 1
-.Sh STANDARDS
-The
-.Nm
-utility is compliant with the
-.St -p1003.1-2008
-specification.
-.Sh AUTHORS
-.An "vibeutils implementation by Travis Cole"
-```
+**Key rules:**
+- No HISTORY section (clean room implementation)
+- Validate with `mandoc -T lint`  
+- Include 2-3 practical examples
+- Document both short (`-f`) and long (`--force`) flags
+- Author: `vibeutils implementation by Travis Cole`
 
 ### Referencing Man Pages
 
@@ -391,18 +171,6 @@ test "description" {
 }
 ```
 
-### Implementation Priorities
-
-Utilities are implemented in phases (see TODO.md):
-1. Phase 1: Essential utilities (echo, cat, ls, cp, mv, rm, mkdir, rmdir, touch, pwd)
-2. Phase 2: Text processing (head, tail, wc, sort, uniq, cut, tr)
-3. Phase 3: File information (stat, du, df)
-4. Phase 4: Advanced (find, grep)
-
-Each utility requires:
-- Full GNU compatibility tests
-- Man page with 2-3 practical examples
-- Modern enhancements (colors, progress, parallel processing where applicable)
 
 ## Zig Documentation Tools
 
@@ -666,191 +434,25 @@ Follow "The Elements of Style" principles for all documentation and code comment
 
 ## Code Style and Conventions
 
-### Simple Writer-Based Error Handling
-All utilities follow a simple pattern: accept `stdout_writer` and `stderr_writer` parameters. This removes direct stderr access from utility functions, preventing stderr pollution during tests.
+### Writer-Based Error Handling
 
-**Core principle: Pass writers explicitly, use them directly. No frameworks, no abstractions.**
-
-#### Complete Working Example
-Here's a complete, compilable example of the simple writer-based approach:
+All utilities accept `stdout_writer` and `stderr_writer` parameters to prevent test pollution:
 
 ```zig
-const std = @import("std");
-const common = @import("common");
-
-// Simple, direct approach - pass the writers you need
-pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8,
-              stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    if (args.len == 0) {
-        common.printErrorWithProgram(stderr_writer, "cat", "missing file operand", .{});
-        return @intFromEnum(common.ExitCode.general_error);
-    }
-    
-    for (args) |file_path| {
-        const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-            common.printErrorWithProgram(stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        defer file.close();
-        
-        // Copy file to stdout - direct, no abstraction
-        try file.reader().streamUntilDelimiter(stdout_writer, 0, null);
-    }
-    
-    return @intFromEnum(common.ExitCode.success);
-}
-
-// Main function - simple setup, no framework
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-    
-    // Simple, direct approach - get the writers and pass them
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
-    
-    const exit_code = try runCat(allocator, args[1..], stdout, stderr);
-    std.process.exit(exit_code);
+pub fn runUtil(allocator: Allocator, args: []const []const u8,
+               stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    // Output to stdout_writer, errors to stderr_writer
+    common.printErrorWithProgram(stderr_writer, "util", "error: {s}", .{msg});
+    return @intFromEnum(common.ExitCode.general_error);
 }
 ```
 
-#### DEPRECATED API (Do Not Use)
-These functions are deprecated and will cause compile errors:
-```zig
-// DEPRECATED: These will cause @compileError
-common.fatal("error message", .{});
-common.printError("error message", .{});
-common.printWarning("warning message", .{});
-```
+**Key points:**
+- Pass writers explicitly, no abstractions
+- Use `common.printErrorWithProgram()` for errors
+- Tests use `common.null_writer` to suppress stderr
+- Old functions (`common.fatal()`, `common.printError()`) cause compile errors
 
-#### NEW API (Required)
-Use the simple writer-based API:
-
-```zig
-// REQUIRED: All utilities must accept both stdout_writer and stderr_writer
-pub fn myUtil(allocator: Allocator, args: []const []const u8, 
-              stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Normal output goes to stdout_writer
-    try stdout_writer.print("Processing file...\n", .{});
-    
-    // Error messages go to stderr_writer with program name
-    common.printErrorWithProgram(stderr_writer, "myutil", "cannot open file: {s}", .{filename});
-    
-    // Fatal errors that should exit
-    common.fatalWithWriter(stderr_writer, "cannot continue: {s}", .{@errorName(err)});
-}
-
-// In main() function:
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-    
-    // Simple, direct approach - get the writers and pass them
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
-    const result = try myUtil(allocator, args[1..], stdout, stderr);
-    
-    std.process.exit(result);
-}
-
-// In tests - suppress error output with null writer:
-test "handles missing file gracefully" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    
-    // Use null_writer for stderr to suppress error messages in tests
-    const result = try myUtil(testing.allocator, &.{"missing.txt"}, 
-                              buffer.writer(), common.null_writer);
-    
-    try testing.expectEqual(@as(u8, 1), result);
-    // No "test: cannot open file" messages in test output!
-}
-
-// Complete test example:
-test "error message format" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-    
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    
-    // Call the utility function - it will write errors to stderr_buffer
-    const result = try myUtil(testing.allocator, &.{"nonexistent.txt"}, 
-                              stdout_buffer.writer(), stderr_buffer.writer());
-    
-    // Verify the function returned error code
-    try testing.expectEqual(@as(u8, 1), result);
-    
-    // Verify error messages went to stderr only
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "myutil: cannot open file: nonexistent.txt") != null);
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    
-    // For utilities that write normal output, test that too
-    stderr_buffer.clearRetainingCapacity();
-    stdout_buffer.clearRetainingCapacity();
-    
-    const success_result = try myUtil(testing.allocator, &.{"--help"}, 
-                                      stdout_buffer.writer(), stderr_buffer.writer());
-    try testing.expectEqual(@as(u8, 0), success_result);
-    try testing.expect(stdout_buffer.items.len > 0); // Help text went to stdout
-    try testing.expectEqualStrings("", stderr_buffer.items); // No errors
-}
-```
-
-#### Architecture Benefits
-This pattern enables:
-- **Clean test output**: No more "test: cannot remove '': No such file or directory" noise
-- **Proper separation**: stdout and stderr are completely isolated  
-- **Easy testing**: Error messages can be captured and verified
-- **Consistent formatting**: All utilities use the same error message format
-- **Compile-time safety**: Deprecated functions cause build failures, preventing accidental stderr pollution
-- **Simple and direct**: No abstractions, just pass the writers you need
-
-#### Migration Guide
-
-**Migration steps:**
-1. Replace `common.fatal()` with `common.fatalWithWriter(stderr_writer, ...)`
-2. Replace `common.printError()` with `common.printErrorWithProgram(stderr_writer, prog_name, ...)`  
-3. Replace `common.printWarning()` with `common.printWarningWithProgram(stderr_writer, prog_name, ...)`
-4. Update function signatures to accept `stdout_writer, stderr_writer` parameters
-5. In main(), get writers with `std.io.getStdOut().writer()` and `std.io.getStdErr().writer()`
-6. Run tests to ensure no stderr pollution occurs during normal operation
-
-### Error Handling (Updated)
-```zig
-// DEPRECATED: These functions cause compile errors
-// common.printError("file.txt: {s}", .{@errorName(err)});
-// common.fatal("cannot continue", .{});
-
-// Use writer-based API with explicit stderr_writer
-pub fn processFile(allocator: Allocator, file_path: []const u8, 
-                   stdout_writer: anytype, stderr_writer: anytype) !void {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        common.printErrorWithProgram(stderr_writer, "cat", "file.txt: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer file.close();
-    
-    // For warnings
-    common.printWarningWithProgram(stderr_writer, "cat", "file truncated", .{});
-    
-    // For fatal errors
-    common.fatalWithWriter(stderr_writer, "cannot continue: {s}", .{@errorName(err)});
-}
-
-// Exit codes from common.ExitCode enum  
-return @intFromEnum(common.ExitCode.general_error);
-```
-
-**Critical**: The deprecated functions (`common.printError()`, `common.fatal()`, `common.printWarning()`) now cause compile-time errors. This prevents accidental stderr pollution during tests. All utility functions must use the two-writer pattern.
 
 ### Memory Management
 - **CLI Tools**: Use Arena allocator (preferred) - all memory freed at once
@@ -1033,99 +635,24 @@ test "description" { ... }
 - Test both success and error cases
 - Keep tests close to implementation
 
-## Privileged Testing Infrastructure
+## Privileged Testing
 
-The project includes infrastructure for testing operations that require elevated privileges (like chmod, chown) using fakeroot and other privilege simulation tools.
-
-### Key Components
-
-1. **src/common/privilege_test.zig** - Core privilege testing module
-   - Platform detection (Linux, macOS, BSD)
-   - FakerootContext for managing privilege simulation
-   - Helper functions for privilege-aware tests
-   - Automatic detection of available tools (fakeroot, unshare)
-
-2. **scripts/run-privileged-tests.sh** - Smart test runner
-   - Auto-detects available privilege simulation tools
-   - Falls back gracefully: fakeroot → unshare → skip
-   - Provides clear reporting of what was tested
-
-3. **Build System Integration**
-   - `zig build test-privileged` - Run with privilege simulation
-   - `make test-privileged` - Requires fakeroot (fails if unavailable)
-   - `make test-privileged-local` - Uses best available method
-
-### Writing Privileged Tests
+Tests requiring elevated privileges use `privilege_test.requiresPrivilege()`:
 
 ```zig
-const common = @import("common");
-const privilege_test = common.privilege_test;
-
-test "operation requiring privileges" {
-    // Skip test if no privilege simulation available
-    try privilege_test.requiresPrivilege();
-    
-    // Test will only run under fakeroot or similar
-    // Perform privileged operations here
-}
-
-test "conditional privileged operation" {
-    if (privilege_test.FakerootContext.isUnderFakeroot()) {
-        // This code only runs under fakeroot
-        // Note: Not all syscalls work through fakeroot with Zig's APIs
-    }
+test "chmod operation" {
+    try privilege_test.requiresPrivilege();  // Skip if not under fakeroot
+    // Test privileged operations
 }
 ```
 
-### Running Privileged Tests
-
-```bash
-# Run with specific method
-scripts/run-privileged-tests.sh -m fakeroot
-
-# Run only specific tests
-scripts/run-privileged-tests.sh -f "chmod"
-
-# Use Makefile targets
-make test-privileged      # Fails if fakeroot not available
-make test-privileged-local # Graceful fallback
-```
-
-### Platform Notes
-
-- **Linux**: Full support with fakeroot and unshare
-- **macOS**: Limited support (fakeroot may not be available)
-- **BSD**: Limited support (may require doas/sudo)
-
-The infrastructure gracefully handles missing tools and provides clear error messages when privilege simulation is not available.
+Run with: `make test-privileged-local` or `scripts/run-privileged-tests.sh`
 
 ## Cross-Platform Testing
 
-### macOS Development with Linux Testing
-
-For macOS developers, the project includes Docker-based Linux testing infrastructure:
-
+Docker-based Linux testing from macOS:
 ```bash
-# Run Linux tests from macOS
-make test-linux         # Run tests in Ubuntu container
-make test-linux-alpine  # Run tests in Alpine container
-
-# Interactive Linux environment
-make shell-linux        # Ubuntu shell with project mounted
-make shell-linux-alpine # Alpine shell with project mounted
-
-# Full CI simulation
-make ci-linux          # Run complete CI pipeline locally
+make test-linux        # Ubuntu tests
+make shell-linux       # Interactive Ubuntu shell
+make ci-linux          # Full CI locally
 ```
-
-### Docker Infrastructure
-- **Dockerfile.ubuntu**: Ubuntu-based testing with kcov support
-- **Dockerfile.alpine**: Minimal Alpine Linux testing
-- Containers automatically mount project at `/workspace`
-- Pre-installed with Zig 0.14.1 and testing tools
-
-### Platform-Specific Considerations
-- **File permissions**: Linux containers preserve Unix permissions better than macOS
-- **Path separators**: Always use forward slashes for cross-platform compatibility
-- **Line endings**: Ensure LF line endings (not CRLF) for Linux compatibility
-- **System calls**: Some syscalls behave differently between macOS and Linux
