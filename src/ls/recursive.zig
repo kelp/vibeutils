@@ -16,7 +16,7 @@ pub fn recurseIntoSubdirectory(
     allocator: std.mem.Allocator,
     style: anytype,
     visited_fs_ids: *common.directory.FileSystemIdSet,
-    git_context: ?*const types.GitContext,
+    git_context: ?*types.GitContext,
 ) anyerror!void {
     // Import core module to avoid circular dependency
     const core = @import("core.zig");

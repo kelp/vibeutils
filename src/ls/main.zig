@@ -295,7 +295,7 @@ fn printIconTest(writer: anytype) !void {
 
 /// List a directory or file, handling both files and directories appropriately
 /// Errors are printed but don't stop execution except for BrokenPipe
-fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*const types.GitContext) anyerror!void {
+fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {}", .{err});
@@ -359,7 +359,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
 }
 
 /// Set up visited filesystem ID tracking for secure cycle detection in recursive mode
-fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*const types.GitContext) anyerror!void {
+fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*types.GitContext) anyerror!void {
     // For recursive listing with symlinks, we need to track visited (device, inode) pairs for security
     var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
     defer visited_fs_ids.deinit();

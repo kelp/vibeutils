@@ -12,7 +12,7 @@ const Entry = types.Entry;
 
 /// Core directory listing logic with cycle detection
 /// Collects, sorts, and prints directory entries
-pub fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_fs_ids: *common.directory.FileSystemIdSet, git_context: ?*const types.GitContext) anyerror!void {
+pub fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_fs_ids: *common.directory.FileSystemIdSet, git_context: ?*types.GitContext) anyerror!void {
     // Collect and prepare entries
     var entries = try collectAndPrepareEntries(allocator, dir, options, git_context, stderr_writer);
     defer entries.deinit();
@@ -29,7 +29,7 @@ pub fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: a
 }
 
 /// Collect and prepare directory entries with metadata
-pub fn collectAndPrepareEntries(allocator: std.mem.Allocator, dir: std.fs.Dir, options: LsOptions, git_context: ?*const types.GitContext, stderr_writer: anytype) !std.ArrayList(Entry) {
+pub fn collectAndPrepareEntries(allocator: std.mem.Allocator, dir: std.fs.Dir, options: LsOptions, git_context: ?*types.GitContext, stderr_writer: anytype) !std.ArrayList(Entry) {
     // Collect and filter entries based on options
     var entries = try entry_collector.collectFilteredEntries(allocator, dir, options);
     errdefer entries.deinit();
@@ -66,7 +66,7 @@ pub fn printDirectoryListing(allocator: std.mem.Allocator, entries: []Entry, pat
 }
 
 /// Process recursive subdirectories
-pub fn processRecursiveDirectories(entries: []const Entry, dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_fs_ids: *common.directory.FileSystemIdSet, git_context: ?*const types.GitContext) !void {
+pub fn processRecursiveDirectories(entries: []const Entry, dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_fs_ids: *common.directory.FileSystemIdSet, git_context: ?*types.GitContext) !void {
     if (options.recursive) {
         try entry_collector.processSubdirectoriesRecursively(entries, dir, path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context);
     }

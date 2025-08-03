@@ -82,7 +82,7 @@ pub fn enhanceEntriesWithMetadataBatch(
     entries: []Entry,
     dir: std.fs.Dir,
     options: LsOptions,
-    git_context: ?*const types.GitContext,
+    git_context: ?*types.GitContext,
     stderr_writer: anytype,
 ) anyerror!void {
     if (entries.len == 0) return;
@@ -144,7 +144,7 @@ pub fn enhanceEntriesWithMetadata(
     entries: []Entry,
     dir: std.fs.Dir,
     options: LsOptions,
-    git_context: ?*const types.GitContext,
+    git_context: ?*types.GitContext,
     stderr_writer: anytype,
 ) anyerror!void {
     // Delegate to the more efficient batch implementation
@@ -162,7 +162,7 @@ pub fn processSubdirectoriesRecursively(
     allocator: std.mem.Allocator,
     style: anytype,
     visited_fs_ids: *common.directory.FileSystemIdSet,
-    git_context: ?*const types.GitContext,
+    git_context: ?*types.GitContext,
 ) anyerror!void {
     // Collect subdirectories using the common utility
     var subdirs = try common.directory.collectSubdirectories(Entry, entries, base_path, allocator);

@@ -204,7 +204,7 @@ pub const GitContext = struct {
     }
 
     /// Get git status for a specific file
-    pub fn getFileStatus(self: *const GitContext, filename: []const u8) ?common.git.GitStatus {
+    pub fn getFileStatus(self: *GitContext, filename: []const u8) ?common.git.GitStatus {
         if (self.repo) |*repo| {
             return repo.getFileStatus(filename);
         }

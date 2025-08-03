@@ -35,19 +35,23 @@ pub const GitRepo = struct {
     root_path: []const u8,
     status_map: std.StringHashMap(GitStatus),
     allocator: std.mem.Allocator,
+    last_refresh: i128, // Timestamp of last git status refresh
+    status_loaded: bool, // Track if status has been loaded at least once
 
     const Self = @This();
+    const REFRESH_INTERVAL_NS: i128 = 5_000_000_000; // 5 seconds in nanoseconds
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !?Self {
         const git_root = try findGitRoot(allocator, path) orelse return null;
 
-        var repo = Self{
+        const repo = Self{
             .root_path = git_root,
             .status_map = std.StringHashMap(GitStatus).init(allocator),
             .allocator = allocator,
+            .last_refresh = 0, // Force refresh on first use
+            .status_loaded = false, // Status not loaded yet
         };
 
-        try repo.refreshStatus();
         return repo;
     }
 
@@ -62,7 +66,17 @@ pub const GitRepo = struct {
         self.status_map.deinit();
     }
 
-    pub fn getFileStatus(self: *const Self, file_path: []const u8) GitStatus {
+    pub fn getFileStatus(self: *Self, file_path: []const u8) GitStatus {
+        // Lazy-load status on first call
+        if (!self.status_loaded) {
+            self.refreshStatus() catch {
+                // If initial load fails, mark as loaded to avoid repeated attempts
+                self.status_loaded = true;
+                return .not_in_repo;
+            };
+            self.status_loaded = true;
+        }
+
         // Convert absolute path to relative path from git root
         const relative_path = self.makeRelativePath(file_path) catch return .not_in_repo;
         defer {
@@ -110,6 +124,9 @@ pub const GitRepo = struct {
             const filename_owned = try self.allocator.dupe(u8, filename);
             try self.status_map.put(filename_owned, status);
         }
+
+        // Only mark as loaded after successful completion
+        self.status_loaded = true;
     }
 
     fn makeRelativePath(self: *const Self, file_path: []const u8) ![]const u8 {
