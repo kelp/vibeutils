@@ -1,0 +1,70 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt TRUE 1
+.Os
+.Sh NAME
+.Nm true
+.Nd return a successful exit status
+.Sh SYNOPSIS
+.Nm true
+.Op Ar ...
+.Sh DESCRIPTION
+The
+.Nm
+utility ignores all command-line arguments and always exits with
+status 0 (success).
+.Pp
+The
+.Nm
+utility produces no output to standard output or standard error.
+It is primarily used in shell scripts and control flow constructs
+where a command that always succeeds is needed.
+.Pp
+All command-line arguments, including flags and options, are ignored
+in accordance with POSIX.1-2017 specification.
+.Sh EXIT STATUS
+.Ex -std true
+.Pp
+The
+.Nm
+utility always exits with status 0, indicating success.
+.Sh EXAMPLES
+Basic usage:
+.Bd -literal -offset indent
+$ true
+$ echo $?
+0
+.Ed
+.Pp
+With arguments (all ignored):
+.Bd -literal -offset indent
+$ true --invalid -x "any arguments"
+$ echo $?
+0
+.Ed
+.Pp
+Common use in shell scripts:
+.Bd -literal -offset indent
+while true; do
+    echo "Infinite loop"
+    sleep 1
+done
+.Ed
+.Pp
+Using in conditional statements:
+.Bd -literal -offset indent
+if true; then
+    echo "This will always execute"
+fi
+.Ed
+.Sh SEE ALSO
+.Xr false 1 ,
+.Xr test 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
