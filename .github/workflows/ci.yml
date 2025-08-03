@@ -354,55 +354,6 @@ jobs:
         make ci-validate
         echo "Build system validation complete"
 
-  benchmark-check:
-    name: Performance Benchmarks
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.inputs.run_benchmarks == 'true'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup Zig
-      uses: mlugg/setup-zig@v2
-      with:
-        version: ${{ env.ZIG_VERSION }}
-        
-    - name: Cache Zig artifacts
-      uses: actions/cache@v4
-      with:
-        path: |
-          zig-cache
-          zig-out
-        key: ${{ runner.os }}-zig-benchmark-${{ env.ZIG_VERSION }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
-        
-    - name: Build benchmark binary
-      run: |
-        echo "Building benchmark binary..."
-        zig build benchmark
-        
-    - name: Run performance benchmarks
-      run: |
-        echo "Running performance benchmarks..."
-        ./zig-out/bin/benchmark-parsers | tee benchmark-results.txt
-        
-    - name: Analyze benchmark results
-      run: |
-        echo "Analyzing benchmark results..."
-        cat benchmark-results.txt
-        
-        # In a production setup, you'd compare against baseline results
-        echo "::notice::Benchmark results saved for analysis"
-        
-    - name: Upload benchmark results
-      uses: actions/upload-artifact@v4
-      with:
-        name: benchmark-results
-        path: |
-          benchmark-results.txt
-          benchmark_results/
-        retention-days: 90
-
   # Windows support (disabled - not yet implemented)
   # windows-build:
   #   name: Windows Build (Experimental)

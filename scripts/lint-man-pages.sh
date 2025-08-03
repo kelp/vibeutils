@@ -183,7 +183,7 @@ find_utilities() {
             utility=$(basename "$file" .zig)
             # Skip test utilities and common modules
             case "$utility" in
-                benchmark_parsers|common|main)
+                common|main)
                     continue
                     ;;
                 *)

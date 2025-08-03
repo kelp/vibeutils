@@ -168,28 +168,6 @@ fn buildTests(
     const run_common_tests = b.addRunArtifact(common_tests);
     test_step.dependOn(&run_common_tests.step);
 
-    // Add benchmark executable
-    const benchmark_exe = b.addExecutable(.{
-        .name = "benchmark-parsers",
-        .root_source_file = b.path("src/benchmark_parsers.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-
-    benchmark_exe.root_module.addImport("common", common);
-    benchmark_exe.root_module.addImport("build_options", build_options_module);
-
-    const benchmark_install = b.addInstallArtifact(benchmark_exe, .{});
-
-    const benchmark_cmd = b.addRunArtifact(benchmark_exe);
-    if (b.args) |args| {
-        benchmark_cmd.addArgs(args);
-    }
-
-    const benchmark_step = b.step("benchmark", "Run parser performance benchmarks");
-    benchmark_step.dependOn(&benchmark_install.step);
-    benchmark_step.dependOn(&benchmark_cmd.step);
-
     // Create a separate privileged test step
     const privileged_test_step = b.step("test-privileged", "Run tests that require privilege simulation (run under fakeroot)");
 

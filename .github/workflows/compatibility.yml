@@ -315,11 +315,6 @@ jobs:
       run: |
         zig build -Doptimize=ReleaseFast
         
-    - name: Run performance benchmarks
-      run: |
-        zig build benchmark
-        ./zig-out/bin/benchmark-parsers > performance-baseline.txt
-        
     - name: Compare with GNU coreutils
       run: |
         echo "Comparing performance with system utilities..."
