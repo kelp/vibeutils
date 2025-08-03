@@ -3,18 +3,33 @@ const std = @import("std");
 /// Type alias for HashMap using FileSystemId as keys
 pub const FileSystemIdSet = std.HashMap(FileSystemId, void, FileSystemId.Context, std.hash_map.default_max_load_percentage);
 
-/// Unique file system identifier combining device and inode for secure cycle detection
+/// Unique file system identifier combining device and inode for cycle detection.
+///
+/// This provides basic cycle detection within a single filesystem by tracking
+/// visited directory inodes. On Unix-like systems, we can obtain the device ID
+/// to detect filesystem boundaries, but this is not foolproof security:
+///
+/// - Device IDs can be reused across boots or filesystem remounts
+/// - Bind mounts and chroot can create complex mount hierarchies
+/// - Network filesystems may not provide reliable device/inode pairs
+/// - Race conditions (TOCTOU) can still occur between stat and traversal
+///
+/// This is primarily a safety feature to prevent infinite loops, not a
+/// security boundary against malicious directory structures.
 pub const FileSystemId = struct {
     device: u64,
     inode: u64,
 
-    /// Create a FileSystemId from a directory's stat information
+    /// Create a FileSystemId from a directory using fstat() on its file descriptor.
+    /// This gets the real device ID from the underlying filesystem, which allows
+    /// basic detection of filesystem boundaries for cycle prevention.
     pub fn fromDir(dir: std.fs.Dir) !FileSystemId {
-        const stat = try dir.stat();
+        // Use fstat() on the directory's file descriptor to get real device ID
+        const stat_info = try std.posix.fstat(dir.fd);
 
         return FileSystemId{
-            .device = 0, // Device ID not available through std.fs.Dir.stat()
-            .inode = stat.inode,
+            .device = @intCast(stat_info.dev),
+            .inode = stat_info.ino,
         };
     }
 
@@ -68,7 +83,19 @@ pub const EntryFilter = struct {
     }
 };
 
-/// Secure cycle detection for recursive directory traversal with TOCTOU protection
+/// Basic cycle detection for recursive directory traversal.
+///
+/// This detector tracks visited directories by their device/inode pair to prevent
+/// infinite loops caused by symbolic links or bind mounts pointing back to parent
+/// directories. While this provides protection against common cycle scenarios,
+/// it has important limitations:
+///
+/// - Cannot prevent all TOCTOU race conditions (filesystem changes between stat and traversal)
+/// - Device/inode pairs may not be unique across all filesystem configurations
+/// - Malicious symbolic links can still cause performance issues before detection
+/// - Does not protect against other forms of filesystem attacks
+///
+/// This is a best-effort safety mechanism, not a security boundary.
 pub const CycleDetector = struct {
     visited_fs_ids: *FileSystemIdSet,
 
@@ -76,12 +103,15 @@ pub const CycleDetector = struct {
         return .{ .visited_fs_ids = visited_fs_ids };
     }
 
-    /// Atomically check and mark a directory as visited to prevent TOCTOU race conditions
-    /// Returns true if this directory was already visited (cycle detected)
+    /// Check if a directory has been visited and mark it as visited.
+    /// Returns true if this directory was already visited (potential cycle detected).
+    ///
+    /// Note: This is not fully atomic - there's still a window between stat()
+    /// and directory traversal where the filesystem can change.
     pub fn checkAndMarkVisited(self: *CycleDetector, dir: std.fs.Dir) !bool {
         const fs_id = try FileSystemId.fromDir(dir);
 
-        // Atomic check-and-set: if already present, it's a cycle
+        // Check-and-set: if already present, it's a potential cycle
         const result = try self.visited_fs_ids.getOrPut(fs_id);
         return result.found_existing;
     }
