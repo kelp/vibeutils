@@ -12,9 +12,6 @@ const build_options = @import("build_options");
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
 
-/// Command-line argument parsing utilities
-pub const args = @import("args.zig");
-
 /// File operation helpers with enhanced error handling
 pub const file = @import("file.zig");
 
