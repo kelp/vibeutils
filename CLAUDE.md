@@ -323,9 +323,13 @@ When implementing a new command, always consult both OpenBSD and GNU coreutils m
 
 2. **GNU coreutils man pages**: 
    - **On Linux**: Available locally via `man <command>`
-   - **On macOS**: Access online at `https://www.gnu.org/software/coreutils/manual/html_node/index.html`
+   - **On macOS with GNU coreutils installed**: Use g-prefixed commands for man pages
+     - Example: `man gls` for GNU ls, `man gcp` for GNU cp
+     - GNU coreutils can be installed via Homebrew: `brew install coreutils`
+     - All GNU utilities are prefixed with 'g' to avoid conflicts with BSD versions
+   - **Online reference**: `https://www.gnu.org/software/coreutils/manual/html_node/index.html`
      - Example: `https://www.gnu.org/software/coreutils/manual/html_node/mkdir-invocation.html`
-     - Note: macOS ships with BSD versions, not GNU coreutils
+     - Note: macOS ships with BSD versions by default, not GNU coreutils
    - More extensive feature set with many flags
    - Required for GNU compatibility
 
