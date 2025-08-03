@@ -26,6 +26,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" },
     .{ .name = "ln", .path = "src/ln.zig", .needs_libc = true, .description = "Create hard and symbolic links" },
     .{ .name = "basename", .path = "src/basename.zig", .needs_libc = true, .description = "Strip directory and suffix from filenames" },
+    .{ .name = "sleep", .path = "src/sleep.zig", .needs_libc = true, .description = "Delay for a specified amount of time" },
 };
 
 /// Parse version from ZON content string

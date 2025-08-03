@@ -1,0 +1,104 @@
+.\" sleep(1) manual page
+.\" This is part of the vibeutils project
+.Dd $Mdocdate$
+.Dt SLEEP 1
+.Os
+.Sh NAME
+.Nm sleep
+.Nd delay for a specified amount of time
+.Sh SYNOPSIS
+.Nm
+.Ar NUMBER Ns Op SUFFIX ...
+.Nm
+.Op Fl h | Fl Fl help
+.Nm
+.Op Fl V | Fl Fl version
+.Sh DESCRIPTION
+The
+.Nm
+utility suspends execution for at least the specified amount of time.
+Time can be specified as a plain number
+.Pq seconds
+or with a unit suffix.
+.Pp
+Unlike most implementations that require
+.Ar NUMBER
+to be an integer, this implementation accepts arbitrary floating point numbers.
+Given two or more arguments, the utility pauses for the amount of time
+specified by the sum of their values.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl h , Fl Fl help
+Display help information and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The
+.Ar NUMBER
+argument may be an integer or floating point number followed by an optional
+.Ar SUFFIX :
+.Bl -tag -width Ds
+.It Sy s
+Seconds
+.Pq default
+.It Sy m
+Minutes
+.It Sy h
+Hours
+.It Sy d
+Days
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Pause for half a second:
+.Bd -literal -offset indent
+$ sleep 0.5
+.Ed
+.Pp
+Pause for 2 minutes and 30 seconds:
+.Bd -literal -offset indent
+$ sleep 2.5m
+.Ed
+.Pp
+Pause for 1 hour and 30 minutes by combining arguments:
+.Bd -literal -offset indent
+$ sleep 1h 30m
+.Ed
+.Pp
+Pause for 1 day:
+.Bd -literal -offset indent
+$ sleep 1d
+.Ed
+.Pp
+Use with negative numbers requires the
+.Fl Fl
+separator to prevent interpretation as flags:
+.Bd -literal -offset indent
+$ sleep -- -1
+sleep: invalid time interval
+.Ed
+.Sh DIAGNOSTICS
+.Bl -diag
+.It "sleep: missing operand"
+No time argument was provided.
+.It "sleep: invalid time interval"
+The time argument could not be parsed as a valid number or contains
+an invalid unit suffix.
+.It "sleep: invalid time interval: value too large"
+The specified time value exceeds the maximum supported duration.
+.El
+.Sh SEE ALSO
+.Xr usleep 3
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+This implementation extends the standard by supporting floating point
+numbers and additional time unit suffixes.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
