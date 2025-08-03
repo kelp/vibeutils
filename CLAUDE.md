@@ -75,6 +75,34 @@ zig test src/echo.zig
 zig test src/common/lib.zig
 ```
 
+### Running Tests with Readable Output
+
+When working with Claude Code or debugging test failures, you need to see the actual test output. Here are the best methods:
+
+```bash
+# View test summary with pass/fail counts
+zig build test --summary all
+zig build test --summary new  # Only show new failures
+
+# Run tests with verbose output to see which commands are executed
+zig build test --verbose
+
+# To see test output when tests fail:
+# Tests only produce output when they fail. Passing tests are silent.
+# You can intentionally break a test to see its output format.
+
+# Alternative: Run tests for a single file with module dependencies
+# Note: This requires manually specifying module paths, so use build.zig instead
+zig build test  # Preferred method that handles all dependencies
+```
+
+**Important Notes for Test Output:**
+- Zig tests follow the Unix philosophy: silence is success
+- Tests only produce output when they fail or when using `std.debug.print`
+- The `--summary` flag shows aggregate results without individual test details
+- Use `--verbose` to see which test commands are being executed
+- Test binaries are cached in `.zig-cache/o/*/test` but may have architecture-specific formats
+
 ## Git Hooks
 
 The project includes a pre-commit hook that automatically:
