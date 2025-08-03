@@ -1,527 +1,351 @@
 const std = @import("std");
 const testing = std.testing;
 const test_utils = @import("test_utils.zig");
-const common = @import("common");
 
 const LsOptions = @import("types.zig").LsOptions;
-const listDirectoryTest = test_utils.listDirectoryTest;
+const LsTestEnv = test_utils.LsTestEnv;
+const LsAssertions = test_utils.LsAssertions;
+const PlatformHelpers = test_utils.PlatformHelpers;
 
-test "ls lists files in current directory" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+// Import constants for readability
+const TEST_SIZE_2K = test_utils.TEST_SIZE_2K;
+const TEST_SIZE_1_5K = test_utils.TEST_SIZE_1_5K;
+const TEST_TERMINAL_WIDTH = test_utils.TEST_TERMINAL_WIDTH;
 
-    // Create test files
-    const file1 = try tmp_dir.dir.createFile("file1.txt", .{});
-    file1.close();
-    const file2 = try tmp_dir.dir.createFile("file2.txt", .{});
-    file2.close();
+// ============================================================================
+// Basic listing functionality
+// ============================================================================
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+test "basic: lists files in current directory" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Open directory with iterate permissions
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
+    try env.createFile("file1.txt", "");
+    try env.createFile("file2.txt", "");
 
-    // List directory
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{}, testing.allocator);
+    try env.runLs(.{});
 
-    // Should contain both files
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "file1.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "file2.txt") != null);
+    try LsAssertions.expectContainsFile(env.getStdout(), "file1.txt");
+    try LsAssertions.expectContainsFile(env.getStdout(), "file2.txt");
 }
 
-test "ls ignores hidden files by default" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "basic: handles empty directory" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Create visible and hidden files
-    const visible = try tmp_dir.dir.createFile("visible.txt", .{});
-    visible.close();
-    const hidden = try tmp_dir.dir.createFile(".hidden", .{});
-    hidden.close();
+    try env.runLs(.{});
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-
-    // List without -a
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{}, testing.allocator);
-
-    // Should contain visible but not hidden
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, ".hidden") == null);
+    try LsAssertions.expectExactOutput(env.getStdout(), "");
 }
 
-test "ls -a shows hidden files" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "basic: shows directories and files together" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Create visible and hidden files
-    const visible = try tmp_dir.dir.createFile("visible.txt", .{});
-    visible.close();
-    const hidden = try tmp_dir.dir.createFile(".hidden", .{});
-    hidden.close();
+    try env.createFile("file.txt", "");
+    try env.createDir("subdir");
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.runLs(.{ .one_per_line = true });
 
-    // List with -a
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .all = true }, testing.allocator);
-
-    // Should contain both files
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, ".hidden") != null);
+    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "file.txt", "subdir" });
 }
 
-test "ls -1 lists one file per line" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+// ============================================================================
+// Hidden file handling
+// ============================================================================
 
-    // Create test files
-    const file1 = try tmp_dir.dir.createFile("aaa.txt", .{});
-    file1.close();
-    const file2 = try tmp_dir.dir.createFile("bbb.txt", .{});
-    file2.close();
+test "hidden: ignores hidden files by default" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.createFile("visible.txt", "");
+    try env.createFile(".hidden", "");
 
-    // List with -1
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .one_per_line = true }, testing.allocator);
+    try env.runLs(.{});
 
-    // Should be one file per line
-    try testing.expectEqualStrings("aaa.txt\nbbb.txt\n", buffer.items);
+    try LsAssertions.expectContainsFile(env.getStdout(), "visible.txt");
+    try LsAssertions.expectNotContainsFile(env.getStdout(), ".hidden");
 }
 
-test "ls handles empty directory" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "hidden: shows hidden files with -a flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.createFile("visible.txt", "");
+    try env.createFile(".hidden", "");
 
-    // List empty directory
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{}, testing.allocator);
+    try env.runLs(.{ .all = true });
 
-    // Should be empty
-    try testing.expectEqualStrings("", buffer.items);
+    try LsAssertions.expectContainsFile(env.getStdout(), "visible.txt");
+    try LsAssertions.expectContainsFile(env.getStdout(), ".hidden");
 }
 
-test "ls with directories shows type indicator" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "hidden: shows almost all files with -A flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Create a file and a directory
-    const file = try tmp_dir.dir.createFile("file.txt", .{});
-    file.close();
-    try tmp_dir.dir.makeDir("subdir");
+    try env.createFile("visible.txt", "");
+    try env.createFile(".hidden", "");
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.runLs(.{ .almost_all = true, .one_per_line = true });
 
-    // List with -1 for predictable output
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .one_per_line = true }, testing.allocator);
-
-    // Both should be listed
-    try testing.expectEqualStrings("file.txt\nsubdir\n", buffer.items);
+    try LsAssertions.expectContainsFile(env.getStdout(), "visible.txt");
+    try LsAssertions.expectContainsFile(env.getStdout(), ".hidden");
 }
 
-test "ls -l shows long format" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+// ============================================================================
+// Format options
+// ============================================================================
 
-    // Create a test file
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("Hello, World!");
-    file.close();
+test "format: one file per line with -1 flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.createFile("aaa.txt", "");
+    try env.createFile("bbb.txt", "");
 
-    // List with -l
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true }, testing.allocator);
+    try env.runLs(.{ .one_per_line = true });
 
-    // Should contain test.txt with permissions and size
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "test.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "-rw-") != null); // File permissions
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "13") != null); // Size of "Hello, World!"
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "total") != null); // Total blocks line
+    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "aaa.txt", "bbb.txt" });
 }
 
-test "ls -lh shows human readable sizes" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "format: comma-separated output with -m flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Create a larger test file
-    const file = try tmp_dir.dir.createFile("large.txt", .{});
-    var data: [2048]u8 = undefined;
-    @memset(&data, 'A');
-    try file.writeAll(&data);
-    file.close();
+    try env.createFile("aaa.txt", "");
+    try env.createFile("bbb.txt", "");
+    try env.createFile("ccc.txt", "");
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.runLs(.{ .comma_format = true });
 
-    // List with -lh
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true, .human_readable = true }, testing.allocator);
-
-    // Should show human readable size
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "2.0K") != null);
+    try LsAssertions.expectCommaFormat(env.getStdout(), "aaa.txt, bbb.txt, ccc.txt\n");
 }
 
-test "ls -lk shows kilobyte sizes" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create test files
-    const file1 = try tmp_dir.dir.createFile("small.txt", .{});
-    try file1.writeAll("Hi");
-    file1.close();
-
-    const file2 = try tmp_dir.dir.createFile("medium.txt", .{});
-    var data: [1500]u8 = undefined;
-    @memset(&data, 'B');
-    try file2.writeAll(&data);
-    file2.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    // List with -lk
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true, .kilobytes = true }, testing.allocator);
-
-    // Should show sizes in kilobytes
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "small.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "medium.txt") != null);
-    // Small file (2 bytes) should round up to 1K
-    // Medium file (1500 bytes) should round up to 2K
-}
-
-test "ls -l shows symlink targets" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create a target file
-    const target = try tmp_dir.dir.createFile("target.txt", .{});
-    try target.writeAll("Hello, World!");
-    target.close();
-
-    // Create a symlink to the file
-    try tmp_dir.dir.symLink("target.txt", "link_to_file", .{});
-
-    // Create a directory and symlink to it
-    try tmp_dir.dir.makeDir("target_dir");
-    try tmp_dir.dir.symLink("target_dir", "link_to_dir", .{});
-
-    // Create a broken symlink
-    try tmp_dir.dir.symLink("nonexistent", "broken_link", .{});
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    // List with -l
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true }, testing.allocator);
-
-    // Check that symlinks show their targets
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "link_to_file -> target.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "link_to_dir -> target_dir") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "broken_link -> nonexistent") != null);
-
-    // Check that symlinks are marked with 'l' in permissions
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "lrwx") != null);
-}
-
-test "ls -A shows almost all files" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create visible and hidden files
-    const visible = try tmp_dir.dir.createFile("visible.txt", .{});
-    visible.close();
-    const hidden = try tmp_dir.dir.createFile(".hidden", .{});
-    hidden.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    // List with -A (using -1 for predictable output)
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .almost_all = true, .one_per_line = true }, testing.allocator);
-
-    // Should contain both visible and hidden files
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "visible.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, ".hidden") != null);
-    // But NOT . and .. (can't easily test absence, but we can verify the feature works)
-}
-
-test "ls -F adds file type indicators" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create different file types
-    const regular = try tmp_dir.dir.createFile("regular.txt", .{});
-    regular.close();
-
-    try tmp_dir.dir.makeDir("directory");
-
-    // Create executable file with execute permissions
-    const exe = try tmp_dir.dir.createFile("executable", .{ .mode = 0o755 });
-    exe.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    // List with -F and -1 for predictable output
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .file_type_indicators = true, .one_per_line = true }, testing.allocator);
-
-    // Check for type indicators
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "directory/") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "executable*") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "regular.txt") != null);
-    // Regular file should not have indicator
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "regular.txt/") == null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "regular.txt*") == null);
-}
-
-test "ls -d lists directory itself, not contents" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create files in the directory
-    const file1 = try tmp_dir.dir.createFile("file1.txt", .{});
-    file1.close();
-    const file2 = try tmp_dir.dir.createFile("file2.txt", .{});
-    file2.close();
-    try tmp_dir.dir.makeDir("subdir");
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    // List with -d (should show "." only)
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .directory = true }, testing.allocator);
-
-    // Should only contain "." and not the files
-    try testing.expectEqualStrings(".\n", buffer.items);
-}
-
-test "ls recursive listing" {
-    // Test that the recursive flag is recognized
-    // Full recursive implementation tested via integration tests
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create directory structure
-    try tmp_dir.dir.makeDir("dir1");
-    const file1 = try tmp_dir.dir.createFile("file1.txt", .{});
-    file1.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    // Create more nested directories for proper testing
-    var dir1 = try tmp_dir.dir.openDir("dir1", .{});
-    defer dir1.close();
-    try dir1.makeDir("subdir1");
-    const file2 = try dir1.createFile("file2.txt", .{});
-    file2.close();
-
-    var subdir1 = try dir1.openDir("subdir1", .{});
-    defer subdir1.close();
-    const file3 = try subdir1.createFile("file3.txt", .{});
-    file3.close();
-
-    // Open the temp directory with iterate permissions
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-
-    // Use the test helper function
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .recursive = true, .one_per_line = true }, testing.allocator);
-
-    // Should contain all files and directory headers
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "file1.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "dir1") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "file2.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "file3.txt") != null);
-}
-
-test "ls multi-column output" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "format: multi-column output by default" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
     // Create several files with different name lengths
     const files = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg", "hhhhhhhh" };
     for (files) |name| {
-        const f = try tmp_dir.dir.createFile(name, .{});
-        f.close();
+        try env.createFile(name, "");
     }
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH });
 
-    // List without -1 (should use columns)
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{
-        .terminal_width = 40, // Force specific width for testing
-    }, testing.allocator);
-
-    // Output should have multiple entries per line
-    var lines = std.mem.splitScalar(u8, buffer.items, '\n');
-    var line_count: usize = 0;
-    while (lines.next()) |line| {
-        if (line.len > 0) line_count += 1;
-    }
-
-    // With 8 files and 40 char width, should fit multiple per line
-    try testing.expect(line_count < files.len);
+    try LsAssertions.expectMultiColumnFormat(env.getStdout(), files.len);
 }
 
-// Additional integration tests
+// ============================================================================
+// Long format options
+// ============================================================================
 
-test "ls -R shows directory headers with proper formatting" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "long_format: shows detailed information with -l flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Create nested directory structure
-    try tmp_dir.dir.makeDir("dir1");
-    try tmp_dir.dir.makeDir("dir2");
-    var dir1 = try tmp_dir.dir.openDir("dir1", .{});
+    try env.createFile("test.txt", "Hello, World!");
+
+    try env.runLs(.{ .long_format = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    try LsAssertions.expectContainsPermissions(output, "-rw-");
+    try LsAssertions.expectContainsFile(output, "13"); // Size of "Hello, World!"
+    try LsAssertions.expectContainsFile(output, "total"); // Total blocks line
+}
+
+test "long_format: shows human readable sizes with -lh flags" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFileWithSize("large.txt", TEST_SIZE_2K, 'A');
+
+    try env.runLs(.{ .long_format = true, .human_readable = true });
+
+    try LsAssertions.expectHumanReadableSize(env.getStdout(), "2.0K");
+}
+
+test "long_format: shows kilobyte sizes with -lk flags" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("small.txt", "Hi");
+    try env.createFileWithSize("medium.txt", TEST_SIZE_1_5K, 'B');
+
+    try env.runLs(.{ .long_format = true, .kilobytes = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "small.txt");
+    try LsAssertions.expectContainsFile(output, "medium.txt");
+}
+
+test "long_format: shows numeric user and group IDs with -n flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "test content");
+
+    try env.runLs(.{ .long_format = true, .numeric_ids = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    try LsAssertions.expectContainsPermissions(output, "-rw-");
+}
+
+// ============================================================================
+// Symlink handling
+// ============================================================================
+
+test "symlinks: shows symlink targets in long format" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("target.txt", "Hello, World!");
+    try env.createDir("target_dir");
+    try env.createSymlink("target.txt", "link_to_file");
+    try env.createSymlink("target_dir", "link_to_dir");
+    try env.createSymlink("nonexistent", "broken_link");
+
+    try env.runLs(.{ .long_format = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectSymlinkTarget(output, "link_to_file", "target.txt");
+    try LsAssertions.expectSymlinkTarget(output, "link_to_dir", "target_dir");
+    try LsAssertions.expectSymlinkTarget(output, "broken_link", "nonexistent");
+    try LsAssertions.expectContainsPermissions(output, "lrwx"); // Symlink permissions
+}
+
+// ============================================================================
+// File type indicators
+// ============================================================================
+
+test "file_type: adds indicators with -F flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("regular.txt", "");
+    try env.createDir("directory");
+
+    if (PlatformHelpers.supportsExecutableBit()) {
+        try env.createExecutableFile("executable");
+    }
+
+    try env.runLs(.{ .file_type_indicators = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectFileTypeIndicator(output, "directory/");
+    try LsAssertions.expectContainsFile(output, "regular.txt");
+    try LsAssertions.expectNotContainsFile(output, "regular.txt/");
+    try LsAssertions.expectNotContainsFile(output, "regular.txt*");
+
+    if (PlatformHelpers.supportsExecutableBit()) {
+        try LsAssertions.expectFileTypeIndicator(output, "executable*");
+    }
+}
+
+// ============================================================================
+// Directory listing options
+// ============================================================================
+
+test "directory: lists directory itself with -d flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("file1.txt", "");
+    try env.createFile("file2.txt", "");
+    try env.createDir("subdir");
+
+    try env.runLs(.{ .directory = true });
+
+    try LsAssertions.expectExactOutput(env.getStdout(), ".\n");
+}
+
+// ============================================================================
+// Inode display
+// ============================================================================
+
+test "inodes: shows inode numbers with -i flag" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "");
+
+    try env.runLs(.{ .show_inodes = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    try LsAssertions.expectContainsNumeric(output, "inode numbers");
+}
+
+// ============================================================================
+// Recursive listing
+// ============================================================================
+
+test "recursive: lists subdirectories with proper structure" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Create complex directory structure
+    try env.createFile("file1.txt", "");
+    try env.createDir("dir1");
+
+    var dir1 = try env.createDirAndOpen("dir1");
+    defer dir1.close();
+
+    const file2 = try dir1.createFile("file2.txt", .{});
+    file2.close();
+
+    try dir1.makeDir("subdir1");
+    var subdir1 = try dir1.openDir("subdir1", .{});
+    defer subdir1.close();
+
+    const file3 = try subdir1.createFile("file3.txt", .{});
+    file3.close();
+
+    try env.runLs(.{ .recursive = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "file1.txt");
+    try LsAssertions.expectContainsFile(output, "dir1");
+    try LsAssertions.expectContainsFile(output, "file2.txt");
+    try LsAssertions.expectContainsFile(output, "file3.txt");
+}
+
+test "recursive: shows directory headers with proper formatting" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createDir("dir1");
+    try env.createDir("dir2");
+
+    var dir1 = try env.createDirAndOpen("dir1");
     defer dir1.close();
     try dir1.makeDir("subdir");
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    try env.runLs(.{ .recursive = true });
 
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .recursive = true }, testing.allocator);
-
-    // Should contain directory headers in the format "./dirname:"
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "./dir1:") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "./dir2:") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "./dir1/subdir:") != null);
+    const output = env.getStdout();
+    try LsAssertions.expectDirectoryHeader(output, "./dir1:");
+    try LsAssertions.expectDirectoryHeader(output, "./dir2:");
+    try LsAssertions.expectDirectoryHeader(output, "./dir1/subdir:");
 }
 
-test "ls -R detects and handles symlink cycles" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
+test "recursive: handles symlink cycles safely" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
 
-    // Create a directory and a symlink that creates a cycle
-    try tmp_dir.dir.makeDir("dir1");
-    var dir1 = try tmp_dir.dir.openDir("dir1", .{});
+    try env.createDir("dir1");
+
+    var dir1 = try env.createDirAndOpen("dir1");
     defer dir1.close();
 
     // Create a symlink back to parent directory
     try dir1.symLink("..", "parent_link", .{});
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-
-    // This should not cause infinite recursion
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .recursive = true }, testing.allocator);
+    try env.runLs(.{ .recursive = true });
 
     // Should contain the symlink but not recurse infinitely
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "parent_link") != null);
-}
-
-test "ls -i shows inode numbers before filenames" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    file.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .show_inodes = true, .one_per_line = true }, testing.allocator);
-
-    // Output should have inode number followed by filename
-    // Format: "<inode> test.txt"
-    const output = buffer.items;
-    try testing.expect(std.mem.indexOf(u8, output, "test.txt") != null);
-
-    // Check that there's a number before the filename
-    var iter = std.mem.tokenizeAny(u8, output, " \n");
-    if (iter.next()) |first_token| {
-        // First token should be a number (inode)
-        _ = try std.fmt.parseInt(u64, first_token, 10);
-    }
-}
-
-test "ls -n shows numeric user/group IDs instead of names" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("test content");
-    file.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .long_format = true, .numeric_ids = true }, testing.allocator);
-
-    // Output should contain numeric IDs instead of names
-    const output = buffer.items;
-    try testing.expect(std.mem.indexOf(u8, output, "test.txt") != null);
-
-    // Check for numeric IDs (should see numbers, not usernames)
-    // The format includes permissions, links, uid, gid, size, date, name
-    // We can't predict the exact IDs, but we can verify the format
-    try testing.expect(std.mem.indexOf(u8, output, "-rw-") != null);
-}
-
-test "ls -m produces comma-separated output" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create test files
-    const file1 = try tmp_dir.dir.createFile("aaa.txt", .{});
-    file1.close();
-    const file2 = try tmp_dir.dir.createFile("bbb.txt", .{});
-    file2.close();
-    const file3 = try tmp_dir.dir.createFile("ccc.txt", .{});
-    file3.close();
-
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
-    try listDirectoryTest(test_dir, ".", buffer.writer(), common.null_writer, .{ .comma_format = true }, testing.allocator);
-
-    // Should be comma-separated with trailing newline
-    try testing.expectEqualStrings("aaa.txt, bbb.txt, ccc.txt\n", buffer.items);
+    try LsAssertions.expectContainsFile(env.getStdout(), "parent_link");
 }
