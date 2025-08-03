@@ -14,7 +14,7 @@ Modern, memory-safe Unix utilities written in Zig, inspired by GNU coreutils and
 
 ## Project Status
 
-**Pre-1.0**: Breaking changes are expected as we refine the design. Currently at 14 utilities with 213+ tests.
+**Pre-1.0**: Breaking changes are expected as we refine the design. Currently at 17 utilities with 240+ tests.
 
 ### Implemented Utilities
 
@@ -31,6 +31,9 @@ Modern, memory-safe Unix utilities written in Zig, inspired by GNU coreutils and
 - ✅ `chmod` - Change file permissions
 - ✅ `chown` - Change file ownership
 - ✅ `ln` - Create links (hard and symbolic)
+- ✅ `basename` - Strip directory and suffix from filenames
+- ✅ `dirname` - Extract directory from path
+- ✅ `sleep` - Delay for specified time
 
 ### Coming Soon
 Text processing utilities (head, tail, wc, sort, uniq) and file information tools (stat, du, df).
@@ -106,7 +109,7 @@ rm -i important.txt
 # Build all utilities
 make build
 
-# Run all tests (213+ tests)
+# Run all tests (240+ tests)
 make test
 
 # Run tests with coverage report
@@ -132,7 +135,7 @@ make help
 
 ### Testing
 
-We maintain comprehensive test coverage with 213+ tests:
+We maintain comprehensive test coverage with 240+ tests:
 - Unit tests embedded in each utility source file
 - Privileged operation tests for chmod/chown (run under fakeroot)
 - Cross-platform testing on Linux, macOS, and BSD
