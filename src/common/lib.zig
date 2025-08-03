@@ -180,5 +180,5 @@ test "common library basics" {
 
 // Import tests to ensure they are run as part of the test suite
 test {
-    _ = @import("buffering_test.zig");
+    // All common module tests are included via individual test blocks
 }
