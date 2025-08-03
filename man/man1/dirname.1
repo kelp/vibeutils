@@ -1,0 +1,77 @@
+.\" dirname(1) manual page
+.\" This is part of the vibeutils project
+.Dd $Mdocdate$
+.Dt DIRNAME 1
+.Os
+.Sh NAME
+.Nm dirname
+.Nd extract directory portion of pathname
+.Sh SYNOPSIS
+.Nm
+.Op Fl z
+.Ar pathname ...
+.Sh DESCRIPTION
+The
+.Nm
+utility deletes the filename portion, beginning with the last slash
+.Sq /
+character to the end of
+.Ar pathname
+(after first stripping trailing slashes), and writes the result to the
+standard output.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl z , Fl Fl zero
+End each output line with NUL, not newline.
+.It Fl h , Fl Fl help
+Display help and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+If
+.Ar pathname
+is a null string, a single slash
+.Pq Sq /
+or contains no slashes,
+.Nm
+writes a period
+.Pq Sq \&.
+to standard output.
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Extract the directory from a full path:
+.Bd -literal -offset indent
+$ dirname /usr/bin/tail
+/usr/bin
+.Ed
+.Pp
+Process multiple paths:
+.Bd -literal -offset indent
+$ dirname dir1/file.txt dir2/data.csv
+dir1
+dir2
+.Ed
+.Pp
+Use NUL separators for paths with spaces:
+.Bd -literal -offset indent
+$ dirname -z "path with spaces/file.txt" | od -c
+path with spaces\\0
+.Ed
+.Sh SEE ALSO
+.Xr basename 1 ,
+.Xr dirname 3
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The
+.Fl z
+option is a GNU extension.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

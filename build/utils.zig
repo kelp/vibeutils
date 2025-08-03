@@ -21,6 +21,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "rmdir", .path = "src/rmdir.zig", .needs_libc = true, .description = "Remove empty directories" },
     .{ .name = "touch", .path = "src/touch.zig", .needs_libc = true, .description = "Update file timestamps" },
     .{ .name = "pwd", .path = "src/pwd.zig", .needs_libc = true, .description = "Print working directory" },
+    .{ .name = "dirname", .path = "src/dirname.zig", .needs_libc = true, .description = "Extract directory name from file path" },
     .{ .name = "chmod", .path = "src/chmod.zig", .needs_libc = true, .description = "Change file mode bits" },
     .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" },
     .{ .name = "ln", .path = "src/ln.zig", .needs_libc = true, .description = "Create hard and symbolic links" },

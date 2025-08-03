@@ -1,9 +1,9 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Utilities Completed**: 14/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, pwd ✓, chmod ✓, chown ✓, ln ✓, basename ✓)
+- **Utilities Completed**: 15/47 (echo ✓, cat ✓, ls ✓, cp ✓, mv ✓, rm ✓, mkdir ✓, rmdir ✓, touch ✓, pwd ✓, chmod ✓, chown ✓, ln ✓, basename ✓, dirname ✓)
 - **Utilities In Progress**: 0/47
-- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), pwd 100% (full GNU/POSIX compliance with secure PWD validation), chmod ~95% (full numeric/symbolic modes + special permissions + reference mode), chown ~95% (full ownership control + name resolution + symlink handling), ln ~95% (hard links + symbolic links + relative paths + security validation), basename ~95% (POSIX compliant + GNU extensions for multiple files and zero delimiter)
+- **GNU Compatibility**: echo 100%, cat 100%, ls ~90% (most useful features + colors + responsive layout + directory grouping + recursive + modern enhancements), cp ~95% (complete implementation with symlink handling), mv ~95% (atomic rename + cross-filesystem support), rm ~95% (advanced safety features + atomic operations), mkdir ~95% (full implementation with mode setting), rmdir 100% (all GNU features implemented), touch ~95% (full timestamp control + symlink handling + atomic operations), pwd 100% (full GNU/POSIX compliance with secure PWD validation), chmod ~95% (full numeric/symbolic modes + special permissions + reference mode), chown ~95% (full ownership control + name resolution + symlink handling), ln ~95% (hard links + symbolic links + relative paths + security validation), basename ~95% (POSIX compliant + GNU extensions for multiple files and zero delimiter), dirname 100% (POSIX compliant with GNU -z flag)
 - **Common Library**: Core functionality implemented (including user/group lookup, terminal utils, Git integration, privileged testing infrastructure, unified file operations, writer-based I/O)
 - **Documentation**: Design philosophy, Zig patterns, man page style, comprehensive testing strategy established, **Claude Code quality check command (/qc) added** ✓
 - **Build System**: Production-ready with comprehensive security fixes, modular architecture, automated formatting, privileged testing support, and GitHub Actions CI/CD
@@ -381,14 +381,14 @@ For each utility:
 - [x] Implement: Multiple file handling
 - [x] Man page: Write concise man page with examples
 
-#### 15. dirname
-- [ ] Test: Extract directory from path
-- [ ] Test: Multiple paths
-- [ ] Test: Zero delimiter (-z, --zero)
-- [ ] Test: Edge cases (/, //, no slash, .)
-- [ ] Implement: Path parsing logic
-- [ ] Implement: Multiple path handling
-- [ ] Man page: Write concise man page with examples
+#### 15. dirname ✓
+- [x] Test: Extract directory from path
+- [x] Test: Multiple paths
+- [x] Test: Zero delimiter (-z, --zero)
+- [x] Test: Edge cases (/, //, no slash, .)
+- [x] Implement: Path parsing logic
+- [x] Implement: Multiple path handling
+- [x] Man page: Write concise man page with examples
 
 #### 16. sleep
 - [ ] Test: Sleep for seconds
