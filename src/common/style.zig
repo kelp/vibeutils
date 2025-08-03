@@ -13,23 +13,23 @@ pub fn Style(comptime Writer: type) type {
             truecolor, // 24-bit RGB
 
             /// Detect color mode from environment
-            pub fn detect() ColorMode {
+            pub fn detect(allocator: std.mem.Allocator) !ColorMode {
                 // Check NO_COLOR standard (just check existence)
-                if (std.process.hasEnvVar(std.heap.c_allocator, "NO_COLOR") catch false) {
+                if (std.process.hasEnvVar(allocator, "NO_COLOR") catch false) {
                     return .none;
                 }
 
                 // Check TERM
-                if (std.process.getEnvVarOwned(std.heap.c_allocator, "TERM")) |term| {
-                    defer std.heap.c_allocator.free(term);
+                if (std.process.getEnvVarOwned(allocator, "TERM")) |term| {
+                    defer allocator.free(term);
 
                     if (std.mem.eql(u8, term, "dumb")) return .none;
                     if (std.mem.indexOf(u8, term, "256color") != null) return .extended;
                     if (std.mem.indexOf(u8, term, "truecolor") != null) return .truecolor;
 
                     // Check COLORTERM for true color
-                    if (std.process.getEnvVarOwned(std.heap.c_allocator, "COLORTERM")) |colorterm| {
-                        defer std.heap.c_allocator.free(colorterm);
+                    if (std.process.getEnvVarOwned(allocator, "COLORTERM")) |colorterm| {
+                        defer allocator.free(colorterm);
                         if (std.mem.eql(u8, colorterm, "truecolor") or
                             std.mem.eql(u8, colorterm, "24bit"))
                         {
@@ -70,21 +70,9 @@ pub fn Style(comptime Writer: type) type {
             bright_white = 97,
         };
 
-        pub const Attribute = enum(u8) {
-            reset = 0,
-            bold = 1,
-            dim = 2,
-            italic = 3,
-            underline = 4,
-            blink = 5,
-            reverse = 7,
-            hidden = 8,
-            strikethrough = 9,
-        };
-
         /// Initialize with auto-detection
-        pub fn init(writer: Writer) Self {
-            const color_mode = ColorMode.detect();
+        pub fn init(allocator: std.mem.Allocator, writer: Writer) !Self {
+            const color_mode = ColorMode.detect(allocator) catch .none;
 
             return .{
                 .color_mode = color_mode,
@@ -98,60 +86,16 @@ pub fn Style(comptime Writer: type) type {
             try self.writer.print("\x1b[{d}m", .{@intFromEnum(color)});
         }
 
-        /// Set text attribute
-        pub fn setAttribute(self: Self, attr: Attribute) !void {
-            if (self.color_mode == .none) return;
-            try self.writer.print("\x1b[{d}m", .{@intFromEnum(attr)});
-        }
-
         /// Reset all styling
         pub fn reset(self: Self) !void {
             if (self.color_mode == .none) return;
             try self.writer.writeAll("\x1b[0m");
-        }
-
-        /// Set RGB color (true color mode only)
-        pub fn setRGB(self: Self, r: u8, g: u8, b: u8) !void {
-            if (self.color_mode != .truecolor) {
-                // Fallback to nearest 256 color
-                const color_256 = rgbTo256(r, g, b);
-                if (self.color_mode == .extended) {
-                    try self.writer.print("\x1b[38;5;{d}m", .{color_256});
-                }
-                return;
-            }
-            try self.writer.print("\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
-        }
-
-        /// Print styled text
-        pub fn print(self: Self, comptime fmt: []const u8, args: anytype, color: Color) !void {
-            try self.setColor(color);
-            try self.writer.print(fmt, args);
-            try self.reset();
-        }
-
-        /// Convert RGB to nearest 256 color
-        fn rgbTo256(r: u8, g: u8, b: u8) u8 {
-            // Simple 6x6x6 color cube mapping
-            const r6 = @as(u16, r) * 5 / 255;
-            const g6 = @as(u16, g) * 5 / 255;
-            const b6 = @as(u16, b) * 5 / 255;
-            return @intCast(16 + 36 * r6 + 6 * g6 + b6);
         }
     };
 }
 
 test "Style color detection" {
     const TestStyle = Style(std.ArrayList(u8).Writer);
-    const mode = TestStyle.ColorMode.detect();
+    const mode = try TestStyle.ColorMode.detect(std.testing.allocator);
     try std.testing.expect(@intFromEnum(mode) >= 0);
-}
-
-test "Style RGB to 256 color conversion" {
-    const TestStyle = Style(std.ArrayList(u8).Writer);
-    const white = TestStyle.rgbTo256(255, 255, 255);
-    try std.testing.expect(white == 231); // Nearest white in 256 color palette
-
-    const black = TestStyle.rgbTo256(0, 0, 0);
-    try std.testing.expect(black == 16); // Nearest black in 256 color palette
 }

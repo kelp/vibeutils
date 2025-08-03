@@ -61,7 +61,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         switch (err) {
             // Handle argument parsing errors with appropriate error messages
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -84,7 +84,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     // Check if we have directories to create
     const dirs = parsed_args.positionals;
     if (dirs.len == 0) {
-        common.printErrorWithProgram(stderr_writer, prog_name, "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -97,7 +97,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     // Parse mode if provided
     if (parsed_args.mode) |mode_str| {
         options.mode = parseMode(mode_str) catch {
-            common.printErrorWithProgram(stderr_writer, prog_name, "invalid mode '{s}'", .{mode_str});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid mode '{s}'", .{mode_str});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
@@ -154,7 +154,7 @@ fn printVersion(writer: anytype) !void {
 fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const u8, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
-        common.printWarningWithProgram(stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
+        common.printWarningWithProgram(allocator, stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
         return;
     }
 
@@ -165,7 +165,7 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
     const result = std.c.chmod(path_z, mode);
     if (result != 0) {
         const err = std.posix.errno(result); // Pass the result to errno
-        common.printErrorWithProgram(stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
         return error.ChmodFailed;
     }
 }
@@ -215,7 +215,7 @@ fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u
 fn createSingleDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     // Create directory
     std.fs.cwd().makeDir(path) catch |err| {
-        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
         return err;
     };
 
@@ -233,7 +233,7 @@ fn createSingleDirectory(path: []const u8, options: MkdirOptions, prog_name: []c
 fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     // Just use makePath - it handles all the complexity
     std.fs.cwd().makePath(path) catch |err| {
-        common.printErrorWithProgram(stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
         return err;
     };
 

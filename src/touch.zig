@@ -64,11 +64,11 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(TouchArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -110,7 +110,7 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const files = parsed_args.positionals;
 
     if (files.len == 0) {
-        common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -122,26 +122,26 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
             switch (err) {
                 error.InvalidTimestamp => {
                     if (options.timestamp_str) |ts| {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "invalid date format '{s}'", .{ts});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format '{s}'", .{ts});
                     } else {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "invalid date format", .{});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format", .{});
                     }
                 },
                 error.InvalidTimeType => {
                     if (options.time_arg) |ta| {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument '{s}' for '--time'", .{ta});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--time'", .{ta});
                     } else {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument for '--time'", .{});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument for '--time'", .{});
                     }
                 },
                 error.DateParsingNotImplemented => {
                     if (options.date_str) |ds| {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "invalid date format '{s}'", .{ds});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format '{s}'", .{ds});
                     } else {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "invalid date format", .{});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format", .{});
                     }
                 },
-                else => handleError(prog_name, file_path, err, stderr_writer),
+                else => handleError(allocator, prog_name, file_path, err, stderr_writer),
             }
             has_error = true;
         };
@@ -501,22 +501,22 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
 }
 
 /// Handles errors by printing appropriate error messages.
-fn handleError(prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: anytype) void {
+fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: anytype) void {
     // GNU touch format: "touch: cannot touch 'filename': Error message"
     switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': No such file or directory", .{path}),
-        error.AccessDenied => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Permission denied", .{path}),
-        error.BadPathName => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Bad address", .{path}),
-        error.Interrupted => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Interrupted system call", .{path}),
-        error.SystemCallNotSupported => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Function not implemented", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Read-only file system", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': File name too long", .{path}),
-        error.NotDir => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Too many levels of symbolic links", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Invalid argument", .{path}),
-        error.BadFileDescriptor => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': Bad file descriptor", .{path}),
-        error.NoSuchProcess => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': No such process", .{path}),
-        else => common.printErrorWithProgram(stderr_writer, prog_name, "cannot touch '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such file or directory", .{path}),
+        error.AccessDenied => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Permission denied", .{path}),
+        error.BadPathName => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad address", .{path}),
+        error.Interrupted => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Interrupted system call", .{path}),
+        error.SystemCallNotSupported => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Function not implemented", .{path}),
+        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Read-only file system", .{path}),
+        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': File name too long", .{path}),
+        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Too many levels of symbolic links", .{path}),
+        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Invalid argument", .{path}),
+        error.BadFileDescriptor => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad file descriptor", .{path}),
+        error.NoSuchProcess => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such process", .{path}),
+        else => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': {s}", .{ path, @errorName(err) }),
     }
 }
 

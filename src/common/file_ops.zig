@@ -24,7 +24,7 @@ const lib = @import("lib.zig");
 /// # Returns
 /// Returns success (0) if the operation succeeds, or general_error (1) if it fails
 /// after issuing warnings for platform-specific limitations.
-pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8, program_name: []const u8, stderr_writer: anytype) !u8 {
+pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.fs.File.Mode, context: ?[]const u8, program_name: []const u8, stderr_writer: anytype) !u8 {
     const handle_type = @TypeOf(handle);
 
     // Get the file descriptor based on handle type
@@ -42,9 +42,9 @@ pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const
     // Strip special bits and warn the user
     const effective_mode = if (isRunningUnderLinuxFakeroot() and has_special_bits) blk: {
         if (context) |ctx| {
-            lib.printWarningWithProgram(stderr_writer, program_name, "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
+            lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Stripped special permissions on {s} (Linux fakeroot limitation)", .{ctx});
         } else {
-            lib.printWarningWithProgram(stderr_writer, program_name, "Stripped special permissions (Linux fakeroot limitation)", .{});
+            lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Stripped special permissions (Linux fakeroot limitation)", .{});
         }
         break :blk mode & 0o0777; // Keep only regular permissions
     } else mode;
@@ -55,9 +55,9 @@ pub fn setPermissions(handle: anytype, mode: std.fs.File.Mode, context: ?[]const
         // the operation since the file operation itself succeeded.
         if (builtin.os.tag == .macos) {
             if (context) |ctx| {
-                lib.printWarningWithProgram(stderr_writer, program_name, "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
+                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
             } else {
-                lib.printWarningWithProgram(stderr_writer, program_name, "Failed to set permissions on macOS: {s}", .{@errorName(err)});
+                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on macOS: {s}", .{@errorName(err)});
             }
             return @intFromEnum(lib.ExitCode.success);
         }

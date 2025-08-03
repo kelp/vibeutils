@@ -142,7 +142,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     var exit_code: u8 = 0;
     for (files) |file_path| {
         chownFile(allocator, file_path, owner_spec, options, stdout_writer, stderr_writer) catch |err| {
-            handleError(file_path, err, options, stderr_writer);
+            handleError(allocator, file_path, err, options, stderr_writer);
             exit_code = @intFromEnum(common.ExitCode.general_error);
         };
     }
@@ -293,14 +293,14 @@ fn chownRecursive(
 
     // Check if it's a directory to recurse into
     const stat_info = common.file.FileInfo.stat(path) catch |err| {
-        common.printErrorWithProgram(stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, @errorName(err) });
         return;
     };
 
     if (stat_info.kind == .directory) {
         // Open directory and iterate
         var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, @errorName(err) });
             return;
         };
         defer dir.close();
@@ -369,24 +369,24 @@ fn reportNoChange(writer: anytype, path: []const u8) !void {
 }
 
 /// Handle and report errors
-fn handleError(path: []const u8, err: anyerror, options: ChownOptions, stderr_writer: anytype) void {
+fn handleError(allocator: std.mem.Allocator, path: []const u8, err: anyerror, options: ChownOptions, stderr_writer: anytype) void {
     if (options.silent) return; // Suppress errors in silent mode
 
     switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': No such file or directory", .{path}),
-        error.PermissionDenied => common.printErrorWithProgram(stderr_writer, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
-        error.NotDir => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': File name too long", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(stderr_writer, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Invalid argument", .{path}),
-        error.InputOutputError => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Input/output error", .{path}),
-        error.UserNotFound => common.printErrorWithProgram(stderr_writer, "chown", "invalid user", .{}),
-        error.GroupNotFound => common.printErrorWithProgram(stderr_writer, "chown", "invalid group", .{}),
-        error.InvalidFormat => common.printErrorWithProgram(stderr_writer, "chown", "invalid owner specification", .{}),
-        error.SystemResources => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
-        error.Unexpected => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': Unexpected error", .{path}),
-        else => common.printErrorWithProgram(stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': No such file or directory", .{path}),
+        error.PermissionDenied => common.printErrorWithProgram(allocator, stderr_writer, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
+        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
+        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': File name too long", .{path}),
+        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
+        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Invalid argument", .{path}),
+        error.InputOutputError => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Input/output error", .{path}),
+        error.UserNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid user", .{}),
+        error.GroupNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid group", .{}),
+        error.InvalidFormat => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid owner specification", .{}),
+        error.SystemResources => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
+        error.Unexpected => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Unexpected error", .{path}),
+        else => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
     }
 }
 

@@ -16,7 +16,7 @@ pub fn listDirectoryTest(dir: std.fs.Dir, writer: anytype, options: LsOptions, a
     if (test_options.color_mode == .auto) {
         test_options.color_mode = .never;
     }
-    const style = display.initStyle(writer, test_options.color_mode);
+    const style = try display.initStyle(allocator, writer, test_options.color_mode);
 
     // If -d is specified, just list the directory itself
     if (test_options.directory) {

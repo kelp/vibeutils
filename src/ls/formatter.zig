@@ -289,7 +289,7 @@ test "formatter - printColumnar basic" {
     };
 
     const options = LsOptions{ .terminal_width = 40 };
-    const style = display.initStyle(buffer.writer(), .never);
+    const style = try display.initStyle(testing.allocator, buffer.writer(), .never);
 
     try printColumnar(&entries, buffer.writer(), options, style);
 

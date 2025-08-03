@@ -67,7 +67,7 @@ fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []cons
         error.NotLink => return null,
         // For all other errors, use OS error message directly - no custom categories
         else => {
-            common.printErrorWithProgram(stderr_writer, "ls", "symlink {s}: {s}", .{ name, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "symlink {s}: {s}", .{ name, @errorName(err) });
             return null; // Continue processing other entries rather than failing completely
         },
     };
@@ -119,7 +119,7 @@ pub fn enhanceEntriesWithMetadataBatch(
     // Batch process stat operations
     if (stat_indices.items.len > 0) {
         for (stat_indices.items) |i| {
-            entries[i].stat = common.file.FileInfo.lstatDir(dir, entries[i].name) catch null;
+            entries[i].stat = common.file.FileInfo.lstatDir(allocator, dir, entries[i].name) catch null;
         }
     }
 
@@ -188,19 +188,19 @@ pub fn processSubdirectoriesRecursively(
 
         // Open the subdirectory relative to the current directory
         var sub_dir = dir.openDir(subdir.name, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ subdir.path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ subdir.path, err });
             continue;
         };
         defer sub_dir.close();
 
         // Atomically check for cycles and mark as visited (TOCTOU-safe)
         const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
-            common.printErrorWithProgram(stderr_writer, "ls", "{s}: unable to check for cycles: {}", .{ subdir.path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: unable to check for cycles: {}", .{ subdir.path, err });
             continue;
         };
 
         if (is_cycle) {
-            common.printErrorWithProgram(stderr_writer, "ls", "{s}: not following symlink cycle", .{subdir.path});
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: not following symlink cycle", .{subdir.path});
             continue;
         }
 

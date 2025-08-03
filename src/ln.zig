@@ -129,7 +129,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     const parsed_args = common.argparse.ArgParser.parse(LnArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -166,7 +166,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     const files = parsed_args.positionals;
 
     if (files.len == 0) {
-        common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -234,9 +234,9 @@ const LinkOptions = struct {
 };
 
 /// Handle the fallback case for 2 arguments when directory doesn't exist or isn't a directory
-fn handleTwoArgFallback(files: []const []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
+fn handleTwoArgFallback(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
     // Special case: 2 args, treat as Form 1 (TARGET LINK_NAME)
-    createSingleLink(files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
+    createSingleLink(allocator, files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
         // Error already printed by createSingleLink
         return common.ExitCode.general_error;
     };
@@ -254,7 +254,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         const stat = std.fs.cwd().statFile(target_dir) catch |err| {
             switch (err) {
                 error.FileNotFound => {
-                    common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
                     return common.ExitCode.general_error;
                 },
                 else => return err,
@@ -262,7 +262,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         };
 
         if (stat.kind != .directory) {
-            common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
             return common.ExitCode.general_error;
         }
 
@@ -270,7 +270,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ target_dir, link_name });
             defer allocator.free(full_link_path);
-            createSingleLink(target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
+            createSingleLink(allocator, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
                 // Error already printed by createSingleLink
                 return common.ExitCode.general_error;
             };
@@ -279,7 +279,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         // Form 2: ln TARGET
         const target = files[0];
         const link_name = std.fs.path.basename(target);
-        createSingleLink(target, link_name, options, stdout_writer, stderr_writer, false) catch {
+        createSingleLink(allocator, target, link_name, options, stdout_writer, stderr_writer, false) catch {
             // Error already printed by createSingleLink
             return common.ExitCode.general_error;
         };
@@ -287,7 +287,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         // Form 1: ln [-T] TARGET LINK_NAME
         const target = files[0];
         const link_name = files[1];
-        createSingleLink(target, link_name, options, stdout_writer, stderr_writer, false) catch {
+        createSingleLink(allocator, target, link_name, options, stdout_writer, stderr_writer, false) catch {
             // Error already printed by createSingleLink
             return common.ExitCode.general_error;
         };
@@ -298,9 +298,9 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         const stat = std.fs.cwd().statFile(directory) catch |err| switch (err) {
             error.FileNotFound => {
                 if (files.len == 2) {
-                    return try handleTwoArgFallback(files, options, stdout_writer, stderr_writer);
+                    return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
                 } else {
-                    common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
                     return common.ExitCode.general_error;
                 }
             },
@@ -309,9 +309,9 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
 
         if (stat.kind != .directory) {
             if (files.len == 2) {
-                return try handleTwoArgFallback(files, options, stdout_writer, stderr_writer);
+                return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
             } else {
-                common.printErrorWithProgram(stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
                 return common.ExitCode.general_error;
             }
         }
@@ -321,13 +321,13 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ directory, link_name });
             defer allocator.free(full_link_path);
-            createSingleLink(target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
+            createSingleLink(allocator, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
                 // Error already printed by createSingleLink
                 return common.ExitCode.general_error;
             };
         }
     } else {
-        common.printErrorWithProgram(stderr_writer, prog_name, "missing destination file operand after '{s}'", .{files[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{files[0]});
         return common.ExitCode.general_error;
     }
 
@@ -337,7 +337,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
 /// Create a single link (hard or symbolic) from target to link_name
 /// Handles existing files and relative paths
 /// When test_mode is true, interactive prompts are skipped (assumes 'no')
-fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype, test_mode: bool) !void {
+fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name: []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype, test_mode: bool) !void {
     const prog_name = "ln";
 
     // Check if link already exists - only catch FileNotFound, propagate permission errors
@@ -345,7 +345,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
         std.fs.cwd().access(link_name, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk false,
             else => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot access '{s}': {s}", .{ link_name, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ link_name, @errorName(err) });
                 return err;
             },
         };
@@ -372,7 +372,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
                 }
             }
         } else {
-            common.printErrorWithProgram(stderr_writer, prog_name, "'{s}': File exists", .{link_name});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "'{s}': File exists", .{link_name});
             return error.FileExists;
         }
     }
@@ -382,7 +382,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
         std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
             error.FileNotFound => {}, // Already removed
             else => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
                 return err;
             },
         };
@@ -392,7 +392,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
         // Create symbolic link
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
-        const allocator = arena.allocator();
+        const temp_allocator = arena.allocator();
 
         var target_path = target;
 
@@ -406,7 +406,7 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
                     break :blk target;
                 } else {
                     break :blk std.fs.realpath(target, &target_abs_buf) catch |err| {
-                        common.printErrorWithProgram(stderr_writer, prog_name, "cannot resolve target path '{s}': {s}", .{ target, @errorName(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot resolve target path '{s}': {s}", .{ target, @errorName(err) });
                         return err;
                     };
                 }
@@ -423,31 +423,31 @@ fn createSingleLink(target: []const u8, link_name: []const u8, options: LinkOpti
             };
 
             // Calculate relative path
-            target_path = makeRelativePath(allocator, link_dir_abs, target_abs) catch |err| {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot compute relative path: {s}", .{@errorName(err)});
+            target_path = makeRelativePath(temp_allocator, link_dir_abs, target_abs) catch |err| {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot compute relative path: {s}", .{@errorName(err)});
                 return err;
             };
         }
 
         std.fs.cwd().symLink(target_path, link_name, .{}) catch |err| {
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
             return err;
         };
     } else {
         // Create hard link - target must exist
         std.fs.cwd().access(target, .{}) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot link '{s}': No such file or directory", .{target});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot link '{s}': No such file or directory", .{target});
                 return error.FileNotFound;
             },
             else => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "cannot access '{s}': {s}", .{ target, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ target, @errorName(err) });
                 return err;
             },
         };
 
         std.posix.link(target, link_name) catch |err| {
-            common.printErrorWithProgram(stderr_writer, prog_name, "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
             return err;
         };
     }

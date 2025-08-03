@@ -141,10 +141,15 @@ pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
 ///
 /// This version allows utilities to specify their program name explicitly,
 /// which is useful for consistent error messages across different contexts.
-pub fn printErrorWithProgram(writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
     // Try to use color for errors
     const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(writer);
+    var s = StyleType.init(allocator, writer) catch {
+        // Fallback to no color if style init fails
+        writer.print("{s}: ", .{prog_name}) catch return;
+        writer.print(fmt ++ "\n", fmt_args) catch return;
+        return;
+    };
     s.setColor(.bright_red) catch {};
     writer.print("{s}: ", .{prog_name}) catch return;
     s.reset() catch {};
@@ -155,10 +160,15 @@ pub fn printErrorWithProgram(writer: anytype, prog_name: []const u8, comptime fm
 ///
 /// This version allows utilities to specify their program name explicitly,
 /// which is useful for consistent warning messages across different contexts.
-pub fn printWarningWithProgram(writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
     // Try to use color for warnings
     const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(writer);
+    var s = StyleType.init(allocator, writer) catch {
+        // Fallback to no color if style init fails
+        writer.print("{s}: warning: ", .{prog_name}) catch return;
+        writer.print(fmt ++ "\n", fmt_args) catch return;
+        return;
+    };
     s.setColor(.bright_yellow) catch {};
     writer.print("{s}: warning: ", .{prog_name}) catch return;
     s.reset() catch {};

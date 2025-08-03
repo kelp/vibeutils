@@ -193,7 +193,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         git_context = types.GitContext.init(allocator, ".");
         // Report any git initialization issues only when git features were explicitly requested
         if (git_context) |*ctx| {
-            ctx.reportInitializationIssues(stderr_writer, "ls", options.show_git_status);
+            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", options.show_git_status);
         }
     }
     defer if (git_context) |*ctx| ctx.deinit();
@@ -297,11 +297,14 @@ fn printIconTest(writer: anytype) !void {
 /// Errors are printed but don't stop execution except for BrokenPipe
 fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*const types.GitContext) anyerror!void {
     // Initialize style based on color mode
-    const style = display.initStyle(writer, options.color_mode);
+    const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {}", .{err});
+        return err;
+    };
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
-        common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
         return;
     };
 
@@ -346,7 +349,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     }
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(stderr_writer, "ls", "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
         return err;
     };
     defer dir.close();

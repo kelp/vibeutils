@@ -217,10 +217,10 @@ pub const GitContext = struct {
     }
 
     /// Report initialization issues if git operations were requested but unavailable
-    pub fn reportInitializationIssues(self: *const GitContext, stderr_writer: anytype, prog_name: []const u8, git_features_requested: bool) void {
+    pub fn reportInitializationIssues(self: *const GitContext, allocator: std.mem.Allocator, stderr_writer: anytype, prog_name: []const u8, git_features_requested: bool) void {
         if (git_features_requested and self.init_error != null) {
             if (self.init_error) |err| {
-                common.printWarningWithProgram(stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
+                common.printWarningWithProgram(allocator, stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
             }
         }
     }

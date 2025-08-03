@@ -39,7 +39,7 @@ pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const parsed_args = common.argparse.ArgParser.parse(EchoArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, "echo", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "echo", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,

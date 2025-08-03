@@ -44,7 +44,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const parsed_args = common.argparse.ArgParser.parse(RmArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, "rm", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -66,7 +66,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
     const files = parsed_args.positionals;
     if (files.len == 0) {
-        common.printErrorWithProgram(stderr_writer, "rm", "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "rm", "missing operand", .{});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -164,14 +164,14 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
     for (files) |file| {
         // Basic safety checks
         if (file.len == 0) {
-            common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
             any_errors = true;
             continue;
         }
 
         // Minimal root directory protection
         if (std.mem.eql(u8, file, "/")) {
-            common.printErrorWithProgram(stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
             any_errors = true;
             continue;
         }
@@ -180,12 +180,12 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
         removeItem(allocator, file, stdout_writer, stderr_writer, options) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!options.force) {
-                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{file});
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{file});
                     any_errors = true;
                 }
             },
             error.AccessDenied => {
-                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
                 any_errors = true;
             },
             error.IsDir => {
@@ -194,19 +194,19 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                         switch (dir_err) {
                             error.UserCancelled => {}, // User said no, continue
                             else => {
-                                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
                                 any_errors = true;
                             },
                         }
                     };
                 } else {
-                    common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': Is a directory", .{file});
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Is a directory", .{file});
                     any_errors = true;
                 }
             },
             error.UserCancelled => {}, // User said no, continue
             else => {
-                common.printErrorWithProgram(stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
                 any_errors = true;
             },
         };

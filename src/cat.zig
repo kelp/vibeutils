@@ -60,7 +60,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, "cat", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cat", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -107,7 +107,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 defer file.close();

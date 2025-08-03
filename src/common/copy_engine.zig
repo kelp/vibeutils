@@ -174,9 +174,9 @@ pub const CopyEngine = struct {
     }
 
     /// Execute a single copy operation
-    pub fn executeCopy(self: *CopyEngine, _: anytype, stderr_writer: anytype, operation: CopyOperation) anyerror!u8 {
+    pub fn executeCopy(self: *CopyEngine, allocator: std.mem.Allocator, _: anytype, stderr_writer: anytype, operation: CopyOperation) anyerror!u8 {
         // Validate operation before execution
-        try self.validateOperation(stderr_writer, operation);
+        try self.validateOperation(allocator, stderr_writer, operation);
 
         // Handle user interaction upfront if needed
         if (self.ctx.options.interactive and operation.dest_exists) {
@@ -190,21 +190,21 @@ pub const CopyEngine = struct {
         // Dispatch to appropriate handler based on source type and options
         switch (operation.source_type) {
             .regular_file => {
-                try self.copyRegularFile(stderr_writer, operation);
+                try self.copyRegularFile(allocator, stderr_writer, operation);
             },
             .symlink => {
                 if (self.ctx.options.no_dereference) {
-                    try self.copySymlink(stderr_writer, operation);
+                    try self.copySymlink(allocator, stderr_writer, operation);
                 } else {
                     // Follow the symlink and copy as regular file
-                    try self.copyRegularFile(stderr_writer, operation);
+                    try self.copyRegularFile(allocator, stderr_writer, operation);
                 }
             },
             .directory => {
-                try self.copyDirectory(stderr_writer, operation);
+                try self.copyDirectory(allocator, stderr_writer, operation);
             },
             .special => {
-                common.printErrorWithProgram(stderr_writer, "cp", "'{s}': unsupported file type", .{operation.source});
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}': unsupported file type", .{operation.source});
                 self.stats.addError();
                 return @intFromEnum(common.ExitCode.general_error);
             },
@@ -214,7 +214,7 @@ pub const CopyEngine = struct {
     }
 
     /// Execute multiple copy operations
-    pub fn executeCopyBatch(self: *CopyEngine, stdout_writer: anytype, stderr_writer: anytype, operations: []CopyOperation) !u8 {
+    pub fn executeCopyBatch(self: *CopyEngine, allocator: std.mem.Allocator, stdout_writer: anytype, stderr_writer: anytype, operations: []CopyOperation) !u8 {
         var exit_code: u8 = @intFromEnum(common.ExitCode.success);
 
         for (operations, 0..) |operation, i| {
@@ -224,7 +224,7 @@ pub const CopyEngine = struct {
             }
 
             // Execute the copy operation
-            const result = self.executeCopy(stdout_writer, stderr_writer, operation) catch {
+            const result = self.executeCopy(allocator, stdout_writer, stderr_writer, operation) catch {
                 // Error already reported in executeCopy, continue with next operation
                 exit_code = @intFromEnum(common.ExitCode.general_error);
                 continue;
@@ -247,6 +247,7 @@ pub const CopyEngine = struct {
     /// Plan multiple copy operations from command line arguments
     pub fn planOperations(
         self: *CopyEngine,
+        allocator: std.mem.Allocator,
         _: anytype,
         stderr_writer: anytype,
         args: []const []const u8,
@@ -267,12 +268,12 @@ pub const CopyEngine = struct {
         // If multiple sources, destination must be a directory
         if (args.len > 2) {
             const dest_type = getFileTypeAtomic(dest, false) catch {
-                common.printErrorWithProgram(stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
                 return CopyError.DestinationIsNotDirectory;
             };
 
             if (dest_type != .directory) {
-                common.printErrorWithProgram(stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
                 return CopyError.DestinationIsNotDirectory;
             }
         }
@@ -303,7 +304,7 @@ pub const CopyEngine = struct {
     /// Security Note: Path validation has been removed in favor of trusting OS validation.
     /// The OS will provide appropriate error codes for invalid paths during actual operations,
     /// eliminating redundant checks and potential TOCTOU (Time-of-Check-Time-of-Use) vulnerabilities.
-    fn validateOperation(self: *CopyEngine, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
+    fn validateOperation(self: *CopyEngine, allocator: std.mem.Allocator, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
 
         // Check if source exists (handles symlinks correctly based on no_dereference option)
         const source_exists = blk: {
@@ -321,29 +322,29 @@ pub const CopyEngine = struct {
         };
 
         if (!source_exists) {
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot stat '{s}': No such file or directory", .{operation.source});
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': No such file or directory", .{operation.source});
             return CopyError.SourceNotFound;
         }
 
         // For directories, ensure recursive flag is set
         if (operation.source_type == .directory and !self.ctx.options.recursive) {
-            common.printErrorWithProgram(stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{operation.source});
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{operation.source});
             return CopyError.RecursionNotAllowed;
         }
 
         // Check destination conflicts (except for force/interactive modes)
         if (operation.dest_exists and !self.ctx.options.force and !self.ctx.options.interactive) {
-            common.printErrorWithProgram(stderr_writer, "cp", "'{s}' already exists", .{operation.final_dest_path});
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' already exists", .{operation.final_dest_path});
             return CopyError.DestinationExists;
         }
     }
 
     /// Copy a regular file
-    fn copyRegularFile(self: *CopyEngine, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
+    fn copyRegularFile(self: *CopyEngine, allocator: std.mem.Allocator, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
         // Get source file stats for size and attributes
         const source_stat = std.fs.cwd().statFile(operation.source) catch |err| {
             const copy_err = mapSystemError(err);
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot stat '{s}': {s}", .{ operation.source, getStandardErrorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ operation.source, getStandardErrorName(err) });
             self.stats.addError();
             return copy_err;
         };
@@ -356,12 +357,12 @@ pub const CopyEngine = struct {
         // Copy the file with correct permissions
         if (self.ctx.options.preserve) {
             // When preserving attributes, create the file with the source's mode directly
-            try self.copyFileWithAttributes(stderr_writer, operation.source, operation.final_dest_path, source_stat);
+            try self.copyFileWithAttributes(allocator, stderr_writer, operation.source, operation.final_dest_path, source_stat);
         } else {
             // Use standard copy when not preserving attributes
             std.fs.cwd().copyFile(operation.source, std.fs.cwd(), operation.final_dest_path, .{}) catch |err| {
                 const copy_err = mapSystemError(err);
-                common.printErrorWithProgram(stderr_writer, "cp", "cannot copy '{s}' to '{s}': {s}", .{ operation.source, operation.final_dest_path, getStandardErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot copy '{s}' to '{s}': {s}", .{ operation.source, operation.final_dest_path, getStandardErrorName(err) });
                 self.stats.addError();
                 return copy_err;
             };
@@ -373,11 +374,11 @@ pub const CopyEngine = struct {
     }
 
     /// Copy a symbolic link
-    fn copySymlink(self: *CopyEngine, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
+    fn copySymlink(self: *CopyEngine, allocator: std.mem.Allocator, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
         // Read the symlink target
         const target = getSymlinkTarget(self.ctx.allocator, operation.source) catch |err| {
             const copy_err = mapSystemError(err);
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot read link '{s}': {s}", .{ operation.source, getStandardErrorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot read link '{s}': {s}", .{ operation.source, getStandardErrorName(err) });
             self.stats.addError();
             return copy_err;
         };
@@ -391,7 +392,7 @@ pub const CopyEngine = struct {
         // Create the symlink
         std.fs.cwd().symLink(target, operation.final_dest_path, .{}) catch |err| {
             const copy_err = mapSystemError(err);
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot create symlink '{s}': {s}", .{ operation.final_dest_path, getStandardErrorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create symlink '{s}': {s}", .{ operation.final_dest_path, getStandardErrorName(err) });
             self.stats.addError();
             return copy_err;
         };
@@ -400,7 +401,7 @@ pub const CopyEngine = struct {
     }
 
     /// Copy a directory recursively
-    fn copyDirectory(self: *CopyEngine, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
+    fn copyDirectory(self: *CopyEngine, allocator: std.mem.Allocator, stderr_writer: anytype, operation: CopyOperation) anyerror!void {
         // SECURITY FIX: Atomic directory creation to eliminate TOCTOU race condition
         // Previously checked dest_exists then created directory - vulnerable to race
         // Now use atomic mkdir that handles existing directories gracefully
@@ -410,7 +411,7 @@ pub const CopyEngine = struct {
             },
             else => {
                 const copy_err = mapSystemError(err);
-                common.printErrorWithProgram(stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ operation.final_dest_path, getStandardErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ operation.final_dest_path, getStandardErrorName(err) });
                 self.stats.addError();
                 return copy_err;
             },
@@ -419,7 +420,7 @@ pub const CopyEngine = struct {
         // Open source directory for iteration
         var source_dir = std.fs.cwd().openDir(operation.source, .{ .iterate = true }) catch |err| {
             const copy_err = mapSystemError(err);
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot open directory '{s}': {s}", .{ operation.source, getStandardErrorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open directory '{s}': {s}", .{ operation.source, getStandardErrorName(err) });
             self.stats.addError();
             return copy_err;
         };
@@ -446,7 +447,7 @@ pub const CopyEngine = struct {
 
             // Plan and execute copy operation for this child
             var child_operation = self.ctx.planOperation(source_child_path, dest_child_path) catch |err| {
-                common.printErrorWithProgram(stderr_writer, "cp", "error planning copy of '{s}': {s}", .{ source_child_path, getStandardErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "error planning copy of '{s}': {s}", .{ source_child_path, getStandardErrorName(err) });
                 self.stats.addError();
                 // Free paths before continuing
                 self.ctx.allocator.free(source_child_path);
@@ -455,7 +456,7 @@ pub const CopyEngine = struct {
             };
             defer child_operation.deinit(self.ctx.allocator);
 
-            _ = self.executeCopy(stderr_writer, stderr_writer, child_operation) catch {
+            _ = self.executeCopy(allocator, stderr_writer, stderr_writer, child_operation) catch {
                 // Error already reported, continue with next entry
             };
 
@@ -468,11 +469,11 @@ pub const CopyEngine = struct {
     }
 
     /// Copy file with preserved attributes
-    fn copyFileWithAttributes(self: *CopyEngine, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) anyerror!void {
+    fn copyFileWithAttributes(self: *CopyEngine, allocator: std.mem.Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) anyerror!void {
         // Open source file
         const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
             const copy_err = mapSystemError(err);
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, getStandardErrorName(err) });
             self.stats.addError();
             return copy_err;
         };
@@ -481,7 +482,7 @@ pub const CopyEngine = struct {
         // Create destination file with source mode
         const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = source_stat.mode }) catch |err| {
             const copy_err = mapSystemError(err);
-            common.printErrorWithProgram(stderr_writer, "cp", "cannot create '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
             self.stats.addError();
             return copy_err;
         };
@@ -507,7 +508,7 @@ pub const CopyEngine = struct {
                 // read() returns actual bytes read and handles partial reads correctly
                 const bytes_read = source_file.read(buffer) catch |err| {
                     const copy_err = mapSystemError(err);
-                    common.printErrorWithProgram(stderr_writer, "cp", "error reading '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cp", "error reading '{s}': {s}", .{ source_path, getStandardErrorName(err) });
                     self.stats.addError();
                     return copy_err;
                 };
@@ -516,7 +517,7 @@ pub const CopyEngine = struct {
 
                 dest_file.writeAll(buffer[0..bytes_read]) catch |err| {
                     const copy_err = mapSystemError(err);
-                    common.printErrorWithProgram(stderr_writer, "cp", "error writing '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cp", "error writing '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
                     self.stats.addError();
                     return copy_err;
                 };
@@ -527,7 +528,7 @@ pub const CopyEngine = struct {
         if (self.ctx.options.preserve) {
             dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
                 // Non-fatal error for timestamp preservation
-                common.printWarningWithProgram(stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+                common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
             };
         }
     }

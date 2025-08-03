@@ -13,6 +13,44 @@ const group = extern struct {
 // Extern function declaration for getgrgid
 extern "c" fn getgrgid(gid: std.c.gid_t) ?*group;
 
+/// Convert stat buffer to FileInfo
+fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
+    // Convert C stat to our FileInfo
+    const kind: std.fs.File.Kind = switch (stat_buf.mode & std.c.S.IFMT) {
+        std.c.S.IFREG => .file,
+        std.c.S.IFDIR => .directory,
+        std.c.S.IFCHR => .character_device,
+        std.c.S.IFBLK => .block_device,
+        std.c.S.IFIFO => .named_pipe,
+        std.c.S.IFLNK => .sym_link,
+        std.c.S.IFSOCK => .unix_domain_socket,
+        else => .unknown,
+    };
+
+    // Handle platform differences in timespec field names
+    const atime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+        stat_buf.atimespec.sec * std.time.ns_per_s + stat_buf.atimespec.nsec
+    else
+        stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec;
+
+    const mtime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+        stat_buf.mtimespec.sec * std.time.ns_per_s + stat_buf.mtimespec.nsec
+    else
+        stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec;
+
+    return FileInfo{
+        .size = @intCast(stat_buf.size),
+        .mode = @intCast(stat_buf.mode),
+        .atime = atime_ns,
+        .mtime = mtime_ns,
+        .kind = kind,
+        .inode = stat_buf.ino,
+        .uid = @intCast(stat_buf.uid),
+        .gid = @intCast(stat_buf.gid),
+        .nlink = @intCast(stat_buf.nlink),
+    };
+}
+
 /// File stat information wrapper
 pub const FileInfo = struct {
     size: u64,
@@ -40,53 +78,27 @@ pub const FileInfo = struct {
             return error.StatFailed;
         }
 
-        // Convert C stat to our FileInfo
-        const kind: std.fs.File.Kind = switch (stat_buf.mode & std.c.S.IFMT) {
-            std.c.S.IFREG => .file,
-            std.c.S.IFDIR => .directory,
-            std.c.S.IFCHR => .character_device,
-            std.c.S.IFBLK => .block_device,
-            std.c.S.IFIFO => .named_pipe,
-            std.c.S.IFLNK => .sym_link,
-            std.c.S.IFSOCK => .unix_domain_socket,
-            else => .unknown,
-        };
-
-        // Handle platform differences in timespec field names
-        const atime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.atimespec.sec * std.time.ns_per_s + stat_buf.atimespec.nsec
-        else
-            stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec;
-
-        const mtime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.mtimespec.sec * std.time.ns_per_s + stat_buf.mtimespec.nsec
-        else
-            stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec;
-
-        return FileInfo{
-            .size = @intCast(stat_buf.size),
-            .mode = @intCast(stat_buf.mode),
-            .atime = atime_ns,
-            .mtime = mtime_ns,
-            .kind = kind,
-            .inode = stat_buf.ino,
-            .uid = @intCast(stat_buf.uid),
-            .gid = @intCast(stat_buf.gid),
-            .nlink = @intCast(stat_buf.nlink),
-        };
+        return statToFileInfo(stat_buf);
     }
 
-    pub fn statDir(dir: std.fs.Dir, name: []const u8) !FileInfo {
-        const file = try dir.openFile(name, .{});
-        defer file.close();
-        return try statFile(file);
-    }
-
-    pub fn lstatDir(dir: std.fs.Dir, name: []const u8) !FileInfo {
+    pub fn lstatDir(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !FileInfo {
         // Use lstat to get info about the link itself, not the target
-        const allocator = std.heap.c_allocator;
-        const name_z = try allocator.dupeZ(u8, name);
-        defer allocator.free(name_z);
+        // Stack buffer optimization for short names
+        var stack_buffer: [256]u8 = undefined;
+        var name_z: [:0]u8 = undefined;
+        var should_free = false;
+
+        if (name.len < stack_buffer.len - 1) {
+            // Use stack buffer for short names
+            @memcpy(stack_buffer[0..name.len], name);
+            stack_buffer[name.len] = 0;
+            name_z = stack_buffer[0..name.len :0];
+        } else {
+            // Use heap allocation for long names
+            name_z = try allocator.dupeZ(u8, name);
+            should_free = true;
+        }
+        defer if (should_free) allocator.free(name_z);
 
         var stat_buf: std.c.Stat = undefined;
         const result = std.c.fstatat(dir.fd, name_z, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
@@ -102,40 +114,7 @@ pub const FileInfo = struct {
             };
         }
 
-        // Convert stat to FileInfo
-        const kind = switch (stat_buf.mode & std.c.S.IFMT) {
-            std.c.S.IFREG => std.fs.File.Kind.file,
-            std.c.S.IFDIR => .directory,
-            std.c.S.IFCHR => .character_device,
-            std.c.S.IFBLK => .block_device,
-            std.c.S.IFIFO => .named_pipe,
-            std.c.S.IFLNK => .sym_link,
-            std.c.S.IFSOCK => .unix_domain_socket,
-            else => .unknown,
-        };
-
-        // Handle platform differences in timespec field names
-        const atime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.atimespec.sec * std.time.ns_per_s + stat_buf.atimespec.nsec
-        else
-            stat_buf.atim.sec * std.time.ns_per_s + stat_buf.atim.nsec;
-
-        const mtime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.mtimespec.sec * std.time.ns_per_s + stat_buf.mtimespec.nsec
-        else
-            stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec;
-
-        return FileInfo{
-            .size = @intCast(stat_buf.size),
-            .mode = @intCast(stat_buf.mode),
-            .atime = atime_ns,
-            .mtime = mtime_ns,
-            .kind = kind,
-            .inode = stat_buf.ino,
-            .uid = @intCast(stat_buf.uid),
-            .gid = @intCast(stat_buf.gid),
-            .nlink = @intCast(stat_buf.nlink),
-        };
+        return statToFileInfo(stat_buf);
     }
 };
 

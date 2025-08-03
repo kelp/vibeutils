@@ -40,7 +40,7 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     const parsed_args = common.argparse.ArgParser.parse(PwdArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, "pwd", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -65,7 +65,7 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
     // Retrieve the current working directory based on the selected mode
     const cwd = getWorkingDirectory(allocator, options) catch |err| {
-        common.printErrorWithProgram(stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(cwd);

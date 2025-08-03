@@ -67,11 +67,11 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const parsed_args = common.argparse.ArgParser.parse(CpArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
                 return common.ExitCode.misuse;
             },
             error.MissingValue => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
                 return common.ExitCode.misuse;
             },
             else => return err,
@@ -91,10 +91,10 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     // Validate argument count
     if (parsed_args.positionals.len < 2) {
         if (parsed_args.positionals.len == 0) {
-            common.printErrorWithProgram(stderr_writer, prog_name, "missing file operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
             return common.ExitCode.misuse;
         } else {
-            common.printErrorWithProgram(stderr_writer, prog_name, "missing destination file operand after '{s}'", .{parsed_args.positionals[0]});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{parsed_args.positionals[0]});
             return common.ExitCode.misuse;
         }
     }
@@ -113,18 +113,18 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     var engine = copy_engine.CopyEngine.init(context);
 
     // Plan all copy operations
-    var operations = engine.planOperations(stdout_writer, stderr_writer, parsed_args.positionals) catch |err| {
+    var operations = engine.planOperations(allocator, stdout_writer, stderr_writer, parsed_args.positionals) catch |err| {
         switch (err) {
             error.InsufficientArguments => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "insufficient arguments", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "insufficient arguments", .{});
                 return common.ExitCode.misuse;
             },
             copy_options.CopyError.DestinationIsNotDirectory => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "destination is not a directory", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "destination is not a directory", .{});
                 return common.ExitCode.general_error;
             },
             else => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "error planning operations: {}", .{err});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "error planning operations: {}", .{err});
                 return common.ExitCode.general_error;
             },
         }
@@ -138,7 +138,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     }
 
     // Execute all copy operations
-    _ = engine.executeCopyBatch(stdout_writer, stderr_writer, operations.items) catch {
+    _ = engine.executeCopyBatch(allocator, stdout_writer, stderr_writer, operations.items) catch {
         return common.ExitCode.general_error;
     };
 
@@ -206,7 +206,7 @@ test "cp: single file copy" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
 }
@@ -260,7 +260,7 @@ test "cp: copy to existing directory" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
 }
@@ -288,7 +288,7 @@ test "cp: error on directory without recursive flag" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    try testing.expectError(copy_options.CopyError.RecursionNotAllowed, engine.executeCopy(common.null_writer, stderr_writer, operation));
+    try testing.expectError(copy_options.CopyError.RecursionNotAllowed, engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation));
 }
 
 // Preserve file attributes (non-privileged)
@@ -314,7 +314,7 @@ test "cp: basic preserve attributes (non-privileged)" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -350,7 +350,7 @@ test "privileged: cp preserve attributes" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -384,7 +384,7 @@ test "cp: recursive directory copy" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
     try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
@@ -424,7 +424,7 @@ test "privileged: cp force mode overwrites" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     try test_dir.expectFileContent("dest.txt", "New content");
 }
@@ -453,7 +453,7 @@ test "cp: symbolic link handling - follow by default" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Should copy file content, not create symlink
     try test_dir.expectFileContent("copied.txt", "Original content");
@@ -484,7 +484,7 @@ test "cp: symbolic link handling - no dereference (-d)" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Should create symlink, not copy content
     try testing.expect(test_dir.isSymlink("copied_link.txt"));
@@ -516,7 +516,7 @@ test "cp: broken symlink handling" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     try testing.expect(test_dir.isSymlink("copied_broken.txt"));
     const target = try test_dir.getSymlinkTarget("copied_broken.txt");
@@ -550,7 +550,7 @@ test "cp: multiple sources to directory" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    var operations = try engine.planOperations(common.null_writer, stderr_writer, &args);
+    var operations = try engine.planOperations(testing.allocator, common.null_writer, stderr_writer, &args);
     defer {
         for (operations.items) |*op| {
             op.deinit(testing.allocator);
@@ -558,7 +558,7 @@ test "cp: multiple sources to directory" {
         operations.deinit();
     }
 
-    _ = try engine.executeCopyBatch(common.null_writer, stderr_writer, operations.items);
+    _ = try engine.executeCopyBatch(testing.allocator, common.null_writer, stderr_writer, operations.items);
 
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
     try test_dir.expectFileContent("dest_dir/file2.txt", "Content 2");
@@ -610,7 +610,7 @@ test "privileged: cp preserve ownership with -p flag" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -661,7 +661,7 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
         defer test_stderr.deinit();
         const stderr_writer = test_stderr.writer();
 
-        _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+        _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
         const source_stat = try test_dir.getFileStat("setuid_file");
         const dest_stat = try test_dir.getFileStat("setuid_copy");
@@ -686,7 +686,7 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
         defer test_stderr.deinit();
         const stderr_writer = test_stderr.writer();
 
-        _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+        _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
         const source_stat = try test_dir.getFileStat("setgid_file");
         const dest_stat = try test_dir.getFileStat("setgid_copy");
@@ -725,7 +725,7 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     const source_stat = try test_dir.getFileStat("sticky_dir");
     const dest_stat = try test_dir.getFileStat("sticky_copy");
@@ -768,7 +768,7 @@ test "regression: cp large file copy (data corruption prevention)" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Verify the copied file has identical content (not truncated)
     const copied_content = try test_dir.readFileAlloc("large_dest.bin");
@@ -834,7 +834,7 @@ test "regression: cp memory usage bounds (shared allocator)" {
     const stderr_writer = test_stderr.writer();
 
     // Memory leak detection: if we're using arena per directory, this would fail
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Verify copy was successful
     try test_dir.expectFileContent("mem_copy/file1.txt", "Content 1");
@@ -865,7 +865,7 @@ test "regression: cp no stderr pollution during tests" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Normal successful copy should produce no stderr output
     try testing.expectEqualStrings("", test_stderr.items);
@@ -942,7 +942,7 @@ test "cp: large file copy performance (10MB)" {
 
     // Measure copy performance
     const start_time = std.time.milliTimestamp();
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
     const end_time = std.time.milliTimestamp();
     const copy_time = end_time - start_time;
 
@@ -993,7 +993,7 @@ test "cp: directory with many files (100 files)" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Verify all files were copied correctly
     for (0..num_files) |i| {
@@ -1036,7 +1036,7 @@ test "cp: edge cases - empty file handling" {
     defer test_stderr.deinit();
     const stderr_writer = test_stderr.writer();
 
-    _ = try engine.executeCopy(common.null_writer, stderr_writer, operation);
+    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Verify empty file was copied correctly
     try test_dir.expectFileContent("empty_copy.txt", "");

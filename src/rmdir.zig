@@ -98,7 +98,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(RmdirArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(stderr_writer, prog_name, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -118,7 +118,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     const directories = parsed_args.positionals;
     if (directories.len == 0) {
-        common.printErrorWithProgram(stderr_writer, prog_name, "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -166,14 +166,14 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
                 // Success
             } else |err| {
                 had_error = true;
-                try handleError(err, dir, stderr_writer, options);
+                try handleError(allocator, err, dir, stderr_writer, options);
             }
         } else {
             if (removeSingleDirectory(dir, stdout_writer, stderr_writer, options)) |_| {
                 // Success
             } else |err| {
                 had_error = true;
-                try handleError(err, dir, stderr_writer, options);
+                try handleError(allocator, err, dir, stderr_writer, options);
             }
         }
     }
@@ -218,13 +218,13 @@ fn removeDirectoryWithParents(allocator: std.mem.Allocator, path: []const u8, st
 }
 
 /// Handle errors with friendly messages.
-fn handleError(err: anyerror, path: []const u8, stderr_writer: anytype, options: RmdirOptions) !void {
+fn handleError(allocator: std.mem.Allocator, err: anyerror, path: []const u8, stderr_writer: anytype, options: RmdirOptions) !void {
     if (options.ignore_fail_on_non_empty and err == error.DirNotEmpty) {
         return;
     }
 
     const msg = formatError(err);
-    common.printErrorWithProgram(stderr_writer, "rmdir", "failed to remove '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "failed to remove '{s}': {s}", .{ path, msg });
 }
 
 // ===== TESTS =====
