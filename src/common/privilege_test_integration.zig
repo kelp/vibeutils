@@ -15,6 +15,7 @@ const privilege_test = @import("privilege_test.zig");
 const builtin = @import("builtin");
 const fs = std.fs;
 const process = std.process;
+const common = @import("lib.zig");
 
 // Import shared test utilities
 const TestUtils = @import("test_utils_privilege.zig").TestUtils;
@@ -41,7 +42,7 @@ test "tool detection finds expected tools on platform" {
 
     // Check for fakeroot availability
     const has_fakeroot = blk: {
-        const result = utils.runCommand(&[_][]const u8{ "which", "fakeroot" }) catch {
+        const result = utils.runCommand(&[_][]const u8{ "which", "fakeroot" }, common.null_writer, common.null_writer) catch {
             break :blk false;
         };
         defer allocator.free(result.stdout);
@@ -52,7 +53,7 @@ test "tool detection finds expected tools on platform" {
     // On Linux, we expect at least one tool to be available
     if (platform == .linux) {
         const has_unshare = blk: {
-            const result = utils.runCommand(&[_][]const u8{ "which", "unshare" }) catch {
+            const result = utils.runCommand(&[_][]const u8{ "which", "unshare" }, common.null_writer, common.null_writer) catch {
                 break :blk false;
             };
             defer allocator.free(result.stdout);
@@ -83,8 +84,7 @@ test "privilege requirement detection" {
     const is_under_fakeroot = privilege_test.FakerootContext.isUnderFakeroot();
 
     // Get a context to check if tools are available
-    var ctx = try privilege_test.FakerootContext.init(testing.allocator);
-    defer ctx.deinit();
+    const ctx = try privilege_test.FakerootContext.init(testing.allocator);
 
     // Try to call requiresPrivilege
     privilege_test.requiresPrivilege() catch |err| {
@@ -109,12 +109,11 @@ test "fakeroot context creation and cleanup" {
     if (platform == .other) return error.SkipZigTest;
 
     // Try to create a fakeroot context
-    var context = privilege_test.FakerootContext.init(allocator) catch |err| {
+    const context = privilege_test.FakerootContext.init(allocator) catch |err| {
         // If fakeroot is not available, that's expected
         if (err == error.FakerootNotAvailable) return error.SkipZigTest;
         return err;
     };
-    defer context.deinit();
 
     // Verify context was created successfully
     try testing.expect(context.platform == privilege_test.Platform.detect());
@@ -134,16 +133,14 @@ test "nested fakeroot contexts" {
     }
 
     // Try to create first context
-    var context1 = privilege_test.FakerootContext.init(allocator) catch |err| {
+    const context1 = privilege_test.FakerootContext.init(allocator) catch |err| {
         if (err == error.FakerootNotAvailable) return error.SkipZigTest;
         return err;
     };
-    defer context1.deinit();
 
     // Creating a second context should succeed - it just detects available tools
     // The actual nesting protection happens when trying to execute under fakeroot
-    var context2 = try privilege_test.FakerootContext.init(allocator);
-    defer context2.deinit();
+    const context2 = try privilege_test.FakerootContext.init(allocator);
 
     // Both contexts should have the same configuration
     try testing.expect(context1.platform == context2.platform);
@@ -231,7 +228,7 @@ test "privileged: directory permission operations" {
 
     const chmod_result = try utils.runCommand(&[_][]const u8{
         "chmod", "700", dir_path,
-    });
+    }, common.null_writer, common.null_writer);
     defer allocator.free(chmod_result.stdout);
     defer allocator.free(chmod_result.stderr);
 
@@ -243,7 +240,7 @@ test "privileged: directory permission operations" {
     // Change to 0755
     const chmod_result2 = try utils.runCommand(&[_][]const u8{
         "chmod", "755", dir_path,
-    });
+    }, common.null_writer, common.null_writer);
     defer allocator.free(chmod_result2.stdout);
     defer allocator.free(chmod_result2.stderr);
 
@@ -254,7 +251,7 @@ test "privileged: directory permission operations" {
 }
 
 // Test helper for cross-utility tests
-pub fn testCrossUtilityWorkflow(allocator: std.mem.Allocator) !void {
+pub fn testCrossUtilityWorkflow(allocator: std.mem.Allocator, stdout_writer: anytype, stderr_writer: anytype) !void {
     var utils = TestUtils.init(allocator);
     defer utils.deinit();
 
@@ -264,24 +261,31 @@ pub fn testCrossUtilityWorkflow(allocator: std.mem.Allocator) !void {
     defer allocator.free(temp_path);
 
     // Create a directory with mkdir
+    const mkdir_path = try TestUtils.getBinaryPath(allocator, "mkdir");
+    defer allocator.free(mkdir_path);
+    const secure_dir_path = try std.fmt.allocPrint(allocator, "{s}/secure_dir", .{temp_path});
+    defer allocator.free(secure_dir_path);
+
     const mkdir_result = try utils.runCommand(&[_][]const u8{
-        "zig-out/bin/mkdir",
+        mkdir_path,
         "-m",
         "700",
-        try std.fmt.allocPrint(allocator, "{s}/secure_dir", .{temp_path}),
-    });
+        secure_dir_path,
+    }, stdout_writer, stderr_writer);
     defer allocator.free(mkdir_result.stdout);
     defer allocator.free(mkdir_result.stderr);
-    defer allocator.free(mkdir_result.argv[3]);
 
     try testing.expect(mkdir_result.term.Exited == 0);
 
     // Verify with ls
+    const ls_path = try TestUtils.getBinaryPath(allocator, "ls");
+    defer allocator.free(ls_path);
+
     const ls_result = try utils.runCommand(&[_][]const u8{
-        "zig-out/bin/ls",
+        ls_path,
         "-la",
         temp_path,
-    });
+    }, stdout_writer, stderr_writer);
     defer allocator.free(ls_result.stdout);
     defer allocator.free(ls_result.stderr);
 
