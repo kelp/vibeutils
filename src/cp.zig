@@ -188,11 +188,11 @@ test "cp: single file copy" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("source.txt", "Hello, World!");
+    try test_dir.createFile("source.txt", .{ .content = "Hello, World!" });
 
-    const source_path = try test_dir.getPath("source.txt");
+    const source_path = try test_dir.getPathAlloc("source.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest.txt");
+    const dest_path = try test_dir.joinPathAlloc("dest.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -241,12 +241,12 @@ test "cp: copy to existing directory" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("source.txt", "Test content");
+    try test_dir.createFile("source.txt", .{ .content = "Test content" });
     try test_dir.createDir("dest_dir");
 
-    const source_path = try test_dir.getPath("source.txt");
+    const source_path = try test_dir.getPathAlloc("source.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.getPath("dest_dir");
+    const dest_path = try test_dir.getPathAlloc("dest_dir");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -272,9 +272,9 @@ test "cp: error on directory without recursive flag" {
 
     try test_dir.createDir("source_dir");
 
-    const source_path = try test_dir.getPath("source_dir");
+    const source_path = try test_dir.getPathAlloc("source_dir");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest_dir");
+    const dest_path = try test_dir.joinPathAlloc("dest_dir");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .recursive = false };
@@ -296,11 +296,11 @@ test "cp: basic preserve attributes (non-privileged)" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFileWithMode("source.txt", "Test content", 0o644);
+    try test_dir.createFile("source.txt", .{ .content = "Test content", .mode = 0o644 });
 
-    const source_path = try test_dir.getPath("source.txt");
+    const source_path = try test_dir.getPathAlloc("source.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest.txt");
+    const dest_path = try test_dir.joinPathAlloc("dest.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .preserve = true };
@@ -332,11 +332,11 @@ test "privileged: cp preserve attributes" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFileWithMode("source.txt", "Executable content", 0o755);
+    try test_dir.createFile("source.txt", .{ .content = "Executable content", .mode = 0o755 });
 
-    const source_path = try test_dir.getPath("source.txt");
+    const source_path = try test_dir.getPathAlloc("source.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest.txt");
+    const dest_path = try test_dir.joinPathAlloc("dest.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .preserve = true };
@@ -365,12 +365,12 @@ test "cp: recursive directory copy" {
     // Create source directory structure
     try test_dir.createDir("source_dir");
     try test_dir.createDir("source_dir/subdir");
-    try test_dir.createFile("source_dir/file1.txt", "File 1 content");
-    try test_dir.createFile("source_dir/subdir/file2.txt", "File 2 content");
+    try test_dir.createFile("source_dir/file1.txt", .{ .content = "File 1 content" });
+    try test_dir.createFile("source_dir/subdir/file2.txt", .{ .content = "File 2 content" });
 
-    const source_path = try test_dir.getPath("source_dir");
+    const source_path = try test_dir.getPathAlloc("source_dir");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest_dir");
+    const dest_path = try test_dir.joinPathAlloc("dest_dir");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .recursive = true };
@@ -405,12 +405,12 @@ test "privileged: cp force mode overwrites" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("source.txt", "New content");
-    try test_dir.createFileWithMode("dest.txt", "Old content", 0o444);
+    try test_dir.createFile("source.txt", .{ .content = "New content" });
+    try test_dir.createFile("dest.txt", .{ .content = "Old content", .mode = 0o444 });
 
-    const source_path = try test_dir.getPath("source.txt");
+    const source_path = try test_dir.getPathAlloc("source.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.getPath("dest.txt");
+    const dest_path = try test_dir.getPathAlloc("dest.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .force = true };
@@ -434,12 +434,12 @@ test "cp: symbolic link handling - follow by default" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("original.txt", "Original content");
+    try test_dir.createFile("original.txt", .{ .content = "Original content" });
     try test_dir.createSymlink("original.txt", "link.txt");
 
-    const link_path = try test_dir.getPath("link.txt");
+    const link_path = try test_dir.getPathAlloc("link.txt");
     defer testing.allocator.free(link_path);
-    const dest_path = try test_dir.joinPath("copied.txt");
+    const dest_path = try test_dir.joinPathAlloc("copied.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -457,7 +457,7 @@ test "cp: symbolic link handling - follow by default" {
 
     // Should copy file content, not create symlink
     try test_dir.expectFileContent("copied.txt", "Original content");
-    try testing.expect(!test_dir.isSymlink("copied.txt"));
+    try testing.expect(!(try test_dir.isSymlink("copied.txt")));
 }
 
 // Preserve symbolic links with -d flag
@@ -465,12 +465,12 @@ test "cp: symbolic link handling - no dereference (-d)" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("original.txt", "Original content");
+    try test_dir.createFile("original.txt", .{ .content = "Original content" });
     try test_dir.createSymlink("original.txt", "link.txt");
 
-    const link_path = try test_dir.joinPath("link.txt");
+    const link_path = try test_dir.joinPathAlloc("link.txt");
     defer testing.allocator.free(link_path);
-    const dest_path = try test_dir.joinPath("copied_link.txt");
+    const dest_path = try test_dir.joinPathAlloc("copied_link.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .no_dereference = true };
@@ -487,8 +487,8 @@ test "cp: symbolic link handling - no dereference (-d)" {
     _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
     // Should create symlink, not copy content
-    try testing.expect(test_dir.isSymlink("copied_link.txt"));
-    const target = try test_dir.getSymlinkTarget("copied_link.txt");
+    try testing.expect(try test_dir.isSymlink("copied_link.txt"));
+    const target = try test_dir.getSymlinkTargetAlloc("copied_link.txt");
     defer testing.allocator.free(target);
     try testing.expectEqualStrings("original.txt", target);
 }
@@ -500,9 +500,9 @@ test "cp: broken symlink handling" {
 
     try test_dir.createSymlink("nonexistent.txt", "broken_link.txt");
 
-    const link_path = try test_dir.joinPath("broken_link.txt");
+    const link_path = try test_dir.joinPathAlloc("broken_link.txt");
     defer testing.allocator.free(link_path);
-    const dest_path = try test_dir.joinPath("copied_broken.txt");
+    const dest_path = try test_dir.joinPathAlloc("copied_broken.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .no_dereference = true };
@@ -518,8 +518,8 @@ test "cp: broken symlink handling" {
 
     _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
 
-    try testing.expect(test_dir.isSymlink("copied_broken.txt"));
-    const target = try test_dir.getSymlinkTarget("copied_broken.txt");
+    try testing.expect(try test_dir.isSymlink("copied_broken.txt"));
+    const target = try test_dir.getSymlinkTargetAlloc("copied_broken.txt");
     defer testing.allocator.free(target);
     try testing.expectEqualStrings("nonexistent.txt", target);
 }
@@ -529,15 +529,15 @@ test "cp: multiple sources to directory" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("file1.txt", "Content 1");
-    try test_dir.createFile("file2.txt", "Content 2");
+    try test_dir.createFile("file1.txt", .{ .content = "Content 1" });
+    try test_dir.createFile("file2.txt", .{ .content = "Content 2" });
     try test_dir.createDir("dest_dir");
 
-    const file1_path = try test_dir.getPath("file1.txt");
+    const file1_path = try test_dir.getPathAlloc("file1.txt");
     defer testing.allocator.free(file1_path);
-    const file2_path = try test_dir.getPath("file2.txt");
+    const file2_path = try test_dir.getPathAlloc("file2.txt");
     defer testing.allocator.free(file2_path);
-    const dest_path = try test_dir.getPath("dest_dir");
+    const dest_path = try test_dir.getPathAlloc("dest_dir");
     defer testing.allocator.free(dest_path);
 
     const args = [_][]const u8{ file1_path, file2_path, dest_path };
@@ -580,11 +580,11 @@ test "privileged: cp preserve ownership with -p flag" {
     defer test_dir.deinit();
 
     // Create source file
-    try test_dir.createFile("source.txt", "Test content with ownership");
+    try test_dir.createFile("source.txt", .{ .content = "Test content with ownership" });
 
-    const source_path = try test_dir.getPath("source.txt");
+    const source_path = try test_dir.getPathAlloc("source.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("dest.txt");
+    const dest_path = try test_dir.joinPathAlloc("dest.txt");
     defer testing.allocator.free(dest_path);
 
     if (privilege_test.FakerootContext.isUnderFakeroot()) {
@@ -638,13 +638,13 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     // Test setup - no debug logging needed
 
     // Create files with special permissions
-    try test_dir.createFileWithMode("setuid_file", "setuid content", 0o4755);
-    try test_dir.createFileWithMode("setgid_file", "setgid content", 0o2755);
+    try test_dir.createFile("setuid_file", .{ .content = "setuid content", .mode = 0o4755 });
+    try test_dir.createFile("setgid_file", .{ .content = "setgid content", .mode = 0o2755 });
 
     {
-        const source_path = try test_dir.getPath("setuid_file");
+        const source_path = try test_dir.getPathAlloc("setuid_file");
         defer testing.allocator.free(source_path);
-        const dest_path = try test_dir.joinPath("setuid_copy");
+        const dest_path = try test_dir.joinPathAlloc("setuid_copy");
         defer testing.allocator.free(dest_path);
 
         const options = copy_options.CpOptions{ .preserve = true };
@@ -670,9 +670,9 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     }
 
     {
-        const source_path = try test_dir.getPath("setgid_file");
+        const source_path = try test_dir.getPathAlloc("setgid_file");
         defer testing.allocator.free(source_path);
-        const dest_path = try test_dir.joinPath("setgid_copy");
+        const dest_path = try test_dir.joinPathAlloc("setgid_copy");
         defer testing.allocator.free(dest_path);
 
         const options = copy_options.CpOptions{ .preserve = true };
@@ -695,7 +695,7 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
     }
 
     try test_dir.createDir("sticky_dir");
-    const sticky_path = try test_dir.getPath("sticky_dir");
+    const sticky_path = try test_dir.getPathAlloc("sticky_dir");
     defer testing.allocator.free(sticky_path);
 
     // Set sticky bit using posix API directly to avoid SIGABRT on macOS
@@ -711,7 +711,7 @@ test "privileged: cp preserve special permissions (setuid, setgid, sticky)" {
         };
     }
 
-    const sticky_dest = try test_dir.joinPath("sticky_copy");
+    const sticky_dest = try test_dir.joinPathAlloc("sticky_copy");
     defer testing.allocator.free(sticky_dest);
 
     const options = copy_options.CpOptions{ .preserve = true, .recursive = true };
@@ -750,11 +750,11 @@ test "regression: cp large file copy (data corruption prevention)" {
         byte.* = @as(u8, @intCast(i % 256));
     }
 
-    try test_dir.createFileFromBytes("large_source.bin", content);
+    try test_dir.createFile("large_source.bin", .{ .content = content });
 
-    const source_path = try test_dir.getPath("large_source.bin");
+    const source_path = try test_dir.getPathAlloc("large_source.bin");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("large_dest.bin");
+    const dest_path = try test_dir.joinPathAlloc("large_dest.bin");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -783,11 +783,11 @@ test "regression: cp race condition prevention (atomic file type detection)" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("race_test.txt", "Race condition test content");
+    try test_dir.createFile("race_test.txt", .{ .content = "Race condition test content" });
 
-    const source_path = try test_dir.getPath("race_test.txt");
+    const source_path = try test_dir.getPathAlloc("race_test.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("race_copy.txt");
+    const dest_path = try test_dir.joinPathAlloc("race_copy.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -813,13 +813,13 @@ test "regression: cp memory usage bounds (shared allocator)" {
     try test_dir.createDir("mem_test");
     try test_dir.createDir("mem_test/sub1");
     try test_dir.createDir("mem_test/sub1/sub2");
-    try test_dir.createFile("mem_test/file1.txt", "Content 1");
-    try test_dir.createFile("mem_test/sub1/file2.txt", "Content 2");
-    try test_dir.createFile("mem_test/sub1/sub2/file3.txt", "Content 3");
+    try test_dir.createFile("mem_test/file1.txt", .{ .content = "Content 1" });
+    try test_dir.createFile("mem_test/sub1/file2.txt", .{ .content = "Content 2" });
+    try test_dir.createFile("mem_test/sub1/sub2/file3.txt", .{ .content = "Content 3" });
 
-    const source_path = try test_dir.getPath("mem_test");
+    const source_path = try test_dir.getPathAlloc("mem_test");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("mem_copy");
+    const dest_path = try test_dir.joinPathAlloc("mem_copy");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .recursive = true };
@@ -847,11 +847,11 @@ test "regression: cp no stderr pollution during tests" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("stderr_test.txt", "Test content");
+    try test_dir.createFile("stderr_test.txt", .{ .content = "Test content" });
 
-    const source_path = try test_dir.getPath("stderr_test.txt");
+    const source_path = try test_dir.getPathAlloc("stderr_test.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("stderr_copy.txt");
+    const dest_path = try test_dir.joinPathAlloc("stderr_copy.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -882,11 +882,11 @@ test "regression: cp deprecated functions removed" {
     var test_dir = TestUtils.TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
-    try test_dir.createFile("deadcode_test.txt", "Dead code test");
+    try test_dir.createFile("deadcode_test.txt", .{ .content = "Dead code test" });
 
-    const source_path = try test_dir.getPath("deadcode_test.txt");
+    const source_path = try test_dir.getPathAlloc("deadcode_test.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("deadcode_copy.txt");
+    const dest_path = try test_dir.joinPathAlloc("deadcode_copy.txt");
     defer testing.allocator.free(dest_path);
 
     // Test that the new API works correctly
@@ -922,11 +922,11 @@ test "cp: large file copy performance (10MB)" {
         byte.* = @as(u8, @intCast((i * 17) % 256)); // Pseudo-random pattern
     }
 
-    try test_dir.createFileFromBytes("large_10mb.bin", content);
+    try test_dir.createFile("large_10mb.bin", .{ .content = content });
 
-    const source_path = try test_dir.getPath("large_10mb.bin");
+    const source_path = try test_dir.getPathAlloc("large_10mb.bin");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("large_10mb_copy.bin");
+    const dest_path = try test_dir.joinPathAlloc("large_10mb_copy.bin");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
@@ -974,12 +974,12 @@ test "cp: directory with many files (100 files)" {
         const content = try std.fmt.allocPrint(testing.allocator, "Content of file {d}", .{i});
         defer testing.allocator.free(content);
 
-        try test_dir.createFile(filename, content);
+        try test_dir.createFile(filename, .{ .content = content });
     }
 
-    const source_path = try test_dir.getPath("many_files_source");
+    const source_path = try test_dir.getPathAlloc("many_files_source");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("many_files_dest");
+    const dest_path = try test_dir.joinPathAlloc("many_files_dest");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{ .recursive = true };
@@ -1018,11 +1018,11 @@ test "cp: edge cases - empty file handling" {
     defer test_dir.deinit();
 
     // Test empty file copy
-    try test_dir.createFile("empty.txt", "");
+    try test_dir.createFile("empty.txt", .{ .content = "" });
 
-    const source_path = try test_dir.getPath("empty.txt");
+    const source_path = try test_dir.getPathAlloc("empty.txt");
     defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPath("empty_copy.txt");
+    const dest_path = try test_dir.joinPathAlloc("empty_copy.txt");
     defer testing.allocator.free(dest_path);
 
     const options = copy_options.CpOptions{};
