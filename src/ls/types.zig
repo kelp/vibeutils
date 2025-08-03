@@ -38,6 +38,7 @@ pub const LsOptions = struct {
     icon_mode: common.icons.IconMode = .auto,
     time_style: TimeStyle = .relative,
     show_git_status: bool = false,
+    is_terminal: bool = false, // Terminal status for icon display
 };
 
 /// Represents a directory entry with metadata

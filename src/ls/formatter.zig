@@ -134,7 +134,7 @@ pub fn printLongFormatEntry(allocator: std.mem.Allocator, entry: Entry, writer: 
     }
 
     // Name with color and optional indicator
-    try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+    try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
 
     // Show symlink target if available
     if (entry.symlink_target) |target| {
@@ -154,7 +154,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
     // This ensures all widths are cached and finds the maximum width
     var max_width: usize = 0;
     for (entries) |*entry| {
-        const width = entry.getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+        const width = entry.getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
         max_width = @max(max_width, width);
     }
 
@@ -176,12 +176,12 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
             const entry = entries[idx];
 
             // Print entry name with color and indicator
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
 
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
                 // This uses cached width from the pre-calculation pass above
-                const width = entries[idx].getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+                const width = entries[idx].getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
                 const padding = col_width - width;
                 for (0..padding) |_| {
                     try writer.writeByte(' ');
@@ -212,7 +212,7 @@ pub fn printEntries(
                     try writer.print("? ", .{});
                 }
             }
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
             try writer.writeByte('\n');
         }
     } else if (options.long_format) {
@@ -236,7 +236,7 @@ pub fn printEntries(
         // Comma-separated format
         for (entries, 0..) |entry, i| {
             if (i > 0) try writer.writeAll(", ");
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
         }
         if (entries.len > 0) try writer.writeByte('\n');
     } else {

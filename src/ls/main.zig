@@ -163,6 +163,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         };
     }
 
+    // Detect terminal status for icons and colors
+    const stdout_file = std.io.getStdOut();
+    const is_terminal = stdout_file.isTty();
+
     // Create options struct by consolidating all parsed arguments
     const options = LsOptions{
         .all = args.all,
@@ -185,6 +189,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .icon_mode = icon_mode,
         .time_style = time_style,
         .show_git_status = args.git,
+        .is_terminal = is_terminal,
     };
 
     // Initialize GitContext once if git status is requested
@@ -325,7 +330,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
         if (options.long_format) {
             try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
         } else {
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
         }
         try writer.writeAll("\n");
         return;
