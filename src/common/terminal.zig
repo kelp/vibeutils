@@ -1,11 +1,20 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Get terminal width in columns
-pub fn getWidth() !u16 {
+/// Terminal dimension types
+const Dimension = enum {
+    width,
+    height,
+};
+
+/// Generic helper function to get terminal dimensions
+fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16 {
     if (builtin.os.tag == .windows) {
-        // Windows implementation would use GetConsoleScreenBufferInfo
-        return 80; // Default for now
+        // TODO: Windows implementation would use GetConsoleScreenBufferInfo
+        return switch (dimension) {
+            .width => @import("constants.zig").DEFAULT_TERMINAL_WIDTH,
+            .height => @import("constants.zig").DEFAULT_TERMINAL_HEIGHT,
+        };
     }
 
     // Unix-like systems: try ioctl first
@@ -21,64 +30,52 @@ pub fn getWidth() !u16 {
         };
 
         if (result == 0) {
-            return ws.col;
+            return switch (dimension) {
+                .width => ws.col,
+                .height => ws.row,
+            };
         }
     }
 
-    // Fallback: check COLUMNS environment variable
-    if (std.process.getEnvVarOwned(std.heap.c_allocator, "COLUMNS")) |cols| {
-        defer std.heap.c_allocator.free(cols);
-        return std.fmt.parseInt(u16, cols, 10) catch @import("constants.zig").DEFAULT_TERMINAL_WIDTH;
+    // Fallback: check environment variables
+    const env_var = switch (dimension) {
+        .width => "COLUMNS",
+        .height => "LINES",
+    };
+    const default_value = switch (dimension) {
+        .width => @import("constants.zig").DEFAULT_TERMINAL_WIDTH,
+        .height => @import("constants.zig").DEFAULT_TERMINAL_HEIGHT,
+    };
+
+    if (std.process.getEnvVarOwned(allocator, env_var)) |env_value| {
+        defer allocator.free(env_value);
+        return std.fmt.parseInt(u16, env_value, 10) catch default_value;
     } else |_| {}
 
     // Default fallback
-    return @import("constants.zig").DEFAULT_TERMINAL_WIDTH;
+    return default_value;
+}
+
+/// Get terminal width in columns
+pub fn getWidth(allocator: std.mem.Allocator) !u16 {
+    return getTerminalDimension(allocator, .width);
 }
 
 /// Get terminal height in rows
-pub fn getHeight() !u16 {
-    if (builtin.os.tag == .windows) {
-        // Windows implementation would use GetConsoleScreenBufferInfo
-        return 24; // Default for now
-    }
-
-    // Unix-like systems: try ioctl first
-    if (std.posix.isatty(std.io.getStdOut().handle)) {
-        var ws: std.posix.winsize = undefined;
-
-        // Use the appropriate ioctl based on the OS
-        const result = switch (builtin.os.tag) {
-            .linux => std.os.linux.ioctl(std.io.getStdOut().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
-            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
-            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.io.getStdOut().handle, std.c.T.IOCGWINSZ, &ws),
-            else => @as(usize, 1), // Force fallback for unknown systems
-        };
-
-        if (result == 0) {
-            return ws.row;
-        }
-    }
-
-    // Fallback: check LINES environment variable
-    if (std.process.getEnvVarOwned(std.heap.c_allocator, "LINES")) |lines| {
-        defer std.heap.c_allocator.free(lines);
-        return std.fmt.parseInt(u16, lines, 10) catch @import("constants.zig").DEFAULT_TERMINAL_HEIGHT;
-    } else |_| {}
-
-    // Default fallback
-    return @import("constants.zig").DEFAULT_TERMINAL_HEIGHT;
+pub fn getHeight(allocator: std.mem.Allocator) !u16 {
+    return getTerminalDimension(allocator, .height);
 }
 
 test "terminal width detection" {
     // This test might fail in non-terminal environments
-    const width = getWidth() catch 80;
+    const width = getWidth(std.testing.allocator) catch 80;
     try std.testing.expect(width > 0);
     try std.testing.expect(width <= 1000); // Reasonable upper bound
 }
 
 test "terminal height detection" {
     // This test might fail in non-terminal environments
-    const height = getHeight() catch 24;
+    const height = getHeight(std.testing.allocator) catch 24;
     try std.testing.expect(height > 0);
     try std.testing.expect(height <= 1000); // Reasonable upper bound
 }

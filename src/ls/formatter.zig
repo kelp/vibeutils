@@ -144,11 +144,11 @@ pub fn printLongFormatEntry(allocator: std.mem.Allocator, entry: Entry, writer: 
 }
 
 /// Print entries in columnar format
-pub fn printColumnar(entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
 
     // Get terminal width
-    const term_width = options.terminal_width orelse common.terminal.getWidth() catch 80;
+    const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
 
     // Pre-calculate display widths for all entries in a single pass
     // This ensures all widths are cached and finds the maximum width
@@ -241,7 +241,7 @@ pub fn printEntries(
         if (entries.len > 0) try writer.writeByte('\n');
     } else {
         // Default format: multi-column layout
-        try printColumnar(entries, writer, options, style);
+        try printColumnar(allocator, entries, writer, options, style);
     }
 
     return total_blocks;
@@ -291,7 +291,7 @@ test "formatter - printColumnar basic" {
     const options = LsOptions{ .terminal_width = 40 };
     const style = try display.initStyle(testing.allocator, buffer.writer(), .never);
 
-    try printColumnar(&entries, buffer.writer(), options, style);
+    try printColumnar(testing.allocator, &entries, buffer.writer(), options, style);
 
     const output = buffer.items;
 
