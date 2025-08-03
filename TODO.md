@@ -1,7 +1,7 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 15/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, ln, ls, mkdir, mv, pwd, rm, rmdir, touch)
+- **Completed**: 16/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, ln, ls, mkdir, mv, pwd, rm, rmdir, touch)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
@@ -400,11 +400,14 @@ For each utility:
 - [ ] Implement: Minimal implementation
 - [ ] Man page: Write concise man page
 
-#### 18. false
-- [ ] Test: Always returns 1 exit code
-- [ ] Test: Ignores all arguments
-- [ ] Implement: Minimal implementation
-- [ ] Man page: Write concise man page
+#### 18. false ✓
+- [x] Test: Always returns 1 exit code
+- [x] Test: Ignores all arguments
+- [x] Test: Produces no output
+- [x] Test: Handles empty arguments array
+- [x] Test: Handles many arguments
+- [x] Implement: Minimal implementation
+- [x] Man page: Write concise man page
 
 #### 19. test
 - [ ] Test: File existence checks (-e, -f, -d, -r, -w, -x)

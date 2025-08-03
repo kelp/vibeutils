@@ -1,0 +1,53 @@
+.\" OpenBSD-style concise man page for false
+.Dd $Mdocdate$
+.Dt FALSE 1
+.Os
+.Sh NAME
+.Nm false
+.Nd do nothing, unsuccessfully
+.Sh SYNOPSIS
+.Nm false
+.Op Ar ignored_arguments ...
+.Sh DESCRIPTION
+The
+.Nm
+utility does nothing and returns an exit status of 1 to indicate failure.
+All arguments are ignored.
+.Pp
+The
+.Nm
+utility is useful in shell scripts and command line constructs where
+a command that always fails is needed, such as in loops or conditional
+statements.
+.Sh EXIT STATUS
+The
+.Nm
+utility always exits with status 1.
+.Sh EXAMPLES
+Use in a conditional statement:
+.Bd -literal -offset indent
+$ if false; then echo "This will not print"; fi
+.Ed
+.Pp
+Use in a loop that should not execute:
+.Bd -literal -offset indent
+$ while false; do echo "This will not print"; done
+.Ed
+.Pp
+Demonstrate that all arguments are ignored:
+.Bd -literal -offset indent
+$ false --help --version any arguments
+$ echo $?
+1
+.Ed
+.Sh SEE ALSO
+.Xr true 1 ,
+.Xr test 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
