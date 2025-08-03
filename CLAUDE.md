@@ -342,14 +342,23 @@ specification.
 
 ### Referencing Man Pages
 
-When implementing a new command, always consult both OpenBSD and GNU coreutils man pages to determine the most useful set of flags to support:
+When implementing a new command, always consult POSIX specifications, OpenBSD, and GNU coreutils man pages to determine the most useful set of flags to support:
 
-1. **OpenBSD man pages**: Access online at `https://man.openbsd.org/<command>`
+1. **POSIX.1-2017 Specifications**: The authoritative standard at `https://pubs.opengroup.org/onlinepubs/9699919799/utilities/contents.html`
+   - Direct utility lookup: `https://pubs.opengroup.org/onlinepubs/9699919799/utilities/<command>.html`
+   - Example: `https://pubs.opengroup.org/onlinepubs/9699919799/utilities/echo.html`
+   - Defines required behavior, flags, and exit codes for POSIX compliance
+   - Free online access without registration
+   - Includes rationale for design decisions
+   - Full index at: `https://pubs.opengroup.org/onlinepubs/9699919799/idx/utilities.html`
+   - Utility conventions: `https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html`
+
+2. **OpenBSD man pages**: Access online at `https://man.openbsd.org/<command>`
    - Example: `https://man.openbsd.org/mkdir` for the mkdir command
    - Focus on security, simplicity, and correctness
    - Often have cleaner, more focused flag sets
 
-2. **GNU coreutils man pages**: 
+3. **GNU coreutils man pages**: 
    - **On Linux**: Available locally via `man <command>`
    - **On macOS with GNU coreutils installed**: Use g-prefixed commands for man pages
      - Example: `man gls` for GNU ls, `man gcp` for GNU cp
@@ -361,11 +370,12 @@ When implementing a new command, always consult both OpenBSD and GNU coreutils m
    - More extensive feature set with many flags
    - Required for GNU compatibility
 
-3. **Implementation strategy**:
-   - Start with the core flags that appear in both implementations
-   - Add GNU-specific flags that are commonly used in scripts
+4. **Implementation strategy**:
+   - Start with POSIX-required functionality as the baseline
+   - Verify behavior against the POSIX specification for compliance
+   - Add commonly used GNU extensions for compatibility
    - Include OpenBSD security/safety features where applicable
-   - Document any intentional differences in behavior
+   - Document any intentional differences from POSIX/GNU/BSD behavior
 
 ### Testing Patterns
 
