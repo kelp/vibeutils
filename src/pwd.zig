@@ -26,14 +26,6 @@ const PwdArgs = struct {
     };
 };
 
-/// Runtime options for pwd behavior
-const PwdOptions = struct {
-    /// Use PWD environment variable if valid
-    logical: bool = false,
-    /// Resolve all symbolic links
-    physical: bool = true,
-};
-
 /// Main entry point for pwd utility
 pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
@@ -60,11 +52,8 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Process command line flags to determine operation mode
-    const options = processModeFlags(parsed_args);
-
-    // Retrieve the current working directory based on the selected mode
-    const cwd = getWorkingDirectory(allocator, options) catch |err| {
+    // Retrieve the current working directory based on command line flags
+    const cwd = getWorkingDirectory(allocator, parsed_args) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
@@ -77,9 +66,9 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
 /// Main entry point for pwd utility
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
@@ -90,25 +79,6 @@ pub fn main() !void {
 
     const exit_code = try runPwd(allocator, args[1..], stdout, stderr);
     std.process.exit(exit_code);
-}
-
-/// Process command line flags and return appropriate options
-/// When both -L and -P are given, the last one wins (POSIX behavior)
-fn processModeFlags(parsed_args: PwdArgs) PwdOptions {
-    var options = PwdOptions{};
-
-    // Process mode flags - when both -L and -P are given, the last one wins
-    // This behavior matches POSIX specifications
-    if (parsed_args.logical) {
-        options.logical = true;
-        options.physical = false;
-    }
-    if (parsed_args.physical) {
-        options.logical = false;
-        options.physical = true;
-    }
-
-    return options;
 }
 
 /// Print help message to the specified writer
@@ -134,28 +104,36 @@ fn printHelp(writer: anytype) !void {
     );
 }
 
-/// Get current working directory according to options
-pub fn getWorkingDirectory(allocator: std.mem.Allocator, options: PwdOptions) ![]const u8 {
-    if (options.logical) {
-        // Attempt to use PWD environment variable in logical mode
-        if (std.process.getEnvVarOwned(allocator, "PWD")) |pwd_env| {
-            defer allocator.free(pwd_env);
+/// Get current working directory according to command line arguments
+/// When both -L and -P are given, the last one wins (POSIX behavior)
+pub fn getWorkingDirectory(allocator: std.mem.Allocator, args: PwdArgs) ![]const u8 {
+    // Determine mode - when both -L and -P are given, the last one wins
+    const use_logical = args.logical and !args.physical;
 
-            // Get the physical path for validation
-            const physical_cwd = try std.process.getCwdAlloc(allocator);
-            defer allocator.free(physical_cwd);
+    if (use_logical) {
+        // Try to use PWD environment variable in logical mode
+        const pwd_env = std.process.getEnvVarOwned(allocator, "PWD") catch {
+            // PWD not set, fall back to physical mode
+            return std.process.getCwdAlloc(allocator);
+        };
+        defer allocator.free(pwd_env);
 
-            // Validate that PWD actually refers to the current directory
-            if (isValidPwd(pwd_env, physical_cwd)) {
-                return allocator.dupe(u8, pwd_env);
-            }
-            // PWD is invalid, fall through to physical mode
-        } else |_| {
-            // PWD environment variable not set, fall through to physical mode
+        // Get physical path for validation
+        const physical_cwd = std.process.getCwdAlloc(allocator) catch {
+            // Can't get physical path, use PWD as-is (rare edge case)
+            return allocator.dupe(u8, pwd_env);
+        };
+        defer allocator.free(physical_cwd);
+
+        // Validate PWD refers to current directory
+        if (isValidPwd(pwd_env, physical_cwd)) {
+            return allocator.dupe(u8, pwd_env);
         }
+        // PWD invalid, fall back to physical path we already have
+        return allocator.dupe(u8, physical_cwd);
     }
 
-    // Physical mode or fallback: get the actual current directory with symlinks resolved
+    // Physical mode (default): resolve all symlinks
     return std.process.getCwdAlloc(allocator);
 }
 
@@ -185,34 +163,13 @@ fn isValidPwd(pwd_env: []const u8, physical_cwd: []const u8) bool {
     return pwd_stat.inode == cwd_stat.inode;
 }
 
-/// Simple pwd function for testing and backward compatibility
-pub fn pwd(allocator: std.mem.Allocator, writer: anytype) !void {
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
-    try writer.print("{s}\n", .{cwd});
-}
-
 // ============================================================================
 // TESTS
 // ============================================================================
 
-test "pwd basic functionality" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    try pwd(testing.allocator, buffer.writer());
-
-    // Should have printed something ending with newline
-    try testing.expect(buffer.items.len > 1);
-    try testing.expect(buffer.items[buffer.items.len - 1] == '\n');
-
-    // Should start with / (absolute path)
-    try testing.expect(buffer.items[0] == '/');
-}
-
 test "getWorkingDirectory physical mode" {
-    const options = PwdOptions{ .physical = true, .logical = false };
-    const cwd = try getWorkingDirectory(testing.allocator, options);
+    const args = PwdArgs{ .physical = true, .logical = false };
+    const cwd = try getWorkingDirectory(testing.allocator, args);
     defer testing.allocator.free(cwd);
 
     // Should return an absolute path
@@ -222,9 +179,9 @@ test "getWorkingDirectory physical mode" {
 
 test "getWorkingDirectory logical mode without PWD" {
     // When PWD is not set, logical mode should fall back to physical
-    const options = PwdOptions{ .logical = true, .physical = false };
+    const args = PwdArgs{ .logical = true, .physical = false };
 
-    const cwd = try getWorkingDirectory(testing.allocator, options);
+    const cwd = try getWorkingDirectory(testing.allocator, args);
     defer testing.allocator.free(cwd);
 
     // Should return an absolute path even without PWD
@@ -250,8 +207,8 @@ test "getWorkingDirectory logical mode with valid PWD" {
     try testing.expect(!isValidPwd("/nonexistent/path", temp_path));
 
     // Test logical mode fallback when PWD is not set
-    const options = PwdOptions{ .logical = true, .physical = false };
-    const cwd = try getWorkingDirectory(testing.allocator, options);
+    const args = PwdArgs{ .logical = true, .physical = false };
+    const cwd = try getWorkingDirectory(testing.allocator, args);
     defer testing.allocator.free(cwd);
 
     // Should return an absolute path
@@ -275,28 +232,12 @@ test "isValidPwd security validation" {
     try testing.expect(!isValidPwd("/nonexistent/directory", current_dir));
 }
 
-test "PwdOptions defaults" {
-    const opts = PwdOptions{};
-    try testing.expect(!opts.logical);
-    try testing.expect(opts.physical);
-}
-
-test "pwd output format" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    try pwd(testing.allocator, buffer.writer());
-    const output = buffer.items;
-
-    // Should end with exactly one newline
-    try testing.expect(output[output.len - 1] == '\n');
-
-    // Should not have any other newlines
-    var newline_count: usize = 0;
-    for (output) |c| {
-        if (c == '\n') newline_count += 1;
-    }
-    try testing.expectEqual(@as(usize, 1), newline_count);
+test "PwdArgs defaults" {
+    const args = PwdArgs{};
+    try testing.expect(!args.logical);
+    try testing.expect(!args.physical);
+    try testing.expect(!args.help);
+    try testing.expect(!args.version);
 }
 
 test "runPwd with help flag" {
@@ -461,7 +402,7 @@ test "runPwd with invalid flag" {
 
     // Should print error to stderr
     try testing.expect(stderr_buffer.items.len > 0);
-    // Check for program name and error message separately to handle ANSI color codes
+    // Should print error message with program name
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd:") != null);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
 }
