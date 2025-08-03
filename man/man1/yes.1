@@ -1,0 +1,102 @@
+.\" yes(1) manual page
+.\" This is part of the vibeutils project
+.Dd $Mdocdate$
+.Dt YES 1
+.Os
+.Sh NAME
+.Nm yes
+.Nd output a string repeatedly until killed
+.Sh SYNOPSIS
+.Nm
+.Op Fl hV
+.Op Ar string ...
+.Sh DESCRIPTION
+The
+.Nm
+utility outputs its command line arguments, or the single character
+.Sq y
+if no arguments are given, separated by spaces and followed by a newline,
+forever until it is killed or interrupted.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl h , Fl Fl help
+Display help information and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+When multiple arguments are provided, they are concatenated with single
+spaces between them.
+.Sh EXIT STATUS
+.Ex -std yes
+.Pp
+The
+.Nm
+utility exits 0 on success (including when terminated by SIGPIPE),
+and >0 if an error occurs.
+.Sh EXAMPLES
+Output
+.Sq y
+repeatedly:
+.Bd -literal -offset indent
+$ yes
+y
+y
+y
+^C
+.Ed
+.Pp
+Output a custom string repeatedly:
+.Bd -literal -offset indent
+$ yes hello
+hello
+hello
+hello
+^C
+.Ed
+.Pp
+Output multiple words repeatedly:
+.Bd -literal -offset indent
+$ yes hello world
+hello world
+hello world
+hello world
+^C
+.Ed
+.Pp
+Use with head to output a limited number of lines:
+.Bd -literal -offset indent
+$ yes | head -n 3
+y
+y
+y
+.Ed
+.Pp
+Generate a file with repeated content:
+.Bd -literal -offset indent
+$ yes "test line" | head -n 100 > testfile.txt
+.Ed
+.Sh DIAGNOSTICS
+The
+.Nm
+utility handles SIGPIPE gracefully when its output is piped to another
+command that terminates early (such as
+.Xr head 1 ) .
+.Sh SEE ALSO
+.Xr echo 1 ,
+.Xr head 1 ,
+.Xr seq 1
+.Sh STANDARDS
+The
+.Nm
+utility is not part of any formal standard but is widely available
+on Unix-like systems.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
+.Sh CAVEATS
+The
+.Nm
+utility will consume CPU resources continuously until terminated.
+It is designed for use in pipelines and should not be run
+indefinitely in interactive sessions without output redirection.
