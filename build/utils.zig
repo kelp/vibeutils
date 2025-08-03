@@ -10,26 +10,7 @@ pub const UtilityMeta = struct {
 
 /// All utilities with their metadata
 /// Note: All utilities currently need libc due to c_allocator usage in common library
-pub const utilities = [_]UtilityMeta{
-    .{ .name = "echo", .path = "src/echo.zig", .needs_libc = true, .description = "Display text" },
-    .{ .name = "cat", .path = "src/cat.zig", .needs_libc = true, .description = "Concatenate and display files" },
-    .{ .name = "ls", .path = "src/ls/main.zig", .needs_libc = true, .description = "List directory contents" },
-    .{ .name = "cp", .path = "src/cp.zig", .needs_libc = true, .description = "Copy files and directories" },
-    .{ .name = "mv", .path = "src/mv.zig", .needs_libc = true, .description = "Move files and directories" },
-    .{ .name = "rm", .path = "src/rm.zig", .needs_libc = true, .description = "Remove files and directories" },
-    .{ .name = "mkdir", .path = "src/mkdir.zig", .needs_libc = true, .description = "Create directories" },
-    .{ .name = "rmdir", .path = "src/rmdir.zig", .needs_libc = true, .description = "Remove empty directories" },
-    .{ .name = "touch", .path = "src/touch.zig", .needs_libc = true, .description = "Update file timestamps" },
-    .{ .name = "pwd", .path = "src/pwd.zig", .needs_libc = true, .description = "Print working directory" },
-    .{ .name = "dirname", .path = "src/dirname.zig", .needs_libc = true, .description = "Extract directory name from file path" },
-    .{ .name = "chmod", .path = "src/chmod.zig", .needs_libc = true, .description = "Change file mode bits" },
-    .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" },
-    .{ .name = "ln", .path = "src/ln.zig", .needs_libc = true, .description = "Create hard and symbolic links" },
-    .{ .name = "basename", .path = "src/basename.zig", .needs_libc = true, .description = "Strip directory and suffix from filenames" },
-    .{ .name = "sleep", .path = "src/sleep.zig", .needs_libc = true, .description = "Delay for a specified amount of time" },
-    .{ .name = "true", .path = "src/true.zig", .needs_libc = true, .description = "Return a successful exit status" },
-    .{ .name = "false", .path = "src/false.zig", .needs_libc = true, .description = "Do nothing, unsuccessfully" }
-};
+pub const utilities = [_]UtilityMeta{ .{ .name = "echo", .path = "src/echo.zig", .needs_libc = true, .description = "Display text" }, .{ .name = "cat", .path = "src/cat.zig", .needs_libc = true, .description = "Concatenate and display files" }, .{ .name = "ls", .path = "src/ls/main.zig", .needs_libc = true, .description = "List directory contents" }, .{ .name = "cp", .path = "src/cp.zig", .needs_libc = true, .description = "Copy files and directories" }, .{ .name = "mv", .path = "src/mv.zig", .needs_libc = true, .description = "Move files and directories" }, .{ .name = "rm", .path = "src/rm.zig", .needs_libc = true, .description = "Remove files and directories" }, .{ .name = "mkdir", .path = "src/mkdir.zig", .needs_libc = true, .description = "Create directories" }, .{ .name = "rmdir", .path = "src/rmdir.zig", .needs_libc = true, .description = "Remove empty directories" }, .{ .name = "touch", .path = "src/touch.zig", .needs_libc = true, .description = "Update file timestamps" }, .{ .name = "pwd", .path = "src/pwd.zig", .needs_libc = true, .description = "Print working directory" }, .{ .name = "dirname", .path = "src/dirname.zig", .needs_libc = true, .description = "Extract directory name from file path" }, .{ .name = "chmod", .path = "src/chmod.zig", .needs_libc = true, .description = "Change file mode bits" }, .{ .name = "chown", .path = "src/chown.zig", .needs_libc = true, .description = "Change file ownership" }, .{ .name = "ln", .path = "src/ln.zig", .needs_libc = true, .description = "Create hard and symbolic links" }, .{ .name = "basename", .path = "src/basename.zig", .needs_libc = true, .description = "Strip directory and suffix from filenames" }, .{ .name = "sleep", .path = "src/sleep.zig", .needs_libc = true, .description = "Delay for a specified amount of time" }, .{ .name = "true", .path = "src/true.zig", .needs_libc = true, .description = "Return a successful exit status" }, .{ .name = "false", .path = "src/false.zig", .needs_libc = true, .description = "Do nothing, unsuccessfully" } };
 
 /// Parse version from ZON content string
 /// Returns a string that must be freed by the caller using the same allocator
