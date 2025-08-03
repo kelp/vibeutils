@@ -23,9 +23,6 @@ pub const Platform = enum {
 /// Available privilege simulation methods
 pub const PrivilegeMethod = enum {
     fakeroot,
-    unshare,
-    doas,
-    sudo,
     none,
 };
 
@@ -35,7 +32,6 @@ pub const FakerootContext = struct {
     platform: Platform,
     method: PrivilegeMethod,
     available: bool,
-    env_map: ?process.EnvMap,
 
     /// Initialize the privilege testing context
     pub fn init(allocator: std.mem.Allocator) !FakerootContext {
@@ -45,86 +41,15 @@ pub const FakerootContext = struct {
             .platform = platform,
             .method = .none,
             .available = false,
-            .env_map = null,
         };
 
-        // Try to detect available privilege simulation tools
-        switch (platform) {
-            .linux => {
-                // Try fakeroot first
-                if (checkCommandExists("fakeroot")) {
-                    ctx.method = .fakeroot;
-                    ctx.available = true;
-                } else if (checkCommandExists("unshare")) {
-                    // Check if we can use unshare without root
-                    if (canUseUnshare()) {
-                        ctx.method = .unshare;
-                        ctx.available = true;
-                    }
-                }
-            },
-            .macos, .bsd => {
-                // macOS and BSD don't have fakeroot, try doas/sudo
-                if (checkCommandExists("doas")) {
-                    ctx.method = .doas;
-                    ctx.available = false; // We don't auto-use doas
-                } else if (checkCommandExists("sudo")) {
-                    ctx.method = .sudo;
-                    ctx.available = false; // We don't auto-use sudo
-                }
-            },
-            .other => {},
+        // Check if fakeroot is available
+        if (checkCommandExists("fakeroot")) {
+            ctx.method = .fakeroot;
+            ctx.available = true;
         }
 
         return ctx;
-    }
-
-    /// Deinitialize and cleanup
-    pub fn deinit(self: *FakerootContext) void {
-        // Currently no resources to clean up
-        // This is kept for future use if we need to manage resources
-        _ = self;
-    }
-
-    /// Execute a test function under fakeroot or similar
-    pub fn execute(
-        self: *FakerootContext,
-        comptime testFn: fn (allocator: std.mem.Allocator) anyerror!void,
-    ) !void {
-        if (!self.available) {
-            return error.NoPrivilegeSimulation;
-        }
-
-        switch (self.method) {
-            .fakeroot => try self.executeFakeroot(testFn),
-            .unshare => try self.executeUnshare(testFn),
-            else => return error.UnsupportedMethod,
-        }
-    }
-
-    fn executeFakeroot(
-        self: *FakerootContext,
-        comptime testFn: fn (allocator: std.mem.Allocator) anyerror!void,
-    ) !void {
-        // If we're already under fakeroot, just execute the function
-        if (isUnderFakeroot()) {
-            try testFn(self.allocator);
-            return;
-        }
-
-        // Otherwise, we can't execute privileged tests
-        // The build system should handle running us under fakeroot
-        return error.RequiresFakeroot;
-    }
-
-    fn executeUnshare(
-        self: *FakerootContext,
-        comptime testFn: fn (allocator: std.mem.Allocator) anyerror!void,
-    ) !void {
-        // Similar to fakeroot, unshare requires re-execution
-        _ = self;
-        _ = testFn;
-        return error.NotImplemented;
     }
 
     /// Check if we're running under fakeroot
@@ -145,8 +70,7 @@ pub const FakerootContext = struct {
 
 /// Skip test if no privilege simulation is available
 pub fn requiresPrivilege() !void {
-    var ctx = try FakerootContext.init(testing.allocator);
-    defer ctx.deinit();
+    const ctx = try FakerootContext.init(testing.allocator);
 
     if (!ctx.available and !FakerootContext.isUnderFakeroot()) {
         return error.SkipZigTest;
@@ -167,29 +91,6 @@ pub fn withFakeroot(
     // Otherwise, check if we should skip the test
     // The build system will re-run us under fakeroot if needed
     return error.SkipZigTest;
-}
-
-/// Assert file permissions
-pub fn assertPermissions(
-    path: []const u8,
-    expected_mode: std.fs.File.Mode,
-    expected_uid: ?std.posix.uid_t,
-    expected_gid: ?std.posix.gid_t,
-) !void {
-    // Currently unused - reserved for future use when ownership testing is needed
-    _ = expected_uid;
-    _ = expected_gid;
-
-    const stat = try std.fs.cwd().statFile(path);
-
-    // Check mode (permissions)
-    const actual_mode = stat.mode & 0o777;
-    const expected_mode_masked = expected_mode & 0o777;
-    try testing.expectEqual(expected_mode_masked, actual_mode);
-
-    // Note: Ownership checking (uid/gid) is not currently implemented
-    // as std.fs.File.Stat doesn't provide ownership information across platforms
-    // This could be added using platform-specific stat calls if needed
 }
 
 /// Check if a command exists in PATH
@@ -231,30 +132,6 @@ fn checkCommandExists(name: []const u8) bool {
     return result.term.Exited == 0;
 }
 
-/// Check if we can use unshare without root
-fn canUseUnshare() bool {
-    // In test environments, avoid subprocess execution which can hang
-    if (builtin.is_test) {
-        return false; // Conservative: assume unshare is not available during tests
-    }
-
-    // Use a general purpose allocator for subprocess operations
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Try a simple unshare command that should work for unprivileged users
-    const argv = [_][]const u8{ "unshare", "--user", "--map-root-user", "true" };
-    const result = process.Child.run(.{
-        .allocator = allocator,
-        .argv = &argv,
-    }) catch return false;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    return result.term.Exited == 0;
-}
-
 // Tests
 test "platform detection" {
     const platform = Platform.detect();
@@ -267,8 +144,7 @@ test "platform detection" {
 }
 
 test "FakerootContext initialization" {
-    var ctx = try FakerootContext.init(testing.allocator);
-    defer ctx.deinit();
+    const ctx = try FakerootContext.init(testing.allocator);
 
     // We should at least detect the platform correctly
     try testing.expect(ctx.platform == Platform.detect());
@@ -301,8 +177,7 @@ test "requiresPrivilege skip behavior" {
     // If we get here, we either:
     // 1. Are under fakeroot, OR
     // 2. Have privilege simulation tools available
-    var ctx = try FakerootContext.init(testing.allocator);
-    defer ctx.deinit();
+    const ctx = try FakerootContext.init(testing.allocator);
     try testing.expect(FakerootContext.isUnderFakeroot() or ctx.available);
 }
 
