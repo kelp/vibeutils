@@ -2,6 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🔴 MANDATORY: Always Use Agent Workflow for Coding
+
+**The multi-agent workflow is required for ANY code changes beyond trivial fixes:**
+
+1. **architect agent** → Design the solution
+2. **programmer agent** → Implement the code  
+3. **reviewer agent** → Review for quality
+4. **optimizer agent** → Optimize if needed
+
+### Agent Usage Required For:
+- Implementing new utilities or features
+- Refactoring existing code
+- Fixing bugs requiring more than 5 lines of change
+- Adding new functions or modifying APIs
+- Performance improvements
+- Any architectural decisions
+- Searching for code patterns across the codebase
+- Understanding existing implementations
+- Researching how something works
+
+### Direct Coding Acceptable For (RARE):
+- Fixing typos in comments or docs
+- Updating single constant values
+- Adding a single test case
+- Trivial one-line fixes
+
+**Default: Use agents. When uncertain, use agents. Start with architect agent for any real coding task.**
+
 ## Pre-1.0 Development Philosophy
 
 **This is pre-1.0 software with zero external users. We prioritize getting the design right over backward compatibility.**
@@ -240,47 +268,37 @@ When implementing file operations:
 
 The tool returns actual code snippets from real Zig projects, making it more reliable than memory or outdated documentation.
 
-## Claude Code Agent Usage
+## Agent Workflow Details
 
-When working with Claude Code, use specialized agents for different tasks to get the best results:
+**Required sequence for all non-trivial code changes:**
 
-### architect agent
-Use the architect agent for:
+### architect agent (ALWAYS FIRST)
 - System design and architectural decisions
-- Planning the structure of new utilities or features
-- Evaluating design trade-offs and architectural patterns
-- Creating high-level implementation strategies
+- Planning implementation approach
+- Evaluating trade-offs
+- Designing APIs and interfaces
 
-Example: "Use the architect agent to design how the cp utility should handle recursive copying with progress indication"
+### programmer agent (ALWAYS SECOND)
+- Writing clean, maintainable code
+- Following established patterns
+- Implementing the architect's design
+- Test-driven development
 
-### programmer agent
-Use the programmer agent for:
-- Writing new code implementations
-- Refactoring existing code for better maintainability
-- Implementing features with focus on clean architecture
-- Following SOLID principles and best practices
+### reviewer agent (ALWAYS THIRD)
+- Quality and security review
+- Bug and edge case identification
+- Verification of requirements
+- Code style compliance
 
-Example: "Use the programmer agent to implement the mkdir utility with all GNU-compatible flags"
+### optimizer agent (WHEN NEEDED)
+- Performance bottleneck analysis
+- Memory optimization
+- Algorithm improvements
+- Binary size reduction
 
-### reviewer agent
-Use the reviewer agent for:
-- Code quality reviews after implementing features
-- Security and vulnerability analysis
-- Identifying potential bugs or edge cases
-- Suggesting improvements for maintainability
+**Workflow: architect → programmer → reviewer → (optimizer if needed)**
 
-Example: "Use the reviewer agent to check the ls implementation for security issues and code quality"
-
-### optimizer agent
-Use the optimizer agent for:
-- Analyzing performance bottlenecks
-- Optimizing memory usage and allocations
-- Improving algorithm efficiency
-- Reducing binary size for release builds
-
-Example: "Use the optimizer agent to improve the performance of sorting large directories in ls"
-
-**Best Practice**: Use these agents in sequence - architect for design, programmer for implementation, reviewer for quality checks, and optimizer for performance improvements.
+Even "simple" features need architecture review - hidden complexity is often discovered during design phase.
 
 ## CRITICAL: Trust the OS for Security (Don't Add Security Theater)
 
