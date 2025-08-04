@@ -189,52 +189,22 @@ The expression evaluated to false.
 An error occurred (malformed expression, etc.).
 .El
 .Sh EXAMPLES
-Test if a file exists:
+Test if a file exists and is readable:
 .Bd -literal -offset indent
-$ test -e /etc/passwd && echo "File exists"
+$ test -f /etc/passwd && echo "File exists"
 File exists
 .Ed
 .Pp
-Test if a directory is writable:
+String comparison using bracket form:
 .Bd -literal -offset indent
-$ test -w /tmp && echo "Directory is writable"
-Directory is writable
+$ [ "$HOME" != "" ] && echo "HOME variable is set"
+HOME variable is set
 .Ed
 .Pp
-Compare two numbers:
+Complex expression with logical operators:
 .Bd -literal -offset indent
-$ test 5 -gt 3 && echo "5 is greater than 3"
-5 is greater than 3
-.Ed
-.Pp
-Complex expression with grouping:
-.Bd -literal -offset indent
-$ test \e( 5 -gt 3 \e) -a \e( 2 -lt 4 \e) && echo "Both conditions true"
-Both conditions true
-.Ed
-.Pp
-Using the bracket form:
-.Bd -literal -offset indent
-$ [ -f ~/.bashrc ] && echo "Bash config exists"
-Bash config exists
-.Ed
-.Pp
-String comparison:
-.Bd -literal -offset indent
-$ [ "$USER" = "root" ] && echo "Running as root"
-.Ed
-.Pp
-Testing for empty string:
-.Bd -literal -offset indent
-$ VAR=""
-$ [ -z "$VAR" ] && echo "Variable is empty"
-Variable is empty
-.Ed
-.Pp
-Negation example:
-.Bd -literal -offset indent
-$ [ ! -d /nonexistent ] && echo "Directory does not exist"
-Directory does not exist
+$ [ -d /tmp -a -w /tmp ] && echo "/tmp exists and is writable"
+/tmp exists and is writable
 .Ed
 .Sh SEE ALSO
 .Xr expr 1 ,
@@ -244,7 +214,7 @@ Directory does not exist
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.1-2017
 specification.
 .Pp
 The

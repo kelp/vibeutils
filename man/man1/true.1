@@ -29,24 +29,16 @@ The
 .Nm
 utility always exits with status 0, indicating success.
 .Sh EXAMPLES
-Basic usage:
+Basic usage with exit status check:
 .Bd -literal -offset indent
-$ true
-$ echo $?
-0
+$ true && echo "Success" || echo "Failure"
+Success
 .Ed
 .Pp
-With arguments (all ignored):
-.Bd -literal -offset indent
-$ true --invalid -x "any arguments"
-$ echo $?
-0
-.Ed
-.Pp
-Common use in shell scripts:
+Common use in infinite loops:
 .Bd -literal -offset indent
 while true; do
-    echo "Infinite loop"
+    echo "Running..."
     sleep 1
 done
 .Ed
@@ -64,7 +56,7 @@ fi
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.1-2017
 specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

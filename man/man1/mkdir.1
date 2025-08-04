@@ -52,37 +52,22 @@ Display version information and exit.
 .Pp
 The user must have write permission in the parent directory.
 .Sh EXIT STATUS
-The
-.Nm
-utility exits 0 on success, and >0 if an error occurs.
+.Ex -std mkdir
 .Sh EXAMPLES
-Create a directory named
-.Pa foobar :
+Create a simple directory:
+.Bd -literal -offset indent
+$ mkdir newdir
+.Ed
 .Pp
-.Dl $ mkdir foobar
+Create nested directories with parent creation:
+.Bd -literal -offset indent
+$ mkdir -p project/src/main
+.Ed
 .Pp
-Create a directory named
-.Pa foobar
-if it doesn't already exist:
-.Pp
-.Dl $ mkdir -p foobar
-.Pp
-Create multiple directories:
-.Pp
-.Dl $ mkdir dir1 dir2 dir3
-.Pp
-Create nested directory structure, creating any missing parent directories:
-.Pp
-.Dl $ mkdir -p /tmp/a/deep/directory/structure
-.Pp
-Create a directory with specific permissions
-(700 = read, write, execute for owner only):
-.Pp
-.Dl $ mkdir -m 700 private_dir
-.Pp
-Create multiple directories verbosely, showing each as it's created:
-.Pp
-.Dl $ mkdir -pv project/{src,tests,docs}
+Create directory with specific permissions:
+.Bd -literal -offset indent
+$ mkdir -m 755 public_dir
+.Ed
 .Sh SEE ALSO
 .Xr chmod 1 ,
 .Xr rmdir 1 ,
@@ -91,7 +76,7 @@ Create multiple directories verbosely, showing each as it's created:
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.1-2017
 specification.
 .Pp
 The

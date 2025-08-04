@@ -20,6 +20,8 @@ utility is useful in shell scripts and command line constructs where
 a command that always fails is needed, such as in loops or conditional
 statements.
 .Sh EXIT STATUS
+.Ex -std false
+.Pp
 The
 .Nm
 utility always exits with status 1.
@@ -41,13 +43,13 @@ $ echo $?
 1
 .Ed
 .Sh SEE ALSO
-.Xr true 1 ,
-.Xr test 1
+.Xr test 1 ,
+.Xr true 1
 .Sh STANDARDS
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.1-2017
 specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
