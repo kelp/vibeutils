@@ -43,6 +43,16 @@ const LimitedWriter = struct {
     }
 };
 
+/// Standardized entry point for yes utility
+pub fn runUtility(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !u8 {
+    return runYes(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main function for the yes utility.
 /// Repeatedly outputs a line with all specified strings, or 'y' if no arguments provided.
 /// Uses arena allocator for memory management as per CLI tool best practices.

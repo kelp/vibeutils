@@ -60,6 +60,9 @@ pub const copy_options = @import("copy_options.zig");
 /// Unicode display width calculation for terminal output
 pub const unicode = @import("unicode.zig");
 
+/// Fuzzing utilities and helpers for property-based testing
+pub const fuzz = @import("fuzz.zig");
+
 /// Version information from build configuration
 pub const version = build_options.version;
 

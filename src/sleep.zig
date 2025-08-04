@@ -173,6 +173,11 @@ fn printVersion(writer: anytype) !void {
 }
 
 /// Main entry point for the sleep utility
+/// Standardized entry point for sleep utility
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runSleep(allocator, args, stdout_writer, stderr_writer);
+}
+
 pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
     const parsed_args = common.argparse.ArgParser.parse(SleepArgs, allocator, args) catch |err| {

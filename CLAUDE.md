@@ -199,6 +199,36 @@ test "description" {
 }
 ```
 
+### Fuzzing Requirements
+
+All utilities must include comprehensive fuzz tests in `src/<utility>_fuzz.zig`:
+
+```zig
+//! Fuzz tests for <utility> using std.testing.fuzz()
+const std = @import("std");
+const testing = std.testing;
+const common = @import("common");
+const <utility> = @import("<utility>");
+
+test "<utility> fuzz basic" {
+    try std.testing.fuzz(testing.allocator, testBasic, .{});
+}
+
+fn testBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+    try common.fuzz.testUtilityBasic(<utility>.runUtility, allocator, input);
+}
+
+test "<utility> fuzz deterministic" {
+    try std.testing.fuzz(testing.allocator, testDeterministic, .{});
+}
+
+fn testDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+    try common.fuzz.testUtilityDeterministic(<utility>.runUtility, allocator, input);
+}
+```
+
+Add utility-specific tests for complex behaviors. The build system automatically creates `fuzz-<utility>` targets.
+
 
 ## Zig Documentation Tools
 

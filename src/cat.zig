@@ -55,6 +55,11 @@ fn printVersion(writer: anytype) !void {
 }
 
 /// Main entry point for cat utility with stdout and stderr writer parameters
+/// Standardized entry point for cat utility
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runCat(allocator, args, stdout_writer, stderr_writer);
+}
+
 pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {

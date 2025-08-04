@@ -1,5 +1,6 @@
 .PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help \
-        test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open
+        test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open \
+        fuzz fuzz-echo
 
 # Default target
 all: build
@@ -77,6 +78,16 @@ coverage:
 # Run tests with kcov coverage
 coverage-kcov:
 	zig build coverage -Dcoverage-backend=kcov
+
+# Fuzzing targets
+# Usage: make fuzz          - runs all fuzz tests
+#        make fuzz UTIL=echo - runs fuzz tests for specific utility
+fuzz:
+ifdef UTIL
+	zig build fuzz-$(UTIL)
+else
+	zig build fuzz
+endif
 
 # Clean build artifacts
 clean:
@@ -159,6 +170,22 @@ test-linux-coverage:
 	@echo "Running coverage tests in Ubuntu 24.04 container..."
 	@scripts/test-linux.sh --coverage
 
+# Fuzzing in Linux container with web UI (for macOS development)
+# Usage: make fuzz-linux          - runs all fuzz tests with web UI
+#        make fuzz-linux UTIL=echo - runs fuzz tests for specific utility with web UI
+fuzz-linux:
+	@echo "Running fuzz tests in Linux container with web UI..."
+	@echo "Web UI will be available at http://localhost:8080"
+ifdef UTIL
+	@scripts/test-linux.sh "zig build fuzz-$(UTIL) --fuzz --port 8080"
+else
+	@scripts/test-linux.sh "zig build fuzz --fuzz --port 8080"
+endif
+
+fuzz-linux-shell:
+	@echo "Starting interactive shell for fuzzing in Linux container..."
+	@scripts/test-linux.sh --shell
+
 docker-build:
 	@echo "Building Docker test images..."
 	@scripts/test-linux.sh --build-only
@@ -198,6 +225,11 @@ help:
 	@echo "  make test-privileged-local - Run privileged tests with fallback"
 	@echo "  make coverage            - Run tests with native coverage"
 	@echo "  make coverage-kcov       - Run tests with kcov coverage"
+	@echo "  make fuzz                - Run all fuzz tests (property-based)"
+	@echo "  make fuzz UTIL=echo      - Run fuzz tests for specific utility"
+	@echo "  make fuzz-linux          - Run fuzz tests in Linux container with web UI"
+	@echo "  make fuzz-linux UTIL=echo - Run utility fuzz tests in Linux with web UI"
+	@echo "  make fuzz-linux-shell    - Interactive shell for fuzzing in Linux"
 	@echo ""
 	@echo "Linux testing from macOS (Docker):"
 	@echo "  make test-linux          - Run tests in Ubuntu 24.04 container"

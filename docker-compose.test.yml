@@ -22,6 +22,8 @@ services:
       - DISTRO=ubuntu-24.04
     working_dir: /workspace
     command: /bin/bash
+    ports:
+      - "8080:8080"  # Expose port for fuzzing web UI
 
   # Ubuntu Latest - Bleeding edge testing
   ubuntu-latest:
