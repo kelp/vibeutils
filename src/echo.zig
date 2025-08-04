@@ -244,7 +244,7 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
                 },
                 'x' => {
                     // Hex sequence: \xHH (exactly 2 hex digits)
-                    if (i + 3 <= s.len) {
+                    if (i + 4 <= s.len) {
                         // Try to parse the next 2 characters as hex
                         const hex_value = std.fmt.parseInt(u8, s[i + 2 .. i + 4], 16) catch {
                             // Invalid hex sequence, output literally
@@ -385,6 +385,28 @@ test "echo -e with hex sequences" {
     try testing.expectEqualStrings("A B\n", buffer.items);
 }
 
+test "echo -e with incomplete hex sequences" {
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // Test incomplete hex sequences that should be output literally
+    const args = [_][]const u8{ "-e", "\\x4\\x\\xZ" }; // incomplete and invalid hex
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\\x4\\x\\xZ\n", buffer.items);
+}
+
+test "echo -e with valid hex at end of string" {
+    var buffer = std.ArrayList(u8).init(testing.allocator);
+    defer buffer.deinit();
+
+    // Test valid hex sequence at the end of string (boundary condition)
+    const args = [_][]const u8{ "-e", "test\\x41" }; // should produce "testA"
+    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("testA\n", buffer.items);
+}
+
 test "echo -en combines flags" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
@@ -433,4 +455,136 @@ test "echo -e overrides previous -E" {
     const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\n", buffer.items);
+}
+
+// Fuzzing tests - these test properties that should hold for all inputs
+test "fuzz: echo never panics with arbitrary arguments" {
+    const fuzz = @import("common").fuzz;
+    const allocator = testing.allocator;
+
+    // Test various argument patterns
+    const test_inputs = [_][]const u8{
+        &[_]u8{}, // Empty
+        &[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 }, // Various argument types
+        &[_]u8{ 255, 254, 253, 100, 50, 25 }, // High bytes
+        &[_]u8{ 4, 65, 66, 67, 68, 69, 70 }, // Mixed chars with special handling
+        &[_]u8{ 0, 255, 0, 255, 128, 64, 32, 16 }, // Alternating pattern
+    };
+
+    for (test_inputs) |input| {
+        // Generate arguments from fuzzer input
+        const args = try fuzz.generateArgs(allocator, input);
+        defer {
+            for (args) |arg| allocator.free(arg);
+            allocator.free(args);
+        }
+
+        // Echo should never panic, only return success or error
+        var buffer = std.ArrayList(u8).init(allocator);
+        defer buffer.deinit();
+
+        const result = runEcho(allocator, args, buffer.writer(), common.null_writer) catch {
+            // Errors are acceptable (e.g., argument parsing errors)
+            continue;
+        };
+
+        // If it succeeded, we should have gotten a valid exit code
+        try testing.expect(result == 0 or result == 1 or result == 2);
+    }
+}
+
+test "fuzz: echo with escape sequences never panics" {
+    const fuzz = @import("common").fuzz;
+    const allocator = testing.allocator;
+
+    // Test various escape sequence patterns
+    const test_inputs = [_][]const u8{
+        &[_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }, // All escape types
+        &[_]u8{ 0, 100, 1, 200, 2, 150 }, // Mixed with regular chars
+        &[_]u8{ 9, 9, 9, 10, 10, 10 }, // Repeated patterns
+        &[_]u8{ 255, 0, 128, 64, 32, 16, 8, 4, 2, 1 }, // Binary countdown
+    };
+
+    for (test_inputs) |input| {
+        // Generate escape sequences
+        const escape_seq = try fuzz.generateEscapeSequence(allocator, input);
+        defer allocator.free(escape_seq);
+
+        // Test both with and without -e flag
+        const test_cases = [_][]const []const u8{
+            &[_][]const u8{ "-e", escape_seq },
+            &[_][]const u8{ "-E", escape_seq },
+            &[_][]const u8{ "-en", escape_seq },
+            &[_][]const u8{escape_seq},
+        };
+
+        for (test_cases) |args| {
+            var buffer = std.ArrayList(u8).init(allocator);
+            defer buffer.deinit();
+
+            const result = runEcho(allocator, args, buffer.writer(), common.null_writer) catch {
+                // Parsing errors are acceptable
+                continue;
+            };
+
+            // Should succeed and produce valid exit code
+            try testing.expect(result == 0 or result == 1 or result == 2);
+        }
+    }
+}
+
+test "fuzz: echo output is deterministic for same input" {
+    const fuzz = @import("common").fuzz;
+    const allocator = testing.allocator;
+
+    const test_input = [_]u8{ 1, 2, 3, 4, 5 };
+    const args = try fuzz.generateArgs(allocator, test_input[0..]);
+    defer {
+        for (args) |arg| allocator.free(arg);
+        allocator.free(args);
+    }
+
+    // Run echo twice with the same arguments
+    var buffer1 = std.ArrayList(u8).init(allocator);
+    defer buffer1.deinit();
+    var buffer2 = std.ArrayList(u8).init(allocator);
+    defer buffer2.deinit();
+
+    const result1 = runEcho(allocator, args, buffer1.writer(), common.null_writer) catch return;
+    const result2 = runEcho(allocator, args, buffer2.writer(), common.null_writer) catch return;
+
+    // Should produce identical results
+    try testing.expectEqual(result1, result2);
+    try testing.expectEqualStrings(buffer1.items, buffer2.items);
+}
+
+test "fuzz: echo handles maximum argument counts gracefully" {
+    const allocator = testing.allocator;
+
+    // Create maximum number of arguments
+    var args = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (args.items) |arg| allocator.free(arg);
+        args.deinit();
+    }
+
+    // Add up to 1000 arguments
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        const arg = try std.fmt.allocPrint(allocator, "arg{}", .{i});
+        try args.append(arg);
+    }
+
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
+
+    // Should handle large argument counts without crashing
+    const result = runEcho(allocator, args.items, buffer.writer(), common.null_writer) catch {
+        // Out of memory or other resource errors are acceptable
+        return;
+    };
+
+    try testing.expect(result == 0);
+    // Output should contain all arguments separated by spaces
+    try testing.expect(buffer.items.len > 1000); // Should be substantial output
 }

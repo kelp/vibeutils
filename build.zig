@@ -61,6 +61,7 @@ pub fn build(b: *std.Build) void {
     addFormatSteps(b);
     addCleanStep(b);
     addCoverageSteps(b, target, optimize, coverage_backend, common, build_options_module);
+    addFuzzSteps(b, target, optimize, common, build_options_module);
     addCIValidateStep(b, ci);
     addDocsStep(b, target, optimize, common, build_options_module);
 }
@@ -419,4 +420,39 @@ fn addDocsStep(
 
     // Add a completion message (without circular dependency)
     // This is just informational and doesn't need to be part of the step chain
+}
+
+/// Add fuzzing build steps for the project
+/// Creates fuzz tests for each utility and provides commands to run them
+fn addFuzzSteps(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    common: *std.Build.Module,
+    build_options_module: *std.Build.Module,
+) void {
+    const fuzz_step = b.step("fuzz", "Run all fuzz tests");
+    const fuzz_echo_step = b.step("fuzz-echo", "Run fuzz tests for echo utility");
+
+    // Fuzz test for echo utility - use dedicated fuzz file
+    const echo_fuzz = b.addTest(.{
+        .name = "echo-fuzz",
+        .root_source_file = b.path("src/echo_fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    echo_fuzz.root_module.addImport("common", common);
+    echo_fuzz.root_module.addImport("build_options", build_options_module);
+    echo_fuzz.root_module.addImport("echo", b.createModule(.{
+        .root_source_file = b.path("src/echo.zig"),
+        .imports = &.{
+            .{ .name = "common", .module = common },
+            .{ .name = "build_options", .module = build_options_module },
+        },
+    }));
+
+    const run_echo_fuzz = b.addRunArtifact(echo_fuzz);
+    fuzz_echo_step.dependOn(&run_echo_fuzz.step);
+    fuzz_step.dependOn(&run_echo_fuzz.step);
 }
