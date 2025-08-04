@@ -302,6 +302,11 @@ pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_wri
     return if (result) @intFromEnum(ExitCode.true) else @intFromEnum(ExitCode.false);
 }
 
+/// Wrapper function for consistent fuzz testing interface
+pub fn runUtility(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runTest(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Run main test command implementation
 pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = stdout_writer; // Not used in test command

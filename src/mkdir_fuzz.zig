@@ -1,53 +1,53 @@
 //! Streamlined fuzz tests for mkdir utility
 //!
 //! Mkdir creates directories with various options.
-//! These tests verify it handles path and permission scenarios gracefully.
+//! Tests verify the utility handles path and permission scenarios gracefully.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const mkdir_util = @import("mkdir.zig");
 
-test "mkdir fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testMkdirBasic, .{});
-}
+// Create standardized fuzz tests using the unified builder
+const MkdirFuzzTests = common.fuzz.createUtilityFuzzTests(mkdir_util.runUtility);
 
-fn testMkdirBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(mkdir_util.runUtility, allocator, input);
+test "mkdir fuzz basic" {
+    try std.testing.fuzz(testing.allocator, MkdirFuzzTests.testBasic, .{});
 }
 
 test "mkdir fuzz paths" {
-    try std.testing.fuzz(testing.allocator, testMkdirPaths, .{});
-}
-
-fn testMkdirPaths(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityPaths(mkdir_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, MkdirFuzzTests.testPaths, .{});
 }
 
 test "mkdir fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testMkdirDeterministic, .{});
+    try std.testing.fuzz(testing.allocator, MkdirFuzzTests.testDeterministic, .{});
 }
 
-fn testMkdirDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(mkdir_util.runUtility, allocator, input);
+test "mkdir fuzz parent creation" {
+    try std.testing.fuzz(testing.allocator, testMkdirParents, .{});
 }
 
-test "mkdir fuzz permissions" {
-    try std.testing.fuzz(testing.allocator, testMkdirPermissions, .{});
-}
+fn testMkdirParents(allocator: std.mem.Allocator, input: []const u8) !void {
+    if (input.len == 0) return;
 
-fn testMkdirPermissions(allocator: std.mem.Allocator, input: []const u8) !void {
-    const perm = common.fuzz.generateFilePermissions(input);
-    const perm_str = try std.fmt.allocPrint(allocator, "{o}", .{perm});
-    defer allocator.free(perm_str);
+    // Generate nested directory path
+    const nested_path = try common.fuzz.generatePath(allocator, input);
+    defer allocator.free(nested_path);
 
-    const args = [_][]const u8{ "-m", perm_str, "/tmp/fuzz_test_dir" };
-
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
-
-    _ = mkdir_util.runUtility(allocator, &args, stdout_buf.writer(), common.null_writer) catch {
-        // Permission and path errors are expected
-        return;
+    // Test with -p flag for parent creation
+    const test_cases = [_][]const []const u8{
+        &[_][]const u8{ "-p", nested_path },
+        &[_][]const u8{ "--parents", nested_path },
+        &[_][]const u8{ "-pv", nested_path }, // With verbose
     };
+
+    for (test_cases) |args| {
+        var stdout_buf = std.ArrayList(u8).init(allocator);
+        defer stdout_buf.deinit();
+
+        _ = mkdir_util.runUtility(allocator, args, stdout_buf.writer(), common.null_writer) catch {
+            // Expected to fail for invalid paths
+            continue;
+        };
+    }
 }

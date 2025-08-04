@@ -1,19 +1,26 @@
 //! Streamlined fuzz tests for echo utility
 //!
 //! Echo outputs text with optional escape sequence processing.
-//! These tests verify it handles various inputs and escape sequences gracefully.
+//! Tests verify the utility handles various inputs and escape sequences gracefully.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const echo_util = @import("echo.zig");
 
+// Create standardized fuzz tests using the unified builder
+const EchoFuzzTests = common.fuzz.createUtilityFuzzTests(echo_util.runUtility);
+
 test "echo fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testEchoBasic, .{});
+    try std.testing.fuzz(testing.allocator, EchoFuzzTests.testBasic, .{});
 }
 
-fn testEchoBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(echo_util.runUtility, allocator, input);
+test "echo fuzz paths" {
+    try std.testing.fuzz(testing.allocator, EchoFuzzTests.testPaths, .{});
+}
+
+test "echo fuzz deterministic" {
+    try std.testing.fuzz(testing.allocator, EchoFuzzTests.testDeterministic, .{});
 }
 
 test "echo fuzz escape sequences" {
@@ -32,22 +39,6 @@ fn testEchoEscapeSequences(allocator: std.mem.Allocator, input: []const u8) !voi
         // Errors are acceptable in fuzz testing
         return;
     };
-}
-
-test "echo fuzz paths" {
-    try std.testing.fuzz(testing.allocator, testEchoPaths, .{});
-}
-
-fn testEchoPaths(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityPaths(echo_util.runUtility, allocator, input);
-}
-
-test "echo fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testEchoDeterministic, .{});
-}
-
-fn testEchoDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(echo_util.runUtility, allocator, input);
 }
 
 test "echo fuzz flag combinations" {

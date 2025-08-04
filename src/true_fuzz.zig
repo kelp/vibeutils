@@ -1,27 +1,22 @@
 //! Streamlined fuzz tests for true utility
 //!
 //! True is the simplest utility - it always succeeds and produces no output.
-//! These tests verify it handles any input gracefully.
+//! Tests verify the utility handles any input gracefully.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const true_util = @import("true.zig");
 
-test "true fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testTrueBasic, .{});
-}
+// Create standardized fuzz tests using the unified builder
+const TrueFuzzTests = common.fuzz.createUtilityFuzzTests(true_util.runUtility);
 
-fn testTrueBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(true_util.runUtility, allocator, input);
+test "true fuzz basic" {
+    try std.testing.fuzz(testing.allocator, TrueFuzzTests.testBasic, .{});
 }
 
 test "true fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testTrueDeterministic, .{});
-}
-
-fn testTrueDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(true_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, TrueFuzzTests.testDeterministic, .{});
 }
 
 test "true fuzz invariant properties" {

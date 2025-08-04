@@ -1,5 +1,6 @@
 const std = @import("std");
 const utils = @import("build/utils.zig");
+const fuzz_coverage = @import("build/fuzz_coverage.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -17,7 +18,13 @@ pub fn build(b: *std.Build) void {
     // Validate utilities exist before building
     utils.validateUtilities() catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
-        return; // Let build system handle the error gracefully
+        return; // Abort build configuration
+    };
+
+    // Validate fuzz coverage - all utilities must have fuzz tests
+    fuzz_coverage.enforceFuzzCoverage(b.allocator) catch |err| {
+        std.log.err("Fuzz coverage validation failed: {}", .{err});
+        return; // Abort build configuration
     };
 
     // Build options with version from build.zig.zon using safe parser
@@ -26,7 +33,7 @@ pub fn build(b: *std.Build) void {
     const version = utils.parseVersion(b.allocator) catch |err| {
         std.log.err("Failed to parse version from build.zig.zon: {}", .{err});
         std.log.err("Ensure build.zig.zon exists and contains a valid .version field", .{});
-        return; // Let build system handle the error gracefully
+        return; // Abort build configuration
     };
     defer b.allocator.free(version); // Free the allocated version string
 
@@ -47,14 +54,14 @@ pub fn build(b: *std.Build) void {
     for (utils.utilities) |util| {
         buildUtility(b, util, target, optimize, coverage, common, build_options_module) catch |err| {
             std.log.err("Failed to build utility {s}: {}", .{ util.name, err });
-            return; // Let build system handle the error gracefully
+            return; // Abort build configuration
         };
     }
 
     // Unit tests
     buildTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
         std.log.err("Failed to configure tests: {}", .{err});
-        return; // Let build system handle the error gracefully
+        return; // Abort build configuration
     };
 
     // Add additional build steps
@@ -62,6 +69,7 @@ pub fn build(b: *std.Build) void {
     addCleanStep(b);
     addCoverageSteps(b, target, optimize, coverage_backend, common, build_options_module);
     addFuzzSteps(b, target, optimize, common, build_options_module);
+    addFuzzCoverageStep(b);
     addCIValidateStep(b, ci);
     addDocsStep(b, target, optimize, common, build_options_module);
 }
@@ -207,7 +215,7 @@ fn buildTests(
     // Integration tests
     buildIntegrationTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
         std.log.err("Failed to configure integration tests: {}", .{err});
-        return;
+        return; // Abort build configuration
     };
 }
 
@@ -347,6 +355,15 @@ fn addCoverageSteps(
 
         coverage_step.dependOn(test_with_coverage);
     }
+}
+
+/// Add fuzz coverage reporting step
+fn addFuzzCoverageStep(b: *std.Build) void {
+    const fuzz_coverage_step = b.step("fuzz-coverage", "Report fuzz test coverage");
+
+    const coverage_cmd = b.addSystemCommand(&.{ "zig", "run", "build/fuzz_coverage_reporter.zig" });
+
+    fuzz_coverage_step.dependOn(&coverage_cmd.step);
 }
 
 /// Add CI validation step

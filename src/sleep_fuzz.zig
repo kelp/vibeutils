@@ -1,19 +1,26 @@
 //! Streamlined fuzz tests for sleep utility
 //!
 //! Sleep delays execution for a specified time with various time formats.
-//! These tests verify it handles time parsing gracefully without actually sleeping.
+//! Tests verify the utility handles time parsing gracefully without actually sleeping.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const sleep_util = @import("sleep.zig");
 
+// Create standardized fuzz tests using the unified builder
+const SleepFuzzTests = common.fuzz.createUtilityFuzzTests(sleep_util.runUtility);
+
 test "sleep fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testSleepBasic, .{});
+    try std.testing.fuzz(testing.allocator, SleepFuzzTests.testBasic, .{});
 }
 
-fn testSleepBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(sleep_util.runUtility, allocator, input);
+test "sleep fuzz paths" {
+    try std.testing.fuzz(testing.allocator, SleepFuzzTests.testPaths, .{});
+}
+
+test "sleep fuzz deterministic" {
+    try std.testing.fuzz(testing.allocator, SleepFuzzTests.testDeterministic, .{});
 }
 
 test "sleep fuzz time formats" {
@@ -40,14 +47,6 @@ fn testSleepTimeFormats(allocator: std.mem.Allocator, input: []const u8) !void {
         // Time parsing errors are acceptable
         return;
     };
-}
-
-test "sleep fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testSleepDeterministic, .{});
-}
-
-fn testSleepDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(sleep_util.runUtility, allocator, input);
 }
 
 test "sleep fuzz multiple time args" {

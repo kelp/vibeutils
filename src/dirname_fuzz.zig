@@ -8,26 +8,17 @@ const testing = std.testing;
 const common = @import("common");
 const dirname_util = @import("dirname.zig");
 
-test "dirname fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testDirnameBasic, .{});
-}
+// Create standardized fuzz tests using the unified builder
+const DirnameFuzzTests = common.fuzz.createUtilityFuzzTests(dirname_util.runUtility);
 
-fn testDirnameBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(dirname_util.runUtility, allocator, input);
+test "dirname fuzz basic" {
+    try std.testing.fuzz(testing.allocator, DirnameFuzzTests.testBasic, .{});
 }
 
 test "dirname fuzz paths" {
-    try std.testing.fuzz(testing.allocator, testDirnamePaths, .{});
-}
-
-fn testDirnamePaths(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityPaths(dirname_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, DirnameFuzzTests.testPaths, .{});
 }
 
 test "dirname fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testDirnameDeterministic, .{});
-}
-
-fn testDirnameDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(dirname_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, DirnameFuzzTests.testDeterministic, .{});
 }

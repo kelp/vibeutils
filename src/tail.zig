@@ -101,6 +101,11 @@ fn printHelp(writer: anytype) !void {
     );
 }
 
+/// Wrapper function for consistent fuzz testing interface
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runTail(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main entry point for tail utility with stdout and stderr writer parameters
 pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser

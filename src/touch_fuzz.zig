@@ -1,35 +1,26 @@
 //! Streamlined fuzz tests for touch utility
 //!
 //! Touch creates files and updates timestamps.
-//! These tests verify it handles various path and option scenarios gracefully.
+//! Tests verify the utility handles various path and option scenarios gracefully.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const touch_util = @import("touch.zig");
 
-test "touch fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testTouchBasic, .{});
-}
+// Create standardized fuzz tests using the unified builder
+const TouchFuzzTests = common.fuzz.createUtilityFuzzTests(touch_util.runUtility);
 
-fn testTouchBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(touch_util.runUtility, allocator, input);
+test "touch fuzz basic" {
+    try std.testing.fuzz(testing.allocator, TouchFuzzTests.testBasic, .{});
 }
 
 test "touch fuzz paths" {
-    try std.testing.fuzz(testing.allocator, testTouchPaths, .{});
-}
-
-fn testTouchPaths(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityPaths(touch_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, TouchFuzzTests.testPaths, .{});
 }
 
 test "touch fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testTouchDeterministic, .{});
-}
-
-fn testTouchDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(touch_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, TouchFuzzTests.testDeterministic, .{});
 }
 
 test "touch fuzz file lists" {

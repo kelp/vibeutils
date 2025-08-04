@@ -32,11 +32,14 @@ const LimitedWriter = struct {
     }
 };
 
+// Create standardized fuzz tests using the unified builder
+const YesFuzzTests = common.fuzz.createUtilityFuzzTests(yes_util.runUtility);
+
 test "yes fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testYesBasic, .{});
+    try std.testing.fuzz(testing.allocator, testYesBasicLimited, .{});
 }
 
-fn testYesBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+fn testYesBasicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
     const args = try common.fuzz.generateArgs(allocator, input);
     defer {
         for (args) |arg| allocator.free(arg);
@@ -53,6 +56,44 @@ fn testYesBasic(allocator: std.mem.Allocator, input: []const u8) !void {
         _ = err;
         return;
     };
+}
+
+test "yes fuzz paths" {
+    try std.testing.fuzz(testing.allocator, YesFuzzTests.testPaths, .{});
+}
+
+test "yes fuzz deterministic" {
+    try std.testing.fuzz(testing.allocator, testYesDeterministicLimited, .{});
+}
+
+fn testYesDeterministicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
+    const args = try common.fuzz.generateArgs(allocator, input);
+    defer {
+        for (args) |arg| allocator.free(arg);
+        allocator.free(args);
+    }
+
+    var stdout_buf1 = std.ArrayList(u8).init(allocator);
+    defer stdout_buf1.deinit();
+    var stdout_buf2 = std.ArrayList(u8).init(allocator);
+    defer stdout_buf2.deinit();
+
+    var limited_writer1 = LimitedWriter{ .buffer = &stdout_buf1, .limit = 200 };
+    var limited_writer2 = LimitedWriter{ .buffer = &stdout_buf2, .limit = 200 };
+
+    const result1 = yes_util.runUtility(allocator, args, limited_writer1.writer(), common.null_writer) catch |err| switch (err) {
+        error.BrokenPipe => @as(u8, 0), // Expected result
+        else => return err,
+    };
+
+    const result2 = yes_util.runUtility(allocator, args, limited_writer2.writer(), common.null_writer) catch |err| switch (err) {
+        error.BrokenPipe => @as(u8, 0), // Expected result
+        else => return err,
+    };
+
+    // Results should be identical for same input
+    try testing.expectEqual(result1, result2);
+    try testing.expectEqualStrings(stdout_buf1.items, stdout_buf2.items);
 }
 
 test "yes fuzz output patterns" {
@@ -83,38 +124,4 @@ fn testYesOutputPatterns(allocator: std.mem.Allocator, input: []const u8) !void 
         _ = err;
         return;
     };
-}
-
-test "yes fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testYesDeterministic, .{});
-}
-
-fn testYesDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    const args = try common.fuzz.generateArgs(allocator, input);
-    defer {
-        for (args) |arg| allocator.free(arg);
-        allocator.free(args);
-    }
-
-    var stdout_buf1 = std.ArrayList(u8).init(allocator);
-    defer stdout_buf1.deinit();
-    var stdout_buf2 = std.ArrayList(u8).init(allocator);
-    defer stdout_buf2.deinit();
-
-    var limited_writer1 = LimitedWriter{ .buffer = &stdout_buf1, .limit = 200 };
-    var limited_writer2 = LimitedWriter{ .buffer = &stdout_buf2, .limit = 200 };
-
-    const result1 = yes_util.runUtility(allocator, args, limited_writer1.writer(), common.null_writer) catch |err| switch (err) {
-        error.BrokenPipe => @as(u8, 0), // Expected result
-        else => return err,
-    };
-
-    const result2 = yes_util.runUtility(allocator, args, limited_writer2.writer(), common.null_writer) catch |err| switch (err) {
-        error.BrokenPipe => @as(u8, 0), // Expected result
-        else => return err,
-    };
-
-    // Results should be identical for same input
-    try testing.expectEqual(result1, result2);
-    try testing.expectEqualStrings(stdout_buf1.items, stdout_buf2.items);
 }

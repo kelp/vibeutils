@@ -1,35 +1,26 @@
 //! Streamlined fuzz tests for cat utility
 //!
 //! Cat concatenates files and prints them to stdout.
-//! These tests verify it handles various file scenarios gracefully.
+//! Tests verify the utility handles various file scenarios gracefully.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const cat_util = @import("cat.zig");
 
-test "cat fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testCatBasic, .{});
-}
+// Create standardized fuzz tests using the unified builder
+const CatFuzzTests = common.fuzz.createUtilityFuzzTests(cat_util.runUtility);
 
-fn testCatBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(cat_util.runUtility, allocator, input);
+test "cat fuzz basic" {
+    try std.testing.fuzz(testing.allocator, CatFuzzTests.testBasic, .{});
 }
 
 test "cat fuzz paths" {
-    try std.testing.fuzz(testing.allocator, testCatPaths, .{});
-}
-
-fn testCatPaths(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityPaths(cat_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, CatFuzzTests.testPaths, .{});
 }
 
 test "cat fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testCatDeterministic, .{});
-}
-
-fn testCatDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(cat_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, CatFuzzTests.testDeterministic, .{});
 }
 
 test "cat fuzz file lists" {

@@ -8,18 +8,17 @@ const testing = std.testing;
 const common = @import("common");
 const pwd_util = @import("pwd.zig");
 
+// Create standardized fuzz tests using the unified builder
+const PwdFuzzTests = common.fuzz.createUtilityFuzzTests(pwd_util.runUtility);
+
 test "pwd fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testPwdBasic, .{});
+    try std.testing.fuzz(testing.allocator, PwdFuzzTests.testBasic, .{});
 }
 
-fn testPwdBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(pwd_util.runUtility, allocator, input);
+test "pwd fuzz paths" {
+    try std.testing.fuzz(testing.allocator, PwdFuzzTests.testPaths, .{});
 }
 
 test "pwd fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testPwdDeterministic, .{});
-}
-
-fn testPwdDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(pwd_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, PwdFuzzTests.testDeterministic, .{});
 }

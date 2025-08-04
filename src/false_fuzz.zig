@@ -1,27 +1,22 @@
 //! Streamlined fuzz tests for false utility
 //!
 //! False is the simplest failing utility - it always fails and produces no output.
-//! These tests verify it handles any input gracefully.
+//! Tests verify the utility handles any input gracefully.
 
 const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const false_util = @import("false.zig");
 
-test "false fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testFalseBasic, .{});
-}
+// Create standardized fuzz tests using the unified builder
+const FalseFuzzTests = common.fuzz.createUtilityFuzzTests(false_util.runUtility);
 
-fn testFalseBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(false_util.runUtility, allocator, input);
+test "false fuzz basic" {
+    try std.testing.fuzz(testing.allocator, FalseFuzzTests.testBasic, .{});
 }
 
 test "false fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testFalseDeterministic, .{});
-}
-
-fn testFalseDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(false_util.runUtility, allocator, input);
+    try std.testing.fuzz(testing.allocator, FalseFuzzTests.testDeterministic, .{});
 }
 
 test "false fuzz invariant properties" {

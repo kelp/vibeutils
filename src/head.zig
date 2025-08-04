@@ -31,6 +31,11 @@ const HeadArgs = struct {
     };
 };
 
+/// Wrapper function for consistent fuzz testing interface
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runHead(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Core head functionality accepting parsed arguments and writers.
 /// Processes files or stdin according to the provided options.
 pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {

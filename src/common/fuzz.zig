@@ -3,6 +3,11 @@
 //! This module provides common utilities for fuzz testing across the project.
 //! It includes helpers for generating random inputs, property-based testing,
 //! and common fuzzing patterns.
+//!
+//! SECURITY NOTE: Functions generate intentionally malicious inputs (path traversal,
+//! special characters) for proper security testing. This tests that utilities rely on
+//! OS kernel security rather than application-level "protection" that prevents
+//! legitimate operations.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -12,19 +17,54 @@ const common = @import("lib.zig");
 /// Configuration constants for fuzzing
 pub const FuzzConfig = struct {
     /// Maximum argument size varies by build mode for performance
+    /// Debug: 1000 bytes (fast iteration), Release: 10KB (comprehensive testing)
+    /// Based on typical shell command limits and reasonable fuzz test duration
     pub const MAX_ARG_SIZE = if (builtin.mode == .Debug) 1000 else 10_000;
+
     /// Maximum argument count varies by build mode
+    /// Debug: 100 args (fast iteration), Release: 1000 args (stress testing)
+    /// Limits prevent excessive memory usage during fuzzing
     pub const MAX_ARG_COUNT = if (builtin.mode == .Debug) 100 else 1000;
-    /// Maximum path depth to prevent infinite recursion
+
+    /// Maximum path depth to prevent infinite recursion in path generation
+    /// Typical filesystem limits are much higher, but 20 is sufficient for testing
     pub const MAX_PATH_DEPTH = 20;
+
+    /// Maximum path size for generated test paths
+    /// 4096 bytes matches typical POSIX PATH_MAX and Linux kernel limits
+    pub const MAX_PATH_SIZE = 4096;
+
+    /// Maximum command line size for escape sequence generation
+    /// 8192 bytes provides comprehensive testing without excessive memory usage
+    pub const MAX_CMDLINE_SIZE = 8192;
+
+    /// Number of path generation patterns (empty, relative, absolute, traversal, special, unicode, long, raw)
+    pub const PATH_PATTERN_COUNT = 8;
+
+    /// Number of argument generation patterns (short flag, long flag, flag with value, combined flags, double dash, empty, unicode, regular)
+    pub const ARG_PATTERN_COUNT = 8;
+
+    /// Number of escape sequence patterns (newline, tab, carriage return, backslash, bell, backspace, form feed, vertical tab, null, octal, hex, regular)
+    pub const ESCAPE_PATTERN_COUNT = 12;
+
+    /// Number of special character patterns for paths (space, tab, newline, other)
+    pub const SPECIAL_CHAR_PATTERN_COUNT = 10;
+
+    /// Number of symlink chain patterns (simple, chain, loop, broken, complex)
+    pub const SYMLINK_PATTERN_COUNT = 5;
+
+    /// Maximum number of files in generated file lists
+    pub const MAX_FILE_LIST_SIZE = 10;
+
+    /// Number of hexadecimal digits for hex escape sequences
+    pub const HEX_DIGIT_COUNT = 16;
+
+    /// Number of octal digits for octal escape sequences
+    pub const OCTAL_DIGIT_COUNT = 8;
 };
 
-/// Legacy constants for backward compatibility
-pub const MAX_PATH_SIZE = 4096;
-pub const MAX_CMDLINE_SIZE = 8192;
-
 /// Generate a random path-like string from fuzzer input
-/// This creates path strings that exercise edge cases like:
+/// Creates path strings exercising edge cases like:
 /// - Empty paths
 /// - Paths with special characters
 /// - Unicode paths
@@ -36,7 +76,7 @@ pub fn generatePath(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     }
 
     // Use first byte to determine path type
-    const path_type = input[0] % 8;
+    const path_type = input[0] % FuzzConfig.PATH_PATTERN_COUNT;
     const remaining = if (input.len > 1) input[1..] else &[_]u8{};
 
     switch (path_type) {
@@ -49,12 +89,15 @@ pub fn generatePath(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
             return allocator.dupe(u8, "file.txt");
         },
         2 => {
-            // Absolute path
-            return allocator.dupe(u8, "/tmp/test.txt");
+            // Absolute path - use cross-platform temp directory
+            const temp_dir = if (builtin.os.tag == .windows) "C:\\temp\\test.txt" else "/tmp/test.txt";
+            return allocator.dupe(u8, temp_dir);
         },
         3 => {
-            // Path with traversal
-            return allocator.dupe(u8, "../../../etc/passwd");
+            // Path with traversal - INTENTIONAL for security testing
+            // This tests that utilities trust the OS kernel for security
+            // rather than implementing application-level "protection"
+            return allocator.dupe(u8, "../../../test/fuzz_traversal_probe");
         },
         4 => {
             // Path with special characters
@@ -62,16 +105,16 @@ pub fn generatePath(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
             defer path.deinit();
             try path.appendSlice("file");
             for (remaining) |byte| {
-                if (byte % 10 == 0) {
+                if (byte % FuzzConfig.SPECIAL_CHAR_PATTERN_COUNT == 0) {
                     try path.append(' ');
-                } else if (byte % 10 == 1) {
+                } else if (byte % FuzzConfig.SPECIAL_CHAR_PATTERN_COUNT == 1) {
                     try path.append('\t');
-                } else if (byte % 10 == 2) {
+                } else if (byte % FuzzConfig.SPECIAL_CHAR_PATTERN_COUNT == 2) {
                     try path.append('\n');
                 } else {
                     try path.append(byte);
                 }
-                if (path.items.len >= MAX_PATH_SIZE) break;
+                if (path.items.len >= FuzzConfig.MAX_PATH_SIZE) break;
             }
             return path.toOwnedSlice();
         },
@@ -83,21 +126,21 @@ pub fn generatePath(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
             // Very long path
             var path = std.ArrayList(u8).init(allocator);
             defer path.deinit();
-            while (path.items.len < MAX_PATH_SIZE and path.items.len < remaining.len * 10) {
+            while (path.items.len < FuzzConfig.MAX_PATH_SIZE and path.items.len < remaining.len * 10) {
                 try path.appendSlice("very/long/path/component/");
             }
             return path.toOwnedSlice();
         },
         else => {
             // Raw fuzzer input as path
-            const max_len = @min(remaining.len, MAX_PATH_SIZE);
+            const max_len = @min(remaining.len, FuzzConfig.MAX_PATH_SIZE);
             return allocator.dupe(u8, remaining[0..max_len]);
         },
     }
 }
 
 /// Generate command-line arguments from fuzzer input
-/// Creates various argument patterns to test argument parsing
+/// Creates argument patterns to test parsing
 pub fn generateArgs(allocator: std.mem.Allocator, input: []const u8) ![]const []const u8 {
     if (input.len == 0) {
         return &[_][]const u8{};
@@ -108,7 +151,7 @@ pub fn generateArgs(allocator: std.mem.Allocator, input: []const u8) ![]const []
 
     var i: usize = 0;
     while (i < input.len) {
-        const arg_type = input[i] % 8;
+        const arg_type = input[i] % FuzzConfig.ARG_PATTERN_COUNT;
         i += 1;
 
         switch (arg_type) {
@@ -169,17 +212,6 @@ pub fn generateArgs(allocator: std.mem.Allocator, input: []const u8) ![]const []
     return args.toOwnedSlice();
 }
 
-/// Property: Function should never panic, only return errors
-/// This is a helper to verify that a function handles all inputs gracefully
-pub fn expectNoGrac(comptime func: anytype, input: anytype) !void {
-    _ = func(input) catch |err| {
-        // Any error is fine, as long as we don't panic
-        _ = err;
-        return;
-    };
-    // Success is also fine
-}
-
 /// Generate escape sequences for testing echo-like utilities
 pub fn generateEscapeSequence(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     if (input.len == 0) {
@@ -190,7 +222,7 @@ pub fn generateEscapeSequence(allocator: std.mem.Allocator, input: []const u8) !
     defer result.deinit();
 
     for (input) |byte| {
-        const escape_type = byte % 12;
+        const escape_type = byte % FuzzConfig.ESCAPE_PATTERN_COUNT;
         switch (escape_type) {
             0 => try result.appendSlice("\\n"),
             1 => try result.appendSlice("\\t"),
@@ -204,15 +236,15 @@ pub fn generateEscapeSequence(allocator: std.mem.Allocator, input: []const u8) !
             9 => {
                 // Octal sequence
                 try result.appendSlice("\\0");
-                try result.append('0' + (byte % 8));
-                try result.append('0' + ((byte / 8) % 8));
+                try result.append('0' + (byte % FuzzConfig.OCTAL_DIGIT_COUNT));
+                try result.append('0' + ((byte / FuzzConfig.OCTAL_DIGIT_COUNT) % FuzzConfig.OCTAL_DIGIT_COUNT));
             },
             10 => {
                 // Hex sequence
                 try result.appendSlice("\\x");
                 const hex_chars = "0123456789abcdef";
-                try result.append(hex_chars[byte % 16]);
-                try result.append(hex_chars[(byte / 16) % 16]);
+                try result.append(hex_chars[byte % FuzzConfig.HEX_DIGIT_COUNT]);
+                try result.append(hex_chars[(byte / FuzzConfig.HEX_DIGIT_COUNT) % FuzzConfig.HEX_DIGIT_COUNT]);
             },
             else => {
                 // Regular character
@@ -220,14 +252,14 @@ pub fn generateEscapeSequence(allocator: std.mem.Allocator, input: []const u8) !
             },
         }
 
-        if (result.items.len >= MAX_CMDLINE_SIZE) break;
+        if (result.items.len >= FuzzConfig.MAX_CMDLINE_SIZE) break;
     }
 
     return result.toOwnedSlice();
 }
 
 /// Generate file permissions from fuzzer input
-/// Creates various permission patterns for chmod testing
+/// Creates permission patterns for chmod testing
 pub fn generateFilePermissions(input: []const u8) u9 {
     if (input.len == 0) {
         return 0o644; // Default permissions
@@ -256,7 +288,7 @@ pub fn generateFilePermissions(input: []const u8) u9 {
 }
 
 /// Generate a list of file paths from fuzzer input
-/// Creates multiple paths for testing batch operations
+/// Creates multiple paths for batch operations
 pub fn generateFileList(allocator: std.mem.Allocator, input: []const u8) ![][]u8 {
     if (input.len == 0) {
         return &[_][]u8{};
@@ -266,7 +298,7 @@ pub fn generateFileList(allocator: std.mem.Allocator, input: []const u8) ![][]u8
     defer files.deinit();
 
     // Determine number of files (1-10)
-    const num_files = @min((input[0] % 10) + 1, input.len);
+    const num_files = @min((input[0] % FuzzConfig.MAX_FILE_LIST_SIZE) + 1, input.len);
 
     var i: usize = 0;
     while (i < num_files) : (i += 1) {
@@ -287,7 +319,7 @@ pub fn generateFileList(allocator: std.mem.Allocator, input: []const u8) ![][]u8
 }
 
 /// Generate a symbolic link chain pattern from fuzzer input
-/// Creates various symlink scenarios for testing ln, cp, mv operations
+/// Creates symlink scenarios for testing ln, cp, mv operations
 pub fn generateSymlinkChain(allocator: std.mem.Allocator, input: []const u8) ![]const []const u8 {
     if (input.len == 0) {
         return &[_][]const u8{};
@@ -296,7 +328,7 @@ pub fn generateSymlinkChain(allocator: std.mem.Allocator, input: []const u8) ![]
     var chain = std.ArrayList([]const u8).init(allocator);
     defer chain.deinit();
 
-    const chain_type = input[0] % 5;
+    const chain_type = input[0] % FuzzConfig.SYMLINK_PATTERN_COUNT;
 
     switch (chain_type) {
         0 => {
@@ -323,7 +355,7 @@ pub fn generateSymlinkChain(allocator: std.mem.Allocator, input: []const u8) ![]
         },
         else => {
             // Complex chain with multiple levels
-            const depth = @min(input[0] % 10, 5);
+            const depth = @min(input[0] % FuzzConfig.MAX_FILE_LIST_SIZE, 5);
             var i: usize = 0;
             while (i < depth) : (i += 1) {
                 const link_name = try std.fmt.allocPrint(allocator, "link{}", .{i});
@@ -363,7 +395,28 @@ pub fn createTestAllocator() std.mem.Allocator {
     return testing.allocator;
 }
 
-/// Generic fuzz test: Utility should handle any input gracefully without panicking
+/// Unified fuzz test builder - creates standardized fuzz test functions for any utility
+/// This reduces duplication across fuzz test files while allowing utility-specific tests
+pub fn createUtilityFuzzTests(comptime run_fn: anytype) type {
+    return struct {
+        /// Basic fuzz test - handle any input gracefully
+        pub fn testBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+            try testUtilityBasic(run_fn, allocator, input);
+        }
+
+        /// Path fuzz test - handle path-like arguments gracefully
+        pub fn testPaths(allocator: std.mem.Allocator, input: []const u8) !void {
+            try testUtilityPaths(run_fn, allocator, input);
+        }
+
+        /// Deterministic fuzz test - same input produces same output
+        pub fn testDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+            try testUtilityDeterministic(run_fn, allocator, input);
+        }
+    };
+}
+
+/// Generic fuzz test: Handle any input gracefully without panicking
 pub fn testUtilityBasic(comptime run_fn: anytype, allocator: std.mem.Allocator, input: []const u8) !void {
     const args = generateArgs(allocator, input) catch return;
     defer {
@@ -374,15 +427,13 @@ pub fn testUtilityBasic(comptime run_fn: anytype, allocator: std.mem.Allocator, 
     var stdout_buf = std.ArrayList(u8).init(allocator);
     defer stdout_buf.deinit();
 
-    _ = run_fn(allocator, args, stdout_buf.writer(), common.null_writer) catch |err| {
-        if (builtin.mode == .Debug) {
-            std.debug.print("Fuzz error (expected): {}\n", .{err});
-        }
+    _ = run_fn(allocator, args, stdout_buf.writer(), common.null_writer) catch {
+        // Errors are expected and acceptable during fuzzing
         return;
     };
 }
 
-/// Generic fuzz test: Utility should be deterministic (same input = same output)
+/// Generic fuzz test: Be deterministic (same input = same output)
 pub fn testUtilityDeterministic(comptime run_fn: anytype, allocator: std.mem.Allocator, input: []const u8) !void {
     const args = generateArgs(allocator, input) catch return;
     defer {
@@ -412,7 +463,7 @@ pub fn testUtilityDeterministic(comptime run_fn: anytype, allocator: std.mem.All
     try testing.expectEqualStrings(buffer1.items, buffer2.items);
 }
 
-/// Generic fuzz test: Utility should handle path-like arguments gracefully
+/// Generic fuzz test: Handle path-like arguments gracefully
 pub fn testUtilityPaths(comptime run_fn: anytype, allocator: std.mem.Allocator, input: []const u8) !void {
     const path = generatePath(allocator, input) catch return;
     defer allocator.free(path);
@@ -421,10 +472,8 @@ pub fn testUtilityPaths(comptime run_fn: anytype, allocator: std.mem.Allocator, 
     var stdout_buf = std.ArrayList(u8).init(allocator);
     defer stdout_buf.deinit();
 
-    _ = run_fn(allocator, &args, stdout_buf.writer(), common.null_writer) catch |err| {
-        if (builtin.mode == .Debug) {
-            std.debug.print("Path fuzz error (expected): {}\n", .{err});
-        }
+    _ = run_fn(allocator, &args, stdout_buf.writer(), common.null_writer) catch {
+        // Errors are expected and acceptable during fuzzing
         return;
     };
 }
@@ -456,7 +505,7 @@ test "generatePath produces valid paths" {
             const path = try generatePath(allocator, input);
             defer allocator.free(path);
             // Just verify it doesn't crash and returns something
-            try testing.expect(path.len <= MAX_PATH_SIZE);
+            try testing.expect(path.len <= FuzzConfig.MAX_PATH_SIZE);
         }
     }
 }
@@ -504,7 +553,7 @@ test "generateEscapeSequence produces valid escape sequences" {
 
         // Verify we got something and it's not too long
         try testing.expect(seq.len > 0);
-        try testing.expect(seq.len <= MAX_CMDLINE_SIZE);
+        try testing.expect(seq.len <= FuzzConfig.MAX_CMDLINE_SIZE);
     }
 }
 

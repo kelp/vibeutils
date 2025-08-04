@@ -31,7 +31,7 @@ const ChmodArgs = struct {
 };
 
 /// Main entry point for chmod utility
-pub fn runChmod(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const parsed_args = common.argparse.ArgParser.parse(ChmodArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -104,7 +104,7 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
 
-    const exit_code = try runChmod(allocator, args[1..], stdout, stderr);
+    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
     std.process.exit(exit_code);
 }
 

@@ -109,6 +109,24 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
     try runLs(allocator, args, stdout, stderr);
 }
 
+/// Wrapper function for consistent fuzz testing interface
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    // Parse arguments using new parser (same as mainWithAllocator)
+    const parsed_args = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "argument parsing failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer allocator.free(parsed_args.positionals);
+
+    // Call the main ls implementation
+    runLs(allocator, parsed_args, stdout_writer, stderr_writer) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "execution failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+
+    return 0;
+}
+
 /// Core ls functionality that accepts separate stdout and stderr writers
 /// This allows for testing and different output targets
 pub fn runLs(allocator: std.mem.Allocator, args: LsArgs, stdout_writer: anytype, stderr_writer: anytype) !void {
