@@ -1,7 +1,7 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 19/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, touch, true, yes)
+- **Completed**: 20/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, test, touch, true, yes)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
@@ -409,17 +409,27 @@ For each utility:
 - [x] Implement: Minimal implementation
 - [x] Man page: Write concise man page
 
-#### 19. test
-- [ ] Test: File existence checks (-e, -f, -d, -r, -w, -x)
-- [ ] Test: String comparisons (=, !=, -z, -n)
-- [ ] Test: Numeric comparisons (-eq, -ne, -lt, -le, -gt, -ge)
-- [ ] Test: Logical operators (-a, -o, !)
-- [ ] Test: Complex expressions with parentheses
-- [ ] Test: Exit codes (0 for true, 1 for false)
-- [ ] Implement: Expression parser
-- [ ] Implement: File test operations
-- [ ] Implement: Comparison operations
-- [ ] Man page: Write concise man page with examples
+#### 19. test ✓
+- [x] Test: File existence checks (-e, -f, -d, -r, -w, -x)
+- [x] Test: String comparisons (=, !=, -z, -n)
+- [x] Test: Numeric comparisons (-eq, -ne, -lt, -le, -gt, -ge)
+- [x] Test: Logical operators (-a, -o, !)
+- [x] Test: Complex expressions with parentheses
+- [x] Test: Exit codes (0 for true, 1 for false, 2 for error)
+- [x] Test: Both test and [ ] forms
+- [x] Test: Terminal tests (-t)
+- [x] Test: Special file tests (-p, -S, -b, -c, -L/-h)
+- [x] Test: File size test (-s)
+- [x] Test: Permission bit tests (-g for setgid)
+- [x] Test: Operator precedence and negation
+- [x] Test: Error handling for invalid expressions
+- [x] Implement: Expression parser with proper precedence
+- [x] Implement: File test operations (all POSIX types)
+- [x] Implement: String and numeric comparison operations
+- [x] Implement: Logical operators with POSIX precedence
+- [x] Implement: Parentheses grouping support
+- [x] Implement: Both test and [ executable forms
+- [x] Man page: Write concise man page with examples
 
 #### 20. date
 - [ ] Test: Display current date/time

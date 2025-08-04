@@ -1,0 +1,257 @@
+.\" POSIX-compliant test utility man page
+.Dd $Mdocdate$
+.Dt TEST 1
+.Os
+.Sh NAME
+.Nm test ,
+.Nm \&[
+.Nd evaluate conditional expressions
+.Sh SYNOPSIS
+.Nm test
+.Ar expression
+.Nm test
+.Nm \&[
+.Ar expression
+.Ic \&]
+.Sh DESCRIPTION
+The
+.Nm
+utility evaluates the given
+.Ar expression
+and exits with status 0 if the expression is true,
+1 if the expression is false,
+or 2 if an error occurred.
+.Pp
+When invoked as
+.Nm \&[ ,
+the command requires a closing
+.Ic \&]
+argument.
+.Pp
+The
+.Ar expression
+is built from the following primitives:
+.Ss File Tests
+.Bl -tag -width Ds
+.It Fl b Ar file
+True if
+.Ar file
+exists and is a block special file.
+.It Fl c Ar file
+True if
+.Ar file
+exists and is a character special file.
+.It Fl d Ar file
+True if
+.Ar file
+exists and is a directory.
+.It Fl e Ar file
+True if
+.Ar file
+exists.
+.It Fl f Ar file
+True if
+.Ar file
+exists and is a regular file.
+.It Fl g Ar file
+True if
+.Ar file
+exists and has its set-group-ID flag set.
+.It Fl h Ar file
+True if
+.Ar file
+exists and is a symbolic link.
+Same as
+.Fl L .
+.It Fl L Ar file
+True if
+.Ar file
+exists and is a symbolic link.
+Same as
+.Fl h .
+.It Fl p Ar file
+True if
+.Ar file
+exists and is a named pipe.
+.It Fl r Ar file
+True if
+.Ar file
+exists and is readable.
+.It Fl s Ar file
+True if
+.Ar file
+exists and has size greater than zero.
+.It Fl S Ar file
+True if
+.Ar file
+exists and is a socket.
+.It Fl t Ar fd
+True if file descriptor
+.Ar fd
+is open and refers to a terminal.
+.It Fl w Ar file
+True if
+.Ar file
+exists and is writable.
+.It Fl x Ar file
+True if
+.Ar file
+exists and is executable.
+.El
+.Ss String Tests
+.Bl -tag -width Ds
+.It Fl n Ar string
+True if the length of
+.Ar string
+is non-zero.
+.It Fl z Ar string
+True if the length of
+.Ar string
+is zero.
+.It Ar string
+True if
+.Ar string
+is not the null string.
+Equivalent to
+.Fl n Ar string .
+.It Ar string1 Li = Ar string2
+True if the strings are identical.
+.It Ar string1 Li != Ar string2
+True if the strings are not identical.
+.El
+.Ss Numeric Tests
+.Bl -tag -width Ds
+.It Ar integer1 Fl eq Ar integer2
+True if the integers are equal.
+.It Ar integer1 Fl ge Ar integer2
+True if
+.Ar integer1
+is greater than or equal to
+.Ar integer2 .
+.It Ar integer1 Fl gt Ar integer2
+True if
+.Ar integer1
+is greater than
+.Ar integer2 .
+.It Ar integer1 Fl le Ar integer2
+True if
+.Ar integer1
+is less than or equal to
+.Ar integer2 .
+.It Ar integer1 Fl lt Ar integer2
+True if
+.Ar integer1
+is less than
+.Ar integer2 .
+.It Ar integer1 Fl ne Ar integer2
+True if the integers are not equal.
+.El
+.Ss Complex Expressions
+Complex expressions can be formed using the following operators,
+listed in order of decreasing precedence:
+.Bl -tag -width Ds
+.It Li \&( Ar expression Li \&)
+True if
+.Ar expression
+is true.
+Used for grouping.
+.It Li \&! Ar expression
+True if
+.Ar expression
+is false.
+.It Ar expression1 Fl a Ar expression2
+True if both
+.Ar expression1
+and
+.Ar expression2
+are true.
+.It Ar expression1 Fl o Ar expression2
+True if either
+.Ar expression1
+or
+.Ar expression2
+is true.
+.El
+.Pp
+Note that
+.Fl a
+has higher precedence than
+.Fl o .
+.Sh EXIT STATUS
+.Ex -std test
+Additionally:
+.Bl -tag -width Ds
+.It Li 0
+The expression evaluated to true.
+.It Li 1
+The expression evaluated to false.
+.It Li 2
+An error occurred (malformed expression, etc.).
+.El
+.Sh EXAMPLES
+Test if a file exists:
+.Bd -literal -offset indent
+$ test -e /etc/passwd && echo "File exists"
+File exists
+.Ed
+.Pp
+Test if a directory is writable:
+.Bd -literal -offset indent
+$ test -w /tmp && echo "Directory is writable"
+Directory is writable
+.Ed
+.Pp
+Compare two numbers:
+.Bd -literal -offset indent
+$ test 5 -gt 3 && echo "5 is greater than 3"
+5 is greater than 3
+.Ed
+.Pp
+Complex expression with grouping:
+.Bd -literal -offset indent
+$ test \e( 5 -gt 3 \e) -a \e( 2 -lt 4 \e) && echo "Both conditions true"
+Both conditions true
+.Ed
+.Pp
+Using the bracket form:
+.Bd -literal -offset indent
+$ [ -f ~/.bashrc ] && echo "Bash config exists"
+Bash config exists
+.Ed
+.Pp
+String comparison:
+.Bd -literal -offset indent
+$ [ "$USER" = "root" ] && echo "Running as root"
+.Ed
+.Pp
+Testing for empty string:
+.Bd -literal -offset indent
+$ VAR=""
+$ [ -z "$VAR" ] && echo "Variable is empty"
+Variable is empty
+.Ed
+.Pp
+Negation example:
+.Bd -literal -offset indent
+$ [ ! -d /nonexistent ] && echo "Directory does not exist"
+Directory does not exist
+.Ed
+.Sh SEE ALSO
+.Xr expr 1 ,
+.Xr find 1 ,
+.Xr sh 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The
+.Fl h
+option is provided for
+.Bx
+compatibility and is equivalent to
+.Fl L .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

@@ -29,6 +29,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "sleep", .path = "src/sleep.zig", .needs_libc = true, .description = "Delay for a specified amount of time" },
     .{ .name = "true", .path = "src/true.zig", .needs_libc = true, .description = "Return a successful exit status" },
     .{ .name = "false", .path = "src/false.zig", .needs_libc = true, .description = "Do nothing, unsuccessfully" },
+    .{ .name = "test", .path = "src/test.zig", .needs_libc = true, .description = "Evaluate conditional expressions" },
+    .{ .name = "[", .path = "src/test.zig", .needs_libc = true, .description = "Evaluate conditional expressions (bracket form)" },
     .{ .name = "yes", .path = "src/yes.zig", .needs_libc = true, .description = "Output a string repeatedly until killed" },
 };
 
