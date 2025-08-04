@@ -32,6 +32,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "test", .path = "src/test.zig", .needs_libc = true, .description = "Evaluate conditional expressions" },
     .{ .name = "[", .path = "src/test.zig", .needs_libc = true, .description = "Evaluate conditional expressions (bracket form)" },
     .{ .name = "yes", .path = "src/yes.zig", .needs_libc = true, .description = "Output a string repeatedly until killed" },
+    .{ .name = "tail", .path = "src/tail.zig", .needs_libc = true, .description = "Display the last part of files" },
 };
 
 /// Parse version from ZON content string

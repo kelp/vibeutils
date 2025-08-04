@@ -1,0 +1,104 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt TAIL 1
+.Os
+.Sh NAME
+.Nm tail
+.Nd display the last part of a file
+.Sh SYNOPSIS
+.Nm tail
+.Op Fl fqvz
+.Op Fl c Ar number
+.Op Fl n Ar number
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the last part of one or more files or standard input.
+By default, the last 10 lines are displayed.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl c Ar number
+Output the last
+.Ar number
+bytes instead of lines.
+.It Fl f , Fl Fl follow
+Output appended data as the file grows.
+.It Fl n Ar number
+Output the last
+.Ar number
+lines instead of the default 10.
+.It Fl q , Fl Fl quiet , Fl Fl silent
+Never output headers giving file names.
+.It Fl v , Fl Fl verbose
+Always output headers giving file names.
+.It Fl z , Fl Fl zero-terminated
+Line delimiter is NUL, not newline.
+.It Fl Fl help
+Display help and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The
+.Ar number
+argument may be a decimal number, optionally followed by a
+size letter
+.Ql b ,
+.Ql k ,
+.Ql m ,
+.Ql g ,
+or
+.Ql t ,
+which represent 512, 1024, 1048576, 1073741824, or 1099511627776 byte blocks,
+respectively.
+.Pp
+If no files are specified,
+.Nm
+reads from standard input.
+A filename of
+.Ql -
+also refers to standard input.
+.Pp
+With multiple files,
+.Nm
+precedes the output of each file with a header showing the file name,
+unless the
+.Fl q
+option is specified.
+.Sh EXIT STATUS
+.Ex -std tail
+.Sh EXAMPLES
+Display the last 20 lines of a file:
+.Bd -literal -offset indent
+$ tail -n 20 file.txt
+.Ed
+.Pp
+Display the last 100 bytes of a file:
+.Bd -literal -offset indent
+$ tail -c 100 file.txt
+.Ed
+.Pp
+Monitor a log file for new entries:
+.Bd -literal -offset indent
+$ tail -f /var/log/messages
+.Ed
+.Sh SEE ALSO
+.Xr cat 1 ,
+.Xr head 1 ,
+.Xr more 1 ,
+.Xr sed 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2017
+specification.
+.Pp
+The flags
+.Op Fl qvz
+are extensions to that specification.
+.Sh AUTHORS
+.Nm vibeutils
+implementation by Travis Cole.
