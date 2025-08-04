@@ -7,7 +7,14 @@
 .Nd list directory contents
 .Sh SYNOPSIS
 .Nm ls
-.Op Fl 1AadhklR
+.Op Fl 1AadhklRV
+.Op Fl Fl help
+.Op Fl Fl version
+.Op Fl Fl color Ns = Ns Ar when
+.Op Fl Fl icons Ns = Ns Ar when
+.Op Fl Fl time-style Ns = Ns Ar style
+.Op Fl Fl group-directories-first
+.Op Fl Fl git
 .Op Ar file ...
 .Sh DESCRIPTION
 For each operand that names a
@@ -61,6 +68,38 @@ option.
 List in long format.
 .It Fl R
 Recursively list subdirectories encountered.
+.It Fl Fl color Ns = Ns Ar when
+Colorize the output.
+.Ar when
+can be
+.Dq always ,
+.Dq auto ,
+or
+.Dq never .
+.It Fl Fl group-directories-first
+Group directories before files in the listing.
+.It Fl Fl icons Ns = Ns Ar when
+Show file type icons.
+.Ar when
+can be
+.Dq always ,
+.Dq auto ,
+or
+.Dq never .
+.It Fl Fl time-style Ns = Ns Ar style
+Time/date format.
+.Ar style
+can be
+.Dq relative ,
+.Dq iso ,
+or
+.Dq long-iso .
+.It Fl Fl git
+Show git status indicators for files.
+.It Fl h , Fl Fl help
+Display help message and exit.
+.It Fl V , Fl Fl version
+Display version information and exit.
 .El
 .Sh EXIT STATUS
 .Ex -std ls
@@ -88,7 +127,7 @@ $ ls -d */
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.1-2017
 specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

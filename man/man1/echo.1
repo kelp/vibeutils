@@ -7,7 +7,9 @@
 .Nd write arguments to standard output
 .Sh SYNOPSIS
 .Nm echo
-.Op Fl enE
+.Op Fl enEhV
+.Op Fl Fl help
+.Op Fl Fl version
 .Op Ar string ...
 .Sh DESCRIPTION
 The
@@ -23,6 +25,10 @@ Enable interpretation of backslash escapes.
 Disable interpretation of backslash escapes (default).
 .It Fl n
 Do not print the trailing newline character.
+.It Fl h , Fl Fl help
+Display help message and exit.
+.It Fl V , Fl Fl version
+Display version information and exit.
 .El
 .Pp
 If
@@ -57,25 +63,19 @@ Character with hex value hh (2 digits)
 .Sh EXIT STATUS
 .Ex -std echo
 .Sh EXAMPLES
-Print a simple message:
+Print a simple message with multiple arguments:
 .Bd -literal -offset indent
-$ echo Hello world
-Hello world
+$ echo Hello world from vibeutils
+Hello world from vibeutils
 .Ed
 .Pp
-Print without newline:
+Print without trailing newline:
 .Bd -literal -offset indent
-$ echo -n prompt:
-prompt:$
+$ echo -n "Enter password: "
+Enter password: $
 .Ed
 .Pp
-Print multiple arguments:
-.Bd -literal -offset indent
-$ echo one two three
-one two three
-.Ed
-.Pp
-Print with escape sequences:
+Print with escape sequences enabled:
 .Bd -literal -offset indent
 $ echo -e "Line 1\\nLine 2\\tTabbed"
 Line 1
@@ -87,7 +87,7 @@ Line 2	Tabbed
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.1-2017
 specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
