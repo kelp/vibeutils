@@ -1,11 +1,4 @@
 //! head - output the first part of files
-//!
-//! The head utility displays the first lines of each file to standard output.
-//! By default, it shows the first 10 lines. The -n option specifies
-//! a different number of lines, and the -c option specifies a number
-//! of bytes instead.
-//!
-//! This implementation is compatible with GNU head and follows POSIX conventions.
 
 const common = @import("common");
 const std = @import("std");
@@ -29,12 +22,12 @@ const HeadArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
-        .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .lines = .{ .short = 'n', .desc = "Print the first NUM lines instead of the first 10" },
         .bytes = .{ .short = 'c', .desc = "Print the first NUM bytes of each file" },
+        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .lines = .{ .short = 'n', .desc = "Print the first NUM lines instead of the first 10" },
         .quiet = .{ .short = 'q', .desc = "Never print headers giving file names" },
         .verbose = .{ .short = 'v', .desc = "Always print headers giving file names" },
+        .version = .{ .short = 'V', .desc = "Output version information and exit" },
     };
 };
 
@@ -45,7 +38,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const parsed_args = common.argparse.ArgParser.parse(HeadArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                printError(stderr_writer, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
@@ -68,7 +61,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     // Create options struct
     const line_count = if (parsed_args.lines) |n| blk: {
         if (n < 0) {
-            printError(stderr_writer, "invalid number of lines", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
         break :blk @as(u64, @intCast(n));
@@ -101,7 +94,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    printError(stderr_writer, "{s}: {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, errorToMessage(err) });
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 defer file.close();
@@ -209,7 +202,7 @@ fn processBytes(reader: anytype, writer: anytype, byte_count: u64) !void {
     var buf_reader = std.io.bufferedReader(reader);
     var input = buf_reader.reader();
 
-    var buffer: [BYTE_BUFFER_SIZE]u8 = undefined;
+    var buffer: [common.constants.LINE_BUFFER_SIZE]u8 = undefined;
     var bytes_written: u64 = 0;
 
     while (bytes_written < byte_count) {
@@ -229,9 +222,6 @@ fn processBytes(reader: anytype, writer: anytype, byte_count: u64) !void {
 /// Default number of lines to display when no -n option is provided
 const DEFAULT_LINE_COUNT: u64 = 10;
 
-/// Buffer size for byte-oriented operations
-const BYTE_BUFFER_SIZE: usize = 4096;
-
 // ========== ERROR HANDLING ==========
 
 /// Convert error to user-friendly message
@@ -242,11 +232,6 @@ fn errorToMessage(err: anytype) []const u8 {
         error.IsDir => "Is a directory",
         else => @errorName(err),
     };
-}
-
-/// Print error message with program name prefix
-fn printError(writer: anytype, comptime fmt: []const u8, args: anytype) void {
-    writer.print("head: " ++ fmt ++ "\n", args) catch {};
 }
 
 // ========== TEST CONSTANTS ==========
@@ -280,11 +265,14 @@ test "head with -n 5 outputs first 5 lines" {
     var buffer = std.ArrayList(u8).init(testing.allocator);
     defer buffer.deinit();
 
-    const args = [_][]const u8{ "-n", "5" };
-    const result = try runHead(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const input = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\n";
+    var input_stream = std.io.fixedBufferStream(input);
 
-    // Since no input file, this succeeds but outputs nothing from stdin
-    try testing.expectEqual(@as(u8, 0), result);
+    const options = HeadOptions{ .line_count = 5 };
+    try processInput(input_stream.reader(), buffer.writer(), options);
+
+    const expected = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+    try testing.expectEqualStrings(expected, buffer.items);
 }
 
 test "head with -c 10 outputs first 10 bytes" {
@@ -363,17 +351,6 @@ test "head with -c 0 outputs nothing" {
     try processInput(input_stream.reader(), buffer.writer(), options);
 
     try testing.expectEqualStrings("", buffer.items);
-}
-
-test "head shows headers for multiple files" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-
-    const options = HeadOptions{ .show_headers = true };
-
-    // This tests the header formatting when show_headers is true
-    // The actual file processing would be tested with real files
-    try testing.expect(options.show_headers);
 }
 
 test "head processes lines efficiently" {
