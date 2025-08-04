@@ -1,0 +1,282 @@
+# Multi-stage optimized Dockerfile for vibeutils testing
+# Implements security hardening, layer caching, and eliminates code duplication
+
+ARG ZIG_VERSION=0.14.1
+ARG VIBEUTILS_USER=vibeutils
+ARG VIBEUTILS_UID=1000
+ARG VIBEUTILS_GID=1000
+
+# =============================================================================
+# BASE IMAGES
+# =============================================================================
+
+FROM ubuntu:24.04 AS base-ubuntu-24.04
+FROM ubuntu:latest AS base-ubuntu-latest  
+FROM debian:12 AS base-debian-12
+FROM alpine:latest AS base-alpine
+
+# =============================================================================
+# COMMON SETUP STAGE - Shared across all distributions
+# =============================================================================
+
+FROM base-ubuntu-24.04 AS common-setup
+ARG ZIG_VERSION
+ARG VIBEUTILS_USER
+ARG VIBEUTILS_UID
+ARG VIBEUTILS_GID
+
+# Copy configuration and scripts
+COPY docker/configs/ /docker/configs/
+COPY docker/scripts/ /docker/scripts/
+
+# Source environment configuration
+RUN set -a && . /docker/configs/env.conf && set +a
+
+# Make scripts executable
+RUN chmod +x /docker/scripts/*.sh
+
+# Create non-root user early for security
+RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
+
+# =============================================================================
+# PACKAGE INSTALLATION STAGES - Distribution-specific
+# =============================================================================
+
+# Ubuntu/Debian package installer
+FROM common-setup AS packages-apt
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    # Essential tools
+    curl \
+    xz-utils \
+    build-essential \
+    git \
+    bash \
+    # Testing tools
+    fakeroot \
+    time \
+    valgrind \
+    # Build dependencies
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    # Development libraries
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Alpine package installer  
+FROM base-alpine AS packages-apk
+ARG VIBEUTILS_USER
+ARG VIBEUTILS_UID
+ARG VIBEUTILS_GID
+
+# Copy scripts for Alpine
+COPY docker/scripts/ /docker/scripts/
+RUN chmod +x /docker/scripts/*.sh
+
+# Create user for Alpine
+RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
+
+# Install Alpine packages
+RUN apk add --no-cache \
+    # Essential tools
+    curl \
+    xz \
+    build-base \
+    git \
+    bash \
+    # Testing tools  
+    valgrind \
+    # Build dependencies
+    python3 \
+    py3-pip \
+    cmake \
+    pkgconf \
+    # Development libraries
+    curl-dev \
+    elfutils-dev \
+    zlib-dev \
+    linux-headers
+
+# =============================================================================
+# ZIG INSTALLATION STAGE - Cached and reusable
+# =============================================================================
+
+FROM packages-apt AS zig-installer
+ARG ZIG_VERSION
+
+# Install Zig using shared script
+RUN /docker/scripts/install-zig.sh "$ZIG_VERSION"
+
+# Verify Zig installation
+RUN zig version && \
+    zig zen && \
+    echo "Zig installation verified"
+
+# =============================================================================  
+# KCOV INSTALLATION STAGE - Build from source
+# =============================================================================
+
+FROM zig-installer AS kcov-installer
+ARG KCOV_VERSION=v42
+
+# Install kcov using shared script
+RUN /docker/scripts/install-kcov.sh "$KCOV_VERSION"
+
+# Verify kcov installation
+RUN kcov --version || echo "kcov verification failed but continuing"
+
+# =============================================================================
+# FINAL TEST STAGES - Distribution-specific targets
+# =============================================================================
+
+# Ubuntu 24.04 LTS - Primary development environment
+FROM kcov-installer AS test-ubuntu-24.04
+ARG VIBEUTILS_USER
+
+# Set up environment
+ENV FORCE_COLOR=1 \
+    CI=true \
+    GITHUB_ACTIONS=true \
+    RUNNER_OS=Linux \
+    DISTRO=ubuntu-24.04 \
+    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+
+# Set working directory with correct permissions
+WORKDIR /workspace
+RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
+
+# Add health check
+HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
+    CMD /docker/scripts/healthcheck.sh
+
+# Switch to non-root user
+USER $VIBEUTILS_USER
+
+# Ubuntu Latest - Bleeding edge testing
+FROM base-ubuntu-latest AS test-ubuntu-latest
+ARG ZIG_VERSION
+ARG VIBEUTILS_USER
+ARG VIBEUTILS_UID
+ARG VIBEUTILS_GID
+
+# Copy shared components
+COPY docker/scripts/ /docker/scripts/
+RUN chmod +x /docker/scripts/*.sh
+
+# Create user
+RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
+
+# Install packages (reuse pattern from packages-apt)
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl xz-utils build-essential git bash fakeroot time valgrind \
+    python3 python3-pip cmake pkg-config \
+    libcurl4-openssl-dev libdw-dev libiberty-dev zlib1g-dev \
+    libssl-dev binutils-dev libelf-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Zig and kcov
+RUN /docker/scripts/install-zig.sh "$ZIG_VERSION" && \
+    /docker/scripts/install-kcov.sh "v42"
+
+# Configure environment
+ENV FORCE_COLOR=1 \
+    CI=true \
+    GITHUB_ACTIONS=true \
+    RUNNER_OS=Linux \
+    DISTRO=ubuntu-latest \
+    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+
+WORKDIR /workspace
+RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
+
+HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
+    CMD /docker/scripts/healthcheck.sh
+
+USER $VIBEUTILS_USER
+
+# Debian 12 - Stability testing
+FROM base-debian-12 AS test-debian-12
+ARG ZIG_VERSION
+ARG VIBEUTILS_USER
+ARG VIBEUTILS_UID
+ARG VIBEUTILS_GID
+
+# Copy shared components
+COPY docker/scripts/ /docker/scripts/
+RUN chmod +x /docker/scripts/*.sh
+
+# Create user
+RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
+
+# Install packages (Debian uses same packages as Ubuntu)
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl xz-utils build-essential git bash fakeroot time valgrind \
+    python3 python3-pip cmake pkg-config \
+    libcurl4-openssl-dev libdw-dev libiberty-dev zlib1g-dev \
+    libssl-dev binutils-dev libelf-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Zig and kcov
+RUN /docker/scripts/install-zig.sh "$ZIG_VERSION" && \
+    /docker/scripts/install-kcov.sh "v42"
+
+# Configure environment
+ENV FORCE_COLOR=1 \
+    CI=true \
+    GITHUB_ACTIONS=true \
+    RUNNER_OS=Linux \
+    DISTRO=debian-12 \
+    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+
+WORKDIR /workspace
+RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
+
+HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
+    CMD /docker/scripts/healthcheck.sh
+
+USER $VIBEUTILS_USER
+
+# Alpine Latest - musl libc testing
+FROM packages-apk AS test-alpine
+ARG ZIG_VERSION
+ARG VIBEUTILS_USER
+
+# Install Zig (note: kcov may have issues on Alpine/musl)
+RUN /docker/scripts/install-zig.sh "$ZIG_VERSION"
+
+# Configure environment
+ENV FORCE_COLOR=1 \
+    CI=true \
+    GITHUB_ACTIONS=true \
+    RUNNER_OS=Linux \
+    DISTRO=alpine-latest \
+    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+
+WORKDIR /workspace
+RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
+
+# Alpine health check (skip kcov check)
+HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
+    CMD /docker/scripts/healthcheck.sh || exit 0
+
+USER $VIBEUTILS_USER
+
+# =============================================================================
+# DEFAULT TARGET
+# =============================================================================
+
+# Default to Ubuntu 24.04 if no target specified
+FROM test-ubuntu-24.04

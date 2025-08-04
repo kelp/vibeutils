@@ -1,109 +1,421 @@
+# Docker Compose configuration for vibeutils testing
+# Implements security hardening, non-root execution, and health checks
+
 services:
   # Ubuntu 24.04 LTS (Noble Numbat) - Primary development environment
   ubuntu-24.04:
     build:
       context: .
-      dockerfile: Dockerfile.test
+      dockerfile: docker/test/Dockerfile.test
       target: test-ubuntu-24.04
       args:
         ZIG_VERSION: "0.14.1"
+        VIBEUTILS_USER: "vibeutils"
+        VIBEUTILS_UID: "1000"
+        VIBEUTILS_GID: "1000"
     image: vibeutils-test:ubuntu-24.04
     container_name: vibeutils-test-ubuntu-24.04
+    
+    # Security hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FSETID
+      - SETGID
+      - SETUID
+      - SYS_PTRACE  # Required for debugging/profiling tools
+    read_only: false  # Need write access for build artifacts
+    
+    # Non-root user execution
+    user: "1000:1000"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '4'
+        reservations:
+          memory: 512M
+          cpus: '1'
+    
+    # Volume mounts with security options
     volumes:
-      - .:/workspace:cached
-      - zig-cache-ubuntu-24:/root/.cache/zig:delegated
-      - /workspace/zig-out
-      - /workspace/zig-cache
+      - type: bind
+        source: .
+        target: /workspace
+        consistency: cached
+      - type: volume
+        source: zig-cache-ubuntu-24
+        target: /home/vibeutils/.cache/zig
+        consistency: delegated
+      - type: tmpfs
+        target: /workspace/zig-out
+        tmpfs:
+          size: 500M
+          mode: 0755
+      - type: tmpfs
+        target: /workspace/zig-cache
+        tmpfs:
+          size: 200M
+          mode: 0755
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100M
+          mode: 1777
+    
+    # Environment variables
     environment:
       - FORCE_COLOR=1
       - CI=true
       - GITHUB_ACTIONS=true
       - RUNNER_OS=Linux
       - DISTRO=ubuntu-24.04
+      - ZIG_GLOBAL_CACHE_DIR=/home/vibeutils/.cache/zig
+      - HOME=/home/vibeutils
+    
+    # Health check configuration
+    healthcheck:
+      test: ["/docker/scripts/healthcheck.sh"]
+      interval: 2m
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    
     working_dir: /workspace
     command: /bin/bash
     ports:
       - "8080:8080"  # Expose port for fuzzing web UI
+    
+    # Network security
+    networks:
+      - vibeutils-test
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Ubuntu Latest - Bleeding edge testing
   ubuntu-latest:
     build:
       context: .
-      dockerfile: Dockerfile.test
+      dockerfile: docker/test/Dockerfile.test
       target: test-ubuntu-latest
       args:
         ZIG_VERSION: "0.14.1"
+        VIBEUTILS_USER: "vibeutils"
+        VIBEUTILS_UID: "1000"
+        VIBEUTILS_GID: "1000"
     image: vibeutils-test:ubuntu-latest
     container_name: vibeutils-test-ubuntu-latest
+    
+    # Security configuration (same as ubuntu-24.04)
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FSETID
+      - SETGID
+      - SETUID
+      - SYS_PTRACE
+    read_only: false
+    user: "1000:1000"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '4'
+        reservations:
+          memory: 512M
+          cpus: '1'
+    
     volumes:
-      - .:/workspace:cached
-      - zig-cache-ubuntu-latest:/root/.cache/zig:delegated
-      - /workspace/zig-out
-      - /workspace/zig-cache
+      - type: bind
+        source: .
+        target: /workspace
+        consistency: cached
+      - type: volume
+        source: zig-cache-ubuntu-latest
+        target: /home/vibeutils/.cache/zig
+        consistency: delegated
+      - type: tmpfs
+        target: /workspace/zig-out
+        tmpfs:
+          size: 500M
+          mode: 0755
+      - type: tmpfs
+        target: /workspace/zig-cache
+        tmpfs:
+          size: 200M
+          mode: 0755
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100M
+          mode: 1777
+    
     environment:
       - FORCE_COLOR=1
       - CI=true
       - GITHUB_ACTIONS=true
       - RUNNER_OS=Linux
       - DISTRO=ubuntu-latest
+      - ZIG_GLOBAL_CACHE_DIR=/home/vibeutils/.cache/zig
+      - HOME=/home/vibeutils
+    
+    healthcheck:
+      test: ["/docker/scripts/healthcheck.sh"]
+      interval: 2m
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    
     working_dir: /workspace
     command: /bin/bash
+    networks:
+      - vibeutils-test
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Debian 12 (Bookworm) - Stability testing
   debian-12:
     build:
       context: .
-      dockerfile: Dockerfile.test
+      dockerfile: docker/test/Dockerfile.test
       target: test-debian-12
       args:
         ZIG_VERSION: "0.14.1"
+        VIBEUTILS_USER: "vibeutils"
+        VIBEUTILS_UID: "1000"
+        VIBEUTILS_GID: "1000"
     image: vibeutils-test:debian-12
     container_name: vibeutils-test-debian-12
+    
+    # Security configuration
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FSETID
+      - SETGID
+      - SETUID
+      - SYS_PTRACE
+    read_only: false
+    user: "1000:1000"
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '4'
+        reservations:
+          memory: 512M
+          cpus: '1'
+    
     volumes:
-      - .:/workspace:cached
-      - zig-cache-debian-12:/root/.cache/zig:delegated
-      - /workspace/zig-out
-      - /workspace/zig-cache
+      - type: bind
+        source: .
+        target: /workspace
+        consistency: cached
+      - type: volume
+        source: zig-cache-debian-12
+        target: /home/vibeutils/.cache/zig
+        consistency: delegated
+      - type: tmpfs
+        target: /workspace/zig-out
+        tmpfs:
+          size: 500M
+          mode: 0755
+      - type: tmpfs
+        target: /workspace/zig-cache
+        tmpfs:
+          size: 200M
+          mode: 0755
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100M
+          mode: 1777
+    
     environment:
       - FORCE_COLOR=1
       - CI=true
       - GITHUB_ACTIONS=true
       - RUNNER_OS=Linux
       - DISTRO=debian-12
+      - ZIG_GLOBAL_CACHE_DIR=/home/vibeutils/.cache/zig
+      - HOME=/home/vibeutils
+    
+    healthcheck:
+      test: ["/docker/scripts/healthcheck.sh"]
+      interval: 2m
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    
     working_dir: /workspace
     command: /bin/bash
+    networks:
+      - vibeutils-test
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Alpine Latest - musl libc testing
   alpine:
     build:
       context: .
-      dockerfile: Dockerfile.test
+      dockerfile: docker/test/Dockerfile.test
       target: test-alpine
       args:
         ZIG_VERSION: "0.14.1"
+        VIBEUTILS_USER: "vibeutils"
+        VIBEUTILS_UID: "1000"
+        VIBEUTILS_GID: "1000"
     image: vibeutils-test:alpine
     container_name: vibeutils-test-alpine
+    
+    # Security configuration
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FSETID
+      - SETGID
+      - SETUID
+      - SYS_PTRACE
+    read_only: false
+    user: "1000:1000"
+    
+    # Resource limits (slightly reduced for Alpine)
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+          cpus: '4'
+        reservations:
+          memory: 256M
+          cpus: '1'
+    
     volumes:
-      - .:/workspace:cached
-      - zig-cache-alpine:/root/.cache/zig:delegated
-      - /workspace/zig-out
-      - /workspace/zig-cache
+      - type: bind
+        source: .
+        target: /workspace
+        consistency: cached
+      - type: volume
+        source: zig-cache-alpine
+        target: /home/vibeutils/.cache/zig
+        consistency: delegated
+      - type: tmpfs
+        target: /workspace/zig-out
+        tmpfs:
+          size: 500M
+          mode: 0755
+      - type: tmpfs
+        target: /workspace/zig-cache
+        tmpfs:
+          size: 200M
+          mode: 0755
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100M
+          mode: 1777
+    
     environment:
       - FORCE_COLOR=1
       - CI=true
       - GITHUB_ACTIONS=true
       - RUNNER_OS=Linux
       - DISTRO=alpine-latest
+      - ZIG_GLOBAL_CACHE_DIR=/home/vibeutils/.cache/zig
+      - HOME=/home/vibeutils
+    
+    healthcheck:
+      test: ["/docker/scripts/healthcheck.sh"]
+      interval: 2m
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    
     working_dir: /workspace
-    command: /bin/sh
+    command: /bin/sh  # Alpine uses ash/sh by default
+    networks:
+      - vibeutils-test
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Networks
+networks:
+  vibeutils-test:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: "vibeutils-br0"
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
 
 # Named volumes for caching Zig dependencies
 volumes:
   zig-cache-ubuntu-24:
     name: vibeutils-zig-cache-ubuntu-24
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/vibeutils-zig-cache-ubuntu-24
+  
   zig-cache-ubuntu-latest:
     name: vibeutils-zig-cache-ubuntu-latest
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/vibeutils-zig-cache-ubuntu-latest
+  
   zig-cache-debian-12:
     name: vibeutils-zig-cache-debian-12
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/vibeutils-zig-cache-debian-12
+  
   zig-cache-alpine:
     name: vibeutils-zig-cache-alpine
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /tmp/vibeutils-zig-cache-alpine

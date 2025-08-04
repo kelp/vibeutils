@@ -1,0 +1,455 @@
+# Multi-stage Dockerfile for testing vibeutils on different Linux distributions
+# This replicates the GitHub Actions CI environment for local testing on macOS
+
+ARG ZIG_VERSION=0.14.1
+
+# Base stage with common setup for all distributions
+FROM ubuntu:24.04 AS base-ubuntu-24.04
+FROM ubuntu:latest AS base-ubuntu-latest
+FROM debian:12 AS base-debian-12
+FROM alpine:latest AS base-alpine
+
+# Ubuntu 24.04 (Noble Numbat) - Primary development environment
+FROM base-ubuntu-24.04 AS test-ubuntu-24.04
+ARG ZIG_VERSION
+
+# Install dependencies matching GitHub Actions
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    xz-utils \
+    build-essential \
+    fakeroot \
+    git \
+    time \
+    valgrind \
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Zig using community mirrors with fallback
+RUN install_zig_from_mirrors() { \
+        zig_version="$1"; \
+        zig_arch="$2"; \
+        # Zig uses different naming for arm64 vs x86_64 \
+        if [ "${zig_arch}" = "aarch64" ]; then \
+            filename="zig-aarch64-linux-${zig_version}.tar.xz"; \
+        else \
+            filename="zig-linux-${zig_arch}-${zig_version}.tar.xz"; \
+        fi; \
+        \
+        # Known stable fallback mirror \
+        fallback_mirrors="https://ziglang.org/download"; \
+        \
+        # Try to get community mirrors list \
+        mirrors_list=$(curl -s --connect-timeout 10 --max-time 30 https://ziglang.org/download/community-mirrors.txt | grep -E '^https?://' | head -10 | tr '\n' ' '); \
+        \
+        # Combine community mirrors with fallback mirrors \
+        all_mirrors="${mirrors_list} ${fallback_mirrors}"; \
+        \
+        # Try up to 3 different mirrors \
+        max_attempts=3; \
+        attempt=0; \
+        \
+        for mirror in $all_mirrors; do \
+            if [ $attempt -ge $max_attempts ]; then \
+                break; \
+            fi; \
+            \
+            echo "Attempting to download Zig from: $mirror"; \
+            \
+            # Try different URL patterns based on known mirror types \
+            if echo "$mirror" | grep -q "ziglang.org/download"; then \
+                # Official mirror uses version subdirectory \
+                download_urls="${mirror}/${zig_version}/${filename}"; \
+            else \
+                # Community mirrors use simple pattern \
+                download_urls="${mirror}/${filename}"; \
+            fi; \
+            \
+            for url in $download_urls; do \
+                echo "Trying URL: $url"; \
+                if curl -L --fail --connect-timeout 10 --max-time 300 "$url" | tar -xJ -C /opt; then \
+                    echo "Successfully downloaded Zig from: $url"; \
+                    return 0; \
+                fi; \
+                echo "Failed to download from: $url"; \
+            done; \
+            \
+            attempt=$((attempt + 1)); \
+        done; \
+        \
+        echo "Failed to download Zig from any mirror after $max_attempts attempts"; \
+        return 1; \
+    }; \
+    \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    install_zig_from_mirrors "${ZIG_VERSION}" "${ZIG_ARCH}" && \
+    if [ "$ZIG_ARCH" = "aarch64" ]; then \
+        ln -s /opt/zig-aarch64-linux-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    else \
+        ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    fi
+
+# Install kcov for coverage (build from source for better compatibility)
+RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
+    cd /tmp/kcov && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/kcov
+
+# Set working directory
+WORKDIR /workspace
+
+# Environment variables matching GitHub Actions
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Ubuntu Latest - Bleeding edge testing
+FROM base-ubuntu-latest AS test-ubuntu-latest
+ARG ZIG_VERSION
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    xz-utils \
+    build-essential \
+    fakeroot \
+    git \
+    time \
+    valgrind \
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Zig using community mirrors with fallback
+RUN install_zig_from_mirrors() { \
+        zig_version="$1"; \
+        zig_arch="$2"; \
+        # Zig uses different naming for arm64 vs x86_64 \
+        if [ "${zig_arch}" = "aarch64" ]; then \
+            filename="zig-aarch64-linux-${zig_version}.tar.xz"; \
+        else \
+            filename="zig-linux-${zig_arch}-${zig_version}.tar.xz"; \
+        fi; \
+        \
+        # Known stable fallback mirror \
+        fallback_mirrors="https://ziglang.org/download"; \
+        \
+        # Try to get community mirrors list \
+        mirrors_list=$(curl -s --connect-timeout 10 --max-time 30 https://ziglang.org/download/community-mirrors.txt | grep -E '^https?://' | head -10 | tr '\n' ' '); \
+        \
+        # Combine community mirrors with fallback mirrors \
+        all_mirrors="${mirrors_list} ${fallback_mirrors}"; \
+        \
+        # Try up to 3 different mirrors \
+        max_attempts=3; \
+        attempt=0; \
+        \
+        for mirror in $all_mirrors; do \
+            if [ $attempt -ge $max_attempts ]; then \
+                break; \
+            fi; \
+            \
+            echo "Attempting to download Zig from: $mirror"; \
+            \
+            # Try different URL patterns based on known mirror types \
+            if echo "$mirror" | grep -q "ziglang.org/download"; then \
+                # Official mirror uses version subdirectory \
+                download_urls="${mirror}/${zig_version}/${filename}"; \
+            else \
+                # Community mirrors use simple pattern \
+                download_urls="${mirror}/${filename}"; \
+            fi; \
+            \
+            for url in $download_urls; do \
+                echo "Trying URL: $url"; \
+                if curl -L --fail --connect-timeout 10 --max-time 300 "$url" | tar -xJ -C /opt; then \
+                    echo "Successfully downloaded Zig from: $url"; \
+                    return 0; \
+                fi; \
+                echo "Failed to download from: $url"; \
+            done; \
+            \
+            attempt=$((attempt + 1)); \
+        done; \
+        \
+        echo "Failed to download Zig from any mirror after $max_attempts attempts"; \
+        return 1; \
+    }; \
+    \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    install_zig_from_mirrors "${ZIG_VERSION}" "${ZIG_ARCH}" && \
+    if [ "$ZIG_ARCH" = "aarch64" ]; then \
+        ln -s /opt/zig-aarch64-linux-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    else \
+        ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    fi
+
+RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
+    cd /tmp/kcov && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/kcov
+
+WORKDIR /workspace
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Debian 12 (Bookworm) - Stability testing
+FROM base-debian-12 AS test-debian-12
+ARG ZIG_VERSION
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    xz-utils \
+    build-essential \
+    fakeroot \
+    git \
+    time \
+    valgrind \
+    python3 \
+    python3-pip \
+    cmake \
+    pkg-config \
+    libcurl4-openssl-dev \
+    libdw-dev \
+    libiberty-dev \
+    zlib1g-dev \
+    libssl-dev \
+    binutils-dev \
+    libelf-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Zig using community mirrors with fallback
+RUN install_zig_from_mirrors() { \
+        zig_version="$1"; \
+        zig_arch="$2"; \
+        # Zig uses different naming for arm64 vs x86_64 \
+        if [ "${zig_arch}" = "aarch64" ]; then \
+            filename="zig-aarch64-linux-${zig_version}.tar.xz"; \
+        else \
+            filename="zig-linux-${zig_arch}-${zig_version}.tar.xz"; \
+        fi; \
+        \
+        # Known stable fallback mirror \
+        fallback_mirrors="https://ziglang.org/download"; \
+        \
+        # Try to get community mirrors list \
+        mirrors_list=$(curl -s --connect-timeout 10 --max-time 30 https://ziglang.org/download/community-mirrors.txt | grep -E '^https?://' | head -10 | tr '\n' ' '); \
+        \
+        # Combine community mirrors with fallback mirrors \
+        all_mirrors="${mirrors_list} ${fallback_mirrors}"; \
+        \
+        # Try up to 3 different mirrors \
+        max_attempts=3; \
+        attempt=0; \
+        \
+        for mirror in $all_mirrors; do \
+            if [ $attempt -ge $max_attempts ]; then \
+                break; \
+            fi; \
+            \
+            echo "Attempting to download Zig from: $mirror"; \
+            \
+            # Try different URL patterns based on known mirror types \
+            if echo "$mirror" | grep -q "ziglang.org/download"; then \
+                # Official mirror uses version subdirectory \
+                download_urls="${mirror}/${zig_version}/${filename}"; \
+            else \
+                # Community mirrors use simple pattern \
+                download_urls="${mirror}/${filename}"; \
+            fi; \
+            \
+            for url in $download_urls; do \
+                echo "Trying URL: $url"; \
+                if curl -L --fail --connect-timeout 10 --max-time 300 "$url" | tar -xJ -C /opt; then \
+                    echo "Successfully downloaded Zig from: $url"; \
+                    return 0; \
+                fi; \
+                echo "Failed to download from: $url"; \
+            done; \
+            \
+            attempt=$((attempt + 1)); \
+        done; \
+        \
+        echo "Failed to download Zig from any mirror after $max_attempts attempts"; \
+        return 1; \
+    }; \
+    \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    install_zig_from_mirrors "${ZIG_VERSION}" "${ZIG_ARCH}" && \
+    if [ "$ZIG_ARCH" = "aarch64" ]; then \
+        ln -s /opt/zig-aarch64-linux-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    else \
+        ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    fi
+
+# Build kcov from source for Debian
+RUN git clone --depth 1 --branch v42 https://github.com/SimonKagstrom/kcov.git /tmp/kcov && \
+    cd /tmp/kcov && \
+    mkdir build && \
+    cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/kcov
+
+WORKDIR /workspace
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Alpine Latest - musl libc testing
+FROM base-alpine AS test-alpine
+ARG ZIG_VERSION
+
+# Install dependencies for Alpine
+RUN apk add --no-cache \
+    curl \
+    xz \
+    build-base \
+    git \
+    bash \
+    valgrind \
+    python3 \
+    py3-pip \
+    cmake \
+    pkgconf \
+    curl-dev \
+    elfutils-dev \
+    zlib-dev
+
+# Install Zig using community mirrors with fallback (Alpine uses musl, but same binary works)
+RUN install_zig_from_mirrors() { \
+        zig_version="$1"; \
+        zig_arch="$2"; \
+        # Zig uses different naming for arm64 vs x86_64 \
+        if [ "${zig_arch}" = "aarch64" ]; then \
+            filename="zig-aarch64-linux-${zig_version}.tar.xz"; \
+        else \
+            filename="zig-linux-${zig_arch}-${zig_version}.tar.xz"; \
+        fi; \
+        \
+        # Known stable fallback mirror \
+        fallback_mirrors="https://ziglang.org/download"; \
+        \
+        # Try to get community mirrors list \
+        mirrors_list=$(curl -s --connect-timeout 10 --max-time 30 https://ziglang.org/download/community-mirrors.txt | grep -E '^https?://' | head -10 | tr '\n' ' '); \
+        \
+        # Combine community mirrors with fallback mirrors \
+        all_mirrors="${mirrors_list} ${fallback_mirrors}"; \
+        \
+        # Try up to 3 different mirrors \
+        max_attempts=3; \
+        attempt=0; \
+        \
+        for mirror in $all_mirrors; do \
+            if [ $attempt -ge $max_attempts ]; then \
+                break; \
+            fi; \
+            \
+            echo "Attempting to download Zig from: $mirror"; \
+            \
+            # Try different URL patterns based on known mirror types \
+            if echo "$mirror" | grep -q "ziglang.org/download"; then \
+                # Official mirror uses version subdirectory \
+                download_urls="${mirror}/${zig_version}/${filename}"; \
+            else \
+                # Community mirrors use simple pattern \
+                download_urls="${mirror}/${filename}"; \
+            fi; \
+            \
+            for url in $download_urls; do \
+                echo "Trying URL: $url"; \
+                if curl -L --fail --connect-timeout 10 --max-time 300 "$url" | tar -xJ -C /opt; then \
+                    echo "Successfully downloaded Zig from: $url"; \
+                    return 0; \
+                fi; \
+                echo "Failed to download from: $url"; \
+            done; \
+            \
+            attempt=$((attempt + 1)); \
+        done; \
+        \
+        echo "Failed to download Zig from any mirror after $max_attempts attempts"; \
+        return 1; \
+    }; \
+    \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    elif [ "$ARCH" = "x86_64" ]; then \
+        ZIG_ARCH="x86_64"; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    install_zig_from_mirrors "${ZIG_VERSION}" "${ZIG_ARCH}" && \
+    if [ "$ZIG_ARCH" = "aarch64" ]; then \
+        ln -s /opt/zig-aarch64-linux-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    else \
+        ln -s /opt/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}/zig /usr/local/bin/zig; \
+    fi
+
+# Note: kcov might have issues on Alpine/musl, so we skip it here
+# fakeroot is also not available on Alpine by default
+
+WORKDIR /workspace
+ENV FORCE_COLOR=1
+ENV CI=true
+ENV GITHUB_ACTIONS=true
+ENV RUNNER_OS=Linux
+
+# Default to Ubuntu 24.04 if no target specified
+FROM test-ubuntu-24.04
