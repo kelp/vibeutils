@@ -1,0 +1,75 @@
+.Dd August 3, 2025
+.Dt HEAD 1
+.Os
+.Sh NAME
+.Nm head
+.Nd display first lines of a file
+.Sh SYNOPSIS
+.Nm head
+.Op Fl nqv
+.Op Fl c Ar num
+.Op Fl n Ar num
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the first count lines or bytes of each of the specified
+files, or of the standard input if no files are specified.
+If count is omitted it defaults to 10.
+.Pp
+If more than one file is specified,
+.Nm
+precedes the output of each file with the following, in order to distinguish
+which file is being displayed:
+.Pp
+.Dl ==> filename <==
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl c Ar num , Fl Fl bytes Ns = Ns Ar num
+Print
+.Ar num
+bytes of each of the specified files.
+.It Fl n Ar num , Fl Fl lines Ns = Ns Ar num
+Print
+.Ar num
+lines of each of the specified files.
+.It Fl q , Fl Fl quiet , Fl Fl silent
+Never print headers giving file names.
+.It Fl v , Fl Fl verbose
+Always print headers giving file names.
+.It Fl Fl help
+Display help and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Pp
+If no options are specified,
+.Nm
+defaults to displaying the first 10 lines of each specified file.
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Display the first 10 lines of a file:
+.Pp
+.Dl $ head myfile.txt
+.Pp
+Display the first 5 lines of multiple files:
+.Pp
+.Dl $ head -n 5 file1.txt file2.txt
+.Pp
+Display the first 100 bytes of a file:
+.Pp
+.Dl $ head -c 100 data.bin
+.Sh SEE ALSO
+.Xr cat 1 ,
+.Xr less 1 ,
+.Xr more 1 ,
+.Xr tail 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

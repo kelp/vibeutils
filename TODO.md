@@ -1,7 +1,7 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 20/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, test, touch, true, yes)
+- **Completed**: 21/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, head, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, test, touch, true, yes)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
@@ -654,17 +654,17 @@ For each utility:
 - [ ] Implement: Section handling
 - [ ] Man page: Write concise man page with examples
 
-#### 36. head
-- [ ] Test: Default 10 lines
-- [ ] Test: Custom line count (-n)
-- [ ] Test: Byte count (-c)
-- [ ] Test: Multiple files
-- [ ] Test: STDIN input
-- [ ] Test: File headers with multiple files
-- [ ] Implement: Line-based reading
-- [ ] Implement: Byte-based reading
-- [ ] Implement: Multi-file handling
-- [ ] Man page: Write concise man page with examples
+#### 36. head ✓
+- [x] Test: Default 10 lines
+- [x] Test: Custom line count (-n)
+- [x] Test: Byte count (-c)
+- [x] Test: Multiple files
+- [x] Test: STDIN input
+- [x] Test: File headers with multiple files
+- [x] Implement: Line-based reading
+- [x] Implement: Byte-based reading
+- [x] Implement: Multi-file handling
+- [x] Man page: Write concise man page with examples
 
 #### 37. tail
 - [ ] Test: Default 10 lines
