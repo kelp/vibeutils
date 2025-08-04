@@ -1,0 +1,158 @@
+name: 'Setup Build Environment'
+description: 'Set up a standardized build environment for vibeutils'
+inputs:
+  zig-version:
+    description: 'Zig version to install'
+    required: false
+    default: '0.14.1'
+  cache-key-suffix:
+    description: 'Additional suffix for cache key uniqueness'
+    required: false
+    default: ''
+  install-docs-tools:
+    description: 'Install documentation tools (mandoc, pandoc)'
+    required: false
+    default: 'false'
+  install-privileged-tools:
+    description: 'Install tools for privileged testing (fakeroot)'
+    required: false
+    default: 'false'
+
+outputs:
+  zig-version:
+    description: 'Installed Zig version'
+    value: ${{ steps.setup-zig.outputs.version }}
+  cache-hit:
+    description: 'Whether cache was hit'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Zig
+      id: setup-zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.zig-version }}
+        
+    - name: Determine cache paths
+      id: cache-paths
+      shell: bash
+      run: |
+        case "${{ runner.os }}" in
+          Linux)
+            echo "system-cache=~/.cache/zig" >> $GITHUB_OUTPUT
+            ;;
+          macOS)
+            echo "system-cache=~/Library/Caches/zig" >> $GITHUB_OUTPUT
+            ;;
+          Windows)
+            echo "system-cache=%LOCALAPPDATA%\\zig" >> $GITHUB_OUTPUT
+            ;;
+          *)
+            echo "system-cache=~/.cache/zig" >> $GITHUB_OUTPUT
+            ;;
+        esac
+        
+    - name: Cache Zig artifacts
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          zig-cache
+          zig-out
+          ${{ steps.cache-paths.outputs.system-cache }}
+        key: ${{ runner.os }}-zig-${{ inputs.zig-version }}-${{ inputs.cache-key-suffix }}-${{ hashFiles('build.zig', 'build.zig.zon', 'build/**/*.zig') }}
+        restore-keys: |
+          ${{ runner.os }}-zig-${{ inputs.zig-version }}-${{ inputs.cache-key-suffix }}-
+          ${{ runner.os }}-zig-${{ inputs.zig-version }}-
+          ${{ runner.os }}-zig-
+          
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        echo "Installing Linux dependencies..."
+        sudo apt-get update
+        
+        # Essential build tools
+        sudo apt-get install -y build-essential
+        
+        # Privileged testing tools
+        if [ "${{ inputs.install-privileged-tools }}" = "true" ]; then
+          sudo apt-get install -y fakeroot
+          echo "Installed fakeroot for privileged testing"
+        fi
+        
+        # Documentation tools
+        if [ "${{ inputs.install-docs-tools }}" = "true" ]; then
+          sudo apt-get install -y mandoc groff-base
+          
+          # Install pandoc if available
+          if sudo apt-get install -y pandoc; then
+            echo "Installed pandoc for documentation generation"
+          else
+            echo "::warning::pandoc not available in package manager"
+          fi
+        fi
+        
+    - name: Install system dependencies (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        echo "Installing macOS dependencies..."
+        
+        # Install GNU coreutils for compatibility
+        brew install coreutils || echo "::warning::Failed to install coreutils"
+        
+        # Documentation tools
+        if [ "${{ inputs.install-docs-tools }}" = "true" ]; then
+          brew install mandoc pandoc || echo "::warning::Failed to install documentation tools"
+        fi
+        
+    - name: Install system dependencies (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        echo "Installing Windows dependencies..."
+        
+        # Documentation tools via chocolatey
+        if [ "${{ inputs.install-docs-tools }}" = "true" ]; then
+          choco install pandoc || echo "::warning::Failed to install pandoc"
+        fi
+        
+    - name: Validate build environment
+      shell: bash
+      run: |
+        echo "Validating build environment..."
+        
+        # Check Zig installation
+        zig version
+        zig env
+        
+        # Validate project structure
+        if [ ! -f "build.zig" ]; then
+          echo "::error::build.zig not found"
+          exit 1
+        fi
+        
+        if [ ! -f "build.zig.zon" ]; then
+          echo "::error::build.zig.zon not found" 
+          exit 1
+        fi
+        
+        # Test basic build functionality
+        echo "Testing build system..."
+        zig build --help > /dev/null
+        
+        echo "✅ Build environment validation complete"
+        
+    - name: Display environment info
+      shell: bash
+      run: |
+        echo "## Build Environment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **OS**: ${{ runner.os }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Zig Version**: $(zig version)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Cache Hit**: ${{ steps.cache.outputs.cache-hit }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Documentation Tools**: ${{ inputs.install-docs-tools }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Privileged Tools**: ${{ inputs.install-privileged-tools }}" >> $GITHUB_STEP_SUMMARY

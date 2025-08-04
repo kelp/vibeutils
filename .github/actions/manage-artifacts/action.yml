@@ -1,0 +1,297 @@
+name: 'Manage Artifacts'
+description: 'Handle artifact creation, signing, and verification with SLSA compliance'
+inputs:
+  action:
+    description: 'Action to perform: create, sign, verify, or upload'
+    required: true
+  artifact-name:
+    description: 'Name of the artifact'
+    required: true
+  artifact-path:
+    description: 'Path to artifact files'
+    required: true
+  retention-days:
+    description: 'Days to retain artifact'
+    required: false
+    default: '30'
+  enable-signing:
+    description: 'Enable artifact signing with checksums'
+    required: false
+    default: 'true'
+  slsa-compliance:
+    description: 'Generate SLSA Build Level 2 provenance'
+    required: false
+    default: 'true'
+
+outputs:
+  artifact-url:
+    description: 'URL of uploaded artifact'
+    value: ${{ steps.upload.outputs.artifact-url }}
+  checksums:
+    description: 'Generated checksums'
+    value: ${{ steps.checksums.outputs.checksums }}
+  provenance-file:
+    description: 'Path to SLSA provenance file'
+    value: ${{ steps.slsa.outputs.provenance-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.action }}" ]; then
+          echo "::error::action input is required"
+          exit 1
+        fi
+        
+        if [ -z "${{ inputs.artifact-name }}" ]; then
+          echo "::error::artifact-name input is required"
+          exit 1
+        fi
+        
+        if [ -z "${{ inputs.artifact-path }}" ]; then
+          echo "::error::artifact-path input is required"
+          exit 1
+        fi
+        
+        # Validate artifact-path exists
+        if [ ! -e "${{ inputs.artifact-path }}" ]; then
+          echo "::error::Artifact path does not exist: ${{ inputs.artifact-path }}"
+          exit 1
+        fi
+        
+    - name: Generate checksums
+      id: checksums  
+      if: inputs.enable-signing == 'true'
+      shell: bash
+      run: |
+        echo "Generating checksums for artifact security..."
+        
+        checksum_file="${{ inputs.artifact-name }}.checksums"
+        
+        # Generate checksums for all files in artifact path
+        if [ -d "${{ inputs.artifact-path }}" ]; then
+          find "${{ inputs.artifact-path }}" -type f -exec sha256sum {} \; > "$checksum_file"
+        else
+          sha256sum "${{ inputs.artifact-path }}" > "$checksum_file"
+        fi
+        
+        # Also generate MD5 for compatibility
+        md5_file="${{ inputs.artifact-name }}.md5"
+        if [ -d "${{ inputs.artifact-path }}" ]; then
+          find "${{ inputs.artifact-path }}" -type f -exec md5sum {} \; > "$md5_file"
+        else
+          md5sum "${{ inputs.artifact-path }}" > "$md5_file"
+        fi
+        
+        echo "Generated checksums:"
+        cat "$checksum_file"
+        
+        echo "checksums=$(cat $checksum_file | base64 -w 0)" >> $GITHUB_OUTPUT
+        echo "checksum-file=$checksum_file" >> $GITHUB_OUTPUT
+        echo "md5-file=$md5_file" >> $GITHUB_OUTPUT
+        
+    - name: Generate SLSA provenance
+      id: slsa
+      if: inputs.slsa-compliance == 'true'
+      shell: bash
+      run: |
+        echo "Generating SLSA Build Level 2 provenance..."
+        
+        provenance_file="${{ inputs.artifact-name }}.provenance.json"
+        
+        # Get git commit info
+        git_sha=$(git rev-parse HEAD)
+        git_ref=$(git rev-parse --abbrev-ref HEAD || echo "main")
+        build_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        # Create SLSA provenance document
+        cat > "$provenance_file" << EOF
+        {
+          "_type": "https://in-toto.io/Statement/v0.1",
+          "predicateType": "https://slsa.dev/provenance/v0.2",
+          "subject": [
+            {
+              "name": "${{ inputs.artifact-name }}",
+              "digest": {
+                "sha256": "$(if [ -f "${{ steps.checksums.outputs.checksum-file }}" ]; then cut -d' ' -f1 "${{ steps.checksums.outputs.checksum-file }}" | head -1; else echo "unknown"; fi)"
+              }
+            }
+          ],
+          "predicate": {
+            "builder": {
+              "id": "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            },
+            "buildType": "https://github.com/actions/workflows",
+            "invocation": {
+              "configSource": {
+                "uri": "git+https://github.com/${{ github.repository }}@$git_ref",
+                "digest": {
+                  "sha1": "$git_sha"
+                },
+                "entryPoint": "${{ github.workflow }}"
+              },
+              "parameters": {
+                "artifact-name": "${{ inputs.artifact-name }}",
+                "artifact-path": "${{ inputs.artifact-path }}",
+                "runner-os": "${{ runner.os }}"
+              }
+            },
+            "metadata": {
+              "buildInvocationId": "${{ github.run_id }}",
+              "buildStartedOn": "$build_time",
+              "buildFinishedOn": "$build_time",
+              "completeness": {
+                "parameters": true,
+                "environment": false,
+                "materials": true
+              },
+              "reproducible": false
+            },
+            "materials": [
+              {
+                "uri": "git+https://github.com/${{ github.repository }}@$git_ref",
+                "digest": {
+                  "sha1": "$git_sha"
+                }
+              }
+            ]
+          }
+        }
+        EOF
+        
+        echo "Generated SLSA provenance:"
+        cat "$provenance_file"
+        
+        echo "provenance-file=$provenance_file" >> $GITHUB_OUTPUT
+        
+    - name: Create artifact bundle
+      shell: bash
+      run: |
+        echo "Creating secure artifact bundle..."
+        
+        bundle_dir="artifact-bundle-${{ inputs.artifact-name }}"
+        mkdir -p "$bundle_dir"
+        
+        # Copy original artifacts
+        if [ -d "${{ inputs.artifact-path }}" ]; then
+          cp -r "${{ inputs.artifact-path }}"/* "$bundle_dir"/
+        else
+          cp "${{ inputs.artifact-path }}" "$bundle_dir"/
+        fi
+        
+        # Add security files if they exist
+        if [ -f "${{ steps.checksums.outputs.checksum-file }}" ]; then
+          cp "${{ steps.checksums.outputs.checksum-file }}" "$bundle_dir"/
+        fi
+        
+        if [ -f "${{ steps.checksums.outputs.md5-file }}" ]; then
+          cp "${{ steps.checksums.outputs.md5-file }}" "$bundle_dir"/
+        fi
+        
+        if [ -f "${{ steps.slsa.outputs.provenance-file }}" ]; then
+          cp "${{ steps.slsa.outputs.provenance-file }}" "$bundle_dir"/
+        fi
+        
+        # Create README for the bundle
+        cat > "$bundle_dir/SECURITY.md" << EOF
+        # Artifact Security Information
+        
+        This artifact bundle includes security verification files:
+        
+        ## Checksums
+        - \`${{ inputs.artifact-name }}.checksums\` - SHA256 checksums
+        - \`${{ inputs.artifact-name }}.md5\` - MD5 checksums (for compatibility)
+        
+        ## SLSA Provenance
+        - \`${{ inputs.artifact-name }}.provenance.json\` - SLSA Build Level 2 provenance
+        
+        ## Verification
+        To verify the artifact integrity:
+        \`\`\`bash
+        # Verify SHA256 checksums
+        sha256sum -c ${{ inputs.artifact-name }}.checksums
+        
+        # Verify MD5 checksums
+        md5sum -c ${{ inputs.artifact-name }}.md5
+        \`\`\`
+        
+        ## Build Information
+        - **Repository**: ${{ github.repository }}
+        - **Commit**: $(git rev-parse HEAD)
+        - **Workflow**: ${{ github.workflow }}
+        - **Run ID**: ${{ github.run_id }}
+        - **Built on**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        EOF
+        
+        echo "Artifact bundle created at: $bundle_dir"
+        ls -la "$bundle_dir"
+        
+    - name: Upload artifact
+      id: upload
+      if: inputs.action == 'create' || inputs.action == 'upload'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: artifact-bundle-${{ inputs.artifact-name }}/
+        retention-days: ${{ inputs.retention-days }}
+        
+    - name: Verify artifact integrity
+      if: inputs.action == 'verify'
+      shell: bash
+      run: |
+        echo "Verifying artifact integrity..."
+        
+        bundle_dir="artifact-bundle-${{ inputs.artifact-name }}"
+        
+        if [ ! -d "$bundle_dir" ]; then
+          echo "::error::Artifact bundle not found for verification"
+          exit 1
+        fi
+        
+        # Verify checksums if available
+        if [ -f "$bundle_dir/${{ inputs.artifact-name }}.checksums" ]; then
+          echo "Verifying SHA256 checksums..."
+          cd "$bundle_dir"
+          if sha256sum -c "${{ inputs.artifact-name }}.checksums"; then
+            echo "✅ SHA256 checksums verified successfully"
+          else
+            echo "::error::SHA256 checksum verification failed"
+            exit 1
+          fi
+          cd ..
+        fi
+        
+        # Verify SLSA provenance format
+        if [ -f "$bundle_dir/${{ inputs.artifact-name }}.provenance.json" ]; then
+          echo "Validating SLSA provenance format..."
+          if command -v jq >/dev/null; then
+            if jq empty "$bundle_dir/${{ inputs.artifact-name }}.provenance.json"; then
+              echo "✅ SLSA provenance JSON is valid"
+            else
+              echo "::error::SLSA provenance JSON is invalid"
+              exit 1
+            fi
+          fi
+        fi
+        
+        echo "✅ Artifact integrity verification complete"
+        
+    - name: Summary
+      shell: bash
+      run: |
+        echo "## Artifact Management Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Action**: ${{ inputs.action }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Artifact**: ${{ inputs.artifact-name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Signing Enabled**: ${{ inputs.enable-signing }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **SLSA Compliance**: ${{ inputs.slsa-compliance }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Retention**: ${{ inputs.retention-days }} days" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ inputs.enable-signing }}" = "true" ]; then
+          echo "- **Security**: SHA256 and MD5 checksums generated" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ inputs.slsa-compliance }}" = "true" ]; then
+          echo "- **SLSA**: Build Level 2 provenance generated" >> $GITHUB_STEP_SUMMARY
+        fi

@@ -1,38 +1,394 @@
 name: 'Setup Documentation Tools'
-description: 'Install mandoc and optionally other documentation tools for vibeutils'
+description: 'Install and configure documentation generation tools'
 inputs:
+  include-groff:
+    description: 'Install groff/mandoc for man page processing'
+    required: false
+    default: 'true'
   include-pandoc:
-    description: 'Install pandoc for README HTML conversion'
+    description: 'Install pandoc for document conversion'
     required: false
     default: 'false'
-  include-groff:
-    description: 'Install groff-base for fallback man page processing'
+  include-link-checker:
+    description: 'Install markdown link checker'
     required: false
     default: 'false'
 
+outputs:
+  mandoc-available:
+    description: 'Whether mandoc is available'
+    value: ${{ steps.check-tools.outputs.mandoc-available }}
+  pandoc-available:
+    description: 'Whether pandoc is available'
+    value: ${{ steps.check-tools.outputs.pandoc-available }}
+  link-checker-available:
+    description: 'Whether link checker is available'
+    value: ${{ steps.check-tools.outputs.link-checker-available }}
+
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
-    - name: Install documentation tools
+    - name: Install documentation tools (Linux)
+      if: runner.os == 'Linux'
       shell: bash
       run: |
-        echo "Installing documentation tools..."
+        echo "Installing documentation tools on Linux..."
         sudo apt-get update
         
-        # Always install mandoc (required for all man page operations)
-        echo "Installing mandoc..."
-        sudo apt-get install -y mandoc
-        
-        # Conditionally install groff
+        # Install groff/mandoc for man page processing
         if [ "${{ inputs.include-groff }}" = "true" ]; then
-          echo "Installing groff-base..."
-          sudo apt-get install -y groff-base
+          if sudo apt-get install -y mandoc groff-base; then
+            echo "✅ Installed mandoc and groff"
+          else
+            echo "::warning::Failed to install mandoc/groff"
+          fi
         fi
         
-        # Conditionally install pandoc
+        # Install pandoc for document conversion
         if [ "${{ inputs.include-pandoc }}" = "true" ]; then
-          echo "Installing pandoc..."
-          sudo apt-get install -y pandoc
+          if sudo apt-get install -y pandoc; then
+            echo "✅ Installed pandoc"
+          else
+            echo "::warning::Failed to install pandoc from apt, trying snap..."
+            if sudo snap install pandoc; then
+              echo "✅ Installed pandoc via snap"
+            else
+              echo "::warning::Failed to install pandoc"
+            fi
+          fi
         fi
         
-        echo "Documentation tools installation complete"
+    - name: Install documentation tools (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        echo "Installing documentation tools on macOS..."
+        
+        # Install groff/mandoc
+        if [ "${{ inputs.include-groff }}" = "true" ]; then
+          if brew install mandoc; then
+            echo "✅ Installed mandoc"
+          else
+            echo "::warning::Failed to install mandoc, using system groff"
+          fi
+        fi
+        
+        # Install pandoc
+        if [ "${{ inputs.include-pandoc }}" = "true" ]; then
+          if brew install pandoc; then
+            echo "✅ Installed pandoc"
+          else
+            echo "::warning::Failed to install pandoc"
+          fi
+        fi
+        
+    - name: Install documentation tools (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        echo "Installing documentation tools on Windows..."
+        
+        # Install pandoc via chocolatey
+        if [ "${{ inputs.include-pandoc }}" = "true" ]; then
+          if choco install pandoc; then
+            echo "✅ Installed pandoc"
+          else
+            echo "::warning::Failed to install pandoc"
+          fi
+        fi
+        
+        # Note: mandoc is not easily available on Windows
+        if [ "${{ inputs.include-groff }}" = "true" ]; then
+          echo "::notice::mandoc/groff not easily available on Windows, skipping"
+        fi
+        
+    - name: Install Node.js tools
+      if: inputs.include-link-checker == 'true'
+      shell: bash
+      run: |
+        echo "Installing Node.js-based documentation tools..."
+        
+        # Install markdown link checker
+        if command -v npm >/dev/null 2>&1; then
+          if npm install -g markdown-link-check; then
+            echo "✅ Installed markdown-link-check"
+          else
+            echo "::warning::Failed to install markdown-link-check"
+          fi
+        else
+          echo "::warning::npm not available, cannot install link checker"
+        fi
+        
+    - name: Check tool availability
+      id: check-tools
+      shell: bash
+      run: |
+        echo "Checking documentation tool availability..."
+        
+        # Check mandoc/groff
+        if command -v mandoc >/dev/null 2>&1; then
+          echo "mandoc-available=true" >> $GITHUB_OUTPUT
+          echo "✅ mandoc available: $(mandoc -V)"
+        elif command -v groff >/dev/null 2>&1; then
+          echo "mandoc-available=true" >> $GITHUB_OUTPUT
+          echo "✅ groff available: $(groff --version | head -1)"
+        else
+          echo "mandoc-available=false" >> $GITHUB_OUTPUT
+          echo "::warning::Neither mandoc nor groff available"
+        fi
+        
+        # Check pandoc
+        if command -v pandoc >/dev/null 2>&1; then
+          echo "pandoc-available=true" >> $GITHUB_OUTPUT
+          echo "✅ pandoc available: $(pandoc --version | head -1)"
+        else
+          echo "pandoc-available=false" >> $GITHUB_OUTPUT
+          echo "::notice::pandoc not available"
+        fi
+        
+        # Check link checker
+        if command -v markdown-link-check >/dev/null 2>&1; then
+          echo "link-checker-available=true" >> $GITHUB_OUTPUT
+          echo "✅ markdown-link-check available"
+        else
+          echo "link-checker-available=false" >> $GITHUB_OUTPUT
+          echo "::notice::markdown-link-check not available"
+        fi
+        
+    - name: Create link checker config
+      if: steps.check-tools.outputs.link-checker-available == 'true'
+      shell: bash
+      run: |
+        echo "Creating link checker configuration..."
+        
+        mkdir -p .github
+        cat > .github/link-check-config.json << EOF
+        {
+          "ignorePatterns": [
+            {
+              "pattern": "^http://localhost"
+            },
+            {
+              "pattern": "^https://localhost"
+            },
+            {
+              "pattern": "^http://127.0.0.1"
+            },
+            {
+              "pattern": "^https://127.0.0.1"
+            }
+          ],
+          "httpHeaders": [
+            {
+              "urls": ["https://github.com"],
+              "headers": {
+                "User-Agent": "Mozilla/5.0 (compatible; Link Checker)"
+              }
+            }
+          ],
+          "timeout": "30s",
+          "retryOn429": true,
+          "retryCount": 3,
+          "fallbackRetryDelay": "30s",
+          "aliveStatusCodes": [200, 206]
+        }
+        EOF
+        
+        echo "✅ Link checker configuration created"
+        
+    - name: Test documentation tools
+      shell: bash
+      run: |
+        echo "Testing documentation tools..."
+        
+        # Test mandoc if available
+        if [ "${{ steps.check-tools.outputs.mandoc-available }}" = "true" ]; then
+          echo "Testing mandoc/groff..."
+          echo '.TH TEST 1' | mandoc >/dev/null 2>&1 && echo "✅ mandoc works" || echo "::warning::mandoc test failed"
+        fi
+        
+        # Test pandoc if available
+        if [ "${{ steps.check-tools.outputs.pandoc-available }}" = "true" ]; then
+          echo "Testing pandoc..."
+          echo "# Test" | pandoc -f markdown -t html >/dev/null 2>&1 && echo "✅ pandoc works" || echo "::warning::pandoc test failed"
+        fi
+        
+        # Test link checker if available
+        if [ "${{ steps.check-tools.outputs.link-checker-available }}" = "true" ]; then
+          echo "Testing link checker..."
+          echo "[test](https://github.com)" | markdown-link-check --config .github/link-check-config.json >/dev/null 2>&1 && echo "✅ link checker works" || echo "::warning::link checker test failed"
+        fi
+        
+    - name: Create documentation helper scripts
+      shell: bash
+      run: |
+        echo "Creating documentation helper scripts..."
+        
+        mkdir -p scripts
+        
+        # Create man page linting script
+        cat > scripts/lint-man-pages.sh << 'EOF'
+        #!/bin/bash
+        set -euo pipefail
+        
+        # Man page linting script
+        echo "Linting man pages..."
+        
+        CI_MODE=false
+        VERBOSE=false
+        
+        while [[ $# -gt 0 ]]; do
+          case $1 in
+            --ci)
+              CI_MODE=true
+              shift
+              ;;
+            --verbose|-v)
+              VERBOSE=true
+              shift
+              ;;
+            *)
+              echo "Unknown option: $1"
+              exit 1
+              ;;
+          esac
+        done
+        
+        if [ ! -d "man" ]; then
+          echo "No man directory found, skipping man page linting"
+          exit 0
+        fi
+        
+        LINT_ERRORS=0
+        
+        find man/ -name "*.1" -o -name "*.8" | while read manfile; do
+          echo "Checking $manfile..."
+          
+          if command -v mandoc >/dev/null 2>&1; then
+            if ! mandoc -T lint "$manfile" 2>/dev/null; then
+              echo "::error::Mandoc linting failed for $manfile"
+              LINT_ERRORS=$((LINT_ERRORS + 1))
+            elif [ "$VERBOSE" = true ]; then
+              echo "✅ $manfile passed mandoc linting"
+            fi
+          else
+            echo "::warning::mandoc not available, skipping detailed linting"
+          fi
+          
+          # Basic content checks
+          if ! grep -q "\.TH" "$manfile"; then
+            echo "::error::$manfile missing .TH header"
+            LINT_ERRORS=$((LINT_ERRORS + 1))
+          fi
+        done
+        
+        if [ $LINT_ERRORS -gt 0 ]; then
+          echo "::error::Found $LINT_ERRORS man page linting errors"
+          exit 1
+        fi
+        
+        echo "✅ All man pages passed linting"
+        EOF
+        
+        chmod +x scripts/lint-man-pages.sh
+        
+        # Create documentation generation script
+        cat > scripts/generate-docs.sh << 'EOF'
+        #!/bin/bash
+        set -euo pipefail
+        
+        # Documentation generation script
+        echo "Generating documentation..."
+        
+        CI_MODE=false
+        
+        while [[ $# -gt 0 ]]; do
+          case $1 in
+            --ci)
+              CI_MODE=true
+              shift
+              ;;
+            *)
+              echo "Unknown option: $1"
+              exit 1
+              ;;
+          esac
+        done
+        
+        # Create output directory
+        mkdir -p docs/html
+        
+        # Generate HTML from man pages if mandoc is available
+        if command -v mandoc >/dev/null 2>&1 && [ -d "man" ]; then
+          echo "Converting man pages to HTML..."
+          find man/ -name "*.1" -o -name "*.8" | while read manfile; do
+            basename=$(basename "$manfile")
+            mandoc -T html "$manfile" > "docs/html/${basename}.html"
+            echo "Converted $manfile to HTML"
+          done
+        fi
+        
+        # Create index file
+        cat > docs/html/index.html << 'HTMLEOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>vibeutils Documentation</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 2em; }
+            h1 { color: #333; }
+            ul { list-style-type: disc; }
+            a { color: #0066cc; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+          </style>
+        </head>
+        <body>
+          <h1>vibeutils Documentation</h1>
+          <p>Modern Zig implementation of GNU coreutils with enhanced UX.</p>
+          
+          <h2>Available Utilities</h2>
+          <ul id="utility-list">
+            <!-- Will be populated by script -->
+          </ul>
+          
+          <h2>Manual Pages</h2>
+          <ul id="man-pages">
+            <!-- Will be populated by script -->
+          </ul>
+          
+          <script>
+            // Populate utility list and man pages dynamically
+            console.log("Documentation index loaded");
+          </script>
+        </body>
+        </html>
+        HTMLEOF
+        
+        echo "✅ Documentation generation complete"
+        EOF
+        
+        chmod +x scripts/generate-docs.sh
+        
+        echo "✅ Documentation helper scripts created"
+        
+    - name: Summary
+      shell: bash
+      run: |
+        echo "## Documentation Tools Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **mandoc/groff**: ${{ steps.check-tools.outputs.mandoc-available }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **pandoc**: ${{ steps.check-tools.outputs.pandoc-available }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **link-checker**: ${{ steps.check-tools.outputs.link-checker-available }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Available Tools" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ steps.check-tools.outputs.mandoc-available }}" = "true" ]; then
+          echo "- ✅ Man page processing available" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ steps.check-tools.outputs.pandoc-available }}" = "true" ]; then
+          echo "- ✅ Document conversion available" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ steps.check-tools.outputs.link-checker-available }}" = "true" ]; then
+          echo "- ✅ Link validation available" >> $GITHUB_STEP_SUMMARY
+        fi

@@ -1,0 +1,95 @@
+name: 'Discover Utilities'
+description: 'Dynamically discover available utilities from the codebase'
+outputs:
+  utilities:
+    description: 'JSON array of utility names'
+    value: ${{ steps.discover.outputs.utilities }}
+  count:
+    description: 'Number of utilities found'
+    value: ${{ steps.discover.outputs.count }}
+  utilities-list:
+    description: 'Space-separated list of utilities'
+    value: ${{ steps.discover.outputs.utilities-list }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Discover utilities
+      id: discover
+      shell: bash
+      run: |
+        echo "Discovering utilities from source directory..."
+        
+        # Find all utilities by looking for .zig files in src/
+        utilities=()
+        
+        # Method 1: Direct .zig files in src/ (e.g., src/echo.zig)
+        for file in src/*.zig; do
+          if [ -f "$file" ]; then
+            basename=$(basename "$file" .zig)
+            # Skip common non-utility files
+            if [[ "$basename" != "common" && "$basename" != "main" && "$basename" != "lib" ]]; then
+              utilities+=("$basename")
+            fi
+          fi
+        done
+        
+        # Method 2: Directories with main.zig (e.g., src/utility/main.zig)
+        for dir in src/*/; do
+          if [ -f "${dir}main.zig" ]; then
+            basename=$(basename "$dir")
+            utilities+=("$basename")
+          fi
+        done
+        
+        # Method 3: Check build.zig for explicit utility definitions
+        if [ -f "build.zig" ] && grep -q "addExecutable" build.zig; then
+          # Extract utility names from build.zig
+          grep -o 'addExecutable.*name.*=.*"\([^"]*\)"' build.zig | \
+            sed 's/.*"\([^"]*\)".*/\1/' | \
+            while read utility; do
+              if [[ ! " ${utilities[*]} " =~ " ${utility} " ]]; then
+                utilities+=("$utility")
+              fi
+            done
+        fi
+        
+        # Remove duplicates and sort
+        IFS=$'\n' utilities=($(sort -u <<<"${utilities[*]}"))
+        unset IFS
+        
+        # Output results
+        count=${#utilities[@]}
+        utilities_json=$(printf '%s\n' "${utilities[@]}" | jq -R . | jq -s .)
+        utilities_list=$(printf '%s ' "${utilities[@]}")
+        
+        echo "Found $count utilities: ${utilities_list}"
+        
+        echo "utilities=$utilities_json" >> $GITHUB_OUTPUT
+        echo "count=$count" >> $GITHUB_OUTPUT  
+        echo "utilities-list=${utilities_list% }" >> $GITHUB_OUTPUT
+        
+    - name: Validate utilities
+      shell: bash
+      run: |
+        echo "Validating discovered utilities..."
+        
+        # Check that each utility has corresponding source files
+        utilities_list="${{ steps.discover.outputs.utilities-list }}"
+        for utility in $utilities_list; do
+          found=false
+          
+          if [ -f "src/${utility}.zig" ]; then
+            found=true
+          elif [ -f "src/${utility}/main.zig" ]; then
+            found=true
+          fi
+          
+          if [ "$found" = false ]; then
+            echo "::warning::Utility '$utility' discovered but no source file found"
+          else
+            echo "✓ Validated: $utility"
+          fi
+        done
+        
+        echo "Utility discovery and validation complete"
