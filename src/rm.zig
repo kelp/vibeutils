@@ -38,6 +38,11 @@ const RmOptions = struct {
     verbose: bool,
 };
 
+/// Standardized entry point for the rm command
+pub fn runUtility(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runRm(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main entry point for the rm command with writer-based interface.
 pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser

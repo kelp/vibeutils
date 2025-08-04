@@ -82,6 +82,11 @@ fn processSingleFile(allocator: std.mem.Allocator, positionals: []const []const 
     return @intFromEnum(common.ExitCode.success);
 }
 
+/// Standardized entry point for the basename utility
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runBasename(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main entry point for the basename utility
 pub fn runBasename(allocator: std.mem.Allocator, args: []const []const u8, stdoutWriter: anytype, stderrWriter: anytype) !u8 {
     // Parse arguments using new parser

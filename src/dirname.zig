@@ -24,6 +24,11 @@ const DirnameArgs = struct {
     };
 };
 
+/// Standardized entry point for dirname utility
+pub fn runUtility(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runDirname(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main entry point for dirname utility
 pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser

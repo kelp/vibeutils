@@ -56,6 +56,11 @@ pub fn main() !void {
     std.process.exit(exit_code);
 }
 
+/// Standardized entry point for touch utility
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runTouch(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main implementation that accepts writers for output.
 pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "touch";

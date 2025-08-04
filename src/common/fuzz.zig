@@ -5,12 +5,22 @@
 //! and common fuzzing patterns.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
+const common = @import("lib.zig");
 
-/// Maximum size for generated paths in fuzzing
+/// Configuration constants for fuzzing
+pub const FuzzConfig = struct {
+    /// Maximum argument size varies by build mode for performance
+    pub const MAX_ARG_SIZE = if (builtin.mode == .Debug) 1000 else 10_000;
+    /// Maximum argument count varies by build mode
+    pub const MAX_ARG_COUNT = if (builtin.mode == .Debug) 100 else 1000;
+    /// Maximum path depth to prevent infinite recursion
+    pub const MAX_PATH_DEPTH = 20;
+};
+
+/// Legacy constants for backward compatibility
 pub const MAX_PATH_SIZE = 4096;
-
-/// Maximum size for generated command lines
 pub const MAX_CMDLINE_SIZE = 8192;
 
 /// Generate a random path-like string from fuzzer input
@@ -153,7 +163,7 @@ pub fn generateArgs(allocator: std.mem.Allocator, input: []const u8) ![]const []
             },
         }
 
-        if (args.items.len >= 100) break; // Limit number of arguments
+        if (args.items.len >= FuzzConfig.MAX_ARG_COUNT) break;
     }
 
     return args.toOwnedSlice();
@@ -216,39 +226,207 @@ pub fn generateEscapeSequence(allocator: std.mem.Allocator, input: []const u8) !
     return result.toOwnedSlice();
 }
 
+/// Generate file permissions from fuzzer input
+/// Creates various permission patterns for chmod testing
+pub fn generateFilePermissions(input: []const u8) u9 {
+    if (input.len == 0) {
+        return 0o644; // Default permissions
+    }
+
+    // Use fuzzer input to create permission bits
+    var perm: u9 = 0;
+    const byte = input[0];
+
+    // Owner permissions
+    if (byte & 0x01 != 0) perm |= 0o400; // Read
+    if (byte & 0x02 != 0) perm |= 0o200; // Write
+    if (byte & 0x04 != 0) perm |= 0o100; // Execute
+
+    // Group permissions
+    if (byte & 0x08 != 0) perm |= 0o040; // Read
+    if (byte & 0x10 != 0) perm |= 0o020; // Write
+    if (byte & 0x20 != 0) perm |= 0o010; // Execute
+
+    // Other permissions
+    if (byte & 0x40 != 0) perm |= 0o004; // Read
+    if (byte & 0x80 != 0) perm |= 0o002; // Write
+    if (input.len > 1 and input[1] & 0x01 != 0) perm |= 0o001; // Execute
+
+    return perm;
+}
+
+/// Generate a list of file paths from fuzzer input
+/// Creates multiple paths for testing batch operations
+pub fn generateFileList(allocator: std.mem.Allocator, input: []const u8) ![][]u8 {
+    if (input.len == 0) {
+        return &[_][]u8{};
+    }
+
+    var files = std.ArrayList([]u8).init(allocator);
+    defer files.deinit();
+
+    // Determine number of files (1-10)
+    const num_files = @min((input[0] % 10) + 1, input.len);
+
+    var i: usize = 0;
+    while (i < num_files) : (i += 1) {
+        const start = i * (input.len / num_files);
+        const end = @min(start + (input.len / num_files), input.len);
+
+        if (start < end) {
+            const file_path = try generatePath(allocator, input[start..end]);
+            try files.append(file_path);
+        } else {
+            // Generate a default file name
+            const file_path = try std.fmt.allocPrint(allocator, "file{}.txt", .{i});
+            try files.append(file_path);
+        }
+    }
+
+    return files.toOwnedSlice();
+}
+
+/// Generate a symbolic link chain pattern from fuzzer input
+/// Creates various symlink scenarios for testing ln, cp, mv operations
+pub fn generateSymlinkChain(allocator: std.mem.Allocator, input: []const u8) ![]const []const u8 {
+    if (input.len == 0) {
+        return &[_][]const u8{};
+    }
+
+    var chain = std.ArrayList([]const u8).init(allocator);
+    defer chain.deinit();
+
+    const chain_type = input[0] % 5;
+
+    switch (chain_type) {
+        0 => {
+            // Simple symlink: link -> target
+            try chain.append(try allocator.dupe(u8, "link"));
+            try chain.append(try allocator.dupe(u8, "target"));
+        },
+        1 => {
+            // Chain: link1 -> link2 -> target
+            try chain.append(try allocator.dupe(u8, "link1"));
+            try chain.append(try allocator.dupe(u8, "link2"));
+            try chain.append(try allocator.dupe(u8, "target"));
+        },
+        2 => {
+            // Loop: link1 -> link2 -> link1
+            try chain.append(try allocator.dupe(u8, "link1"));
+            try chain.append(try allocator.dupe(u8, "link2"));
+            try chain.append(try allocator.dupe(u8, "link1"));
+        },
+        3 => {
+            // Broken: link -> nonexistent
+            try chain.append(try allocator.dupe(u8, "link"));
+            try chain.append(try allocator.dupe(u8, "/nonexistent/path"));
+        },
+        else => {
+            // Complex chain with multiple levels
+            const depth = @min(input[0] % 10, 5);
+            var i: usize = 0;
+            while (i < depth) : (i += 1) {
+                const link_name = try std.fmt.allocPrint(allocator, "link{}", .{i});
+                try chain.append(link_name);
+            }
+            try chain.append(try allocator.dupe(u8, "final_target"));
+        },
+    }
+
+    return chain.toOwnedSlice();
+}
+
+/// Generate signal number from fuzzer input
+/// Used for testing signal handling in utilities like sleep, yes
+pub fn generateSignal(input: []const u8) u8 {
+    if (input.len == 0) {
+        return 15; // SIGTERM
+    }
+
+    // Common signals to test
+    const signals = [_]u8{
+        1, // SIGHUP
+        2, // SIGINT
+        3, // SIGQUIT
+        9, // SIGKILL
+        15, // SIGTERM
+        17, // SIGSTOP
+        18, // SIGTSTP
+        19, // SIGCONT
+    };
+
+    return signals[input[0] % signals.len];
+}
+
 /// Test helper: Create a test allocator that detects leaks
 pub fn createTestAllocator() std.mem.Allocator {
     return testing.allocator;
 }
 
-/// Fuzzing property: Verify that parsing and formatting round-trip correctly
-pub fn verifyRoundTrip(comptime T: type, parse_fn: anytype, format_fn: anytype, input: []const u8) !void {
-    const allocator = createTestAllocator();
+/// Generic fuzz test: Utility should handle any input gracefully without panicking
+pub fn testUtilityBasic(comptime run_fn: anytype, allocator: std.mem.Allocator, input: []const u8) !void {
+    const args = generateArgs(allocator, input) catch return;
+    defer {
+        for (args) |arg| allocator.free(arg);
+        allocator.free(args);
+    }
 
-    // Parse the input
-    const parsed = parse_fn(allocator, input) catch |err| {
-        // Parse errors are acceptable
-        _ = err;
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    _ = run_fn(allocator, args, stdout_buf.writer(), common.null_writer) catch |err| {
+        if (builtin.mode == .Debug) {
+            std.debug.print("Fuzz error (expected): {}\n", .{err});
+        }
         return;
     };
-    defer if (@hasDecl(T, "deinit")) parsed.deinit();
+}
 
-    // Format it back
-    const formatted = format_fn(allocator, parsed) catch |err| {
-        // Format errors indicate a bug if parse succeeded
-        return err;
+/// Generic fuzz test: Utility should be deterministic (same input = same output)
+pub fn testUtilityDeterministic(comptime run_fn: anytype, allocator: std.mem.Allocator, input: []const u8) !void {
+    const args = generateArgs(allocator, input) catch return;
+    defer {
+        for (args) |arg| allocator.free(arg);
+        allocator.free(args);
+    }
+
+    var buffer1 = std.ArrayList(u8).init(allocator);
+    defer buffer1.deinit();
+    var buffer2 = std.ArrayList(u8).init(allocator);
+    defer buffer2.deinit();
+
+    const result1 = run_fn(allocator, args, buffer1.writer(), common.null_writer) catch |err| {
+        // If first fails, second should also fail
+        const result2 = run_fn(allocator, args, buffer2.writer(), common.null_writer) catch {
+            return; // Both failed consistently
+        };
+        _ = result2;
+        return err; // Inconsistent behavior
     };
-    defer allocator.free(formatted);
 
-    // Parse again
-    const reparsed = parse_fn(allocator, formatted) catch |err| {
-        // This should not fail if format produced valid output
-        return err;
+    const result2 = run_fn(allocator, args, buffer2.writer(), common.null_writer) catch {
+        return error.InconsistentBehavior;
     };
-    defer if (@hasDecl(T, "deinit")) reparsed.deinit();
 
-    // Verify equivalence (this is type-specific)
-    // The actual comparison would depend on the type T
+    try testing.expectEqual(result1, result2);
+    try testing.expectEqualStrings(buffer1.items, buffer2.items);
+}
+
+/// Generic fuzz test: Utility should handle path-like arguments gracefully
+pub fn testUtilityPaths(comptime run_fn: anytype, allocator: std.mem.Allocator, input: []const u8) !void {
+    const path = generatePath(allocator, input) catch return;
+    defer allocator.free(path);
+
+    const args = [_][]const u8{path};
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    _ = run_fn(allocator, &args, stdout_buf.writer(), common.null_writer) catch |err| {
+        if (builtin.mode == .Debug) {
+            std.debug.print("Path fuzz error (expected): {}\n", .{err});
+        }
+        return;
+    };
 }
 
 test "generatePath produces valid paths" {
@@ -327,5 +505,102 @@ test "generateEscapeSequence produces valid escape sequences" {
         // Verify we got something and it's not too long
         try testing.expect(seq.len > 0);
         try testing.expect(seq.len <= MAX_CMDLINE_SIZE);
+    }
+}
+
+test "generateFilePermissions produces valid permissions" {
+    // Test empty input
+    {
+        const perm = generateFilePermissions(&[_]u8{});
+        try testing.expectEqual(@as(u9, 0o644), perm);
+    }
+
+    // Test various permission patterns
+    {
+        const perm1 = generateFilePermissions(&[_]u8{0xFF}); // All bits set
+        try testing.expect(perm1 <= 0o777);
+
+        const perm2 = generateFilePermissions(&[_]u8{0x00}); // No bits set
+        try testing.expectEqual(@as(u9, 0), perm2);
+
+        const perm3 = generateFilePermissions(&[_]u8{0x07}); // Owner rwx
+        try testing.expectEqual(@as(u9, 0o700), perm3);
+    }
+}
+
+test "generateFileList produces valid file lists" {
+    const allocator = testing.allocator;
+
+    // Test empty input
+    {
+        const files = try generateFileList(allocator, &[_]u8{});
+        defer allocator.free(files);
+        try testing.expectEqual(@as(usize, 0), files.len);
+    }
+
+    // Test various file list patterns
+    {
+        const input = [_]u8{ 3, 65, 66, 67, 68, 69, 70 };
+        const files = try generateFileList(allocator, input[0..]);
+        defer {
+            for (files) |file| allocator.free(file);
+            allocator.free(files);
+        }
+
+        // Should have 1-10 files
+        try testing.expect(files.len >= 1);
+        try testing.expect(files.len <= 10);
+    }
+}
+
+test "generateSymlinkChain produces valid symlink patterns" {
+    const allocator = testing.allocator;
+
+    // Test empty input
+    {
+        const chain = try generateSymlinkChain(allocator, &[_]u8{});
+        defer allocator.free(chain);
+        try testing.expectEqual(@as(usize, 0), chain.len);
+    }
+
+    // Test various chain types
+    {
+        const inputs = [_][]const u8{
+            &[_]u8{0}, // Simple symlink
+            &[_]u8{1}, // Chain
+            &[_]u8{2}, // Loop
+            &[_]u8{3}, // Broken
+            &[_]u8{4}, // Complex
+        };
+
+        for (inputs) |input| {
+            const chain = try generateSymlinkChain(allocator, input);
+            defer {
+                for (chain) |link| allocator.free(link);
+                allocator.free(chain);
+            }
+
+            // Should have at least 2 items (link and target)
+            try testing.expect(chain.len >= 2);
+        }
+    }
+}
+
+test "generateSignal produces valid signal numbers" {
+    // Test empty input
+    {
+        const sig = generateSignal(&[_]u8{});
+        try testing.expectEqual(@as(u8, 15), sig); // SIGTERM
+    }
+
+    // Test various inputs
+    {
+        const inputs = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 255 };
+        for (inputs) |input| {
+            const sig = generateSignal(&[_]u8{input});
+            // Should be one of the common signals
+            try testing.expect(sig == 1 or sig == 2 or sig == 3 or sig == 9 or
+                sig == 15 or sig == 17 or sig == 18 or sig == 19);
+        }
     }
 }

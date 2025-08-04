@@ -6,9 +6,9 @@ const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
 
-/// Main entry point for the true utility
+/// Standardized entry point for the true utility
 /// Always returns success (0) regardless of arguments, following POSIX specification
-pub fn runTrue(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = allocator; // Unused
     _ = args; // All arguments ignored per POSIX
     _ = stdout_writer; // No output per POSIX
@@ -16,6 +16,11 @@ pub fn runTrue(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     // Always return success - this is the entire POSIX-specified behavior
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Legacy entry point - kept for backward compatibility during migration
+pub fn runTrue(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runUtility(allocator, args, stdout_writer, stderr_writer);
 }
 
 /// Main entry point for the true utility
@@ -34,7 +39,7 @@ test "true always returns success with no arguments" {
     defer stdout_buffer.deinit();
 
     const args = [_][]const u8{};
-    const result = try runTrue(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buffer.items); // No output per POSIX
@@ -45,7 +50,7 @@ test "true returns success with single argument" {
     defer stdout_buffer.deinit();
 
     const args = [_][]const u8{"ignored"};
-    const result = try runTrue(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buffer.items); // No output per POSIX
@@ -56,7 +61,7 @@ test "true returns success with multiple arguments" {
     defer stdout_buffer.deinit();
 
     const args = [_][]const u8{ "foo", "bar", "baz", "with spaces" };
-    const result = try runTrue(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buffer.items); // No output per POSIX
@@ -67,7 +72,7 @@ test "true ignores flag-like arguments" {
     defer stdout_buffer.deinit();
 
     const args = [_][]const u8{ "-x", "--invalid", "-flag", "--help", "--version" };
-    const result = try runTrue(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buffer.items); // No output per POSIX

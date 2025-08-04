@@ -26,6 +26,11 @@ const PwdArgs = struct {
     };
 };
 
+/// Standardized entry point for pwd utility
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runPwd(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main entry point for pwd utility
 pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser

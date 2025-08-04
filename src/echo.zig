@@ -33,6 +33,11 @@ const EchoArgs = struct {
     };
 };
 
+/// Standardized entry point for the echo utility
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runEcho(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Main entry point for the echo utility
 pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser
