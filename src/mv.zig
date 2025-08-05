@@ -757,7 +757,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("mv");
 
 test "mv fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -765,6 +765,9 @@ test "mv fuzz intelligent" {
 }
 
 fn testMvIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("mv")) return;
+
     const MvIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(MvArgs, runUtility);
     try MvIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

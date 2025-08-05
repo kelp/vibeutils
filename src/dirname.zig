@@ -351,7 +351,7 @@ test "dirname: combined flags" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("dirname");
 
 test "dirname fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -359,6 +359,9 @@ test "dirname fuzz intelligent" {
 }
 
 fn testDirnameIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("dirname")) return;
+
     const DirnameIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(DirnameArgs, runDirname);
     try DirnameIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

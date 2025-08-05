@@ -522,7 +522,7 @@ test "mkdir with mode applies to all created directories with -p" {
 }
 
 // Fuzz tests - only included when fuzzing is available
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("mkdir");
 
 test "mkdir fuzz all flags automatically" {
     if (!enable_fuzz_tests) return error.SkipZigTest;

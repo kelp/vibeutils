@@ -28,6 +28,36 @@ const common = @import("lib.zig");
 /// Enable fuzz tests only on Linux when fuzzing is enabled
 const enable_fuzz_tests = builtin.os.tag == .linux and @import("builtin").fuzz;
 
+/// Check if fuzzing should be enabled for a specific utility (runtime version)
+/// This supports selective fuzzing via the VIBEUTILS_FUZZ_TARGET environment variable
+/// Note: This must be called at runtime, not compile time
+pub fn shouldFuzzUtilityRuntime(utility_name: []const u8) bool {
+    // Only fuzz on Linux
+    if (builtin.os.tag != .linux) return false;
+
+    // Check environment variable
+    const fuzz_target = std.process.getEnvVarOwned(std.heap.page_allocator, "VIBEUTILS_FUZZ_TARGET") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false, // Default: no fuzzing unless explicitly enabled
+        else => return false, // Other errors: disable fuzzing
+    };
+    defer std.heap.page_allocator.free(fuzz_target);
+
+    // Check if this utility should be fuzzed
+    if (std.mem.eql(u8, fuzz_target, "all")) return true;
+    if (std.mem.eql(u8, fuzz_target, utility_name)) return true;
+
+    return false;
+}
+
+/// Check if fuzzing should be enabled for a specific utility (compile-time version)
+/// This is the simpler version that can be used at compile time for test filtering
+/// It only checks the OS and assumes fuzzing is enabled when the build has --fuzz
+pub fn shouldFuzzUtility(utility_name: []const u8) bool {
+    _ = utility_name; // We'll check this at runtime in the actual test
+    // Only enable fuzz tests on Linux - environment variable will be checked at runtime
+    return builtin.os.tag == .linux;
+}
+
 /// Configuration constants for fuzzing
 pub const FuzzConfig = struct {
     /// Build-dependent limits for performance vs coverage
@@ -776,7 +806,13 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
 
             // Use fuzzer input to generate arguments
             var args = std.ArrayList([]const u8).init(allocator);
-            defer args.deinit();
+            defer {
+                // Free all allocated argument strings
+                for (args.items) |arg| {
+                    allocator.free(arg);
+                }
+                args.deinit();
+            }
 
             var input_idx: usize = 0;
 
@@ -847,13 +883,19 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
             defer stderr_buf1.deinit();
 
             var args1 = std.ArrayList([]const u8).init(allocator);
-            defer args1.deinit();
+            defer {
+                for (args1.items) |arg| allocator.free(arg);
+                args1.deinit();
+            }
             try generateArgsFromInput(ArgsType, &args1, allocator, input);
 
             const result1 = runFn(allocator, args1.items, stdout_buf1.writer(), stderr_writer) catch |err| {
                 // If it fails once, it should fail consistently
                 var args2 = std.ArrayList([]const u8).init(allocator);
-                defer args2.deinit();
+                defer {
+                    for (args2.items) |arg| allocator.free(arg);
+                    args2.deinit();
+                }
                 try generateArgsFromInput(ArgsType, &args2, allocator, input);
 
                 _ = runFn(allocator, args2.items, common.null_writer, stderr_writer) catch {
@@ -869,7 +911,10 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
             defer stderr_buf2.deinit();
 
             var args2 = std.ArrayList([]const u8).init(allocator);
-            defer args2.deinit();
+            defer {
+                for (args2.items) |arg| allocator.free(arg);
+                args2.deinit();
+            }
             try generateArgsFromInput(ArgsType, &args2, allocator, input);
 
             const result2 = runFn(allocator, args2.items, stdout_buf2.writer(), stderr_writer) catch {
@@ -1262,6 +1307,10 @@ pub const SmartArgumentBuilder = struct {
     }
 
     pub fn deinit(self: *SmartArgumentBuilder) void {
+        // Free all allocated argument strings
+        for (self.args.items) |arg| {
+            self.allocator.free(arg);
+        }
         self.args.deinit();
         self.selected_flags.deinit();
     }
@@ -1548,13 +1597,7 @@ test "intelligent fuzzer components work correctly" {
     // Test SmartArgumentBuilder
     {
         var builder = SmartArgumentBuilder.init(allocator, &[_]u8{ 10, 20, 30 });
-        defer {
-            // Clean up allocated strings
-            for (builder.args.items) |arg| {
-                allocator.free(arg);
-            }
-            builder.deinit();
-        }
+        defer builder.deinit(); // deinit now properly frees allocated strings
 
         try builder.addPositionalArgs(2);
         const args = builder.getArgs();

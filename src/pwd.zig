@@ -412,7 +412,7 @@ test "runPwd with invalid flag" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("pwd");
 
 test "pwd fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;

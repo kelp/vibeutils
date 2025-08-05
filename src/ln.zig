@@ -664,7 +664,7 @@ test "ln relative path calculation" {
 }
 
 // Fuzz tests - only included when fuzzing is available
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("ln");
 
 test "ln fuzz all flags automatically" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -672,6 +672,9 @@ test "ln fuzz all flags automatically" {
 }
 
 fn testLnSmartAllFlags(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("ln")) return;
+
     const LnSmartFuzzer = common.fuzz.createSmartFuzzer(LnArgs, runLn);
     try LnSmartFuzzer.testAllFlags(allocator, input, common.null_writer);
 }
@@ -682,6 +685,9 @@ test "ln fuzz deterministic" {
 }
 
 fn testLnSmartDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("ln")) return;
+
     const LnSmartFuzzer = common.fuzz.createSmartFuzzer(LnArgs, runLn);
     try LnSmartFuzzer.testDeterministic(allocator, input, common.null_writer);
 }
@@ -693,6 +699,9 @@ test "ln fuzz link operations" {
 }
 
 fn testLnLinkOperationsFuzz(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("ln")) return;
+
     if (input.len == 0) return;
 
     // Test different link operation scenarios

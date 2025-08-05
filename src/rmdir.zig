@@ -527,7 +527,7 @@ test "rmdir: error message consistency" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("rmdir");
 
 test "rmdir fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -535,6 +535,9 @@ test "rmdir fuzz intelligent" {
 }
 
 fn testRmdirIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("rmdir")) return;
+
     const RmdirIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(RmdirArgs, runRmdir);
     try RmdirIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
@@ -545,6 +548,9 @@ test "rmdir fuzz parent removal" {
 }
 
 fn testRmdirParents(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("rmdir")) return;
+
     if (input.len == 0) return;
 
     // Generate nested directory path
@@ -578,6 +584,9 @@ test "rmdir fuzz multiple directories" {
 }
 
 fn testRmdirMultiple(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("rmdir")) return;
+
     var file_storage = common.fuzz.FileListStorage.init();
     const dirs = common.fuzz.generateFileList(&file_storage, input);
 

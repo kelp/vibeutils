@@ -439,7 +439,7 @@ test "sleepNanos - zero duration" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("sleep");
 
 test "sleep fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -447,6 +447,9 @@ test "sleep fuzz intelligent" {
 }
 
 fn testSleepIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("sleep")) return;
+
     const SleepIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(SleepArgs, runSleep);
     try SleepIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
@@ -457,6 +460,9 @@ test "sleep fuzz time formats" {
 }
 
 fn testSleepTimeFormats(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("sleep")) return;
+
     if (input.len == 0) return;
 
     // Generate various time format patterns
@@ -484,6 +490,9 @@ test "sleep fuzz multiple time args" {
 }
 
 fn testSleepMultipleArgs(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("sleep")) return;
+
     if (input.len < 2) return;
 
     // Test multiple time args that get summed

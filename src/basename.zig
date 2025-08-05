@@ -400,7 +400,7 @@ test "basename with -s flag (GNU extension)" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("basename");
 
 test "basename fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -408,6 +408,9 @@ test "basename fuzz intelligent" {
 }
 
 fn testBasenameIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("basename")) return;
+
     const BasenameIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(BasenameArgs, runBasename);
     try BasenameIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

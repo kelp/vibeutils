@@ -598,7 +598,7 @@ test "fuzz: echo handles maximum argument counts gracefully" {
 //                                FUZZ TESTS
 // ============================================================================
 
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("echo");
 
 test "echo fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -606,6 +606,9 @@ test "echo fuzz intelligent" {
 }
 
 fn testEchoIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("echo")) return;
+
     const EchoIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(EchoArgs, runEcho);
     try EchoIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
@@ -616,6 +619,9 @@ test "echo fuzz escape sequences" {
 }
 
 fn testEchoEscapeSequences(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("echo")) return;
+
     var escape_buffer: [common.fuzz.FuzzConfig.ESCAPE_BUFFER_SIZE]u8 = undefined;
     const escape_seq = common.fuzz.generateEscapeSequence(&escape_buffer, input);
 
@@ -635,6 +641,9 @@ test "echo fuzz flag combinations" {
 }
 
 fn testEchoFlagCombinations(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("echo")) return;
+
     if (input.len == 0) return;
 
     // Generate different flag combinations

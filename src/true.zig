@@ -78,7 +78,7 @@ test "true ignores flag-like arguments" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("true");
 
 test "true fuzz basic" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -86,6 +86,9 @@ test "true fuzz basic" {
 }
 
 fn testTrueBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
+
     try common.fuzz.testUtilityBasic(runTrue, allocator, input, common.null_writer);
 }
 
@@ -95,6 +98,9 @@ test "true fuzz deterministic" {
 }
 
 fn testTrueDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
+
     try common.fuzz.testUtilityDeterministic(runTrue, allocator, input, common.null_writer);
 }
 
@@ -104,6 +110,9 @@ test "true fuzz invariant properties" {
 }
 
 fn testTrueInvariants(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
+
     var arg_storage = common.fuzz.ArgStorage.init();
     const args = common.fuzz.generateArgs(&arg_storage, input);
 

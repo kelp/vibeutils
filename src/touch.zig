@@ -833,7 +833,7 @@ test "touch with -t timestamp" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("touch");
 
 test "touch fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -841,6 +841,9 @@ test "touch fuzz intelligent" {
 }
 
 fn testTouchIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("touch")) return;
+
     const TouchIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(TouchArgs, runTouch);
     try TouchIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
@@ -851,6 +854,9 @@ test "touch fuzz file lists" {
 }
 
 fn testTouchFileLists(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("touch")) return;
+
     var file_storage = common.fuzz.FileListStorage.init();
     const files = common.fuzz.generateFileList(&file_storage, input);
 

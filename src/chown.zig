@@ -83,7 +83,8 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(ChownArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.fatalWithWriter(stderr_writer, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid argument", .{});
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
@@ -121,13 +122,15 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const owner_spec: []const u8 = if (parsed_args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
-            common.fatalWithWriter(stderr_writer, "missing file operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing file operand", .{});
+            return @intFromEnum(common.ExitCode.general_error);
         }
         break :blk "";
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
-            common.fatalWithWriter(stderr_writer, "missing operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing operand", .{});
+            return @intFromEnum(common.ExitCode.general_error);
         }
         break :blk positionals[0];
     };
@@ -937,7 +940,7 @@ test "reportChange function" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("chown");
 
 test "chown fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -945,6 +948,9 @@ test "chown fuzz intelligent" {
 }
 
 fn testChownIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("chown")) return;
+
     const ChownIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(ChownArgs, runChown);
     try ChownIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

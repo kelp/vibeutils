@@ -471,7 +471,7 @@ test "runLs function works with separate writers" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("ls");
 
 test "ls fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -479,6 +479,9 @@ test "ls fuzz intelligent" {
 }
 
 fn testLsIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("ls")) return;
+
     // Wrapper that parses args and calls runLs
     const runLsWrapper = struct {
         fn run(alloc: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {

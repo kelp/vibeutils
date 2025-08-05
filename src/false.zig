@@ -82,7 +82,7 @@ test "false produces no output" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("false");
 
 test "false fuzz basic" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -90,6 +90,9 @@ test "false fuzz basic" {
 }
 
 fn testFalseBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("false")) return;
+
     try common.fuzz.testUtilityBasic(runFalse, allocator, input, common.null_writer);
 }
 
@@ -99,6 +102,9 @@ test "false fuzz deterministic" {
 }
 
 fn testFalseDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("false")) return;
+
     try common.fuzz.testUtilityDeterministic(runFalse, allocator, input, common.null_writer);
 }
 
@@ -108,6 +114,9 @@ test "false fuzz invariant properties" {
 }
 
 fn testFalseInvariants(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("false")) return;
+
     var arg_storage = common.fuzz.ArgStorage.init();
     const args = common.fuzz.generateArgs(&arg_storage, input);
 

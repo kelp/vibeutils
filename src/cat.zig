@@ -485,7 +485,7 @@ fn testCatStdin(reader: anytype, writer: anytype, options: CatOptions) !void {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("cat");
 
 test "cat fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -493,6 +493,9 @@ test "cat fuzz intelligent" {
 }
 
 fn testCatIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("cat")) return;
+
     const CatIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(CatArgs, runCat);
     try CatIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
@@ -503,6 +506,9 @@ test "cat fuzz file lists" {
 }
 
 fn testCatFileLists(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("cat")) return;
+
     var file_storage = common.fuzz.FileListStorage.init();
     const files = common.fuzz.generateFileList(&file_storage, input);
 

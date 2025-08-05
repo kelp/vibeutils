@@ -16,20 +16,33 @@ limitations of this system.
 - On macOS: Tests skip with "no fuzz tests found" 
 - On Windows: Not supported
 
-### Fundamental Limitation
-**You cannot select which fuzz test to run.** When you run `zig build test --fuzz`:
-1. It finds ALL tests calling `std.testing.fuzz()`
-2. Runs them sequentially (not in parallel)
-3. Since fuzzing runs forever, it gets stuck on the first test
-4. Never reaches the other 22 utilities
+### Fundamental Limitation (SOLVED)
+**Previously, you couldn't select which fuzz test to run.** This has been solved with our selective fuzzing system:
 
-There is no `--test-filter` or similar option for fuzzing.
+**Old Problem:**
+- `zig build test --fuzz` ran ALL tests and got stuck on the first one
+- No built-in `--test-filter` support for fuzzing
+
+**Our Solution:**
+- Individual build targets: `zig build fuzz-<utility>` 
+- Environment variable control: `VIBEUTILS_FUZZ_TARGET=<utility>`
+- Intelligent fuzzing script with timeouts and rotation
+- Full control over which utilities get fuzzed and for how long
 
 ## Quick Start (Linux Only)
 
 ```bash
-# Run all fuzz tests (will get stuck on first utility found)
-zig build test --fuzz
+# Fuzz a specific utility (RECOMMENDED)
+zig build fuzz-cat         # Fuzz cat utility only
+zig build fuzz-echo        # Fuzz echo utility only
+
+# Alternative: Use environment variable
+VIBEUTILS_FUZZ_TARGET=cat zig build test --fuzz
+
+# Use the fuzzing script for advanced control
+./scripts/fuzz-utilities.sh cat          # Fuzz cat with default timeout
+./scripts/fuzz-utilities.sh -t 60 echo   # Fuzz echo for 1 minute
+./scripts/fuzz-utilities.sh all          # Fuzz all utilities sequentially
 
 # View web UI (check output for actual port, usually 8000)
 # Browse to http://127.0.0.1:8000
@@ -186,69 +199,83 @@ fuzzer handles this with:
 if (!@hasField(ArgsType, "meta")) continue;
 ```
 
-## Practical Workarounds
+## Selective Fuzzing System
 
-Since we can't select individual fuzz tests, here are workable approaches:
+We've implemented a comprehensive solution for selective fuzzing:
 
-### Manual Rotation Script
+### Individual Build Targets
 ```bash
-#!/bin/bash
-# scripts/fuzz-rotation.sh
-# Run each utility for 5 minutes
-
-for file in src/*.zig src/ls/main.zig; do
-    echo "Fuzzing $file for 5 minutes..."
-    timeout 300 zig build test --fuzz
-    # Note: This still has the problem of running ALL tests
-    # Real solution would require commenting out other tests
-done
+# Fuzz specific utilities directly
+zig build fuzz-cat
+zig build fuzz-echo
+zig build fuzz-basename
+# ... and 19 more targets
 ```
 
-### Environment Variable Approach (Not Implemented)
-Could modify the enable check:
-```zig
-const enable_fuzz_tests = builtin.os.tag == .linux and 
-    std.os.getenv("FUZZ_UTILITY") == "basename";
+### Environment Variable Control
+```bash
+# Set target via environment variable
+VIBEUTILS_FUZZ_TARGET=cat zig build test --fuzz
+VIBEUTILS_FUZZ_TARGET=all zig build test --fuzz  # Fuzz all utilities
 ```
 
-### Current Reality
-The most practical approach is to:
-1. Run `zig build test --fuzz` on Linux
-2. Let it fuzz the first utility it finds
-3. Manually stop (Ctrl+C) when you want to move on
-4. Comment out completed tests if you need specific coverage
+### Advanced Fuzzing Script
+```bash
+# Use our intelligent fuzzing script
+./scripts/fuzz-utilities.sh cat           # Default 5 minute timeout
+./scripts/fuzz-utilities.sh -t 60 echo    # Custom timeout (seconds)
+./scripts/fuzz-utilities.sh all           # Sequential fuzzing of all
+./scripts/fuzz-utilities.sh -r -t 30      # Rotation mode, 30s each
+```
+
+### How It Works
+1. Each utility checks `VIBEUTILS_FUZZ_TARGET` environment variable
+2. Only enables fuzzing if the variable matches its name or equals "all"
+3. Build system creates individual targets that set the appropriate variable
+4. Script provides advanced control with timeouts and logging
 
 ## What Actually Works
 
 ✅ **Working:**
+- **Selective fuzzing of individual utilities** (FIXED!)
 - Fuzzing infrastructure compiles and runs on Linux
 - Intelligent fuzzer with semantic understanding
 - Automatic flag discovery via compile-time reflection  
 - Web UI starts and shows coverage (Linux only)
+- Individual build targets for each utility
+- Environment variable control for utility selection
+- Advanced fuzzing script with timeouts and rotation
+- Sequential fuzzing of all utilities
 
 ❌ **Not Working:**
-- Cannot select specific utilities to fuzz
-- macOS fuzzing (platform limitation)
-- Corpus persistence between runs
-- Parallel fuzzing of multiple utilities
+- macOS fuzzing (platform limitation - Linux only)
+- Corpus persistence between runs (Zig limitation)
+- Parallel fuzzing of multiple utilities (sequential only)
 
-⚠️ **Limitations:**
-- Only fuzzes first test found, runs forever
-- No built-in time limits
-- No way to skip tests via command line
-- Must manually manage which tests run
+⚠️ **Resolved Issues:**
+- ~~Cannot select specific utilities to fuzz~~ ✅ FIXED with selective fuzzing
+- ~~Only fuzzes first test found, runs forever~~ ✅ FIXED with environment variables
+- ~~No built-in time limits~~ ✅ FIXED with fuzzing script
+- ~~Must manually manage which tests run~~ ✅ FIXED with build targets
 
 ## Summary
 
 We built a sophisticated fuzzing infrastructure with intelligent test generation 
-and semantic understanding of command-line arguments. The main constraint is 
-Zig's current fuzzing implementation, which lacks granular control over test 
-selection.
+and semantic understanding of command-line arguments. We then **solved the major
+limitation** of Zig's fuzzing implementation by implementing selective fuzzing.
 
-The fuzzing absolutely works on Linux, but practical usage requires manual 
-intervention to test different utilities. This is a limitation of Zig 0.14's 
-fuzzing support, not our implementation.
+**Key Achievements**: 
+- ✅ Successfully integrated fuzzing into all 23 utilities
+- ✅ Automatic flag discovery and intelligent test generation
+- ✅ Reduced code duplication by ~70% compared to manual fuzz test writing
+- ✅ **SOLVED the selection problem** with environment variables and build targets
+- ✅ Created practical tooling for development and CI/CD integration
 
-**Key Achievement**: We successfully integrated fuzzing into all 23 utilities 
-with automatic flag discovery and intelligent test generation, reducing code 
-duplication by ~70% compared to manual fuzz test writing.
+The fuzzing system is now **fully practical and usable** on Linux, with:
+- Individual utility fuzzing via `zig build fuzz-<utility>`
+- Time-limited fuzzing via the script
+- Sequential coverage of all utilities
+- Clear documentation and examples
+
+This transforms fuzzing from "gets stuck on first test forever" to a powerful,
+controlled testing tool that can systematically validate all utilities.

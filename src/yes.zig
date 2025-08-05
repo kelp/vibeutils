@@ -259,7 +259,7 @@ test "yes handles BrokenPipe gracefully" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("yes");
 
 test "yes fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -267,6 +267,9 @@ test "yes fuzz intelligent" {
 }
 
 fn testYesIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
+
     const YesIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(YesArgs, runYes);
     try YesIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
@@ -277,6 +280,9 @@ test "yes fuzz basic limited" {
 }
 
 fn testYesBasicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
+
     var arg_storage = common.fuzz.ArgStorage.init();
     const args = common.fuzz.generateArgs(&arg_storage, input);
 
@@ -297,6 +303,9 @@ test "yes fuzz deterministic limited" {
 }
 
 fn testYesDeterministicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
+
     var arg_storage = common.fuzz.ArgStorage.init();
     const args = common.fuzz.generateArgs(&arg_storage, input);
 
@@ -329,6 +338,9 @@ test "yes fuzz output patterns" {
 }
 
 fn testYesOutputPatterns(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
+
     if (input.len == 0) return;
 
     // Test various output patterns

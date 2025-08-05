@@ -804,7 +804,7 @@ test "FileAccess module" {
 // ============================================================================
 
 const builtin = @import("builtin");
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("test");
 
 test "test fuzz basic" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -812,5 +812,8 @@ test "test fuzz basic" {
 }
 
 fn testRunTestBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("test")) return;
+
     try common.fuzz.testUtilityBasic(runTest, allocator, input, common.null_writer);
 }

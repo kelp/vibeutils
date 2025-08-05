@@ -1140,7 +1140,7 @@ test "error handling consistency" {
 //                                FUZZ TESTS
 // ============================================================================
 
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("chmod");
 
 test "chmod fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
@@ -1148,6 +1148,9 @@ test "chmod fuzz intelligent" {
 }
 
 fn testChmodIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("chmod")) return;
+
     const ChmodIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(ChmodArgs, runUtility);
     try ChmodIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

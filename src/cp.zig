@@ -1051,7 +1051,7 @@ test "cp: edge cases - empty file handling" {
 //                                FUZZ TESTS
 // ============================================================================
 
-const enable_fuzz_tests = builtin.os.tag == .linux;
+const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("cp");
 
 test "cp fuzz intelligent" {
     if (!enable_fuzz_tests) return error.SkipZigTest;
