@@ -199,35 +199,41 @@ test "description" {
 }
 ```
 
-### Fuzzing Requirements
+### Fuzzing (Zig 0.14)
 
-All utilities must include comprehensive fuzz tests in `src/<utility>_fuzz.zig`:
+**⚠️ Critical Limitations:**
+- **Linux-only** - Returns "no fuzz tests found" on macOS
+- **Cannot select specific tests** - `zig build test --fuzz` runs ALL fuzz tests, gets stuck on first forever
+- **No workaround** - No `--test-filter` support for fuzzing
 
+**Required Pattern (wrapper function needed):**
 ```zig
-//! Fuzz tests for <utility> using std.testing.fuzz()
-const std = @import("std");
-const testing = std.testing;
-const common = @import("common");
-const <utility> = @import("<utility>");
+// At end of src/myutil.zig (NOT separate _fuzz.zig files)
+const enable_fuzz_tests = builtin.os.tag == .linux;
 
-test "<utility> fuzz basic" {
-    try std.testing.fuzz(testing.allocator, testBasic, .{});
+test "myutil fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testWrapper, .{});
 }
 
-fn testBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityBasic(<utility>.runUtility, allocator, input);
-}
-
-test "<utility> fuzz deterministic" {
-    try std.testing.fuzz(testing.allocator, testDeterministic, .{});
-}
-
-fn testDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    try common.fuzz.testUtilityDeterministic(<utility>.runUtility, allocator, input);
+fn testWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const Fuzzer = common.fuzz.createIntelligentFuzzer(MyUtilArgs, runMyUtil);
+    try Fuzzer.testComprehensive(allocator, input, common.null_writer);
 }
 ```
 
-Add utility-specific tests for complex behaviors. The build system automatically creates `fuzz-<utility>` targets.
+**Zig 0.14 Fixes We've Applied:**
+- `@typeInfo(T).@"struct"` not `.Struct`
+- `@setEvalBranchQuota(10000)` for compile-time loops
+- Cannot store `type` fields in runtime structs
+- Use `&array` for pointer iteration on arrays
+
+**Use Intelligent Fuzzer** (`common/fuzz.zig`):
+- Automatic flag discovery via compile-time reflection
+- Understands flag relationships (force vs interactive, etc.)
+- 70% less code than manual fuzz tests
+
+See `docs/FUZZING.md` for full details.
 
 
 ## Zig Documentation Tools

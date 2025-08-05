@@ -1135,3 +1135,19 @@ test "error handling consistency" {
     try testing.expectError(ChmodError.InvalidMode, parseMode("u+invalid"));
     try testing.expectError(ChmodError.InvalidMode, parseMode("invalid+x"));
 }
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "chmod fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testChmodIntelligentWrapper, .{});
+}
+
+fn testChmodIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const ChmodIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(ChmodArgs, runUtility);
+    try ChmodIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}

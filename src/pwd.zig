@@ -26,11 +26,6 @@ const PwdArgs = struct {
     };
 };
 
-/// Standardized entry point for pwd utility
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runPwd(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main entry point for pwd utility
 pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
@@ -410,4 +405,21 @@ test "runPwd with invalid flag" {
     // Should print error message with program name
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd:") != null);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "pwd fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testPwdIntelligentWrapper, .{});
+}
+
+fn testPwdIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const PwdIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(PwdArgs, runPwd);
+    try PwdIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

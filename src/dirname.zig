@@ -24,11 +24,6 @@ const DirnameArgs = struct {
     };
 };
 
-/// Standardized entry point for dirname utility
-pub fn runUtility(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runDirname(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main entry point for dirname utility
 pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
@@ -349,4 +344,21 @@ test "dirname: combined flags" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\x00c\x00.\x00", stdout_buffer.items);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "dirname fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testDirnameIntelligentWrapper, .{});
+}
+
+fn testDirnameIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const DirnameIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(DirnameArgs, runDirname);
+    try DirnameIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

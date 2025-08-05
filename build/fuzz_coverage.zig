@@ -48,7 +48,7 @@ pub const ValidationResult = struct {
     }
 };
 
-/// Validate that all utilities have corresponding fuzz test files
+/// Validate that all utilities have integrated fuzz tests
 /// Returns detailed validation results including which utilities are missing fuzz tests
 pub fn validateFuzzCoverage(allocator: std.mem.Allocator) FuzzCoverageError!ValidationResult {
     var missing_list = std.ArrayList([]const u8).init(allocator);
@@ -56,33 +56,34 @@ pub fn validateFuzzCoverage(allocator: std.mem.Allocator) FuzzCoverageError!Vali
 
     var covered_count: usize = 0;
 
-    // Check each utility for a corresponding fuzz file
+    // Check each utility for integrated fuzz tests
     for (utils.utilities) |util| {
         // Skip bracket form of test utility - it shares fuzz tests with test
         if (std.mem.eql(u8, util.name, "[")) {
-            covered_count += 1; // Count as covered since it uses test_fuzz.zig
+            covered_count += 1; // Count as covered since it uses test.zig fuzz tests
             continue;
         }
 
-        const fuzz_file_path = std.fmt.allocPrint(allocator, "src/{s}_fuzz.zig", .{util.name}) catch {
-            return FuzzCoverageError.FileSystemError;
-        };
-        defer allocator.free(fuzz_file_path);
-
-        // Check if fuzz file exists
-        if (std.fs.cwd().access(fuzz_file_path, .{})) {
-            covered_count += 1;
-        } else |err| switch (err) {
-            error.FileNotFound => {
-                // Missing fuzz file - add to missing list
-                const missing_name = allocator.dupe(u8, util.name) catch {
-                    return FuzzCoverageError.FileSystemError;
-                };
-                try missing_list.append(missing_name);
-            },
-            else => {
+        // Determine main utility file path
+        const main_file_path = if (std.mem.eql(u8, util.name, "ls"))
+            std.fmt.allocPrint(allocator, "src/ls/main.zig", .{}) catch {
                 return FuzzCoverageError.FileSystemError;
-            },
+            }
+        else
+            std.fmt.allocPrint(allocator, "src/{s}.zig", .{util.name}) catch {
+                return FuzzCoverageError.FileSystemError;
+            };
+        defer allocator.free(main_file_path);
+
+        // Check if main utility file has integrated fuzz tests
+        if (hasIntegratedFuzzTests(allocator, main_file_path)) {
+            covered_count += 1;
+        } else {
+            // Missing fuzz tests - add to missing list
+            const missing_name = allocator.dupe(u8, util.name) catch {
+                return FuzzCoverageError.FileSystemError;
+            };
+            try missing_list.append(missing_name);
         }
     }
 
@@ -105,15 +106,15 @@ pub fn enforceFuzzCoverage(allocator: std.mem.Allocator) FuzzCoverageError!void 
         std.log.err("Missing fuzz tests for {} utilities:", .{result.missing.len});
 
         for (result.missing) |missing_util| {
-            std.log.err("  - {s} (expected: src/{s}_fuzz.zig)", .{ missing_util, missing_util });
+            std.log.err("  - {s} (expected: integrated fuzz tests in src/{s}.zig)", .{ missing_util, missing_util });
         }
 
         std.log.err("", .{});
         std.log.err("To fix this issue:", .{});
-        std.log.err("1. Create fuzz test files for the missing utilities", .{});
-        std.log.err("2. Follow the pattern in existing fuzz files like src/echo_fuzz.zig", .{});
-        std.log.err("3. Include basic, paths, deterministic, and utility-specific fuzz tests", .{});
-        std.log.err("4. Use std.testing.fuzz() with common.fuzz helper functions", .{});
+        std.log.err("1. Add integrated fuzz tests to the utility files", .{});
+        std.log.err("2. For utilities with Args structs, use: common.fuzz.createIntelligentFuzzer(ArgsType, runFunction)", .{});
+        std.log.err("3. For utilities without Args structs, use: common.fuzz.testUtilityBasic", .{});
+        std.log.err("4. Include enable_fuzz_tests checks and std.testing.fuzz() calls", .{});
         std.log.err("", .{});
 
         return FuzzCoverageError.MissingFuzzTests;
@@ -144,18 +145,49 @@ pub fn printFuzzCoverageReport(allocator: std.mem.Allocator) !void {
     }
 }
 
-/// Check if a specific utility has fuzz tests
+/// Check if a specific utility has integrated fuzz tests
 pub fn hasUtilityFuzzTests(allocator: std.mem.Allocator, util_name: []const u8) bool {
     // Special case for bracket form of test utility
     if (std.mem.eql(u8, util_name, "[")) {
         return hasUtilityFuzzTests(allocator, "test");
     }
 
-    const fuzz_file_path = std.fmt.allocPrint(allocator, "src/{s}_fuzz.zig", .{util_name}) catch return false;
-    defer allocator.free(fuzz_file_path);
+    // Determine main utility file path
+    const main_file_path = if (std.mem.eql(u8, util_name, "ls"))
+        std.fmt.allocPrint(allocator, "src/ls/main.zig", .{}) catch return false
+    else
+        std.fmt.allocPrint(allocator, "src/{s}.zig", .{util_name}) catch return false;
+    defer allocator.free(main_file_path);
 
-    std.fs.cwd().access(fuzz_file_path, .{}) catch return false;
-    return true;
+    return hasIntegratedFuzzTests(allocator, main_file_path);
+}
+
+/// Check if a file contains integrated fuzz tests
+fn hasIntegratedFuzzTests(allocator: std.mem.Allocator, file_path: []const u8) bool {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch return false;
+    defer file.close();
+
+    const file_size = file.getEndPos() catch return false;
+    if (file_size > 10 * 1024 * 1024) return false; // Skip files larger than 10MB
+
+    const content = file.readToEndAlloc(allocator, file_size) catch return false;
+    defer allocator.free(content);
+
+    // Look for fuzz test patterns indicating integrated fuzz tests
+    const fuzz_patterns = [_][]const u8{
+        "fuzz.*intelligent",  // Intelligent fuzzer pattern
+        "fuzz.*basic",        // Basic fuzzer pattern  
+        "std.testing.fuzz",   // Direct usage of fuzz testing
+        "enable_fuzz_tests",  // Fuzz test enablement check
+    };
+
+    for (fuzz_patterns) |pattern| {
+        if (std.mem.indexOf(u8, content, pattern) != null) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 test "validateFuzzCoverage basic functionality" {
@@ -175,9 +207,9 @@ test "validateFuzzCoverage basic functionality" {
 test "hasUtilityFuzzTests works correctly" {
     const allocator = std.testing.allocator;
 
-    // Test existing utilities that should have fuzz tests
+    // Test existing utilities that should have integrated fuzz tests
     try std.testing.expect(hasUtilityFuzzTests(allocator, "echo"));
-    try std.testing.expect(hasUtilityFuzzTests(allocator, "cat"));
+    try std.testing.expect(hasUtilityFuzzTests(allocator, "true"));
 
     // Test bracket form mapping
     try std.testing.expect(hasUtilityFuzzTests(allocator, "[") == hasUtilityFuzzTests(allocator, "test"));

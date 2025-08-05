@@ -54,12 +54,6 @@ fn printVersion(writer: anytype) !void {
     try writer.print("cat ({s}) {s}\n", .{ common.name, common.version });
 }
 
-/// Main entry point for cat utility with stdout and stderr writer parameters
-/// Standardized entry point for cat utility
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runCat(allocator, args, stdout_writer, stderr_writer);
-}
-
 pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {
@@ -484,4 +478,39 @@ fn testCatFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options: 
 fn testCatStdin(reader: anytype, writer: anytype, options: CatOptions) !void {
     var line_state = LineNumberState{};
     try processInput(reader, writer, options, &line_state);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "cat fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testCatIntelligentWrapper, .{});
+}
+
+fn testCatIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const CatIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(CatArgs, runCat);
+    try CatIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}
+
+test "cat fuzz file lists" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testCatFileLists, .{});
+}
+
+fn testCatFileLists(allocator: std.mem.Allocator, input: []const u8) !void {
+    var file_storage = common.fuzz.FileListStorage.init();
+    const files = common.fuzz.generateFileList(&file_storage, input);
+
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    _ = runCat(allocator, files, stdout_buf.writer(), common.null_writer) catch {
+        // File not found errors are expected
+        return;
+    };
 }

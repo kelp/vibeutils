@@ -43,16 +43,6 @@ const LimitedWriter = struct {
     }
 };
 
-/// Standardized entry point for yes utility
-pub fn runUtility(
-    allocator: std.mem.Allocator,
-    args: []const []const u8,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
-) !u8 {
-    return runYes(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main function for the yes utility.
 /// Repeatedly outputs a line with all specified strings, or 'y' if no arguments provided.
 /// Uses arena allocator for memory management as per CLI tool best practices.
@@ -262,4 +252,103 @@ test "yes handles BrokenPipe gracefully" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stderr_buffer.items); // No error messages for SIGPIPE
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "yes fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testYesIntelligentWrapper, .{});
+}
+
+fn testYesIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const YesIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(YesArgs, runYes);
+    try YesIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}
+
+test "yes fuzz basic limited" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testYesBasicLimited, .{});
+}
+
+fn testYesBasicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
+    var arg_storage = common.fuzz.ArgStorage.init();
+    const args = common.fuzz.generateArgs(&arg_storage, input);
+
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    var limited_writer = LimitedWriter{ .buffer = &stdout_buf, .limit = 1000 };
+
+    _ = runYes(allocator, args, limited_writer.writer(), common.null_writer) catch {
+        // BrokenPipe and other errors are expected
+        return;
+    };
+}
+
+test "yes fuzz deterministic limited" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testYesDeterministicLimited, .{});
+}
+
+fn testYesDeterministicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
+    var arg_storage = common.fuzz.ArgStorage.init();
+    const args = common.fuzz.generateArgs(&arg_storage, input);
+
+    var stdout_buf1 = std.ArrayList(u8).init(allocator);
+    defer stdout_buf1.deinit();
+    var stdout_buf2 = std.ArrayList(u8).init(allocator);
+    defer stdout_buf2.deinit();
+
+    var limited_writer1 = LimitedWriter{ .buffer = &stdout_buf1, .limit = 200 };
+    var limited_writer2 = LimitedWriter{ .buffer = &stdout_buf2, .limit = 200 };
+
+    const result1 = runYes(allocator, args, limited_writer1.writer(), common.null_writer) catch |err| switch (err) {
+        error.BrokenPipe => @as(u8, 0), // Expected result
+        else => return err,
+    };
+
+    const result2 = runYes(allocator, args, limited_writer2.writer(), common.null_writer) catch |err| switch (err) {
+        error.BrokenPipe => @as(u8, 0), // Expected result
+        else => return err,
+    };
+
+    // Results should be identical for same input
+    try testing.expectEqual(result1, result2);
+    try testing.expectEqualStrings(stdout_buf1.items, stdout_buf2.items);
+}
+
+test "yes fuzz output patterns" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testYesOutputPatterns, .{});
+}
+
+fn testYesOutputPatterns(allocator: std.mem.Allocator, input: []const u8) !void {
+    if (input.len == 0) return;
+
+    // Test various output patterns
+    const patterns = [_][]const []const u8{
+        &.{}, // Default 'y'
+        &.{"hello"},
+        &.{ "a", "b", "c" },
+        &.{""},
+        &.{ "hello", "world" },
+    };
+
+    const args = patterns[input[0] % patterns.len];
+
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    var limited_writer = LimitedWriter{ .buffer = &stdout_buf, .limit = 500 };
+
+    _ = runYes(allocator, args, limited_writer.writer(), common.null_writer) catch {
+        // BrokenPipe is expected
+        return;
+    };
 }

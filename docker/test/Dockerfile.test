@@ -2,9 +2,6 @@
 # Implements security hardening, layer caching, and eliminates code duplication
 
 ARG ZIG_VERSION=0.14.1
-ARG VIBEUTILS_USER=vibeutils
-ARG VIBEUTILS_UID=1000
-ARG VIBEUTILS_GID=1000
 
 # =============================================================================
 # BASE IMAGES
@@ -21,9 +18,6 @@ FROM alpine:latest AS base-alpine
 
 FROM base-ubuntu-24.04 AS common-setup
 ARG ZIG_VERSION
-ARG VIBEUTILS_USER
-ARG VIBEUTILS_UID
-ARG VIBEUTILS_GID
 
 # Copy configuration and scripts
 COPY docker/configs/ /docker/configs/
@@ -35,8 +29,7 @@ RUN set -a && . /docker/configs/env.conf && set +a
 # Make scripts executable
 RUN chmod +x /docker/scripts/*.sh
 
-# Create non-root user early for security
-RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
+# No user creation needed - running as root
 
 # =============================================================================
 # PACKAGE INSTALLATION STAGES - Distribution-specific
@@ -74,16 +67,12 @@ RUN apt-get update && \
 
 # Alpine package installer  
 FROM base-alpine AS packages-apk
-ARG VIBEUTILS_USER
-ARG VIBEUTILS_UID
-ARG VIBEUTILS_GID
 
 # Copy scripts for Alpine
 COPY docker/scripts/ /docker/scripts/
 RUN chmod +x /docker/scripts/*.sh
 
-# Create user for Alpine
-RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
+# No user creation needed - running as root
 
 # Install Alpine packages
 RUN apk add --no-cache \
@@ -140,7 +129,6 @@ RUN kcov --version || echo "kcov verification failed but continuing"
 
 # Ubuntu 24.04 LTS - Primary development environment
 FROM kcov-installer AS test-ubuntu-24.04
-ARG VIBEUTILS_USER
 
 # Set up environment
 ENV FORCE_COLOR=1 \
@@ -148,32 +136,24 @@ ENV FORCE_COLOR=1 \
     GITHUB_ACTIONS=true \
     RUNNER_OS=Linux \
     DISTRO=ubuntu-24.04 \
-    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+    ZIG_GLOBAL_CACHE_DIR="/root/.cache/zig"
 
-# Set working directory with correct permissions
+# Set working directory
 WORKDIR /workspace
-RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
 
 # Add health check
 HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
-    CMD /docker/scripts/healthcheck.sh
+    CMD ["/docker/scripts/healthcheck.sh"]
 
-# Switch to non-root user
-USER $VIBEUTILS_USER
+# Run as root (default - no USER directive needed)
 
 # Ubuntu Latest - Bleeding edge testing
 FROM base-ubuntu-latest AS test-ubuntu-latest
 ARG ZIG_VERSION
-ARG VIBEUTILS_USER
-ARG VIBEUTILS_UID
-ARG VIBEUTILS_GID
 
 # Copy shared components
 COPY docker/scripts/ /docker/scripts/
 RUN chmod +x /docker/scripts/*.sh
-
-# Create user
-RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
 
 # Install packages (reuse pattern from packages-apt)
 RUN apt-get update && \
@@ -195,29 +175,22 @@ ENV FORCE_COLOR=1 \
     GITHUB_ACTIONS=true \
     RUNNER_OS=Linux \
     DISTRO=ubuntu-latest \
-    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+    ZIG_GLOBAL_CACHE_DIR="/root/.cache/zig"
 
 WORKDIR /workspace
-RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
 
 HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
-    CMD /docker/scripts/healthcheck.sh
+    CMD ["/docker/scripts/healthcheck.sh"]
 
-USER $VIBEUTILS_USER
+# Run as root (default)
 
 # Debian 12 - Stability testing
 FROM base-debian-12 AS test-debian-12
 ARG ZIG_VERSION
-ARG VIBEUTILS_USER
-ARG VIBEUTILS_UID
-ARG VIBEUTILS_GID
 
 # Copy shared components
 COPY docker/scripts/ /docker/scripts/
 RUN chmod +x /docker/scripts/*.sh
-
-# Create user
-RUN /docker/scripts/create-user.sh "$VIBEUTILS_USER" "$VIBEUTILS_UID" "$VIBEUTILS_GID"
 
 # Install packages (Debian uses same packages as Ubuntu)
 RUN apt-get update && \
@@ -239,20 +212,19 @@ ENV FORCE_COLOR=1 \
     GITHUB_ACTIONS=true \
     RUNNER_OS=Linux \
     DISTRO=debian-12 \
-    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+    ZIG_GLOBAL_CACHE_DIR="/home/testuser/.cache/zig"
 
 WORKDIR /workspace
-RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
+RUN chown testuser:testuser /workspace
 
 HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
-    CMD /docker/scripts/healthcheck.sh
+    CMD ["/docker/scripts/healthcheck.sh"]
 
-USER $VIBEUTILS_USER
+USER testuser
 
 # Alpine Latest - musl libc testing
 FROM packages-apk AS test-alpine
 ARG ZIG_VERSION
-ARG VIBEUTILS_USER
 
 # Install Zig (note: kcov may have issues on Alpine/musl)
 RUN /docker/scripts/install-zig.sh "$ZIG_VERSION"
@@ -263,16 +235,16 @@ ENV FORCE_COLOR=1 \
     GITHUB_ACTIONS=true \
     RUNNER_OS=Linux \
     DISTRO=alpine-latest \
-    ZIG_GLOBAL_CACHE_DIR="/home/$VIBEUTILS_USER/.cache/zig"
+    ZIG_GLOBAL_CACHE_DIR="/home/testuser/.cache/zig"
 
 WORKDIR /workspace
-RUN chown "$VIBEUTILS_USER:$VIBEUTILS_USER" /workspace
+RUN chown testuser:testuser /workspace
 
 # Alpine health check (skip kcov check)
 HEALTHCHECK --interval=5m --timeout=1m --retries=3 \
-    CMD /docker/scripts/healthcheck.sh || exit 0
+    CMD ["/bin/sh", "-c", "/docker/scripts/healthcheck.sh || exit 0"]
 
-USER $VIBEUTILS_USER
+USER testuser
 
 # =============================================================================
 # DEFAULT TARGET

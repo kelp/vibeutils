@@ -91,6 +91,11 @@ pub fn main() !void {
     std.process.exit(exit_code);
 }
 
+/// Unified interface for fuzzing and testing
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return runRmdir(allocator, args, stdout_writer, stderr_writer);
+}
+
 /// Run rmdir with provided writers for output
 pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "rmdir";
@@ -515,4 +520,76 @@ test "rmdir: error message consistency" {
     try testing.expectEqualStrings("Not a directory", formatError(error.NotDir));
     try testing.expectEqualStrings("Permission denied", formatError(error.AccessDenied));
     try testing.expectEqualStrings("No such file or directory", formatError(error.FileNotFound));
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "rmdir fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testRmdirIntelligentWrapper, .{});
+}
+
+fn testRmdirIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const RmdirIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(RmdirArgs, runRmdir);
+    try RmdirIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}
+
+test "rmdir fuzz parent removal" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testRmdirParents, .{});
+}
+
+fn testRmdirParents(allocator: std.mem.Allocator, input: []const u8) !void {
+    if (input.len == 0) return;
+
+    // Generate nested directory path
+    var path_buffer: [common.fuzz.FuzzConfig.PATH_BUFFER_SIZE]u8 = undefined;
+    const nested_path = common.fuzz.generatePath(&path_buffer, input);
+
+    // Test with -p flag for parent removal
+    const test_cases = [_][]const []const u8{
+        &[_][]const u8{ "-p", nested_path },
+        &[_][]const u8{ "--parents", nested_path },
+        &[_][]const u8{ "-pv", nested_path }, // With verbose
+        &[_][]const u8{ "--ignore-fail-on-non-empty", nested_path },
+    };
+
+    for (test_cases) |args| {
+        var stdout_buf = std.ArrayList(u8).init(allocator);
+        defer stdout_buf.deinit();
+        var stderr_buf = std.ArrayList(u8).init(allocator);
+        defer stderr_buf.deinit();
+
+        _ = runRmdir(allocator, args, stdout_buf.writer(), stderr_buf.writer()) catch {
+            // Expected to fail for non-existent or non-empty directories
+            continue;
+        };
+    }
+}
+
+test "rmdir fuzz multiple directories" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testRmdirMultiple, .{});
+}
+
+fn testRmdirMultiple(allocator: std.mem.Allocator, input: []const u8) !void {
+    var file_storage = common.fuzz.FileListStorage.init();
+    const dirs = common.fuzz.generateFileList(&file_storage, input);
+
+    if (dirs.len == 0) return;
+
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+    var stderr_buf = std.ArrayList(u8).init(allocator);
+    defer stderr_buf.deinit();
+
+    _ = runRmdir(allocator, dirs, stdout_buf.writer(), stderr_buf.writer()) catch {
+        // Directory conflicts and permission issues are expected
+        return;
+    };
 }

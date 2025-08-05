@@ -520,3 +520,63 @@ test "mkdir with mode applies to all created directories with -p" {
     };
     test_dir.close();
 }
+
+// Fuzz tests - only included when fuzzing is available
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "mkdir fuzz all flags automatically" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testMkdirAllFlags, .{});
+}
+
+fn testMkdirAllFlags(allocator: std.mem.Allocator, input: []const u8) !void {
+    const MkdirSmartFuzzer = common.fuzz.createSmartFuzzer(MkdirArgs, runUtility);
+    try MkdirSmartFuzzer.testAllFlags(allocator, input, common.null_writer);
+}
+
+test "mkdir fuzz deterministic" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testMkdirDeterministic, .{});
+}
+
+fn testMkdirDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+    const MkdirSmartFuzzer = common.fuzz.createSmartFuzzer(MkdirArgs, runUtility);
+    try MkdirSmartFuzzer.testDeterministic(allocator, input, common.null_writer);
+}
+
+test "mkdir fuzz mode values" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+
+    try std.testing.fuzz(testing.allocator, testMkdirModeValuesFuzz, .{});
+}
+
+fn testMkdirModeValuesFuzz(allocator: std.mem.Allocator, input: []const u8) !void {
+    if (input.len == 0) return;
+
+    // Generate different mode formats
+    const mode_formats = [_][]const u8{
+        "755", "0755", "u+x", "g-w", "a+r", "777", "644",
+    };
+
+    const mode = mode_formats[input[0] % mode_formats.len];
+
+    // Generate a path
+    var path_buffer: [common.fuzz.FuzzConfig.PATH_BUFFER_SIZE]u8 = undefined;
+    const path = common.fuzz.generatePath(&path_buffer, if (input.len > 1) input[1..] else input);
+
+    const args = [_][]const u8{ "-m", mode, path };
+
+    _ = runUtility(allocator, &args, common.null_writer, common.null_writer) catch {
+        // Errors expected for invalid modes or paths
+    };
+}
+
+test "mkdir fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testMkdirIntelligent, .{});
+}
+
+fn testMkdirIntelligent(allocator: std.mem.Allocator, input: []const u8) !void {
+    const MkdirIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(MkdirArgs, runUtility);
+    try MkdirIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}

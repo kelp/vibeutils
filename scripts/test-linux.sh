@@ -198,9 +198,9 @@ run_in_container() {
     # Build the docker-compose run command (handle both docker-compose and docker compose)
     local docker_cmd
     if command -v docker-compose >/dev/null 2>&1; then
-        docker_cmd="docker-compose -f docker-compose.test.yml run --rm"
+        docker_cmd="docker-compose -f docker-compose.test.yml run --rm --service-ports"
     else
-        docker_cmd="docker compose -f docker-compose.test.yml run --rm"
+        docker_cmd="docker compose -f docker-compose.test.yml run --rm --service-ports"
     fi
     
     if [[ $VERBOSE -eq 1 ]]; then

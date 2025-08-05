@@ -177,9 +177,9 @@ fuzz-linux:
 	@echo "Running fuzz tests in Linux container with web UI..."
 	@echo "Web UI will be available at http://localhost:8080"
 ifdef UTIL
-	@scripts/test-linux.sh "zig build fuzz-$(UTIL) --fuzz --port 8080"
+	@scripts/test-linux.sh "zig build test --fuzz --port 8080"
 else
-	@scripts/test-linux.sh "zig build fuzz --fuzz --port 8080"
+	@scripts/test-linux.sh "zig build test --fuzz --port 8080"
 endif
 
 fuzz-linux-shell:

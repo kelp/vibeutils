@@ -82,11 +82,6 @@ fn processSingleFile(allocator: std.mem.Allocator, positionals: []const []const 
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Standardized entry point for the basename utility
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runBasename(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main entry point for the basename utility
 pub fn runBasename(allocator: std.mem.Allocator, args: []const []const u8, stdoutWriter: anytype, stderrWriter: anytype) !u8 {
     // Parse arguments using new parser
@@ -398,4 +393,21 @@ test "basename complex path cases" {
 test "basename with -s flag (GNU extension)" {
     // Using -s flag (should imply -a)
     try expectBasenameOutput(&.{ "-s", ".c", "hello.c", "world.c", "test.h" }, "hello\nworld\ntest.h\n");
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "basename fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testBasenameIntelligentWrapper, .{});
+}
+
+fn testBasenameIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const BasenameIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(BasenameArgs, runBasename);
+    try BasenameIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

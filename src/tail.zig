@@ -101,11 +101,6 @@ fn printHelp(writer: anytype) !void {
     );
 }
 
-/// Wrapper function for consistent fuzz testing interface
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runTail(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main entry point for tail utility with stdout and stderr writer parameters
 pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser
@@ -835,4 +830,21 @@ fn testTailStdin(reader: anytype, writer: anytype, options: TailOptions) !void {
         const line_count = options.line_count orelse 10;
         try processInputByLines(testing.allocator, reader, writer, line_count, options.zero_terminated);
     }
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "tail fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testTailIntelligentWrapper, .{});
+}
+
+fn testTailIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const TailIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(TailArgs, runTail);
+    try TailIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

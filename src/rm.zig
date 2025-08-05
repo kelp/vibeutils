@@ -38,11 +38,6 @@ const RmOptions = struct {
     verbose: bool,
 };
 
-/// Standardized entry point for the rm command
-pub fn runUtility(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runRm(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main entry point for the rm command with writer-based interface.
 pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
@@ -385,4 +380,21 @@ test "rm: version flag" {
     // Should succeed and show version
     try testing.expect(exit_code == 0);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "vibeutils") != null);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "rm fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testRmIntelligentWrapper, .{});
+}
+
+fn testRmIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const RmIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(RmArgs, runRm);
+    try RmIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

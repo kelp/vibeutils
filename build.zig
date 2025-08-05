@@ -448,56 +448,19 @@ fn addFuzzSteps(
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
 ) void {
-    const fuzz_step = b.step("fuzz", "Run all fuzz tests");
-
-    // Dynamically create fuzz steps for all utilities
-    for (utils.utilities) |util| {
-        // Check if a dedicated fuzz file exists for this utility
-        const fuzz_file_path = b.fmt("src/{s}_fuzz.zig", .{util.name});
-        const fuzz_file = std.fs.cwd().openFile(fuzz_file_path, .{}) catch {
-            // No fuzz file for this utility yet, skip it
-            continue;
-        };
-        fuzz_file.close();
-
-        // Create a build step for this utility's fuzz tests
-        const fuzz_step_name = b.fmt("fuzz-{s}", .{util.name});
-        const fuzz_step_desc = b.fmt("Run fuzz tests for {s} utility", .{util.name});
-        const util_fuzz_step = b.step(fuzz_step_name, fuzz_step_desc);
-
-        // Create the test executable for fuzzing
-        const fuzz_test = b.addTest(.{
-            .name = b.fmt("{s}-fuzz", .{util.name}),
-            .root_source_file = b.path(fuzz_file_path),
-            .target = target,
-            .optimize = optimize,
-        });
-
-        // Add common imports
-        fuzz_test.root_module.addImport("common", common);
-        fuzz_test.root_module.addImport("build_options", build_options_module);
-
-        // Add the utility module itself as an import
-        // This allows the fuzz test to import the utility's functions
-        const util_module = b.createModule(.{
-            .root_source_file = b.path(util.path),
-            .imports = &.{
-                .{ .name = "common", .module = common },
-                .{ .name = "build_options", .module = build_options_module },
-            },
-        });
-        fuzz_test.root_module.addImport(util.name, util_module);
-
-        // Link libc if needed
-        if (util.needs_libc) {
-            fuzz_test.linkLibC();
-        }
-
-        // Create run step for this fuzz test
-        const run_fuzz = b.addRunArtifact(fuzz_test);
-
-        // Add to both the utility-specific step and the main fuzz step
-        util_fuzz_step.dependOn(&run_fuzz.step);
-        fuzz_step.dependOn(&run_fuzz.step);
-    }
+    // Mark unused parameters
+    _ = target;
+    _ = optimize;
+    _ = common;
+    _ = build_options_module;
+    
+    // Fuzz testing is now integrated into main utility tests
+    // Use 'zig build test --fuzz' to run fuzz tests
+    const fuzz_step = b.step("fuzz", "Run fuzz tests (use 'zig build test --fuzz' instead)");
+    
+    // Display a helpful message
+    const fuzz_info = b.addSystemCommand(&.{ "echo", "Fuzz tests are now integrated into main utility files." });
+    const fuzz_info2 = b.addSystemCommand(&.{ "echo", "Run 'zig build test --fuzz' to execute fuzz tests." });
+    fuzz_step.dependOn(&fuzz_info.step);
+    fuzz_step.dependOn(&fuzz_info2.step);
 }

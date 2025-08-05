@@ -1046,3 +1046,19 @@ test "cp: edge cases - empty file handling" {
     try testing.expectEqual(@as(u64, 1), stats.files_copied);
     try testing.expectEqual(@as(u64, 0), stats.bytes_copied); // Empty file = 0 bytes
 }
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "cp fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testCpIntelligentWrapper, .{});
+}
+
+fn testCpIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const CpIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(CpArgs, runUtility);
+    try CpIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}

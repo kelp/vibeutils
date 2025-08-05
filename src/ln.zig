@@ -2,6 +2,7 @@
 //! Implements POSIX ln command
 
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common");
 const testing = std.testing;
 
@@ -660,4 +661,62 @@ test "ln relative path calculation" {
         defer testing.allocator.free(result);
         try testing.expectEqualStrings(tc.expected, result);
     }
+}
+
+// Fuzz tests - only included when fuzzing is available
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "ln fuzz all flags automatically" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testLnSmartAllFlags, .{});
+}
+
+fn testLnSmartAllFlags(allocator: std.mem.Allocator, input: []const u8) !void {
+    const LnSmartFuzzer = common.fuzz.createSmartFuzzer(LnArgs, runLn);
+    try LnSmartFuzzer.testAllFlags(allocator, input, common.null_writer);
+}
+
+test "ln fuzz deterministic" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testLnSmartDeterministic, .{});
+}
+
+fn testLnSmartDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
+    const LnSmartFuzzer = common.fuzz.createSmartFuzzer(LnArgs, runLn);
+    try LnSmartFuzzer.testDeterministic(allocator, input, common.null_writer);
+}
+
+test "ln fuzz link operations" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+
+    try std.testing.fuzz(testing.allocator, testLnLinkOperationsFuzz, .{});
+}
+
+fn testLnLinkOperationsFuzz(allocator: std.mem.Allocator, input: []const u8) !void {
+    if (input.len == 0) return;
+
+    // Test different link operation scenarios
+    const scenarios = [_][]const u8{
+        "-s", // symbolic link
+        "-f", // force
+        "-i", // interactive
+        "-sf", // symbolic + force
+        "-r", // relative
+        "-sr", // symbolic + relative
+    };
+
+    const flags = scenarios[input[0] % scenarios.len];
+
+    // Generate paths
+    var target_buffer: [common.fuzz.FuzzConfig.PATH_BUFFER_SIZE]u8 = undefined;
+    var link_buffer: [common.fuzz.FuzzConfig.PATH_BUFFER_SIZE]u8 = undefined;
+
+    const target = common.fuzz.generatePath(&target_buffer, if (input.len > 1) input[1..] else input);
+    const link_name = common.fuzz.generatePath(&link_buffer, if (input.len > 2) input[2..] else input);
+
+    const args = [_][]const u8{ flags, target, link_name };
+
+    _ = runLn(allocator, &args, common.null_writer, common.null_writer) catch {
+        // Errors expected for invalid paths or operations
+    };
 }

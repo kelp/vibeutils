@@ -31,11 +31,6 @@ const HeadArgs = struct {
     };
 };
 
-/// Wrapper function for consistent fuzz testing interface
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runHead(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Core head functionality accepting parsed arguments and writers.
 /// Processes files or stdin according to the provided options.
 pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
@@ -455,4 +450,21 @@ test "head byte count takes precedence over line count" {
     try processInput(input_stream.reader(), buffer.writer(), options);
 
     try testing.expectEqualStrings("Line ", buffer.items);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "head fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testHeadIntelligentWrapper, .{});
+}
+
+fn testHeadIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const HeadIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(HeadArgs, runHead);
+    try HeadIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

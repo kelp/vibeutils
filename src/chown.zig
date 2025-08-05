@@ -931,3 +931,20 @@ test "reportChange function" {
     // Verify output was written
     try testing.expect(stdout_buffer.items.len > 0);
 }
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "chown fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testChownIntelligentWrapper, .{});
+}
+
+fn testChownIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const ChownIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(ChownArgs, runChown);
+    try ChownIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}

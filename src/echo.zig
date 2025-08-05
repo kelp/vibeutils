@@ -6,6 +6,7 @@
 //! This implementation is compatible with GNU echo and supports backslash escape
 //! sequences when the -e option is specified.
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common");
 const testing = std.testing;
 
@@ -32,11 +33,6 @@ const EchoArgs = struct {
         .E = .{ .short = 'E', .desc = "Disable interpretation of backslash escapes (default)" },
     };
 };
-
-/// Standardized entry point for the echo utility
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runEcho(allocator, args, stdout_writer, stderr_writer);
-}
 
 /// Main entry point for the echo utility
 pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
@@ -463,7 +459,11 @@ test "echo -e overrides previous -E" {
 }
 
 // Fuzzing tests - these test properties that should hold for all inputs
+// NOTE: Fuzzing is only supported on Linux. Tests are skipped on macOS and Windows.
 test "fuzz: echo never panics with arbitrary arguments" {
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
+    }
     const fuzz = @import("common").fuzz;
     const allocator = testing.allocator;
 
@@ -478,11 +478,8 @@ test "fuzz: echo never panics with arbitrary arguments" {
 
     for (test_inputs) |input| {
         // Generate arguments from fuzzer input
-        const args = try fuzz.generateArgs(allocator, input);
-        defer {
-            for (args) |arg| allocator.free(arg);
-            allocator.free(args);
-        }
+        var arg_storage = fuzz.ArgStorage.init();
+        const args = fuzz.generateArgs(&arg_storage, input);
 
         // Echo should never panic, only return success or error
         var buffer = std.ArrayList(u8).init(allocator);
@@ -499,6 +496,9 @@ test "fuzz: echo never panics with arbitrary arguments" {
 }
 
 test "fuzz: echo with escape sequences never panics" {
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
+    }
     const fuzz = @import("common").fuzz;
     const allocator = testing.allocator;
 
@@ -512,8 +512,8 @@ test "fuzz: echo with escape sequences never panics" {
 
     for (test_inputs) |input| {
         // Generate escape sequences
-        const escape_seq = try fuzz.generateEscapeSequence(allocator, input);
-        defer allocator.free(escape_seq);
+        var escape_buffer: [fuzz.FuzzConfig.ESCAPE_BUFFER_SIZE]u8 = undefined;
+        const escape_seq = fuzz.generateEscapeSequence(&escape_buffer, input);
 
         // Test both with and without -e flag
         const test_cases = [_][]const []const u8{
@@ -539,15 +539,15 @@ test "fuzz: echo with escape sequences never panics" {
 }
 
 test "fuzz: echo output is deterministic for same input" {
+    if (builtin.os.tag != .linux) {
+        return error.SkipZigTest;
+    }
     const fuzz = @import("common").fuzz;
     const allocator = testing.allocator;
 
     const test_input = [_]u8{ 1, 2, 3, 4, 5 };
-    const args = try fuzz.generateArgs(allocator, test_input[0..]);
-    defer {
-        for (args) |arg| allocator.free(arg);
-        allocator.free(args);
-    }
+    var arg_storage = fuzz.ArgStorage.init();
+    const args = fuzz.generateArgs(&arg_storage, test_input[0..]);
 
     // Run echo twice with the same arguments
     var buffer1 = std.ArrayList(u8).init(allocator);
@@ -592,4 +592,78 @@ test "fuzz: echo handles maximum argument counts gracefully" {
     try testing.expect(result == 0);
     // Output should contain all arguments separated by spaces
     try testing.expect(buffer.items.len > 1000); // Should be substantial output
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "echo fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testEchoIntelligentWrapper, .{});
+}
+
+fn testEchoIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const EchoIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(EchoArgs, runEcho);
+    try EchoIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}
+
+test "echo fuzz escape sequences" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testEchoEscapeSequences, .{});
+}
+
+fn testEchoEscapeSequences(allocator: std.mem.Allocator, input: []const u8) !void {
+    var escape_buffer: [common.fuzz.FuzzConfig.ESCAPE_BUFFER_SIZE]u8 = undefined;
+    const escape_seq = common.fuzz.generateEscapeSequence(&escape_buffer, input);
+
+    const args = [_][]const u8{ "-e", escape_seq };
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    _ = runEcho(allocator, &args, stdout_buf.writer(), common.null_writer) catch {
+        // Errors are acceptable in fuzz testing
+        return;
+    };
+}
+
+test "echo fuzz flag combinations" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testEchoFlagCombinations, .{});
+}
+
+fn testEchoFlagCombinations(allocator: std.mem.Allocator, input: []const u8) !void {
+    if (input.len == 0) return;
+
+    // Generate different flag combinations
+    const flag_combinations = [_][]const []const u8{
+        &.{"-n"},
+        &.{"-e"},
+        &.{"-E"},
+        &.{ "-n", "-e" },
+        &.{ "-n", "-E" },
+        &.{ "-e", "-E" },
+        &.{ "-n", "-e", "-E" },
+    };
+
+    const flags = flag_combinations[input[0] % flag_combinations.len];
+    const text = if (input.len > 1) input[1..] else "test";
+
+    var args = std.ArrayList([]const u8).init(allocator);
+    defer args.deinit();
+
+    for (flags) |flag| {
+        try args.append(flag);
+    }
+    try args.append(text);
+
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    _ = runEcho(allocator, args.items, stdout_buf.writer(), common.null_writer) catch {
+        // Errors are acceptable
+        return;
+    };
 }

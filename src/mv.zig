@@ -751,3 +751,20 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         return @intFromEnum(common.ExitCode.success);
     }
 }
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "mv fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testMvIntelligentWrapper, .{});
+}
+
+fn testMvIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const MvIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(MvArgs, runUtility);
+    try MvIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}

@@ -302,11 +302,6 @@ pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_wri
     return if (result) @intFromEnum(ExitCode.true) else @intFromEnum(ExitCode.false);
 }
 
-/// Wrapper function for consistent fuzz testing interface
-pub fn runUtility(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runTest(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Run main test command implementation
 pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = stdout_writer; // Not used in test command
@@ -802,4 +797,20 @@ test "FileAccess module" {
     try testing.expect(!FileAccess.exists("/nonexistent/file"));
     try testing.expect(!FileAccess.check("/nonexistent/file", std.posix.R_OK));
     try testing.expect(FileAccess.getStat("/nonexistent/file") == null);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "test fuzz basic" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testRunTestBasic, .{});
+}
+
+fn testRunTestBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+    try common.fuzz.testUtilityBasic(runTest, allocator, input, common.null_writer);
 }

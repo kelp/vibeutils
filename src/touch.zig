@@ -56,11 +56,6 @@ pub fn main() !void {
     std.process.exit(exit_code);
 }
 
-/// Standardized entry point for touch utility
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runTouch(allocator, args, stdout_writer, stderr_writer);
-}
-
 /// Main implementation that accepts writers for output.
 pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "touch";
@@ -831,4 +826,39 @@ test "touch with -t timestamp" {
     // but the file should exist and have been touched
     const stat = try common.file.FileInfo.stat(test_file);
     try testing.expect(stat.mtime > 0);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "touch fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testTouchIntelligentWrapper, .{});
+}
+
+fn testTouchIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    const TouchIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(TouchArgs, runTouch);
+    try TouchIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+}
+
+test "touch fuzz file lists" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testTouchFileLists, .{});
+}
+
+fn testTouchFileLists(allocator: std.mem.Allocator, input: []const u8) !void {
+    var file_storage = common.fuzz.FileListStorage.init();
+    const files = common.fuzz.generateFileList(&file_storage, input);
+
+    var stdout_buf = std.ArrayList(u8).init(allocator);
+    defer stdout_buf.deinit();
+
+    _ = runTouch(allocator, files, stdout_buf.writer(), common.null_writer) catch {
+        // Permission and path errors are expected
+        return;
+    };
 }

@@ -44,9 +44,9 @@ echo "Installing Zig ${ZIG_VERSION} for ${ZIG_ARCH} architecture..."
 
 # Function to get community mirrors
 get_community_mirrors() {
-    echo "Fetching community mirrors..."
+    # Silently fetch community mirrors (don't echo status messages)
     curl -s --connect-timeout "$CONNECT_TIMEOUT" --max-time 30 \
-        "https://ziglang.org/download/community-mirrors.txt" \
+        "https://ziglang.org/download/community-mirrors.txt" 2>/dev/null \
         | grep -E '^https?://' \
         | head -10 \
         | tr '\n' ' ' || echo ""
@@ -76,14 +76,25 @@ install_zig() {
     # Combine community mirrors with fallback
     local all_mirrors="$mirrors_list $FALLBACK_MIRRORS"
     
+    # If no mirrors found, use only fallback
+    if [ -z "$all_mirrors" ] || [ "$all_mirrors" = " $FALLBACK_MIRRORS" ]; then
+        echo "No community mirrors available, using official mirror only"
+        all_mirrors="$FALLBACK_MIRRORS"
+    fi
+    
     local attempt=0
     for mirror in $all_mirrors; do
+        # Skip empty entries
+        if [ -z "$mirror" ]; then
+            continue
+        fi
+        
         if [ $attempt -ge $MAX_ATTEMPTS ]; then
             echo "Maximum attempts ($MAX_ATTEMPTS) reached."
             break
         fi
         
-        echo "Mirror attempt $((attempt + 1))/$MAX_ATTEMPTS: $mirror"
+        echo "Mirror attempt $((attempt + 1))/$MAX_ATTEMPTS: Using mirror base: ${mirror}"
         
         # Generate URLs based on mirror type
         local urls=""

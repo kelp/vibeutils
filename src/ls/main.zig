@@ -1,6 +1,7 @@
 //! Main entry point for the ls command with file listing functionality
 const std = @import("std");
 const common = @import("common");
+const testing = std.testing;
 
 // Import our modules
 const types = @import("types.zig");
@@ -408,8 +409,6 @@ test {
 
 // Test the refactored lsMain function with writer parameter
 test "lsMain help works with different writers" {
-    const testing = std.testing;
-
     var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
     defer stdout_buffer.deinit();
     var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
@@ -430,8 +429,6 @@ test "lsMain help works with different writers" {
 }
 
 test "lsMain version works with different writers" {
-    const testing = std.testing;
-
     var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
     defer stdout_buffer.deinit();
     var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
@@ -451,8 +448,6 @@ test "lsMain version works with different writers" {
 }
 
 test "runLs function works with separate writers" {
-    const testing = std.testing;
-
     var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
     defer stdout_buffer.deinit();
     var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
@@ -469,4 +464,38 @@ test "runLs function works with separate writers" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
     // stderr should be empty for help
     try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+}
+
+// ============================================================================
+//                                FUZZ TESTS
+// ============================================================================
+
+const builtin = @import("builtin");
+const enable_fuzz_tests = builtin.os.tag == .linux;
+
+test "ls fuzz intelligent" {
+    if (!enable_fuzz_tests) return error.SkipZigTest;
+    try std.testing.fuzz(testing.allocator, testLsIntelligentWrapper, .{});
+}
+
+fn testLsIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Wrapper that parses args and calls runLs
+    const runLsWrapper = struct {
+        fn run(alloc: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+            const parsed_args = common.argparse.ArgParser.parse(LsArgs, alloc, args) catch |err| {
+                common.printErrorWithProgram(alloc, stderr_writer, "ls", "error: {s}", .{@errorName(err)});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+            defer alloc.free(parsed_args.positionals);
+
+            runLs(alloc, parsed_args, stdout_writer, stderr_writer) catch |err| {
+                common.printErrorWithProgram(alloc, stderr_writer, "ls", "error: {s}", .{@errorName(err)});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+            return @intFromEnum(common.ExitCode.success);
+        }
+    }.run;
+
+    const LsIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(LsArgs, runLsWrapper);
+    try LsIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }
