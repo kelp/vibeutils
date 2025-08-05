@@ -30,3 +30,6 @@ docs/*.tar
 *_REVIEW*.md
 *_review.md
 *_report.md
+
+# Local settings
+.claude/settings.local.json
