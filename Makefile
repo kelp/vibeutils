@@ -302,9 +302,9 @@ docker-shell-debian:
 docker-clean:
 	@echo "Cleaning Docker test containers and volumes..."
 	@if command -v docker-compose >/dev/null 2>&1; then \
-		docker-compose -f docker-compose.test.yml down -v; \
+		docker-compose -f docker/docker-compose.test.yml down -v; \
 	else \
-		docker compose -f docker-compose.test.yml down -v; \
+		docker compose -f docker/docker-compose.test.yml down -v; \
 	fi
 	@docker rmi vibeutils-test:ubuntu-24.04 vibeutils-test:ubuntu-latest vibeutils-test:debian-12 vibeutils-test:alpine 2>/dev/null || true
 
