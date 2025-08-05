@@ -80,6 +80,7 @@ coverage-kcov:
 	zig build coverage -Dcoverage-backend=kcov
 
 # Fuzzing targets - Selective fuzzing system for individual utilities
+# All fuzzing runs in isolated /tmp directory to avoid filesystem pollution
 # Usage: make fuzz          - Show fuzzing help
 #        make fuzz UTIL=cat - Fuzz specific utility
 #        make fuzz-all      - Fuzz all utilities sequentially
@@ -87,9 +88,9 @@ coverage-kcov:
 #        make fuzz-quick    - Quick 30-second fuzz of each utility
 fuzz:
 ifdef UTIL
-	@echo "🎯 Fuzzing $(UTIL) utility..."
+	@echo "🎯 Fuzzing $(UTIL) utility in isolated environment..."
 	@if [ "$$(uname -s)" = "Linux" ]; then \
-		zig build fuzz-$(UTIL); \
+		./scripts/fuzz-utilities.sh $(UTIL); \
 	else \
 		echo "⚠️  Fuzzing only works on Linux. Use 'make fuzz-linux UTIL=$(UTIL)' for Docker-based fuzzing."; \
 		exit 1; \
@@ -108,6 +109,8 @@ else
 	@echo "  make fuzz-all            - Fuzz all utilities (5 min each)"
 	@echo "  make fuzz-quick          - Quick fuzz all utilities (30s each)"
 	@echo "  make fuzz-rotate         - Continuous rotation (2 min each)"
+	@echo ""
+	@echo "⚠️  All fuzzing runs in /tmp to avoid creating junk files"
 	@echo ""
 	@echo "Advanced options:"
 	@echo "  make fuzz-list           - List all available fuzz targets"

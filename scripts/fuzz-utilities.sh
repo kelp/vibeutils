@@ -1,6 +1,7 @@
 #!/bin/bash
 # Selective fuzzing script for vibeutils
 # This script allows fuzzing individual utilities or all utilities with time limits
+# Runs in a temporary directory to avoid filesystem pollution
 
 set -euo pipefail
 
@@ -10,6 +11,30 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
+
+# Save the original directory
+ORIGINAL_DIR="$(pwd)"
+
+# Create and switch to temporary directory
+TMPDIR=$(mktemp -d /tmp/vibeutils-fuzz.XXXXXX)
+echo -e "${GREEN}Created temporary fuzzing directory: $TMPDIR${NC}"
+
+# Cleanup function
+cleanup() {
+    local exit_code=$?
+    echo -e "\n${YELLOW}Cleaning up...${NC}"
+    cd "$ORIGINAL_DIR"
+    rm -rf "$TMPDIR"
+    echo -e "${GREEN}Cleanup complete${NC}"
+    exit $exit_code
+}
+
+# Set up trap to cleanup on exit
+trap cleanup EXIT INT TERM
+
+# Change to temporary directory
+cd "$TMPDIR"
+echo -e "${GREEN}Fuzzing in isolated environment: $TMPDIR${NC}\n"
 
 # Default values
 DEFAULT_TIMEOUT=300  # 5 minutes per utility
@@ -108,18 +133,18 @@ fuzz_utility() {
     # Set environment variable for selective fuzzing
     export VIBEUTILS_FUZZ_TARGET="$util"
     
-    # Build the project first
+    # Build the project first (from original directory)
     echo -e "${YELLOW}Building project...${NC}"
-    if ! zig build > /dev/null 2>&1; then
+    if ! (cd "$ORIGINAL_DIR" && zig build) > /dev/null 2>&1; then
         echo -e "${RED}Build failed for utility: $util${NC}" >&2
         return 2
     fi
     
-    # Run the fuzz test with timeout
+    # Run the fuzz test with timeout (from original directory)
     local start_time=$(date +%s)
     echo -e "${GREEN}Starting fuzz test for $util${NC}"
     
-    if timeout "${timeout}s" zig build test --fuzz 2>&1 | tee "fuzz_${util}_$(date +%Y%m%d_%H%M%S).log"; then
+    if timeout "${timeout}s" bash -c "cd '$ORIGINAL_DIR' && zig build test --fuzz" 2>&1 | tee "fuzz_${util}_$(date +%Y%m%d_%H%M%S).log"; then
         local end_time=$(date +%s)
         local duration=$((end_time - start_time))
         echo -e "${GREEN}✓ Fuzz test completed for $util (${duration}s)${NC}"
