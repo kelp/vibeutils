@@ -175,10 +175,10 @@ fn hasIntegratedFuzzTests(allocator: std.mem.Allocator, file_path: []const u8) b
 
     // Look for fuzz test patterns indicating integrated fuzz tests
     const fuzz_patterns = [_][]const u8{
-        "fuzz.*intelligent",  // Intelligent fuzzer pattern
-        "fuzz.*basic",        // Basic fuzzer pattern  
-        "std.testing.fuzz",   // Direct usage of fuzz testing
-        "enable_fuzz_tests",  // Fuzz test enablement check
+        "fuzz.*intelligent", // Intelligent fuzzer pattern
+        "fuzz.*basic", // Basic fuzzer pattern
+        "std.testing.fuzz", // Direct usage of fuzz testing
+        "enable_fuzz_tests", // Fuzz test enablement check
     };
 
     for (fuzz_patterns) |pattern| {

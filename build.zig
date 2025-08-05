@@ -453,11 +453,11 @@ fn addFuzzSteps(
     _ = optimize;
     _ = common;
     _ = build_options_module;
-    
+
     // Fuzz testing is now integrated into main utility tests
     // Use 'zig build test --fuzz' to run fuzz tests
     const fuzz_step = b.step("fuzz", "Run fuzz tests (use 'zig build test --fuzz' instead)");
-    
+
     // Display a helpful message
     const fuzz_info = b.addSystemCommand(&.{ "echo", "Fuzz tests are now integrated into main utility files." });
     const fuzz_info2 = b.addSystemCommand(&.{ "echo", "Run 'zig build test --fuzz' to execute fuzz tests." });
