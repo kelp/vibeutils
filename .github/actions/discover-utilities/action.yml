@@ -34,8 +34,8 @@ runs:
         # Output results
         count=${#utilities[@]}
         
-        # Create JSON array
-        utilities_json=$(printf '%s\n' "${utilities[@]}" | jq -R . | jq -s .)
+        # Create JSON array (compact single-line format for GitHub Actions)
+        utilities_json=$(printf '%s\n' "${utilities[@]}" | jq -R . | jq -s -c .)
         
         # Create space-separated list
         utilities_list=$(printf '%s ' "${utilities[@]}")
