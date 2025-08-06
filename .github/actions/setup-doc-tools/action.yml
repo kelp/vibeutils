@@ -108,6 +108,11 @@ runs:
       run: |
         echo "Installing Node.js-based documentation tools..."
         
+        # Also install mandoc for link checker job
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo apt-get install -y mandoc 2>/dev/null || true
+        fi
+        
         # Install markdown link checker
         if command -v npm >/dev/null 2>&1; then
           if npm install -g markdown-link-check; then
