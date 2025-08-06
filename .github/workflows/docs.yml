@@ -140,76 +140,79 @@ jobs:
           
           mkdir -p docs/html
           
-          # Create basic index
-          cat > docs/html/index.html <<EOF
-<!DOCTYPE html>
-<html>
-<head>
-  <title>vibeutils Documentation</title>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 2em; line-height: 1.6; }
-    h1 { color: #2c3e50; border-bottom: 2px solid #3498db; }
-    h2 { color: #34495e; margin-top: 2em; }
-    .utility-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1em; margin: 1em 0; }
-    .utility-card { border: 1px solid #ddd; padding: 1em; border-radius: 8px; }
-    .utility-name { font-weight: bold; color: #2980b9; }
-    a { color: #3498db; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .stats { background: #f8f9fa; padding: 1em; border-radius: 8px; margin: 1em 0; }
-  </style>
-</head>
-<body>
-  <h1>vibeutils Documentation</h1>
-  <p>Modern Zig implementation of GNU coreutils with enhanced UX features.</p>
-  
-  <div class="stats">
-    <strong>Statistics:</strong>
-    <ul>
-      <li>Total Utilities: ${{ needs.discover.outputs.count }}</li>
-      <li>Build Date: $(date -u)</li>
-      <li>Zig Version: ${{ env.ZIG_VERSION }}</li>
-    </ul>
-  </div>
-  
-  <h2>Available Utilities</h2>
-  <div class="utility-grid">
-EOF
+          # Create basic index using printf to avoid here-doc YAML issues
+          {
+            echo '<!DOCTYPE html>'
+            echo '<html>'
+            echo '<head>'
+            echo '  <title>vibeutils Documentation</title>'
+            echo '  <meta charset="utf-8">'
+            echo '  <meta name="viewport" content="width=device-width, initial-scale=1">'
+            echo '  <style>'
+            echo '    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 2em; line-height: 1.6; }'
+            echo '    h1 { color: #2c3e50; border-bottom: 2px solid #3498db; }'
+            echo '    h2 { color: #34495e; margin-top: 2em; }'
+            echo '    .utility-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1em; margin: 1em 0; }'
+            echo '    .utility-card { border: 1px solid #ddd; padding: 1em; border-radius: 8px; }'
+            echo '    .utility-name { font-weight: bold; color: #2980b9; }'
+            echo '    a { color: #3498db; text-decoration: none; }'
+            echo '    a:hover { text-decoration: underline; }'
+            echo '    .stats { background: #f8f9fa; padding: 1em; border-radius: 8px; margin: 1em 0; }'
+            echo '  </style>'
+            echo '</head>'
+            echo '<body>'
+            echo '  <h1>vibeutils Documentation</h1>'
+            echo '  <p>Modern Zig implementation of GNU coreutils with enhanced UX features.</p>'
+            echo '  '
+            echo '  <div class="stats">'
+            echo '    <strong>Statistics:</strong>'
+            echo '    <ul>'
+            echo "      <li>Total Utilities: ${{ needs.discover.outputs.count }}</li>"
+            echo "      <li>Build Date: $(date -u)</li>"
+            echo "      <li>Zig Version: ${{ env.ZIG_VERSION }}</li>"
+            echo '    </ul>'
+            echo '  </div>'
+            echo '  '
+            echo '  <h2>Available Utilities</h2>'
+            echo '  <div class="utility-grid">'
+          } > docs/html/index.html
           
           # Add discovered utilities
           utilities="${{ needs.discover.outputs.utilities-list }}"
           for utility in $utilities; do
-            echo "              <div class=\"utility-card\">" >> docs/html/index.html
-            echo "                <div class=\"utility-name\">$utility</div>" >> docs/html/index.html
-            
-            if [ -f "man/man1/${utility}.1" ]; then
-              echo "                <div><a href=\"${utility}.1.html\">Manual Page</a></div>" >> docs/html/index.html
-            fi
-            
-            if [ -f "src/${utility}.zig" ]; then
-              echo "                <div><a href=\"https://github.com/${{ github.repository }}/blob/main/src/${utility}.zig\">Source Code</a></div>" >> docs/html/index.html
-            fi
-            
-            echo "              </div>" >> docs/html/index.html
+            {
+              echo "    <div class=\"utility-card\">"
+              echo "      <div class=\"utility-name\">$utility</div>"
+              
+              if [ -f "man/man1/${utility}.1" ]; then
+                echo "      <div><a href=\"${utility}.1.html\">Manual Page</a></div>"
+              fi
+              
+              if [ -f "src/${utility}.zig" ]; then
+                echo "      <div><a href=\"https://github.com/${{ github.repository }}/blob/main/src/${utility}.zig\">Source Code</a></div>"
+              fi
+              
+              echo "    </div>"
+            } >> docs/html/index.html
           done
           
-          cat >> docs/html/index.html <<EOF
-  </div>
-  
-  <h2>Documentation</h2>
-  <ul>
-    <li><a href="https://github.com/${{ github.repository }}">Source Repository</a></li>
-    <li><a href="https://github.com/${{ github.repository }}/releases">Releases</a></li>
-    <li><a href="https://github.com/${{ github.repository }}/issues">Issue Tracker</a></li>
-  </ul>
-  
-  <footer style="margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; color: #666;">
-    <p>Generated automatically on $(date -u) by GitHub Actions</p>
-  </footer>
-</body>
-</html>
-EOF
+          # Close the HTML
+          {
+            echo '  </div>'
+            echo '  '
+            echo '  <h2>Documentation</h2>'
+            echo '  <ul>'
+            echo "    <li><a href=\"https://github.com/${{ github.repository }}\">Source Repository</a></li>"
+            echo "    <li><a href=\"https://github.com/${{ github.repository }}/releases\">Releases</a></li>"
+            echo "    <li><a href=\"https://github.com/${{ github.repository }}/issues\">Issue Tracker</a></li>"
+            echo '  </ul>'
+            echo '  '
+            echo '  <footer style="margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; color: #666;">'
+            echo "    <p>Generated automatically on $(date -u) by GitHub Actions</p>"
+            echo '  </footer>'
+            echo '</body>'
+            echo '</html>'
+          } >> docs/html/index.html
           
           echo "✅ Basic documentation generated"
         fi
@@ -252,46 +255,46 @@ EOF
         echo "Creating documentation package..."
         
         # Add a style sheet
-        cat > docs/html/style.css << EOF
-        /* vibeutils documentation styles */
-        body { 
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-          margin: 2em auto; 
-          max-width: 1200px; 
-          line-height: 1.6; 
-          color: #333;
-        }
-        h1, h2, h3 { color: #2c3e50; }
-        h1 { border-bottom: 2px solid #3498db; padding-bottom: 0.5em; }
-        pre, code { 
-          background: #f8f9fa; 
-          padding: 0.2em 0.4em; 
-          border-radius: 4px; 
-          font-family: 'Monaco', 'Menlo', monospace;
-        }
-        pre { padding: 1em; overflow-x: auto; }
-        a { color: #3498db; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .utility-grid { 
-          display: grid; 
-          grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
-          gap: 1em; 
-          margin: 2em 0; 
-        }
-        .utility-card { 
-          border: 1px solid #ddd; 
-          padding: 1.5em; 
-          border-radius: 8px; 
-          transition: box-shadow 0.2s;
-        }
-        .utility-card:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        .stats { 
-          background: linear-gradient(135deg, #f8f9fa, #e9ecef); 
-          padding: 1.5em; 
-          border-radius: 8px; 
-          margin: 2em 0; 
-        }
-        EOF
+        {
+          echo '/* vibeutils documentation styles */'
+          echo 'body { '
+          echo '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; '
+          echo '  margin: 2em auto; '
+          echo '  max-width: 1200px; '
+          echo '  line-height: 1.6; '
+          echo '  color: #333;'
+          echo '}'
+          echo 'h1, h2, h3 { color: #2c3e50; }'
+          echo 'h1 { border-bottom: 2px solid #3498db; padding-bottom: 0.5em; }'
+          echo 'pre, code { '
+          echo '  background: #f8f9fa; '
+          echo '  padding: 0.2em 0.4em; '
+          echo '  border-radius: 4px; '
+          echo '  font-family: "Monaco", "Menlo", monospace;'
+          echo '}'
+          echo 'pre { padding: 1em; overflow-x: auto; }'
+          echo 'a { color: #3498db; text-decoration: none; }'
+          echo 'a:hover { text-decoration: underline; }'
+          echo '.utility-grid { '
+          echo '  display: grid; '
+          echo '  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); '
+          echo '  gap: 1em; '
+          echo '  margin: 2em 0; '
+          echo '}'
+          echo '.utility-card { '
+          echo '  border: 1px solid #ddd; '
+          echo '  padding: 1.5em; '
+          echo '  border-radius: 8px; '
+          echo '  transition: box-shadow 0.2s;'
+          echo '}'
+          echo '.utility-card:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.1); }'
+          echo '.stats { '
+          echo '  background: linear-gradient(135deg, #f8f9fa, #e9ecef); '
+          echo '  padding: 1.5em; '
+          echo '  border-radius: 8px; '
+          echo '  margin: 2em 0; '
+          echo '}'
+        } > docs/html/style.css
         
         # Create navigation
         echo "Creating documentation navigation..."
