@@ -471,6 +471,12 @@ jobs:
           echo "::notice::Privileged tests skipped on macOS - script not found"
         fi
         
+    - name: Create test output file
+      if: always()
+      run: |
+        # Create empty test-output.log if it doesn't exist
+        touch test-output.log
+        
     - name: Upload privileged test results
       if: always()
       uses: ./.github/actions/manage-artifacts
