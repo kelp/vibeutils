@@ -18,49 +18,26 @@ runs:
       id: discover
       shell: bash
       run: |
-        echo "Discovering utilities from source directory..."
+        echo "Discovering utilities from build system..."
         
-        # Find all utilities by looking for .zig files in src/
+        # Use zig build --help to get the authoritative list of utilities
+        # This is more reliable than parsing source files or build.zig
         utilities=()
-        
-        # Method 1: Direct .zig files in src/ (e.g., src/echo.zig)
-        for file in src/*.zig; do
-          if [ -f "$file" ]; then
-            basename=$(basename "$file" .zig)
-            # Skip common non-utility files
-            if [[ "$basename" != "common" && "$basename" != "main" && "$basename" != "lib" ]]; then
-              utilities+=("$basename")
-            fi
-          fi
-        done
-        
-        # Method 2: Directories with main.zig (e.g., src/utility/main.zig)
-        for dir in src/*/; do
-          if [ -f "${dir}main.zig" ]; then
-            basename=$(basename "$dir")
-            utilities+=("$basename")
-          fi
-        done
-        
-        # Method 3: Check build.zig for explicit utility definitions
-        if [ -f "build.zig" ] && grep -q "addExecutable" build.zig; then
-          # Extract utility names from build.zig
-          grep -o 'addExecutable.*name.*=.*"\([^"]*\)"' build.zig | \
-            sed 's/.*"\([^"]*\)".*/\1/' | \
-            while read utility; do
-              if [[ ! " ${utilities[*]} " =~ " ${utility} " ]]; then
-                utilities+=("$utility")
-              fi
-            done
-        fi
-        
-        # Remove duplicates and sort
-        IFS=$'\n' utilities=($(sort -u <<<"${utilities[*]}"))
-        unset IFS
+        while IFS= read -r utility; do
+          utilities+=("$utility")
+        done < <(zig build --help 2>&1 | awk '/^  run-/ { 
+          sub(/^  run-/, "")  # Remove the "  run-" prefix
+          sub(/ .*/, "")      # Remove everything after the first space
+          print 
+        }')
         
         # Output results
         count=${#utilities[@]}
+        
+        # Create JSON array
         utilities_json=$(printf '%s\n' "${utilities[@]}" | jq -R . | jq -s .)
+        
+        # Create space-separated list
         utilities_list=$(printf '%s ' "${utilities[@]}")
         
         echo "Found $count utilities: ${utilities_list}"
