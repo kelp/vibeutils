@@ -1,9 +1,39 @@
 #!/bin/sh
-# Generate index.html for documentation root
+# Generate index.html for documentation root and convert man pages
 
 set -e
 
 DOCS_DIR="zig-out/docs"
+MAN_DIR="man/man1"
+
+# Convert man pages to HTML if mandoc is available
+if command -v mandoc >/dev/null 2>&1; then
+    echo "Converting man pages to HTML..."
+    mkdir -p "$DOCS_DIR/man"
+    
+    for manfile in "$MAN_DIR"/*.1; do
+        if [ -f "$manfile" ]; then
+            basename=$(basename "$manfile" .1)
+            mandoc -T html -O style=man-style.css "$manfile" > "$DOCS_DIR/man/${basename}.html" 2>/dev/null || true
+        fi
+    done
+    
+    # Create a simple CSS file for man pages
+    cat > "$DOCS_DIR/man/man-style.css" << 'MANCSS'
+body { max-width: 80ch; margin: 2em auto; padding: 0 1em; font-family: monospace; line-height: 1.4; }
+h1, h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.3em; }
+pre { background: #f4f4f4; padding: 1em; overflow-x: auto; }
+@media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e0e0e0; }
+    pre { background: #2a2a2a; }
+    h1, h2 { border-color: #444; }
+    a { color: #66b3ff; }
+}
+MANCSS
+    echo "Man pages converted to HTML in $DOCS_DIR/man/"
+else
+    echo "Note: mandoc not found, skipping man page HTML conversion"
+fi
 
 # Create index.html
 cat > "$DOCS_DIR/index.html" << 'EOF'
@@ -60,29 +90,43 @@ cat > "$DOCS_DIR/index.html" << 'EOF'
             color: var(--fg);
             opacity: 0.9;
         }
-        .utilities-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 1rem;
+        .utilities-table {
+            width: 100%;
+            border-collapse: collapse;
             margin-bottom: 2rem;
         }
-        .utility-link {
-            display: block;
+        .utilities-table th {
+            text-align: left;
             padding: 0.75rem;
             background: var(--code-bg);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            text-decoration: none;
-            color: var(--link);
+            border-bottom: 2px solid var(--border);
+            font-weight: 600;
+        }
+        .utilities-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .utilities-table tr:hover {
+            background: var(--code-bg);
+        }
+        .utility-name {
             font-family: monospace;
-            font-size: 1rem;
+            font-weight: bold;
+            color: var(--fg);
+        }
+        .doc-link {
+            color: var(--link);
+            text-decoration: none;
+            padding: 0.25rem 0.5rem;
+            margin-right: 0.5rem;
+            background: var(--code-bg);
+            border-radius: 3px;
+            font-size: 0.9rem;
             transition: all 0.2s ease;
         }
-        .utility-link:hover {
-            background: var(--border);
-            color: var(--link-hover);
-            transform: translateY(-2px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        .doc-link:hover {
+            background: var(--link);
+            color: white;
         }
         .special-link {
             display: inline-block;
@@ -132,34 +176,197 @@ cat > "$DOCS_DIR/index.html" << 'EOF'
     </p>
 
     <h2>Core Library</h2>
-    <a href="common/" class="special-link">📚 Common Library Documentation</a>
+    <a href="common/" class="special-link">📚 Common Library API Documentation</a>
     <p>Shared utilities and abstractions used across all commands.</p>
 
     <h2>Utilities</h2>
-    <div class="utilities-grid">
-        <a href="basename/" class="utility-link">basename</a>
-        <a href="cat/" class="utility-link">cat</a>
-        <a href="chmod/" class="utility-link">chmod</a>
-        <a href="chown/" class="utility-link">chown</a>
-        <a href="cp/" class="utility-link">cp</a>
-        <a href="dirname/" class="utility-link">dirname</a>
-        <a href="echo/" class="utility-link">echo</a>
-        <a href="false/" class="utility-link">false</a>
-        <a href="head/" class="utility-link">head</a>
-        <a href="ln/" class="utility-link">ln</a>
-        <a href="ls/" class="utility-link">ls</a>
-        <a href="mkdir/" class="utility-link">mkdir</a>
-        <a href="mv/" class="utility-link">mv</a>
-        <a href="pwd/" class="utility-link">pwd</a>
-        <a href="rm/" class="utility-link">rm</a>
-        <a href="rmdir/" class="utility-link">rmdir</a>
-        <a href="sleep/" class="utility-link">sleep</a>
-        <a href="tail/" class="utility-link">tail</a>
-        <a href="test/" class="utility-link">test</a>
-        <a href="touch/" class="utility-link">touch</a>
-        <a href="true/" class="utility-link">true</a>
-        <a href="yes/" class="utility-link">yes</a>
-    </div>
+    <table class="utilities-table">
+        <thead>
+            <tr>
+                <th>Command</th>
+                <th>Description</th>
+                <th>Documentation</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><span class="utility-name">basename</span></td>
+                <td>Strip directory and suffix from filenames</td>
+                <td>
+                    <a href="basename/" class="doc-link">API</a>
+                    <a href="man/basename.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">cat</span></td>
+                <td>Concatenate and display files</td>
+                <td>
+                    <a href="cat/" class="doc-link">API</a>
+                    <a href="man/cat.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">chmod</span></td>
+                <td>Change file mode permissions</td>
+                <td>
+                    <a href="chmod/" class="doc-link">API</a>
+                    <a href="man/chmod.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">chown</span></td>
+                <td>Change file ownership</td>
+                <td>
+                    <a href="chown/" class="doc-link">API</a>
+                    <a href="man/chown.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">cp</span></td>
+                <td>Copy files and directories</td>
+                <td>
+                    <a href="cp/" class="doc-link">API</a>
+                    <a href="man/cp.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">dirname</span></td>
+                <td>Strip last component from file name</td>
+                <td>
+                    <a href="dirname/" class="doc-link">API</a>
+                    <a href="man/dirname.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">echo</span></td>
+                <td>Display a line of text</td>
+                <td>
+                    <a href="echo/" class="doc-link">API</a>
+                    <a href="man/echo.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">false</span></td>
+                <td>Exit with non-zero status</td>
+                <td>
+                    <a href="false/" class="doc-link">API</a>
+                    <a href="man/false.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">head</span></td>
+                <td>Display first lines of a file</td>
+                <td>
+                    <a href="head/" class="doc-link">API</a>
+                    <a href="man/head.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">ln</span></td>
+                <td>Create links between files</td>
+                <td>
+                    <a href="ln/" class="doc-link">API</a>
+                    <a href="man/ln.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">ls</span></td>
+                <td>List directory contents</td>
+                <td>
+                    <a href="ls/" class="doc-link">API</a>
+                    <a href="man/ls.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">mkdir</span></td>
+                <td>Create directories</td>
+                <td>
+                    <a href="mkdir/" class="doc-link">API</a>
+                    <a href="man/mkdir.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">mv</span></td>
+                <td>Move/rename files and directories</td>
+                <td>
+                    <a href="mv/" class="doc-link">API</a>
+                    <a href="man/mv.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">pwd</span></td>
+                <td>Print working directory</td>
+                <td>
+                    <a href="pwd/" class="doc-link">API</a>
+                    <a href="man/pwd.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">rm</span></td>
+                <td>Remove files and directories</td>
+                <td>
+                    <a href="rm/" class="doc-link">API</a>
+                    <a href="man/rm.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">rmdir</span></td>
+                <td>Remove empty directories</td>
+                <td>
+                    <a href="rmdir/" class="doc-link">API</a>
+                    <a href="man/rmdir.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">sleep</span></td>
+                <td>Delay for a specified time</td>
+                <td>
+                    <a href="sleep/" class="doc-link">API</a>
+                    <a href="man/sleep.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">tail</span></td>
+                <td>Display last lines of a file</td>
+                <td>
+                    <a href="tail/" class="doc-link">API</a>
+                    <a href="man/tail.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">test / [</span></td>
+                <td>Evaluate conditional expressions</td>
+                <td>
+                    <a href="test/" class="doc-link">API</a>
+                    <a href="man/test.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">touch</span></td>
+                <td>Change file timestamps</td>
+                <td>
+                    <a href="touch/" class="doc-link">API</a>
+                    <a href="man/touch.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">true</span></td>
+                <td>Exit with zero status</td>
+                <td>
+                    <a href="true/" class="doc-link">API</a>
+                    <a href="man/true.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+            <tr>
+                <td><span class="utility-name">yes</span></td>
+                <td>Output a string repeatedly</td>
+                <td>
+                    <a href="yes/" class="doc-link">API</a>
+                    <a href="man/yes.html" class="doc-link">man page</a>
+                </td>
+            </tr>
+        </tbody>
+    </table>
 
     <h2>Additional Resources</h2>
     <ul>
