@@ -188,6 +188,7 @@ fn buildTests(
             .target = target,
             .optimize = optimize,
             .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
+            .name = b.fmt("{s}_privileged_test", .{util.name}), // Unique name to avoid conflicts
         });
 
         util_tests.root_module.addImport("common", common);
@@ -197,7 +198,14 @@ fn buildTests(
             util_tests.linkLibC();
         }
 
-        const run_util_tests = b.addRunArtifact(util_tests);
+        // WORKAROUND: The --listen=- flag breaks under fakeroot
+        // See: https://github.com/ziglang/zig/issues/15091
+        // Run tests directly without the server mode
+        const install_util_tests = b.addInstallArtifact(util_tests, .{});
+        const run_util_tests = b.addSystemCommand(&.{
+            b.getInstallPath(install_util_tests.dest_dir.?, util_tests.out_filename),
+        });
+        run_util_tests.step.dependOn(&install_util_tests.step);
         privileged_test_step.dependOn(&run_util_tests.step);
     }
 
@@ -207,10 +215,16 @@ fn buildTests(
         .target = target,
         .optimize = optimize,
         .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
+        .name = "common_privileged_test", // Unique name to avoid conflicts
     });
     common_tests_priv.root_module.addImport("build_options", build_options_module);
 
-    const run_common_tests_priv = b.addRunArtifact(common_tests_priv);
+    // Same workaround as above for common library tests
+    const install_common_tests_priv = b.addInstallArtifact(common_tests_priv, .{});
+    const run_common_tests_priv = b.addSystemCommand(&.{
+        b.getInstallPath(install_common_tests_priv.dest_dir.?, common_tests_priv.out_filename),
+    });
+    run_common_tests_priv.step.dependOn(&install_common_tests_priv.step);
     privileged_test_step.dependOn(&run_common_tests_priv.step);
 
     // Integration tests

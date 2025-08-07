@@ -417,6 +417,29 @@ pub const CopyEngine = struct {
             },
         };
 
+        // Preserve directory permissions when preserve option is set
+        if (self.ctx.options.preserve) {
+            // Get source directory stats
+            if (std.fs.cwd().statFile(operation.source)) |source_stat| {
+                // Open destination directory to apply permissions
+                if (std.fs.cwd().openDir(operation.final_dest_path, .{})) |dest_dir_const| {
+                    var dest_dir = dest_dir_const;
+                    defer dest_dir.close();
+                    // Apply permissions with chmod
+                    dest_dir.chmod(source_stat.mode) catch |err| {
+                        // Non-fatal error for permission preservation
+                        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve permissions for '{s}': {s}", .{ operation.final_dest_path, getStandardErrorName(err) });
+                    };
+                } else |err| {
+                    // Non-fatal error for permission preservation
+                    common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}' for permission preservation: {s}", .{ operation.final_dest_path, getStandardErrorName(err) });
+                }
+            } else |err| {
+                // Non-fatal error for permission preservation
+                common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}' for permission preservation: {s}", .{ operation.source, getStandardErrorName(err) });
+            }
+        }
+
         // Open source directory for iteration
         var source_dir = std.fs.cwd().openDir(operation.source, .{ .iterate = true }) catch |err| {
             const copy_err = mapSystemError(err);

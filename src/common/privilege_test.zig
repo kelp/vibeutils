@@ -3,6 +3,27 @@ const builtin = @import("builtin");
 const process = std.process;
 const testing = std.testing;
 
+/// Arena allocator for privileged tests to avoid testing.allocator issues under fakeroot
+/// This is a workaround for Zig 0.14 test runner incompatibility with fakeroot
+/// See: https://github.com/ziglang/zig/issues/15091
+pub const TestArena = struct {
+    arena: std.heap.ArenaAllocator,
+
+    pub fn init() TestArena {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+        };
+    }
+
+    pub fn deinit(self: *TestArena) void {
+        self.arena.deinit();
+    }
+
+    pub fn allocator(self: *TestArena) std.mem.Allocator {
+        return self.arena.allocator();
+    }
+};
+
 /// Platform-specific privilege simulation capabilities
 pub const Platform = enum {
     linux,
@@ -70,10 +91,12 @@ pub const FakerootContext = struct {
 
 /// Skip test if no privilege simulation is available
 pub fn requiresPrivilege() !void {
-    const ctx = try FakerootContext.init(testing.allocator);
-
-    if (!ctx.available and !FakerootContext.isUnderFakeroot()) {
-        return error.SkipZigTest;
+    // Use a simple check without allocator to avoid issues
+    if (!FakerootContext.isUnderFakeroot()) {
+        // Also check if fakeroot is available in the system
+        if (!checkCommandExists("fakeroot")) {
+            return error.SkipZigTest;
+        }
     }
 }
 

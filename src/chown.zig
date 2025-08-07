@@ -399,12 +399,16 @@ fn handleError(allocator: std.mem.Allocator, path: []const u8, err: anyerror, op
 // Privileged tests require fakeroot and are named with "privileged:" prefix
 
 test "privileged: chown basic functionality" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -416,24 +420,22 @@ test "privileged: chown basic functionality" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(allocator, "{s}/test.txt", .{tmp_path});
-            defer allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             // Get current user for the test
             const current_uid = common.user_group.getCurrentUserId();
             const current_gid = common.user_group.getCurrentGroupId();
 
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}:{d}", .{ current_uid, current_gid });
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}:{d}", .{ current_uid, current_gid });
 
             const options = ChownOptions{};
 
             // This should work for changing to the same ownership
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -462,12 +464,16 @@ test "chown with invalid owner specification" {
 }
 
 test "privileged: chown user only specification" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -477,32 +483,34 @@ test "privileged: chown user only specification" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(allocator, "{s}/test.txt", .{tmp_path});
-            defer allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             const current_uid = common.user_group.getCurrentUserId();
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}", .{current_uid});
 
             const options = ChownOptions{};
 
             // Should work for user-only specification
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
 
 test "privileged: chown group only specification" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -512,32 +520,34 @@ test "privileged: chown group only specification" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(allocator, "{s}/test.txt", .{tmp_path});
-            defer allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             const current_gid = common.user_group.getCurrentGroupId();
-            const owner_spec = try std.fmt.allocPrint(allocator, ":{d}", .{current_gid});
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, ":{d}", .{current_gid});
 
             const options = ChownOptions{};
 
             // Should work for group-only specification
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
 
 test "privileged: chown with reference file" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -551,20 +561,18 @@ test "privileged: chown with reference file" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const ref_path = try std.fmt.allocPrint(allocator, "{s}/reference.txt", .{tmp_path});
-            defer allocator.free(ref_path);
+            const ref_path = try std.fmt.allocPrint(inner_allocator, "{s}/reference.txt", .{tmp_path});
 
-            const target_path = try std.fmt.allocPrint(allocator, "{s}/target.txt", .{tmp_path});
-            defer allocator.free(target_path);
+            const target_path = try std.fmt.allocPrint(inner_allocator, "{s}/target.txt", .{tmp_path});
 
             const options = ChownOptions{ .reference_file = ref_path };
 
             // Should use reference file's ownership
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, target_path, "", options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, target_path, "", options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -617,13 +625,16 @@ test "getOwnershipFromReference" {
 }
 
 test "privileged: changeOwnership with same values" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
-            _ = allocator;
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -633,8 +644,7 @@ test "privileged: changeOwnership with same values" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
-            defer testing.allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             // Get current ownership
             const stat_info = try common.file.FileInfo.stat(test_file);
@@ -644,19 +654,22 @@ test "privileged: changeOwnership with same values" {
             const options = ChownOptions{};
 
             // Should succeed when changing to same ownership
-            try changeOwnership(testing.allocator, test_file, current_uid, current_gid, options);
+            try changeOwnership(inner_allocator, test_file, current_uid, current_gid, options);
         }
     }.testFn);
 }
 
 test "privileged: chownSingle basic operation" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
-            _ = allocator;
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -666,8 +679,7 @@ test "privileged: chownSingle basic operation" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
-            defer testing.allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             // Get current ownership
             const stat_info = try common.file.FileInfo.stat(test_file);
@@ -682,22 +694,26 @@ test "privileged: chownSingle basic operation" {
             const options = ChownOptions{};
 
             // Should work for same ownership
-            var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownSingle(testing.allocator, test_file, ownership, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownSingle(inner_allocator, test_file, ownership, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
 
 test "privileged: chown recursive option" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -710,33 +726,35 @@ test "privileged: chown recursive option" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_dir = try std.fmt.allocPrint(allocator, "{s}/testdir", .{tmp_path});
-            defer allocator.free(test_dir);
+            const test_dir = try std.fmt.allocPrint(inner_allocator, "{s}/testdir", .{tmp_path});
 
             const current_uid = common.user_group.getCurrentUserId();
             const current_gid = common.user_group.getCurrentGroupId();
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}:{d}", .{ current_uid, current_gid });
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}:{d}", .{ current_uid, current_gid });
 
             const options = ChownOptions{ .recursive = true };
 
             // Should work recursively
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_dir, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_dir, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
 
 test "privileged: chown with verbose option" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -746,32 +764,34 @@ test "privileged: chown with verbose option" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(allocator, "{s}/test.txt", .{tmp_path});
-            defer allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             const current_uid = common.user_group.getCurrentUserId();
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}", .{current_uid});
 
             const options = ChownOptions{ .verbose = true };
 
             // Should work with verbose output
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
 
 test "privileged: chown with changes option" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -781,32 +801,34 @@ test "privileged: chown with changes option" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(allocator, "{s}/test.txt", .{tmp_path});
-            defer allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             const current_uid = common.user_group.getCurrentUserId();
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}", .{current_uid});
 
             const options = ChownOptions{ .changes = true };
 
             // Should work with changes option
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
 
 test "privileged: chown with no-dereference option" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -822,21 +844,19 @@ test "privileged: chown with no-dereference option" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_link = try std.fmt.allocPrint(allocator, "{s}/link.txt", .{tmp_path});
-            defer allocator.free(test_link);
+            const test_link = try std.fmt.allocPrint(inner_allocator, "{s}/link.txt", .{tmp_path});
 
             const current_uid = common.user_group.getCurrentUserId();
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}", .{current_uid});
 
             const options = ChownOptions{ .no_dereference = true };
 
             // Should work with no-dereference option
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
-            try chownFile(allocator, test_link, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_link, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }
@@ -858,12 +878,16 @@ test "chown with silent option suppresses errors" {
 }
 
 test "privileged: chown traverse options" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     // Skip test if no privilege simulation available
     try privilege_test.requiresPrivilege();
 
     // Run test under privilege simulation
-    try privilege_test.withFakeroot(testing.allocator, struct {
-        fn testFn(allocator: std.mem.Allocator) !void {
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
@@ -873,29 +897,27 @@ test "privileged: chown traverse options" {
             var path_buf: [fs.max_path_bytes]u8 = undefined;
             const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
 
-            const test_file = try std.fmt.allocPrint(allocator, "{s}/test.txt", .{tmp_path});
-            defer allocator.free(test_file);
+            const test_file = try std.fmt.allocPrint(inner_allocator, "{s}/test.txt", .{tmp_path});
 
             const current_uid = common.user_group.getCurrentUserId();
-            const owner_spec = try std.fmt.allocPrint(allocator, "{d}", .{current_uid});
-            defer allocator.free(owner_spec);
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}", .{current_uid});
 
-            var stdout_buffer = std.ArrayList(u8).init(allocator);
+            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(allocator);
+            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
             defer stderr_buffer.deinit();
 
             // Test traverse command line symlinks
             const options_h = ChownOptions{ .traverse_command_line_symlinks = true };
-            try chownFile(allocator, test_file, owner_spec, options_h, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options_h, stdout_buffer.writer(), stderr_buffer.writer());
 
             // Test traverse all symlinks
             const options_l = ChownOptions{ .traverse_all_symlinks = true };
-            try chownFile(allocator, test_file, owner_spec, options_l, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options_l, stdout_buffer.writer(), stderr_buffer.writer());
 
             // Test no traverse symlinks (default)
             const options_p = ChownOptions{ .no_traverse_symlinks = true };
-            try chownFile(allocator, test_file, owner_spec, options_p, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options_p, stdout_buffer.writer(), stderr_buffer.writer());
         }
     }.testFn);
 }

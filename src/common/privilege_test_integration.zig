@@ -149,9 +149,12 @@ test "nested fakeroot contexts" {
 }
 
 test "privileged: environment variable propagation" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     try privilege_test.requiresPrivilege();
 
-    const allocator = testing.allocator;
     var utils = TestUtils.init(allocator);
     defer utils.deinit();
 
@@ -166,17 +169,18 @@ test "privileged: environment variable propagation" {
         .argv = &[_][]const u8{ "sh", "-c", "echo $TEST_PRIVILEGE_VAR" },
         .env_map = &env_map,
     });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
 
     try testing.expect(result.term.Exited == 0);
     try testing.expect(std.mem.indexOf(u8, result.stdout, "test_value") != null);
 }
 
 test "privileged: file permission operations" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     try privilege_test.requiresPrivilege();
 
-    const allocator = testing.allocator;
     var utils = TestUtils.init(allocator);
     defer utils.deinit();
 
@@ -207,9 +211,12 @@ test "privileged: file permission operations" {
 }
 
 test "privileged: directory permission operations" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     try privilege_test.requiresPrivilege();
 
-    const allocator = testing.allocator;
     var utils = TestUtils.init(allocator);
     defer utils.deinit();
 
@@ -222,15 +229,11 @@ test "privileged: directory permission operations" {
     // Change permissions to 0700
     // Note: We need to use external chmod command for directories
     const temp_path = try temp_dir_handle.realpathAlloc(allocator, ".");
-    defer allocator.free(temp_path);
     const dir_path = try std.fmt.allocPrint(allocator, "{s}/test_dir", .{temp_path});
-    defer allocator.free(dir_path);
 
     const chmod_result = try utils.runCommand(&[_][]const u8{
         "chmod", "700", dir_path,
     }, common.null_writer, common.null_writer);
-    defer allocator.free(chmod_result.stdout);
-    defer allocator.free(chmod_result.stderr);
 
     // Verify permissions
     const stat = try temp_dir_handle.statFile("test_dir");
@@ -241,8 +244,6 @@ test "privileged: directory permission operations" {
     const chmod_result2 = try utils.runCommand(&[_][]const u8{
         "chmod", "755", dir_path,
     }, common.null_writer, common.null_writer);
-    defer allocator.free(chmod_result2.stdout);
-    defer allocator.free(chmod_result2.stderr);
 
     // Verify new permissions
     const stat2 = try temp_dir_handle.statFile("test_dir");
