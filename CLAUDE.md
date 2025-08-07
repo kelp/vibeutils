@@ -86,6 +86,7 @@ Tests requiring file permission changes or other privileged operations are:
 - Automatically skipped during regular `zig build test`
 - Run separately with `./scripts/run-privileged-tests.sh` or `fakeroot zig build test-privileged`
 - Use `privilege_test.requiresPrivilege()` or `privilege_test.withFakeroot()` to check for fakeroot environment
+- **CRITICAL**: Must use `privilege_test.TestArena` allocators, NOT `testing.allocator` (Zig 0.14 fakeroot issue)
 
 ## Architecture Overview
 
@@ -691,16 +692,24 @@ test "description" { ... }
 
 ## Privileged Testing
 
-Tests requiring elevated privileges use `privilege_test.requiresPrivilege()`:
+**⚠️ CRITICAL: Zig 0.14 Fakeroot Issue**
+- **Problem**: `testing.allocator` breaks under fakeroot when bypassing `--listen=-` server mode
+- **Solution**: Use `privilege_test.TestArena` for ALL privileged tests
+- **See**: https://github.com/ziglang/zig/issues/15091
 
 ```zig
-test "chmod operation" {
-    try privilege_test.requiresPrivilege();  // Skip if not under fakeroot
-    // Test privileged operations
+test "privileged: chmod operation" {
+    // REQUIRED: Use arena allocator, NOT testing.allocator
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    try privilege_test.requiresPrivilege();
+    // Use 'allocator' throughout test, not 'testing.allocator'
 }
 ```
 
-Run with: `make test-privileged-local` or `scripts/run-privileged-tests.sh`
+Run with: `make test-privileged` or `scripts/run-privileged-tests.sh`
 
 ## Cross-Platform Testing
 
