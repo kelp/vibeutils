@@ -1,0 +1,39 @@
+name: 'Validate Documentation'
+description: 'Validates man pages and checks documentation coverage'
+inputs:
+  utilities:
+    description: 'Space-separated list of utilities to validate'
+    required: true
+  zig-version:
+    description: 'Zig version to use'
+    required: true
+    default: '0.14.1'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup build environment
+      uses: ./.github/actions/setup-build-env
+      with:
+        zig-version: ${{ inputs.zig-version }}
+        cache-key-suffix: validate-docs
+        install-docs-tools: 'true'
+        
+    - name: Setup documentation tools
+      uses: ./.github/actions/setup-doc-tools
+      with:
+        include-groff: 'true'
+        include-pandoc: 'false'
+        include-link-checker: 'false'
+        
+    - name: Validate man pages
+      shell: bash
+      run: |
+        source scripts/docs/lib/common.sh
+        scripts/docs/validate-man-pages.sh --ci --utilities "${{ inputs.utilities }}"
+        
+    - name: Check documentation coverage
+      shell: bash
+      run: |
+        source scripts/docs/lib/common.sh
+        scripts/docs/check-coverage.sh --utilities "${{ inputs.utilities }}"

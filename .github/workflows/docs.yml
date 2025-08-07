@@ -3,17 +3,10 @@ name: Documentation
 on:
   push:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'man/**'
-      - 'README.md'
-      - 'src/**/*.zig'  # Re-generate docs when code changes
+    paths: ['docs/**', 'man/**', 'README.md', 'src/**/*.zig']
   pull_request:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'man/**'
-      - 'README.md'
+    paths: ['docs/**', 'man/**', 'README.md']
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -27,7 +20,7 @@ env:
   FORCE_COLOR: 1
 
 jobs:
-  # Discover utilities for documentation
+  # Discover utilities for parallel processing
   discover:
     name: Discover Utilities
     runs-on: ubuntu-latest
@@ -35,553 +28,68 @@ jobs:
       utilities: ${{ steps.discover.outputs.utilities }}
       count: ${{ steps.discover.outputs.count }}
       utilities-list: ${{ steps.discover.outputs.utilities-list }}
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Discover utilities
-      id: discover
-      uses: ./.github/actions/discover-utilities
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/discover-utilities
 
-  # Build and validate documentation
-  build-docs:
-    name: Build Documentation
+  # Validate documentation in parallel
+  validate:
+    name: Validate Documentation
     runs-on: ubuntu-latest
     needs: [discover]
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup build environment
-      uses: ./.github/actions/setup-build-env
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/validate-docs
       with:
+        utilities: ${{ needs.discover.outputs.utilities-list }}
         zig-version: ${{ env.ZIG_VERSION }}
-        cache-key-suffix: docs
-        install-docs-tools: 'true'
-        
-    - name: Setup documentation tools
-      uses: ./.github/actions/setup-doc-tools
-      with:
-        include-groff: 'true'
-        include-pandoc: 'true'
-        include-link-checker: 'false'
-        
-    - name: Validate man pages
-      run: |
-        echo "Linting man pages with comprehensive checks..."
-        if [ -f "scripts/lint-man-pages.sh" ]; then
-          chmod +x scripts/lint-man-pages.sh
-          if ./scripts/lint-man-pages.sh --ci --verbose; then
-            echo "✅ Man page linting passed"
-          else
-            echo "::error::Man page linting failed"
-            exit 1
-          fi
-        else
-          echo "::notice::Man page linting script not found, performing basic checks"
-          
-          if [ -d "man" ]; then
-            find man/ -name "*.1" -o -name "*.8" | while read manfile; do
-              if ! grep -q "\.TH" "$manfile"; then
-                echo "::error::$manfile missing .TH header"
-                exit 1
-              fi
-            done
-            echo "✅ Basic man page validation passed"
-          else
-            echo "::notice::No man pages found"
-          fi
-        fi
-        
-    - name: Check man page coverage
-      run: |
-        echo "Checking man page coverage for discovered utilities..."
-        utilities="${{ needs.discover.outputs.utilities-list }}"
-        missing_count=0
-        
-        for utility in $utilities; do
-          if [ ! -f "man/man1/${utility}.1" ]; then
-            echo "::error::Missing man page for $utility"
-            echo "Expected: man/man1/${utility}.1"
-            missing_count=$((missing_count + 1))
-          else
-            echo "✅ Man page exists for $utility"
-          fi
-        done
-        
-        echo "Man page coverage: $(( ${{ needs.discover.outputs.count }} - missing_count ))/${{ needs.discover.outputs.count }} utilities"
-        
-        if [ $missing_count -gt 0 ]; then
-          echo "::error::Documentation coverage incomplete: $missing_count utilities missing man pages"
-          echo ""
-          echo "All utilities must have man pages for release quality."
-          echo "Create missing man pages using the format in existing man/man1/*.1 files."
-          echo "Refer to CLAUDE.md for man page style guidelines."
-          exit 1
-        else
-          echo "✅ Complete documentation coverage - all utilities have man pages"
-        fi
-        
-    - name: Generate documentation
-      run: |
-        echo "Generating documentation using shared script..."
-        if [ -f "scripts/generate-docs.sh" ]; then
-          chmod +x scripts/generate-docs.sh
-          if ./scripts/generate-docs.sh --ci; then
-            echo "✅ Documentation generation successful"
-          else
-            echo "::error::Documentation generation failed"
-            exit 1
-          fi
-        else
-          echo "::notice::Documentation generation script not found, creating basic docs"
-          
-          mkdir -p docs/html
-          
-          # Create basic index using printf to avoid here-doc YAML issues
-          {
-            echo '<!DOCTYPE html>'
-            echo '<html>'
-            echo '<head>'
-            echo '  <title>vibeutils Documentation</title>'
-            echo '  <meta charset="utf-8">'
-            echo '  <meta name="viewport" content="width=device-width, initial-scale=1">'
-            echo '  <style>'
-            echo '    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 2em; line-height: 1.6; }'
-            echo '    h1 { color: #2c3e50; border-bottom: 2px solid #3498db; }'
-            echo '    h2 { color: #34495e; margin-top: 2em; }'
-            echo '    .utility-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1em; margin: 1em 0; }'
-            echo '    .utility-card { border: 1px solid #ddd; padding: 1em; border-radius: 8px; }'
-            echo '    .utility-name { font-weight: bold; color: #2980b9; }'
-            echo '    a { color: #3498db; text-decoration: none; }'
-            echo '    a:hover { text-decoration: underline; }'
-            echo '    .stats { background: #f8f9fa; padding: 1em; border-radius: 8px; margin: 1em 0; }'
-            echo '  </style>'
-            echo '</head>'
-            echo '<body>'
-            echo '  <h1>vibeutils Documentation</h1>'
-            echo '  <p>Modern Zig implementation of GNU coreutils with enhanced UX features.</p>'
-            echo '  '
-            echo '  <div class="stats">'
-            echo '    <strong>Statistics:</strong>'
-            echo '    <ul>'
-            echo "      <li>Total Utilities: ${{ needs.discover.outputs.count }}</li>"
-            echo "      <li>Build Date: $(date -u)</li>"
-            echo "      <li>Zig Version: ${{ env.ZIG_VERSION }}</li>"
-            echo '    </ul>'
-            echo '  </div>'
-            echo '  '
-            echo '  <h2>Available Utilities</h2>'
-            echo '  <div class="utility-grid">'
-          } > docs/html/index.html
-          
-          # Add discovered utilities
-          utilities="${{ needs.discover.outputs.utilities-list }}"
-          for utility in $utilities; do
-            {
-              echo "    <div class=\"utility-card\">"
-              echo "      <div class=\"utility-name\">$utility</div>"
-              
-              if [ -f "man/man1/${utility}.1" ]; then
-                echo "      <div><a href=\"${utility}.1.html\">Manual Page</a></div>"
-              fi
-              
-              if [ -f "src/${utility}.zig" ]; then
-                echo "      <div><a href=\"https://github.com/${{ github.repository }}/blob/main/src/${utility}.zig\">Source Code</a></div>"
-              fi
-              
-              echo "    </div>"
-            } >> docs/html/index.html
-          done
-          
-          # Close the HTML
-          {
-            echo '  </div>'
-            echo '  '
-            echo '  <h2>Documentation</h2>'
-            echo '  <ul>'
-            echo "    <li><a href=\"https://github.com/${{ github.repository }}\">Source Repository</a></li>"
-            echo "    <li><a href=\"https://github.com/${{ github.repository }}/releases\">Releases</a></li>"
-            echo "    <li><a href=\"https://github.com/${{ github.repository }}/issues\">Issue Tracker</a></li>"
-            echo '  </ul>'
-            echo '  '
-            echo '  <footer style="margin-top: 3em; padding-top: 1em; border-top: 1px solid #ddd; color: #666;">'
-            echo "    <p>Generated automatically on $(date -u) by GitHub Actions</p>"
-            echo '  </footer>'
-            echo '</body>'
-            echo '</html>'
-          } >> docs/html/index.html
-          
-          echo "✅ Basic documentation generated"
-        fi
-        
-    - name: Convert man pages to HTML
-      run: |
-        echo "Converting man pages to HTML..."
-        
-        if command -v mandoc >/dev/null 2>&1 && [ -d "man" ]; then
-          echo "Converting man pages using mandoc..."
-          find man/ -name "*.1" -o -name "*.8" | while read manfile; do
-            basename=$(basename "$manfile")
-            if mandoc -T html "$manfile" > "docs/html/${basename}.html"; then
-              echo "✅ Converted $manfile to HTML"
-            else
-              echo "::warning::Failed to convert $manfile"
-            fi
-          done
-        else
-          echo "::notice::mandoc not available or no man pages found"
-        fi
-        
-    - name: Generate README HTML
-      run: |
-        echo "Generating README HTML..."
-        
-        if command -v pandoc >/dev/null 2>&1; then
-          echo "Converting README to HTML with pandoc..."
-          if pandoc README.md -o docs/html/README.html --standalone --metadata title="vibeutils README"; then
-            echo "✅ README converted to HTML"
-          else
-            echo "::warning::Failed to convert README to HTML"
-          fi
-        else
-          echo "::notice::pandoc not available, skipping README conversion"
-        fi
-        
-    - name: Create documentation package
-      run: |
-        echo "Creating documentation package..."
-        
-        # Add a style sheet
-        {
-          echo '/* vibeutils documentation styles */'
-          echo 'body { '
-          echo '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; '
-          echo '  margin: 2em auto; '
-          echo '  max-width: 1200px; '
-          echo '  line-height: 1.6; '
-          echo '  color: #333;'
-          echo '}'
-          echo 'h1, h2, h3 { color: #2c3e50; }'
-          echo 'h1 { border-bottom: 2px solid #3498db; padding-bottom: 0.5em; }'
-          echo 'pre, code { '
-          echo '  background: #f8f9fa; '
-          echo '  padding: 0.2em 0.4em; '
-          echo '  border-radius: 4px; '
-          echo '  font-family: "Monaco", "Menlo", monospace;'
-          echo '}'
-          echo 'pre { padding: 1em; overflow-x: auto; }'
-          echo 'a { color: #3498db; text-decoration: none; }'
-          echo 'a:hover { text-decoration: underline; }'
-          echo '.utility-grid { '
-          echo '  display: grid; '
-          echo '  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); '
-          echo '  gap: 1em; '
-          echo '  margin: 2em 0; '
-          echo '}'
-          echo '.utility-card { '
-          echo '  border: 1px solid #ddd; '
-          echo '  padding: 1.5em; '
-          echo '  border-radius: 8px; '
-          echo '  transition: box-shadow 0.2s;'
-          echo '}'
-          echo '.utility-card:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.1); }'
-          echo '.stats { '
-          echo '  background: linear-gradient(135deg, #f8f9fa, #e9ecef); '
-          echo '  padding: 1.5em; '
-          echo '  border-radius: 8px; '
-          echo '  margin: 2em 0; '
-          echo '}'
-        } > docs/html/style.css
-        
-        # Create navigation
-        echo "Creating documentation navigation..."
-        ls -la docs/html/
-        
-    - name: Validate generated documentation
-      run: |
-        echo "Validating generated documentation..."
-        
-        # Check that key files were generated
-        required_files=("index.html")
-        for file in "${required_files[@]}"; do
-          if [ ! -f "docs/html/$file" ]; then
-            echo "::error::Required file not generated: $file"
-            exit 1
-          else
-            echo "✅ Found: $file"
-          fi
-        done
-        
-        # Check for broken internal links (basic check)
-        if command -v grep >/dev/null; then
-          echo "Checking for potential broken links..."
-          find docs/html/ -name "*.html" -exec grep -l "href=" {} \; | while read file; do
-            echo "Checked links in: $file"
-          done
-        fi
-        
-        # Validate HTML structure (basic)
-        find docs/html/ -name "*.html" | while read file; do
-          if grep -q "<html" "$file" && grep -q "</html>" "$file"; then
-            echo "✅ Valid HTML structure: $file"
-          else
-            echo "::warning::Potentially malformed HTML: $file"
-          fi
-        done
-        
-        echo "✅ Documentation validation complete"
-        
-    - name: Upload documentation artifacts
-      uses: ./.github/actions/manage-artifacts
-      with:
-        action: create
-        artifact-name: documentation
-        artifact-path: docs/html/
-        retention-days: 30
-        enable-signing: 'true'
-        slsa-compliance: 'true'
 
-  # Deploy documentation to GitHub Pages (only on main branch)
-  deploy-docs:
-    name: Deploy Documentation
+  # Generate documentation
+  generate:
+    name: Generate Documentation  
     runs-on: ubuntu-latest
-    needs: [build-docs]
+    needs: [discover, validate]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/generate-docs
+      with:
+        utilities: ${{ needs.discover.outputs.utilities-list }}
+        zig-version: ${{ env.ZIG_VERSION }}
+        force-rebuild: ${{ github.event.inputs.force_rebuild }}
+
+  # Check links in parallel with generation
+  check-links:
+    name: Check Links
+    runs-on: ubuntu-latest
+    needs: [generate]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/check-links
+      with:
+        docs-artifact: documentation
+
+  # Deploy to GitHub Pages (main branch only)
+  deploy:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: [generate, check-links]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
     permissions:
       contents: read
       pages: write
       id-token: write
-    
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    
     steps:
-    - name: Download documentation artifacts
-      uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v4
       with:
         name: documentation
         path: ./docs-site
-        
-    - name: Prepare Pages deployment
-      run: |
-        echo "Preparing GitHub Pages deployment..."
-        ls -la docs-site/
-        
-        # Ensure we have an index.html
-        if [ ! -f "docs-site/index.html" ]; then
-          echo "::error::No index.html found for Pages deployment"
-          exit 1
-        fi
-        
-        # Add .nojekyll to prevent Jekyll processing
-        touch docs-site/.nojekyll
-        
-        echo "✅ Pages deployment prepared"
-        
-    - name: Setup Pages
-      uses: actions/configure-pages@v4
-      
-    - name: Upload to GitHub Pages
-      uses: actions/upload-pages-artifact@v3
+    - run: touch docs-site/.nojekyll
+    - uses: actions/configure-pages@v4
+    - uses: actions/upload-pages-artifact@v3
       with:
         path: ./docs-site
-        retention-days: 1
-        
-    - name: Deploy to GitHub Pages
-      id: deployment
+    - id: deployment
       uses: actions/deploy-pages@v4
-
-  # Check documentation links
-  link-check:
-    name: Link Check
-    runs-on: ubuntu-latest
-    needs: [build-docs]
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup documentation tools
-      uses: ./.github/actions/setup-doc-tools
-      with:
-        include-groff: 'false'
-        include-pandoc: 'false'
-        include-link-checker: 'true'
-        
-    - name: Download documentation
-      uses: actions/download-artifact@v4
-      with:
-        name: documentation
-        path: ./docs-built
-        
-    - name: Check README links
-      run: |
-        echo "Checking README links..."
-        if command -v markdown-link-check >/dev/null 2>&1; then
-          if [ -f ".github/link-check-config.json" ]; then
-            if markdown-link-check README.md --config .github/link-check-config.json; then
-              echo "✅ README links are valid"
-            else
-              echo "::warning::Some links in README may be broken"
-            fi
-          else
-            if markdown-link-check README.md; then
-              echo "✅ README links are valid"
-            else
-              echo "::warning::Some links in README may be broken"
-            fi
-          fi
-        else
-          echo "::notice::markdown-link-check not available"
-        fi
-        
-    - name: Check documentation links
-      run: |
-        echo "Checking documentation links..."
-        if command -v markdown-link-check >/dev/null 2>&1; then
-          if [ -d "docs" ]; then
-            find docs/ -name "*.md" | while read file; do
-              echo "Checking links in: $file"
-              if markdown-link-check "$file"; then
-                echo "✅ Links valid in $file"
-              else
-                echo "::warning::Some links may be broken in $file"
-              fi
-            done
-          else
-            echo "::notice::No markdown documentation files found"
-          fi
-        else
-          echo "::notice::Link checking skipped - markdown-link-check not available"
-        fi
-
-  # Documentation quality check
-  docs-quality:
-    name: Documentation Quality Check
-    runs-on: ubuntu-latest
-    needs: [discover]
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Check documentation completeness
-      run: |
-        echo "Checking documentation completeness..."
-        
-        # Check that all utilities have documentation
-        utilities="${{ needs.discover.outputs.utilities-list }}"
-        missing_docs=0
-        
-        for utility in $utilities; do
-          has_man=false
-          has_readme_mention=false
-          
-          # Check for man page
-          if [ -f "man/man1/${utility}.1" ]; then
-            has_man=true
-            echo "✅ $utility has man page"
-          else
-            echo "::error::$utility is missing man page"
-            missing_docs=$((missing_docs + 1))
-          fi
-          
-          # Check if mentioned in README
-          if grep -q "${utility}" README.md; then
-            has_readme_mention=true
-            echo "✅ $utility mentioned in README"
-          else
-            echo "::notice::$utility is not mentioned in README"
-          fi
-        done
-        
-        echo "Documentation completeness: $(( ${{ needs.discover.outputs.count }} - missing_docs ))/${{ needs.discover.outputs.count }} utilities have man pages"
-        
-        if [ $missing_docs -gt 0 ]; then
-          echo "::error::Documentation coverage incomplete: $missing_docs utilities missing documentation"
-          echo ""
-          echo "The following utilities are missing man pages:"
-          for utility in $utilities; do
-            if [ ! -f "man/man1/${utility}.1" ]; then
-              echo "  - $utility (expected: man/man1/${utility}.1)"
-            fi
-          done
-          echo ""
-          echo "Complete documentation is required for production quality."
-          echo "Please create man pages following the project guidelines in CLAUDE.md."
-          exit 1
-        else
-          echo "✅ Complete documentation coverage - all utilities fully documented"
-        fi
-        
-    - name: Check writing quality
-      run: |
-        echo "Checking writing quality..."
-        
-        # Basic checks for common issues
-        issues_found=0
-        
-        if grep -r "TODO" docs/ README.md 2>/dev/null; then
-          echo "::notice::Found TODO items in documentation"
-          issues_found=$((issues_found + 1))
-        fi
-        
-        # Check for consistent style
-        if grep -r "utilit[iy]" README.md | grep -v "utilities"; then
-          echo "::notice::Check utility/utilities consistency in README"
-          issues_found=$((issues_found + 1))
-        fi
-        
-        # Check for proper capitalization
-        if grep -r "github" README.md | grep -v "GitHub"; then
-          echo "::notice::Use 'GitHub' instead of 'github' for consistency"
-          issues_found=$((issues_found + 1))
-        fi
-        
-        if [ $issues_found -eq 0 ]; then
-          echo "✅ No writing quality issues found"
-        else
-          echo "::notice::Found $issues_found potential writing quality issues"
-        fi
-
-  # Documentation summary
-  docs-summary:
-    name: Documentation Summary
-    runs-on: ubuntu-latest
-    needs: [discover, build-docs, link-check, docs-quality]
-    if: always()
-    
-    steps:
-    - name: Generate documentation report
-      run: |
-        echo "## Documentation Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Build Results" >> $GITHUB_STEP_SUMMARY
-        echo "- 📚 **Documentation Build**: ${{ needs.build-docs.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- 🔗 **Link Check**: ${{ needs.link-check.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "- ✅ **Quality Check**: ${{ needs.docs-quality.result }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Statistics" >> $GITHUB_STEP_SUMMARY
-        echo "- **Utilities Discovered**: ${{ needs.discover.outputs.count }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Utilities**: ${{ needs.discover.outputs.utilities-list }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ "${{ github.ref }}" = "refs/heads/main" ] && [ "${{ github.event_name }}" = "push" ]; then
-          echo "### Deployment" >> $GITHUB_STEP_SUMMARY
-          echo "- 🚀 **Documentation deployed to GitHub Pages**" >> $GITHUB_STEP_SUMMARY
-          echo "- 📖 **Available at**: https://${{ github.repository_owner }}.github.io/$(basename ${{ github.repository }})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        echo "### Generated Documentation" >> $GITHUB_STEP_SUMMARY
-        echo "- HTML documentation with responsive design" >> $GITHUB_STEP_SUMMARY
-        echo "- Man pages converted to HTML (when available)" >> $GITHUB_STEP_SUMMARY
-        echo "- Cross-referenced utility guide" >> $GITHUB_STEP_SUMMARY
-        echo "- SLSA-compliant artifact generation" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "*Documentation generated on $(date)*" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,61 @@
+name: 'Generate Documentation'
+description: 'Generates HTML documentation from man pages and source'
+inputs:
+  utilities:
+    description: 'Space-separated list of utilities to document'
+    required: true
+  zig-version:
+    description: 'Zig version to use'
+    required: true
+    default: '0.14.1'
+  force-rebuild:
+    description: 'Force complete documentation rebuild'
+    required: false
+    default: 'false'
+
+outputs:
+  artifact-name:
+    description: 'Name of the generated documentation artifact'
+    value: 'documentation'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup build environment
+      uses: ./.github/actions/setup-build-env
+      with:
+        zig-version: ${{ inputs.zig-version }}
+        cache-key-suffix: generate-docs
+        install-docs-tools: 'true'
+        
+    - name: Setup documentation tools
+      uses: ./.github/actions/setup-doc-tools
+      with:
+        include-groff: 'true'
+        include-pandoc: 'true'
+        include-link-checker: 'false'
+        
+    - name: Generate HTML documentation
+      shell: bash
+      run: |
+        source scripts/docs/lib/common.sh
+        scripts/docs/generate-html.sh \
+          --utilities "${{ inputs.utilities }}" \
+          --force-rebuild "${{ inputs.force-rebuild }}" \
+          --ci
+        
+    - name: Check documentation quality
+      shell: bash
+      run: |
+        source scripts/docs/lib/common.sh
+        scripts/docs/check-quality.sh --generated-docs docs/html/
+        
+    - name: Upload documentation artifacts
+      uses: ./.github/actions/manage-artifacts
+      with:
+        action: create
+        artifact-name: documentation
+        artifact-path: docs/html/
+        retention-days: 30
+        enable-signing: 'true'
+        slsa-compliance: 'true'

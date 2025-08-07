@@ -1,0 +1,51 @@
+name: 'Check Links'
+description: 'Validates links in documentation and README'
+inputs:
+  docs-artifact:
+    description: 'Name of the documentation artifact to check'
+    required: true
+    default: 'documentation'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup documentation tools
+      uses: ./.github/actions/setup-doc-tools
+      with:
+        include-groff: 'false'
+        include-pandoc: 'false'
+        include-link-checker: 'true'
+        
+    - name: Download documentation
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ inputs.docs-artifact }}
+        path: ./docs-built
+        
+    - name: Check README links
+      shell: bash
+      run: |
+        if command -v markdown-link-check >/dev/null 2>&1; then
+          config_file=".github/link-check-config.json"
+          if [ -f "$config_file" ]; then
+            markdown-link-check README.md --config "$config_file"
+          else
+            markdown-link-check README.md
+          fi
+        else
+          echo "::notice::markdown-link-check not available"
+        fi
+        
+    - name: Check documentation links
+      shell: bash
+      run: |
+        if command -v markdown-link-check >/dev/null 2>&1; then
+          if [ -d "docs" ]; then
+            find docs/ -name "*.md" | while read file; do
+              echo "Checking links in: $file"
+              markdown-link-check "$file" || echo "::warning::Some links may be broken in $file"
+            done
+          fi
+        else
+          echo "::notice::Link checking skipped - markdown-link-check not available"
+        fi

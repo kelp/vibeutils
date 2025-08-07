@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Modern Zig implementation of GNU coreutils with enhanced UX features">
+    <title>vibeutils Documentation</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>vibeutils Documentation</h1>
+        <p>Modern Zig implementation of GNU coreutils with enhanced UX features.</p>
+    </header>
+    
+    <nav>
+        <ul>
+            <li><a href="https://github.com/{{GITHUB_REPO}}">Source Code</a></li>
+            <li><a href="https://github.com/{{GITHUB_REPO}}/blob/main/README.md">README</a></li>
+            <li><a href="https://github.com/{{GITHUB_REPO}}/releases">Releases</a></li>
+            <li><a href="https://github.com/{{GITHUB_REPO}}/issues">Issues</a></li>
+        </ul>
+    </nav>
+    
+    <main>
+        <section class="stats">
+            <h2>Project Statistics</h2>
+            <ul>
+                <li><strong>Total Utilities:</strong> {{UTILITY_COUNT}}</li>
+                <li><strong>Build Date:</strong> {{BUILD_DATE}}</li>
+                <li><strong>Zig Version:</strong> {{ZIG_VERSION}}</li>
+                <li><strong>Platform:</strong> Cross-platform (Linux, macOS, Windows)</li>
+            </ul>
+        </section>
+        
+        <section>
+            <h2>Available Utilities</h2>
+            <div class="utility-grid">
