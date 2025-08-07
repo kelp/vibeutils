@@ -182,6 +182,10 @@ fn buildTests(
     const privileged_test_step = b.step("test-privileged", "Run tests that require privilege simulation (run under fakeroot)");
 
     // Run privileged tests only - filter for tests starting with "privileged:"
+    // Chain tests sequentially to avoid FileBusy race conditions in parallel execution
+    // See: https://github.com/ziglang/zig/issues/9439
+    var prev_run_step: ?*std.Build.Step = null;
+    
     for (utils.utilities) |util| {
         const util_tests = b.addTest(.{
             .root_source_file = b.path(util.path),
@@ -206,6 +210,13 @@ fn buildTests(
             b.getInstallPath(install_util_tests.dest_dir.?, util_tests.out_filename),
         });
         run_util_tests.step.dependOn(&install_util_tests.step);
+        
+        // Chain each test to run after the previous one completes
+        if (prev_run_step) |prev| {
+            run_util_tests.step.dependOn(prev);
+        }
+        prev_run_step = &run_util_tests.step;
+        
         privileged_test_step.dependOn(&run_util_tests.step);
     }
 
@@ -225,6 +236,12 @@ fn buildTests(
         b.getInstallPath(install_common_tests_priv.dest_dir.?, common_tests_priv.out_filename),
     });
     run_common_tests_priv.step.dependOn(&install_common_tests_priv.step);
+    
+    // Chain common tests to run after all utility tests
+    if (prev_run_step) |prev| {
+        run_common_tests_priv.step.dependOn(prev);
+    }
+    
     privileged_test_step.dependOn(&run_common_tests_priv.step);
 
     // Integration tests
