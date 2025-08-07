@@ -25,6 +25,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.14.1
+      - name: Install mandoc
+        run: sudo apt-get update && sudo apt-get install -y mandoc
       - run: make docs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
