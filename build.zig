@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
     };
 
     // Validate fuzz coverage - all utilities must have fuzz tests
+    // This runs during build configuration to ensure test coverage
     fuzz_coverage.enforceFuzzCoverage(b.allocator) catch |err| {
         std.log.err("Fuzz coverage validation failed: {}", .{err});
         return; // Abort build configuration

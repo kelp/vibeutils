@@ -120,7 +120,8 @@ pub fn enforceFuzzCoverage(allocator: std.mem.Allocator) FuzzCoverageError!void 
         return FuzzCoverageError.MissingFuzzTests;
     }
 
-    std.log.info("Fuzz coverage validation passed: {}/{} utilities ({d}%)", .{ result.covered, result.total, result.getCoveragePercent() });
+    // Silent success - only report errors, not success
+    // This validation runs for all build commands, so we avoid noise
 }
 
 /// Print fuzz coverage report without enforcing
