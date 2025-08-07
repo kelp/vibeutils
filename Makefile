@@ -93,6 +93,7 @@ ci-validate:
 
 docs:
 	zig build docs
+	./scripts/generate-docs-index.sh
 	@echo "API documentation generated in zig-out/docs/"
 
 docs-html: docs
