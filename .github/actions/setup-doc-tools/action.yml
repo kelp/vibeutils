@@ -110,7 +110,13 @@ runs:
         
         # Also install mandoc for link checker job
         if [ "$RUNNER_OS" = "Linux" ]; then
-          sudo apt-get install -y mandoc 2>/dev/null || true
+          if ! command -v mandoc >/dev/null 2>&1; then
+            if sudo apt-get install -y mandoc 2>/dev/null; then
+              echo "✅ Installed mandoc for link checking"
+            else
+              echo "::notice::mandoc already installed or not available"
+            fi
+          fi
         fi
         
         # Install markdown link checker
