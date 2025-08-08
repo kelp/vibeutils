@@ -14,6 +14,9 @@
   - Security theater (unnecessary validation that belongs in the OS)
   - Non-idiomatic Zig patterns
   - Missing or incorrect documentation
+  - Over-engineering, needless complexity
+  - Poor quailty or weak tests
+  - Missing critical tests
   
   ### Writing Style Issues (per "The Elements of Style"):
   - Passive voice in documentation or comments

@@ -411,54 +411,28 @@ const PROMPT_BUFFER_SIZE = 256;
 
 /// Move across filesystems using copy-then-delete
 fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
-    // DEAD CODE CLEANUP FIX: Use new common modules instead of old cp/ modules
-    const copy_options = common.copy_options;
-    const copy_engine = common.copy_engine;
-
     if (options.verbose) {
         try stdout_writer.print("mv: moving '{s}' to '{s}' (cross-filesystem)\n", .{ source, dest });
     }
 
-    // Create cp options from mv options
-    // We always use recursive mode for cross-filesystem moves to handle directories
-    const cp_options = copy_options.CpOptions{
-        .recursive = true, // Always recursive for directories
-        .preserve = true, // Preserve attributes
-        .force = options.force,
-        .interactive = options.interactive,
-        .no_dereference = false, // Follow symlinks by default for mv
-    };
-
-    // Use the new unified copy engine
-    const cp_context = copy_engine.CopyContext.create(allocator, cp_options);
-    var engine = copy_engine.CopyEngine.init(cp_context);
-
-    // Plan and execute the copy
-    var operation = try cp_context.planOperation(source, dest);
-    defer operation.deinit(allocator);
-
-    // Show progress for cross-filesystem moves (simplified progress)
-    if (options.verbose) {
-        try stderr_writer.print("mv: copying '{s}' to '{s}'\n", .{ source, dest });
-    }
-
-    // Execute copy with proper error handling
-    _ = engine.executeCopy(allocator, stderr_writer, stderr_writer, operation) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "error copying '{s}' to '{s}': {}", .{ source, dest, err });
+    // Get source stat to determine if it's a directory
+    const source_stat = std.fs.cwd().statFile(source) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat '{s}': {}", .{ source, err });
         return err;
     };
 
+    if (source_stat.kind == .directory) {
+        // Handle directory recursively
+        try copyDirectoryRecursive(allocator, source, dest, options, stdout_writer, stderr_writer);
+    } else {
+        // Handle regular file
+        try copyFile(allocator, source, dest, source_stat, options, stdout_writer, stderr_writer);
+    }
+
+    // If copy succeeded, remove the source
     if (options.verbose) {
         try stderr_writer.print("mv: removing source '{s}'\n", .{source});
     }
-
-    // If copy succeeded, remove the source with error recovery
-    // We need to check if it's a directory to use the appropriate delete method
-    const source_stat = std.fs.cwd().statFile(source) catch |stat_err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "failed to stat source '{s}' for deletion: {}", .{ source, stat_err });
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "copy completed but source not removed - manual cleanup required", .{});
-        return stat_err;
-    };
 
     if (source_stat.kind == .directory) {
         std.fs.cwd().deleteTree(source) catch |del_err| {
@@ -476,6 +450,160 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 
     if (options.verbose) {
         try stderr_writer.print("mv: completed cross-filesystem move\n", .{});
+    }
+}
+
+/// Copy a single file across filesystems with attribute preservation
+fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    _ = stdout_writer;
+
+    if (options.verbose) {
+        try stderr_writer.print("mv: copying file '{s}' to '{s}'\n", .{ source_path, dest_path });
+    }
+
+    // Open source file
+    const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source file '{s}': {}", .{ source_path, err });
+        return err;
+    };
+    defer source_file.close();
+
+    // Create destination file with same permissions as source
+    const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = source_stat.mode }) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination file '{s}': {}", .{ dest_path, err });
+        return err;
+    };
+    defer dest_file.close();
+
+    // Copy data using 64KB buffer
+    const buffer_size = 64 * 1024;
+    var buffer: [buffer_size]u8 = undefined;
+
+    while (true) {
+        const bytes_read = source_file.readAll(&buffer) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading from '{s}': {}", .{ source_path, err });
+            return err;
+        };
+
+        if (bytes_read == 0) break;
+
+        dest_file.writeAll(buffer[0..bytes_read]) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "error writing to '{s}': {}", .{ dest_path, err });
+            return err;
+        };
+    }
+
+    // Preserve timestamps if possible
+    dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
+        // Non-critical error - log but continue
+        if (options.verbose) {
+            try stderr_writer.print("mv: warning: could not preserve timestamps for '{s}': {}\n", .{ dest_path, err });
+        }
+    };
+}
+
+/// Recursively copy directory across filesystems
+fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    if (options.verbose) {
+        try stderr_writer.print("mv: copying directory '{s}' to '{s}'\n", .{ source_path, dest_path });
+    }
+
+    // Get source directory stat for permissions
+    const source_stat = std.fs.cwd().statFile(source_path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat source directory '{s}': {}", .{ source_path, err });
+        return err;
+    };
+
+    // Create destination directory with same permissions
+    std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            // Directory already exists, check if it's actually a directory
+            const dest_stat = std.fs.cwd().statFile(dest_path) catch |stat_err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat existing destination '{s}': {}", .{ dest_path, stat_err });
+                return stat_err;
+            };
+            if (dest_stat.kind != .directory) {
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", "destination '{s}' exists but is not a directory", .{dest_path});
+                return error.NotDir;
+            }
+        },
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination directory '{s}': {}", .{ dest_path, err });
+            return err;
+        },
+    };
+
+    // Set directory permissions
+    var dest_dir = std.fs.cwd().openDir(dest_path, .{}) catch |err| {
+        if (options.verbose) {
+            try stderr_writer.print("mv: warning: could not open directory for permission setting '{s}': {}\n", .{ dest_path, err });
+        }
+        return;
+    };
+    defer dest_dir.close();
+
+    dest_dir.chmod(source_stat.mode) catch |err| {
+        if (options.verbose) {
+            try stderr_writer.print("mv: warning: could not set permissions on '{s}': {}\n", .{ dest_path, err });
+        }
+    };
+
+    // Open source directory for iteration
+    var source_dir = std.fs.cwd().openDir(source_path, .{ .iterate = true }) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source directory '{s}': {}", .{ source_path, err });
+        return err;
+    };
+    defer source_dir.close();
+
+    // Iterate through directory entries
+    var iterator = source_dir.iterate();
+    while (iterator.next() catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading directory '{s}': {}", .{ source_path, err });
+        return err;
+    }) |entry| {
+        // Build full paths for source and destination
+        const entry_source = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ source_path, entry.name });
+        defer allocator.free(entry_source);
+        const entry_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest_path, entry.name });
+        defer allocator.free(entry_dest);
+
+        switch (entry.kind) {
+            .file => {
+                const entry_stat = std.fs.cwd().statFile(entry_source) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat file '{s}': {}", .{ entry_source, err });
+                    return err;
+                };
+                try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stdout_writer, stderr_writer);
+            },
+            .directory => {
+                try copyDirectoryRecursive(allocator, entry_source, entry_dest, options, stdout_writer, stderr_writer);
+            },
+            .sym_link => {
+                // Copy symlink by reading target and creating new symlink
+                var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const target = std.fs.cwd().readLink(entry_source, &target_buf) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot read symlink '{s}': {}", .{ entry_source, err });
+                    return err;
+                };
+
+                std.fs.cwd().symLink(target, entry_dest, .{}) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create symlink '{s}': {}", .{ entry_dest, err });
+                    return err;
+                };
+            },
+            else => {
+                // Skip other file types (block devices, character devices, etc.)
+                if (options.verbose) {
+                    try stderr_writer.print("mv: skipping special file '{s}'\n", .{entry_source});
+                }
+            },
+        }
+    }
+
+    // Preserve directory timestamps if possible
+    // Note: On some systems, directory timestamp preservation may not be supported
+    if (options.verbose) {
+        try stderr_writer.print("mv: note: directory timestamp preservation not implemented for cross-filesystem moves\n", .{});
     }
 }
 

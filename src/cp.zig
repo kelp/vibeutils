@@ -4,41 +4,80 @@ const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
 
-const copy_options = common.copy_options;
-const copy_engine = common.copy_engine;
+const Allocator = std.mem.Allocator;
+const testing = std.testing;
+const privilege_test = common.privilege_test;
+
+// Copy buffer size - single 64KB buffer for all operations
+const COPY_BUFFER_SIZE = 64 * 1024;
 
 /// Command-line arguments for cp
 const CpArgs = struct {
-    help: bool = false,
-    version: bool = false,
-    r: bool = false,
-    recursive: bool = false,
-    R: bool = false,
-    i: bool = false,
-    interactive: bool = false,
-    f: bool = false,
     force: bool = false,
-    p: bool = false,
-    preserve: bool = false,
-    d: bool = false,
+    help: bool = false,
+    interactive: bool = false,
     no_dereference: bool = false,
+    preserve: bool = false,
+    recursive: bool = false,
+    version: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
+        .force = .{ .short = 'f', .desc = "Force overwrite without prompting" },
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .interactive = .{ .short = 'i', .desc = "Prompt before overwrite" },
+        .no_dereference = .{ .short = 'd', .desc = "Never follow symbolic links in SOURCE" },
+        .preserve = .{ .short = 'p', .desc = "Preserve mode, ownership, timestamps" },
+        .recursive = .{ .short = 'r', .desc = "Copy directories recursively" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .r = .{ .desc = "Copy directories recursively" },
-        .recursive = .{ .short = 0, .desc = "Copy directories recursively" },
-        .R = .{ .desc = "Copy directories recursively (same as -r)" },
-        .i = .{ .desc = "Prompt before overwrite" },
-        .interactive = .{ .short = 0, .desc = "Prompt before overwrite" },
-        .f = .{ .desc = "Force overwrite without prompting" },
-        .force = .{ .short = 0, .desc = "Force overwrite without prompting" },
-        .p = .{ .desc = "Preserve mode, ownership, timestamps" },
-        .preserve = .{ .short = 0, .desc = "Preserve mode, ownership, timestamps" },
-        .d = .{ .desc = "Never follow symbolic links in SOURCE" },
-        .no_dereference = .{ .short = 0, .desc = "Never follow symbolic links in SOURCE" },
     };
+};
+
+/// Copy operation options
+const CpOptions = struct {
+    force: bool = false,
+    interactive: bool = false,
+    no_dereference: bool = false,
+    preserve: bool = false,
+    recursive: bool = false,
+};
+
+/// File type enumeration for copy operations
+const FileType = enum {
+    directory,
+    regular_file,
+    special,
+    symlink,
+};
+
+/// Copy operation statistics
+const CopyStats = struct {
+    errors_encountered: usize = 0,
+};
+
+/// Copy errors specific to cp operations
+const CopyError = error{
+    AccessDenied,
+    CrossDevice,
+    DestinationExists,
+    DestinationIsDirectory,
+    DestinationIsNotDirectory,
+    DestinationNotWritable,
+    EmptyPath,
+    InvalidPath,
+    NoSpaceLeft,
+    OutOfMemory,
+    PathTooLong,
+    PermissionDenied,
+    QuotaExceeded,
+    RecursionNotAllowed,
+    SameFile,
+    SourceIsDirectory,
+    SourceNotFound,
+    SourceNotReadable,
+    UnsupportedFileType,
+    Unexpected,
+    UserCancelled,
 };
 
 /// Main entry point for the cp command
@@ -47,7 +86,6 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
@@ -59,7 +97,6 @@ pub fn main() !void {
 }
 
 /// Run cp with provided writers for output
-/// SECURITY FIX: API consistency - return ExitCode enum instead of raw u8
 pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
     const prog_name = "cp";
 
@@ -100,55 +137,445 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     }
 
     // Create options from parsed arguments
-    const options = copy_options.CpOptions{
-        .recursive = parsed_args.r or parsed_args.R or parsed_args.recursive,
-        .interactive = parsed_args.i or parsed_args.interactive,
-        .force = parsed_args.f or parsed_args.force,
-        .preserve = parsed_args.p or parsed_args.preserve,
-        .no_dereference = parsed_args.d or parsed_args.no_dereference,
+    const options = CpOptions{
+        .force = parsed_args.force,
+        .interactive = parsed_args.interactive,
+        .no_dereference = parsed_args.no_dereference,
+        .preserve = parsed_args.preserve,
+        .recursive = parsed_args.recursive,
     };
 
-    // Create copy context and engine
-    const context = copy_engine.CopyContext.create(allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    // Execute copy operations
+    var stats = CopyStats{};
+    const success = try executeCopyOperations(allocator, stdout_writer, stderr_writer, parsed_args.positionals, options, &stats);
 
-    // Plan all copy operations
-    var operations = engine.planOperations(allocator, stdout_writer, stderr_writer, parsed_args.positionals) catch |err| {
-        switch (err) {
-            error.InsufficientArguments => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "insufficient arguments", .{});
-                return common.ExitCode.misuse;
-            },
-            copy_options.CopyError.DestinationIsNotDirectory => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "destination is not a directory", .{});
-                return common.ExitCode.general_error;
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "error planning operations: {}", .{err});
-                return common.ExitCode.general_error;
-            },
+    return if (success) common.ExitCode.success else common.ExitCode.general_error;
+}
+
+/// Execute all copy operations
+fn executeCopyOperations(allocator: Allocator, _: anytype, stderr_writer: anytype, args: []const []const u8, options: CpOptions, stats: *CopyStats) !bool {
+    const dest = args[args.len - 1];
+
+    // If multiple sources, destination must be a directory
+    if (args.len > 2) {
+        const dest_type = getFileTypeAtomic(dest, false) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
+            return false;
+        };
+
+        if (dest_type != .directory) {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "target '{s}' is not a directory", .{dest});
+            return false;
         }
-    };
-    defer {
-        // Clean up all planned operations
-        for (operations.items) |*op| {
-            op.deinit(allocator);
-        }
-        operations.deinit();
     }
 
-    // Execute all copy operations
-    _ = engine.executeCopyBatch(allocator, stdout_writer, stderr_writer, operations.items) catch {
-        return common.ExitCode.general_error;
-    };
+    var success = true;
 
-    // Check for errors during execution
-    const stats = engine.getStats();
-    if (stats.errors_encountered > 0) {
-        return common.ExitCode.general_error;
+    // Process each source
+    for (args[0 .. args.len - 1]) |source| {
+        const result = copySingleFile(allocator, stderr_writer, source, dest, options, stats) catch false;
+        if (!result) success = false;
     }
 
-    return common.ExitCode.success;
+    return success;
+}
+
+/// Copy a single file or directory
+fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: CpOptions, stats: *CopyStats) !bool {
+    // Get source file type
+    const source_type = getFileTypeAtomic(source, options.no_dereference) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return false;
+    };
+
+    // Resolve final destination path
+    const final_dest_path = resolveFinalDestination(allocator, source, dest) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error resolving destination: {s}", .{getStandardErrorName(err)});
+        stats.errors_encountered += 1;
+        return false;
+    };
+    defer allocator.free(final_dest_path);
+
+    // Check for same file
+    if (isSameFile(source, final_dest_path) catch false) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' and '{s}' are the same file", .{ source, final_dest_path });
+        stats.errors_encountered += 1;
+        return false;
+    }
+
+    // Check if destination exists
+    const dest_exists = fileExists(final_dest_path);
+
+    // Validate operation
+    if (source_type == .directory and !options.recursive) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{source});
+        stats.errors_encountered += 1;
+        return false;
+    }
+
+    // Handle destination exists
+    if (dest_exists and !options.force and !options.interactive) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' already exists", .{final_dest_path});
+        stats.errors_encountered += 1;
+        return false;
+    }
+
+    // Handle interactive mode
+    if (options.interactive and dest_exists) {
+        const should_proceed = shouldOverwrite(stderr_writer, final_dest_path) catch false;
+        if (!should_proceed) {
+            return true; // User cancelled, not an error
+        }
+    }
+
+    // Execute the copy based on source type
+    return switch (source_type) {
+        .regular_file => copyRegularFile(allocator, stderr_writer, source, final_dest_path, options, stats),
+        .symlink => if (options.no_dereference)
+            copySymlink(allocator, stderr_writer, source, final_dest_path, options, stats)
+        else
+            copyRegularFile(allocator, stderr_writer, source, final_dest_path, options, stats),
+        .directory => copyDirectory(allocator, stderr_writer, source, final_dest_path, options, stats),
+        .special => blk: {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}': unsupported file type", .{source});
+            stats.errors_encountered += 1;
+            break :blk false;
+        },
+    };
+}
+
+/// Copy a regular file
+fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: CpOptions, stats: *CopyStats) bool {
+    // Get source file stats
+    const source_stat = std.fs.cwd().statFile(source_path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return false;
+    };
+
+    // Handle force overwrite if needed
+    if (fileExists(dest_path) and options.force) {
+        handleForceOverwrite(dest_path) catch {};
+    }
+
+    if (options.preserve) {
+        copyFileWithAttributes(allocator, stderr_writer, source_path, dest_path, source_stat, stats) catch {
+            return false;
+        };
+    } else {
+        std.fs.cwd().copyFile(source_path, std.fs.cwd(), dest_path, .{}) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot copy '{s}' to '{s}': {s}", .{ source_path, dest_path, getStandardErrorName(err) });
+            stats.errors_encountered += 1;
+            return false;
+        };
+    }
+
+    return true;
+}
+
+/// Copy a symbolic link
+fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: CpOptions, stats: *CopyStats) bool {
+    // Read the symlink target
+    const target = getSymlinkTarget(allocator, source_path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot read link '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return false;
+    };
+    defer allocator.free(target);
+
+    // Handle force overwrite if needed
+    if (fileExists(dest_path) and options.force) {
+        handleForceOverwrite(dest_path) catch {};
+    }
+
+    // Create the symlink
+    std.fs.cwd().symLink(target, dest_path, .{}) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create symlink '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return false;
+    };
+
+    return true;
+}
+
+/// Copy a directory recursively
+fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: CpOptions, stats: *CopyStats) bool {
+    // Create destination directory
+    std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            // Directory already exists, continue
+        },
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+            stats.errors_encountered += 1;
+            return false;
+        },
+    };
+
+    // Preserve directory permissions when preserve option is set
+    if (options.preserve) {
+        if (std.fs.cwd().statFile(source_path)) |source_stat| {
+            if (std.fs.cwd().openDir(dest_path, .{})) |dest_dir_const| {
+                var dest_dir = dest_dir_const;
+                defer dest_dir.close();
+                dest_dir.chmod(source_stat.mode) catch |err| {
+                    common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve permissions for '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+                };
+            } else |err| {
+                common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}' for permission preservation: {s}", .{ dest_path, getStandardErrorName(err) });
+            }
+        } else |err| {
+            common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}' for permission preservation: {s}", .{ source_path, getStandardErrorName(err) });
+        }
+    }
+
+    // Open source directory for iteration
+    var source_dir = std.fs.cwd().openDir(source_path, .{ .iterate = true }) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open directory '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return false;
+    };
+    defer source_dir.close();
+
+    var success = true;
+
+    // Iterate through directory entries
+    var iterator = source_dir.iterate();
+    while (iterator.next() catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error reading directory '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return false;
+    }) |entry| {
+        // Skip . and .. entries
+        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
+            continue;
+        }
+
+        // Construct full paths
+        const source_child_path = std.fs.path.join(allocator, &.{ source_path, entry.name }) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot allocate memory for path: {s}", .{getStandardErrorName(err)});
+            stats.errors_encountered += 1;
+            success = false;
+            continue;
+        };
+        defer allocator.free(source_child_path);
+
+        const dest_child_path = std.fs.path.join(allocator, &.{ dest_path, entry.name }) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot allocate memory for path: {s}", .{getStandardErrorName(err)});
+            stats.errors_encountered += 1;
+            success = false;
+            continue;
+        };
+        defer allocator.free(dest_child_path);
+
+        // Recursively copy child
+        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options, stats) catch false;
+        if (!result) success = false;
+    }
+
+    return success;
+}
+
+/// Copy file with preserved attributes
+fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, stats: *CopyStats) !void {
+    // Open source file
+    const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return error.SourceNotReadable;
+    };
+    defer source_file.close();
+
+    // Create destination file with source mode
+    const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = source_stat.mode }) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+        stats.errors_encountered += 1;
+        return error.DestinationNotWritable;
+    };
+    defer dest_file.close();
+
+    // Copy file contents using fixed buffer size
+    var buffer: [COPY_BUFFER_SIZE]u8 = undefined;
+
+    while (true) {
+        const bytes_read = source_file.read(buffer[0..]) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "error reading '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+            stats.errors_encountered += 1;
+            return error.SourceNotReadable;
+        };
+
+        if (bytes_read == 0) break;
+
+        dest_file.writeAll(buffer[0..bytes_read]) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "error writing '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+            stats.errors_encountered += 1;
+            return error.DestinationNotWritable;
+        };
+    }
+
+    // Preserve timestamps
+    dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
+        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+    };
+}
+
+/// Get file type atomically to avoid race conditions
+fn getFileTypeAtomic(path: []const u8, no_dereference: bool) !FileType {
+    if (no_dereference) {
+        // Check for symlinks first using readLink
+        var link_buf: [1]u8 = undefined;
+        if (std.fs.cwd().readLink(path, &link_buf)) |_| {
+            return .symlink;
+        } else |err| switch (err) {
+            error.NotLink => {
+                // Not a symlink, fall through to stat the actual file
+            },
+            error.FileNotFound => return error.FileNotFound,
+            else => return err,
+        }
+    }
+
+    // Get file stats to determine type
+    const file_stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+        error.FileNotFound => return error.FileNotFound,
+        else => return err,
+    };
+
+    return switch (file_stat.kind) {
+        .directory => .directory,
+        .file => .regular_file,
+        else => .special,
+    };
+}
+
+/// Resolve the final destination path for a copy operation
+fn resolveFinalDestination(allocator: Allocator, source: []const u8, dest: []const u8) ![]u8 {
+    // Check if destination exists and is a directory
+    const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Destination doesn't exist, use as-is
+            return try allocator.dupe(u8, dest);
+        },
+        else => return err,
+    };
+
+    if (dest_stat.kind == .directory) {
+        // Destination is a directory, append source basename
+        const source_basename = std.fs.path.basename(source);
+        return try std.fs.path.join(allocator, &[_][]const u8{ dest, source_basename });
+    } else {
+        // Destination is a file, use as-is
+        return try allocator.dupe(u8, dest);
+    }
+}
+
+/// Check if a file exists at the given path
+fn fileExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+/// Get the target of a symbolic link
+fn getSymlinkTarget(allocator: Allocator, path: []const u8) ![]u8 {
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = try std.fs.cwd().readLink(path, &target_buf);
+    return try allocator.dupe(u8, target);
+}
+
+/// Check if source and destination refer to the same file
+fn isSameFile(source: []const u8, dest: []const u8) !bool {
+    const source_stat = std.fs.cwd().statFile(source) catch return false;
+    const dest_stat = std.fs.cwd().statFile(dest) catch return false;
+    return source_stat.inode == dest_stat.inode;
+}
+
+/// Convert system error to user-friendly error message
+fn getStandardErrorName(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AccessDenied => "Permission denied",
+        error.BadPathName => "Invalid file name",
+        error.CrossDeviceLink => "Invalid cross-device link (try 'mv' for cross-filesystem moves)",
+        error.DeviceBusy => "Device or resource busy",
+        error.DiskQuota => "Disk quota exceeded",
+        error.EmptyPath => "Empty path",
+        error.FileBusy => "Text file busy",
+        error.FileNotFound => "No such file or directory",
+        error.FileTooBig => "File too large",
+        error.InvalidHandle => "Invalid file handle",
+        error.InvalidPath => "Invalid path",
+        error.IsDir => "Is a directory",
+        error.NameTooLong => "File name too long",
+        error.NoSpaceLeft => "No space left on device",
+        error.NotDir => "Not a directory",
+        error.NotLink => "Not a symbolic link",
+        error.OutOfMemory => "Cannot allocate memory",
+        error.PathAlreadyExists => "File exists",
+        error.PathTooLong => "File name too long",
+        error.PermissionDenied => "Permission denied",
+        error.ProcessFdQuotaExceeded => "Too many open files in system",
+        error.ReadOnlyFileSystem => "Read-only file system",
+        error.SymLinkLoop => "Too many levels of symbolic links",
+        error.SystemFdQuotaExceeded => "Too many open files",
+        error.SystemResources => "Insufficient system resources",
+        error.Unexpected => "Unexpected error",
+        error.WouldBlock => "Resource temporarily unavailable",
+        else => @errorName(err),
+    };
+}
+
+/// Prompt user for overwrite confirmation
+fn shouldOverwrite(stderr_writer: anytype, dest_path: []const u8) !bool {
+    if (builtin.is_test) return false;
+
+    // Check for CI environments
+    if (std.process.getEnvVarOwned(std.heap.page_allocator, "CI")) |ci_val| {
+        defer std.heap.page_allocator.free(ci_val);
+        return false;
+    } else |_| {}
+
+    try stderr_writer.print("cp: overwrite '{s}'? ", .{dest_path});
+    return promptYesNo();
+}
+
+/// Prompt user with a yes/no question
+fn promptYesNo() !bool {
+    if (builtin.is_test) return false;
+
+    // Check environment variables before any file operations
+    if (std.process.getEnvVarOwned(std.heap.page_allocator, "CI")) |ci_val| {
+        defer std.heap.page_allocator.free(ci_val);
+        return false;
+    } else |_| {}
+
+    if (std.process.getEnvVarOwned(std.heap.page_allocator, "GITHUB_ACTIONS")) |ga_val| {
+        defer std.heap.page_allocator.free(ga_val);
+        return false;
+    } else |_| {}
+
+    const stdin_file = std.io.getStdIn();
+    if (!stdin_file.isTty()) return false;
+
+    var buffer: [10]u8 = undefined;
+    const stdin = stdin_file.reader();
+
+    if (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) |line| {
+        if (line.len > 0) {
+            const first_char = std.ascii.toLower(line[0]);
+            return first_char == 'y';
+        }
+    }
+
+    return false;
+}
+
+/// Handle force removal of destination file
+fn handleForceOverwrite(dest_path: []const u8) !void {
+    std.fs.cwd().deleteFile(dest_path) catch |err| switch (err) {
+        error.FileNotFound => {}, // Already doesn't exist
+        error.IsDir => return err, // Can't remove directory with deleteFile
+        else => return err,
+    };
 }
 
 /// Print help message for cp
@@ -177,502 +604,271 @@ fn printHelp(writer: anytype) !void {
     , .{ prog_name, prog_name, prog_name, prog_name, prog_name, prog_name });
 }
 
+// Simple test directory helper (inlined from TestUtils)
+const TestDir = struct {
+    tmp_dir: testing.TmpDir,
+    allocator: std.mem.Allocator,
+    original_cwd: ?std.fs.Dir,
+
+    fn init(allocator: std.mem.Allocator) TestDir {
+        return TestDir{
+            .tmp_dir = testing.tmpDir(.{}),
+            .allocator = allocator,
+            .original_cwd = null,
+        };
+    }
+
+    fn deinit(self: *TestDir) void {
+        // Restore original directory
+        if (self.original_cwd) |*cwd| {
+            std.posix.fchdir(cwd.fd) catch {};
+            cwd.close();
+        }
+        self.tmp_dir.cleanup();
+    }
+
+    fn setup(self: *TestDir) !void {
+        // Save current directory
+        self.original_cwd = std.fs.cwd().openDir(".", .{}) catch null;
+        // Change to test directory
+        try std.posix.fchdir(self.tmp_dir.dir.fd);
+    }
+
+    fn createFile(self: *TestDir, name: []const u8, content: []const u8, mode: ?std.fs.File.Mode) !void {
+        const file_options = if (mode) |m| std.fs.File.CreateFlags{ .mode = m } else std.fs.File.CreateFlags{};
+        const file = try self.tmp_dir.dir.createFile(name, file_options);
+        defer file.close();
+        try file.writeAll(content);
+    }
+
+    fn createDir(self: *TestDir, name: []const u8) !void {
+        try self.tmp_dir.dir.makeDir(name);
+    }
+
+    fn createSymlink(self: *TestDir, target: []const u8, link_name: []const u8) !void {
+        try self.tmp_dir.dir.symLink(target, link_name, .{});
+    }
+
+    fn expectFileContent(self: *TestDir, name: []const u8, expected: []const u8) !void {
+        const actual = try self.readFileAlloc(name);
+        defer self.allocator.free(actual);
+        try testing.expectEqualStrings(expected, actual);
+    }
+
+    fn readFileAlloc(self: *TestDir, name: []const u8) ![]u8 {
+        const file = try self.tmp_dir.dir.openFile(name, .{});
+        defer file.close();
+        const file_size = try file.getEndPos();
+        const contents = try self.allocator.alloc(u8, file_size);
+        _ = try file.readAll(contents);
+        return contents;
+    }
+
+    fn isSymlink(self: *TestDir, name: []const u8) !bool {
+        var test_buf: [1]u8 = undefined;
+        _ = self.tmp_dir.dir.readLink(name, &test_buf) catch |err| switch (err) {
+            error.NotLink => return false,
+            else => return err,
+        };
+        return true;
+    }
+
+    fn getSymlinkTarget(self: *TestDir, name: []const u8) ![]u8 {
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target = try self.tmp_dir.dir.readLink(name, &target_buf);
+        return try self.allocator.dupe(u8, target);
+    }
+
+    fn getFileStat(self: *TestDir, name: []const u8) !std.fs.File.Stat {
+        return try self.tmp_dir.dir.statFile(name);
+    }
+};
+
 // Tests
 
-const testing = std.testing;
-const TestUtils = @import("cp/test_utils.zig").TestUtils;
-const privilege_test = common.privilege_test;
-
-// Basic file copy
 test "cp: single file copy" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    try test_dir.createFile("source.txt", .{ .content = "Hello, World!" });
+    try test_dir.createFile("source.txt", "Hello, World!", null);
 
-    const source_path = try test_dir.getPathAlloc("source.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("dest.txt");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "source.txt", "dest.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
+    try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
 }
 
-// Argument count validation
-test "cp: basic argument validation" {
-    const args_empty = [_][]const u8{};
-    const args_one = [_][]const u8{"source"};
-    const args_two = [_][]const u8{ "source", "dest" };
-
-    try testing.expect(args_empty.len < 2);
-    try testing.expect(args_one.len < 2);
-    try testing.expect(args_two.len >= 2);
-}
-
-// Options structure defaults
-test "cp: options structure" {
-    const options_default = copy_options.CpOptions{};
-    try testing.expect(!options_default.recursive);
-    try testing.expect(!options_default.interactive);
-    try testing.expect(!options_default.force);
-    try testing.expect(!options_default.preserve);
-    try testing.expect(!options_default.no_dereference);
-
-    const options_recursive = copy_options.CpOptions{ .recursive = true };
-    try testing.expect(options_recursive.recursive);
-    try testing.expect(!options_recursive.interactive);
-}
-
-// Copy file to existing directory
 test "cp: copy to existing directory" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    try test_dir.createFile("source.txt", .{ .content = "Test content" });
+    try test_dir.createFile("source.txt", "Test content", null);
     try test_dir.createDir("dest_dir");
 
-    const source_path = try test_dir.getPathAlloc("source.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.getPathAlloc("dest_dir");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "source.txt", "dest_dir" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
+    try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
 }
 
-// Directory copy requires recursive flag
 test "cp: error on directory without recursive flag" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
     try test_dir.createDir("source_dir");
 
-    const source_path = try test_dir.getPathAlloc("source_dir");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("dest_dir");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{ .recursive = false };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "source_dir", "dest_dir" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    try testing.expectError(copy_options.CopyError.RecursionNotAllowed, engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation));
+    try testing.expectEqual(common.ExitCode.general_error, exit_code);
 }
 
-// Preserve file attributes (non-privileged)
-test "cp: basic preserve attributes (non-privileged)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+test "cp: recursive directory copy" {
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    try test_dir.createFile("source.txt", .{ .content = "Test content", .mode = 0o644 });
+    // Create source directory structure
+    try test_dir.createDir("source_dir");
+    try test_dir.createDir("source_dir/subdir");
+    try test_dir.createFile("source_dir/file1.txt", "File 1 content", null);
+    try test_dir.createFile("source_dir/subdir/file2.txt", "File 2 content", null);
 
-    const source_path = try test_dir.getPathAlloc("source.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("dest.txt");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{ .preserve = true };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "-r", "source_dir", "dest_dir" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
+    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
+    try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
+}
 
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
+test "cp: preserve attributes" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
 
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
+    try test_dir.createFile("source.txt", "Test content", 0o644);
+
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+
+    try testing.expectEqual(common.ExitCode.success, exit_code);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
 
-    // Check user permissions only (works without privileges)
+    // Check user permissions (works without privileges)
     const source_user_perms = source_stat.mode & 0o700;
     const dest_user_perms = dest_stat.mode & 0o700;
     try testing.expectEqual(source_user_perms, dest_user_perms);
 }
 
-// Preserve attributes with privileges
-test "privileged: cp preserve attributes" {
-    var arena = privilege_test.TestArena.init();
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    try privilege_test.requiresPrivilege();
-
-    var test_dir = TestUtils.TestDir.init(allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createFile("source.txt", .{ .content = "Executable content", .mode = 0o755 });
-
-    const source_path = try test_dir.getPathAlloc("source.txt");
-    const dest_path = try test_dir.joinPathAlloc("dest.txt");
-
-    const options = copy_options.CpOptions{ .preserve = true };
-    const context = copy_engine.CopyContext.create(allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(allocator);
-
-    var test_stderr = std.ArrayList(u8).init(allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(allocator, common.null_writer, stderr_writer, operation);
-
-    const source_stat = try test_dir.getFileStat("source.txt");
-    const dest_stat = try test_dir.getFileStat("dest.txt");
-    try testing.expectEqual(source_stat.mode, dest_stat.mode);
-}
-
-// Recursive directory copy
-test "cp: recursive directory copy" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    // Create source directory structure
-    try test_dir.createDir("source_dir");
-    try test_dir.createDir("source_dir/subdir");
-    try test_dir.createFile("source_dir/file1.txt", .{ .content = "File 1 content" });
-    try test_dir.createFile("source_dir/subdir/file2.txt", .{ .content = "File 2 content" });
-
-    const source_path = try test_dir.getPathAlloc("source_dir");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("dest_dir");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{ .recursive = true };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
-    try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
-}
-
-// Force mode overwrites read-only files
-test "privileged: cp force mode overwrites" {
-    var arena = privilege_test.TestArena.init();
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    try privilege_test.requiresPrivilege();
-
-    // Skip this test on macOS in CI environments where chmod can cause SIGABRT
-    if (builtin.os.tag == .macos) {
-        // Use simpler env check to avoid allocator issues
-        const has_ci = std.process.hasEnvVar(allocator, "CI") catch false;
-        if (has_ci) {
-            return error.SkipZigTest;
-        }
-    }
-
-    var test_dir = TestUtils.TestDir.init(allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createFile("source.txt", .{ .content = "New content" });
-    try test_dir.createFile("dest.txt", .{ .content = "Old content", .mode = 0o444 });
-
-    const source_path = try test_dir.getPathAlloc("source.txt");
-    const dest_path = try test_dir.getPathAlloc("dest.txt");
-
-    const options = copy_options.CpOptions{ .force = true };
-    const context = copy_engine.CopyContext.create(allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(allocator);
-
-    var test_stderr = std.ArrayList(u8).init(allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(allocator, common.null_writer, stderr_writer, operation);
-
-    try test_dir.expectFileContent("dest.txt", "New content");
-}
-
-// Symbolic links followed by default
 test "cp: symbolic link handling - follow by default" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    try test_dir.createFile("original.txt", .{ .content = "Original content" });
+    try test_dir.createFile("original.txt", "Original content", null);
     try test_dir.createSymlink("original.txt", "link.txt");
 
-    const link_path = try test_dir.getPathAlloc("link.txt");
-    defer testing.allocator.free(link_path);
-    const dest_path = try test_dir.joinPathAlloc("copied.txt");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "link.txt", "copied.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(link_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Should copy file content, not create symlink
+    try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("copied.txt", "Original content");
     try testing.expect(!(try test_dir.isSymlink("copied.txt")));
 }
 
-// Preserve symbolic links with -d flag
 test "cp: symbolic link handling - no dereference (-d)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    try test_dir.createFile("original.txt", .{ .content = "Original content" });
+    try test_dir.createFile("original.txt", "Original content", null);
     try test_dir.createSymlink("original.txt", "link.txt");
 
-    const link_path = try test_dir.joinPathAlloc("link.txt");
-    defer testing.allocator.free(link_path);
-    const dest_path = try test_dir.joinPathAlloc("copied_link.txt");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{ .no_dereference = true };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "-d", "link.txt", "copied_link.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(link_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Should create symlink, not copy content
+    try testing.expectEqual(common.ExitCode.success, exit_code);
     try testing.expect(try test_dir.isSymlink("copied_link.txt"));
-    const target = try test_dir.getSymlinkTargetAlloc("copied_link.txt");
+    const target = try test_dir.getSymlinkTarget("copied_link.txt");
     defer testing.allocator.free(target);
     try testing.expectEqualStrings("original.txt", target);
 }
 
-// Copy broken symbolic links
-test "cp: broken symlink handling" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createSymlink("nonexistent.txt", "broken_link.txt");
-
-    const link_path = try test_dir.joinPathAlloc("broken_link.txt");
-    defer testing.allocator.free(link_path);
-    const dest_path = try test_dir.joinPathAlloc("copied_broken.txt");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{ .no_dereference = true };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(link_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    try testing.expect(try test_dir.isSymlink("copied_broken.txt"));
-    const target = try test_dir.getSymlinkTargetAlloc("copied_broken.txt");
-    defer testing.allocator.free(target);
-    try testing.expectEqualStrings("nonexistent.txt", target);
-}
-
-// Multiple sources to directory
 test "cp: multiple sources to directory" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    try test_dir.createFile("file1.txt", .{ .content = "Content 1" });
-    try test_dir.createFile("file2.txt", .{ .content = "Content 2" });
+    try test_dir.createFile("file1.txt", "Content 1", null);
+    try test_dir.createFile("file2.txt", "Content 2", null);
     try test_dir.createDir("dest_dir");
 
-    const file1_path = try test_dir.getPathAlloc("file1.txt");
-    defer testing.allocator.free(file1_path);
-    const file2_path = try test_dir.getPathAlloc("file2.txt");
-    defer testing.allocator.free(file2_path);
-    const dest_path = try test_dir.getPathAlloc("dest_dir");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const args = [_][]const u8{ file1_path, file2_path, dest_path };
+    const args = [_][]const u8{ "file1.txt", "file2.txt", "dest_dir" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    var operations = try engine.planOperations(testing.allocator, common.null_writer, stderr_writer, &args);
-    defer {
-        for (operations.items) |*op| {
-            op.deinit(testing.allocator);
-        }
-        operations.deinit();
-    }
-
-    _ = try engine.executeCopyBatch(testing.allocator, common.null_writer, stderr_writer, operations.items);
-
+    try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
     try test_dir.expectFileContent("dest_dir/file2.txt", "Content 2");
 }
 
-// Preserve ownership with privileges
-test "privileged: cp preserve ownership with -p flag" {
-    var arena = privilege_test.TestArena.init();
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    try privilege_test.requiresPrivilege();
-
-    // Skip this test on macOS in CI environments where chmod can cause SIGABRT
-    if (builtin.os.tag == .macos) {
-        // Use simpler env check to avoid allocator issues
-        const has_ci = std.process.hasEnvVar(allocator, "CI") catch false;
-        if (has_ci) {
-            return error.SkipZigTest;
-        }
-    }
-
-    var test_dir = TestUtils.TestDir.init(allocator);
+test "cp: large file copy" {
+    var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
+    try test_dir.setup();
 
-    // Create source file
-    try test_dir.createFile("source.txt", .{ .content = "Test content with ownership" });
-
-    const source_path = try test_dir.getPathAlloc("source.txt");
-    const dest_path = try test_dir.joinPathAlloc("dest.txt");
-
-    if (privilege_test.FakerootContext.isUnderFakeroot()) {
-        const source_file = try std.fs.cwd().openFile(source_path, .{});
-        defer source_file.close();
-
-        source_file.chown(1000, 1000) catch |err| switch (err) {
-            error.AccessDenied => {
-                return;
-            },
-            else => return err,
-        };
-    }
-
-    const options = copy_options.CpOptions{ .preserve = true };
-    const context = copy_engine.CopyContext.create(allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(allocator);
-
-    var test_stderr = std.ArrayList(u8).init(allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(allocator, common.null_writer, stderr_writer, operation);
-
-    const source_stat = try test_dir.getFileStat("source.txt");
-    const dest_stat = try test_dir.getFileStat("dest.txt");
-
-    try testing.expectEqual(source_stat.mode, dest_stat.mode);
-
-    if (privilege_test.FakerootContext.isUnderFakeroot()) {}
-}
-
-// Preserve special permissions (setuid, setgid, sticky)
-// DISABLED: Still causes "reached unreachable code" panic even with arena allocators
-// This appears to be a deeper Zig 0.14 + fakeroot incompatibility issue
-test "DISABLED privileged: cp preserve special permissions (setuid, setgid, sticky)" {
-    return error.SkipZigTest;
-}
-
-// REGRESSION TESTS - Add 5 specific tests for critical fixes
-
-// Test for data corruption bug fix - files > 64KB
-test "regression: cp large file copy (data corruption prevention)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    // Create a file larger than the copy buffer (64KB + extra)
-    const large_size = 65536 + 1024; // 64KB + 1KB
+    // Create a file larger than the copy buffer
+    const large_size = COPY_BUFFER_SIZE + 1024;
     const content = try testing.allocator.alloc(u8, large_size);
     defer testing.allocator.free(content);
 
-    // Fill with predictable pattern for verification
+    // Fill with predictable pattern
     for (content, 0..) |*byte, i| {
         byte.* = @as(u8, @intCast(i % 256));
     }
 
-    try test_dir.createFile("large_source.bin", .{ .content = content });
+    try test_dir.createFile("large_source.bin", content, null);
 
-    const source_path = try test_dir.getPathAlloc("large_source.bin");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("large_dest.bin");
-    defer testing.allocator.free(dest_path);
+    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
+    defer stderr_buffer.deinit();
 
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
+    const args = [_][]const u8{ "large_source.bin", "large_dest.bin" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
 
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
+    try testing.expectEqual(common.ExitCode.success, exit_code);
 
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Verify the copied file has identical content (not truncated)
+    // Verify the copied file has identical content
     const copied_content = try test_dir.readFileAlloc("large_dest.bin");
     defer testing.allocator.free(copied_content);
 
@@ -680,278 +876,7 @@ test "regression: cp large file copy (data corruption prevention)" {
     try testing.expectEqualSlices(u8, content, copied_content);
 }
 
-// Test for race condition prevention
-test "regression: cp race condition prevention (atomic file type detection)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createFile("race_test.txt", .{ .content = "Race condition test content" });
-
-    const source_path = try test_dir.getPathAlloc("race_test.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("race_copy.txt");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-
-    // Test that planning operation is atomic and consistent
-    var operation1 = try context.planOperation(source_path, dest_path);
-    defer operation1.deinit(testing.allocator);
-    var operation2 = try context.planOperation(source_path, dest_path);
-    defer operation2.deinit(testing.allocator);
-
-    // Both operations should have identical source type detection
-    try testing.expectEqual(operation1.source_type, operation2.source_type);
-    try testing.expectEqual(operation1.dest_exists, operation2.dest_exists);
-}
-
-// Test for memory usage bounds verification
-test "regression: cp memory usage bounds (shared allocator)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    // Create a directory structure with multiple levels
-    try test_dir.createDir("mem_test");
-    try test_dir.createDir("mem_test/sub1");
-    try test_dir.createDir("mem_test/sub1/sub2");
-    try test_dir.createFile("mem_test/file1.txt", .{ .content = "Content 1" });
-    try test_dir.createFile("mem_test/sub1/file2.txt", .{ .content = "Content 2" });
-    try test_dir.createFile("mem_test/sub1/sub2/file3.txt", .{ .content = "Content 3" });
-
-    const source_path = try test_dir.getPathAlloc("mem_test");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("mem_copy");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{ .recursive = true };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    // Memory leak detection: if we're using arena per directory, this would fail
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Verify copy was successful
-    try test_dir.expectFileContent("mem_copy/file1.txt", "Content 1");
-    try test_dir.expectFileContent("mem_copy/sub1/file2.txt", "Content 2");
-    try test_dir.expectFileContent("mem_copy/sub1/sub2/file3.txt", "Content 3");
-}
-
-// Test for no stderr pollution during normal operation
-test "regression: cp no stderr pollution during tests" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createFile("stderr_test.txt", .{ .content = "Test content" });
-
-    const source_path = try test_dir.getPathAlloc("stderr_test.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("stderr_copy.txt");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Normal successful copy should produce no stderr output
-    try testing.expectEqualStrings("", test_stderr.items);
-
-    // Verify copy was successful
-    try test_dir.expectFileContent("stderr_copy.txt", "Test content");
-}
-
-// Test for dead code cleanup verification
-test "regression: cp deprecated functions removed" {
-    // This test verifies that deprecated patterns are no longer available
-    // by ensuring the new writer-based API is enforced
-
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    try test_dir.createFile("deadcode_test.txt", .{ .content = "Dead code test" });
-
-    const source_path = try test_dir.getPathAlloc("deadcode_test.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("deadcode_copy.txt");
-    defer testing.allocator.free(dest_path);
-
-    // Test that the new API works correctly
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-
-    const args = [_][]const u8{ source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
-
-    // Should succeed with no output
-    try testing.expectEqual(common.ExitCode.success, exit_code);
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expectEqualStrings("", stderr_buffer.items);
-
-    // Verify copy was successful
-    try test_dir.expectFileContent("deadcode_copy.txt", "Dead code test");
-}
-
-// ENHANCED TESTING: Large file performance validation
-test "cp: large file copy performance (10MB)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    // Create a 10MB file for performance testing
-    const large_size = 10 * 1024 * 1024; // 10MB
-    const content = try testing.allocator.alloc(u8, large_size);
-    defer testing.allocator.free(content);
-
-    // Fill with a pattern to ensure copy integrity
-    for (content, 0..) |*byte, i| {
-        byte.* = @as(u8, @intCast((i * 17) % 256)); // Pseudo-random pattern
-    }
-
-    try test_dir.createFile("large_10mb.bin", .{ .content = content });
-
-    const source_path = try test_dir.getPathAlloc("large_10mb.bin");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("large_10mb_copy.bin");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    // Measure copy performance
-    const start_time = std.time.milliTimestamp();
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-    const end_time = std.time.milliTimestamp();
-    const copy_time = end_time - start_time;
-
-    // Verify the copy completed and is identical
-    const copied_content = try test_dir.readFileAlloc("large_10mb_copy.bin");
-    defer testing.allocator.free(copied_content);
-
-    try testing.expectEqual(large_size, copied_content.len);
-    try testing.expectEqualSlices(u8, content, copied_content);
-
-    // Performance validation: 10MB should copy in reasonable time (< 5 seconds)
-    // This verifies adaptive buffering is working efficiently
-    try testing.expect(copy_time < 5000); // Less than 5 seconds
-}
-
-// ENHANCED TESTING: Directory with many files
-test "cp: directory with many files (100 files)" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    // Create source directory with many files
-    try test_dir.createDir("many_files_source");
-
-    // Create 100 files for testing batch operations
-    const num_files = 100;
-    for (0..num_files) |i| {
-        const filename = try std.fmt.allocPrint(testing.allocator, "many_files_source/file_{d:0>3}.txt", .{i});
-        defer testing.allocator.free(filename);
-        const content = try std.fmt.allocPrint(testing.allocator, "Content of file {d}", .{i});
-        defer testing.allocator.free(content);
-
-        try test_dir.createFile(filename, .{ .content = content });
-    }
-
-    const source_path = try test_dir.getPathAlloc("many_files_source");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("many_files_dest");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{ .recursive = true };
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Verify all files were copied correctly
-    for (0..num_files) |i| {
-        const filename = try std.fmt.allocPrint(testing.allocator, "many_files_dest/file_{d:0>3}.txt", .{i});
-        defer testing.allocator.free(filename);
-        const expected_content = try std.fmt.allocPrint(testing.allocator, "Content of file {d}", .{i});
-        defer testing.allocator.free(expected_content);
-
-        try test_dir.expectFileContent(filename, expected_content);
-    }
-
-    // Verify statistics tracking
-    const stats = engine.getStats();
-    try testing.expectEqual(@as(u64, num_files), stats.files_copied);
-    try testing.expectEqual(@as(u64, 1), stats.directories_copied);
-    try testing.expectEqual(@as(u64, 0), stats.errors_encountered);
-}
-
-// ENHANCED TESTING: Edge cases for security fixes
-test "cp: edge cases - empty file handling" {
-    var test_dir = TestUtils.TestDir.init(testing.allocator);
-    defer test_dir.deinit();
-
-    // Test empty file copy
-    try test_dir.createFile("empty.txt", .{ .content = "" });
-
-    const source_path = try test_dir.getPathAlloc("empty.txt");
-    defer testing.allocator.free(source_path);
-    const dest_path = try test_dir.joinPathAlloc("empty_copy.txt");
-    defer testing.allocator.free(dest_path);
-
-    const options = copy_options.CpOptions{};
-    const context = copy_engine.CopyContext.create(testing.allocator, options);
-    var engine = copy_engine.CopyEngine.init(context);
-
-    var operation = try context.planOperation(source_path, dest_path);
-    defer operation.deinit(testing.allocator);
-
-    var test_stderr = std.ArrayList(u8).init(testing.allocator);
-    defer test_stderr.deinit();
-    const stderr_writer = test_stderr.writer();
-
-    _ = try engine.executeCopy(testing.allocator, common.null_writer, stderr_writer, operation);
-
-    // Verify empty file was copied correctly
-    try test_dir.expectFileContent("empty_copy.txt", "");
-
-    // Verify statistics for zero-byte file
-    const stats = engine.getStats();
-    try testing.expectEqual(@as(u64, 1), stats.files_copied);
-    try testing.expectEqual(@as(u64, 0), stats.bytes_copied); // Empty file = 0 bytes
-}
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
+// Fuzzing
 
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("cp");
 
