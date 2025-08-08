@@ -7,20 +7,35 @@ const common = @import("common");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const privilege_test = common.privilege_test;
+const TestDir = common.test_dir.TestDir;
 
 // Copy buffer size - single 64KB buffer for all operations
 const COPY_BUFFER_SIZE = 64 * 1024;
 
-/// Command-line arguments for cp
-const CpArgs = struct {
-    force: bool = false,
+/// Command-line configuration and runtime options for cp
+const CpConfig = struct {
+    // Command-line only options
     help: bool = false,
+    version: bool = false,
+    positionals: []const []const u8 = &.{},
+
+    // Runtime operation options
+    force: bool = false,
     interactive: bool = false,
     no_dereference: bool = false,
     preserve: bool = false,
     recursive: bool = false,
-    version: bool = false,
-    positionals: []const []const u8 = &.{},
+
+    /// Extract runtime-only configuration
+    pub fn runtime(self: CpConfig) RuntimeOptions {
+        return RuntimeOptions{
+            .force = self.force,
+            .interactive = self.interactive,
+            .no_dereference = self.no_dereference,
+            .preserve = self.preserve,
+            .recursive = self.recursive,
+        };
+    }
 
     pub const meta = .{
         .force = .{ .short = 'f', .desc = "Force overwrite without prompting" },
@@ -33,8 +48,8 @@ const CpArgs = struct {
     };
 };
 
-/// Copy operation options
-const CpOptions = struct {
+/// Runtime options for copy operations
+const RuntimeOptions = struct {
     force: bool = false,
     interactive: bool = false,
     no_dereference: bool = false,
@@ -53,31 +68,6 @@ const FileType = enum {
 /// Copy operation statistics
 const CopyStats = struct {
     errors_encountered: usize = 0,
-};
-
-/// Copy errors specific to cp operations
-const CopyError = error{
-    AccessDenied,
-    CrossDevice,
-    DestinationExists,
-    DestinationIsDirectory,
-    DestinationIsNotDirectory,
-    DestinationNotWritable,
-    EmptyPath,
-    InvalidPath,
-    NoSpaceLeft,
-    OutOfMemory,
-    PathTooLong,
-    PermissionDenied,
-    QuotaExceeded,
-    RecursionNotAllowed,
-    SameFile,
-    SourceIsDirectory,
-    SourceNotFound,
-    SourceNotReadable,
-    UnsupportedFileType,
-    Unexpected,
-    UserCancelled,
 };
 
 /// Main entry point for the cp command
@@ -101,7 +91,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const prog_name = "cp";
 
     // Parse command line arguments
-    const parsed_args = common.argparse.ArgParser.parse(CpArgs, allocator, args) catch |err| {
+    const config = common.argparse.ArgParser.parse(CpConfig, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
@@ -114,46 +104,37 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             else => return err,
         }
     };
-    defer allocator.free(parsed_args.positionals);
+    defer allocator.free(config.positionals);
 
-    if (parsed_args.help) {
+    if (config.help) {
         try printHelp(stdout_writer);
         return common.ExitCode.success;
     }
-    if (parsed_args.version) {
+    if (config.version) {
         try stdout_writer.print("cp ({s}) {s}\n", .{ common.name, common.version });
         return common.ExitCode.success;
     }
 
     // Validate argument count
-    if (parsed_args.positionals.len < 2) {
-        if (parsed_args.positionals.len == 0) {
+    if (config.positionals.len < 2) {
+        if (config.positionals.len == 0) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
             return common.ExitCode.misuse;
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{parsed_args.positionals[0]});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{config.positionals[0]});
             return common.ExitCode.misuse;
         }
     }
 
-    // Create options from parsed arguments
-    const options = CpOptions{
-        .force = parsed_args.force,
-        .interactive = parsed_args.interactive,
-        .no_dereference = parsed_args.no_dereference,
-        .preserve = parsed_args.preserve,
-        .recursive = parsed_args.recursive,
-    };
-
     // Execute copy operations
     var stats = CopyStats{};
-    const success = try executeCopyOperations(allocator, stdout_writer, stderr_writer, parsed_args.positionals, options, &stats);
+    const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime(), &stats);
 
     return if (success) common.ExitCode.success else common.ExitCode.general_error;
 }
 
 /// Execute all copy operations
-fn executeCopyOperations(allocator: Allocator, _: anytype, stderr_writer: anytype, args: []const []const u8, options: CpOptions, stats: *CopyStats) !bool {
+fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, stats: *CopyStats) !bool {
     const dest = args[args.len - 1];
 
     // If multiple sources, destination must be a directory
@@ -181,7 +162,7 @@ fn executeCopyOperations(allocator: Allocator, _: anytype, stderr_writer: anytyp
 }
 
 /// Copy a single file or directory
-fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: CpOptions, stats: *CopyStats) !bool {
+fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, stats: *CopyStats) !bool {
     // Get source file type
     const source_type = getFileTypeAtomic(source, options.no_dereference) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source, getStandardErrorName(err) });
@@ -223,7 +204,7 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
 
     // Handle interactive mode
     if (options.interactive and dest_exists) {
-        const should_proceed = shouldOverwrite(stderr_writer, final_dest_path) catch false;
+        const should_proceed = shouldOverwrite(allocator, stderr_writer, final_dest_path) catch false;
         if (!should_proceed) {
             return true; // User cancelled, not an error
         }
@@ -246,7 +227,7 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
 }
 
 /// Copy a regular file
-fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: CpOptions, stats: *CopyStats) bool {
+fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, stats: *CopyStats) bool {
     // Get source file stats
     const source_stat = std.fs.cwd().statFile(source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source_path, getStandardErrorName(err) });
@@ -275,7 +256,7 @@ fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []
 }
 
 /// Copy a symbolic link
-fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: CpOptions, stats: *CopyStats) bool {
+fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, stats: *CopyStats) bool {
     // Read the symlink target
     const target = getSymlinkTarget(allocator, source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot read link '{s}': {s}", .{ source_path, getStandardErrorName(err) });
@@ -300,7 +281,7 @@ fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []cons
 }
 
 /// Copy a directory recursively
-fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: CpOptions, stats: *CopyStats) bool {
+fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, stats: *CopyStats) bool {
     // Create destination directory
     std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -525,31 +506,31 @@ fn getStandardErrorName(err: anyerror) []const u8 {
 }
 
 /// Prompt user for overwrite confirmation
-fn shouldOverwrite(stderr_writer: anytype, dest_path: []const u8) !bool {
+fn shouldOverwrite(allocator: Allocator, stderr_writer: anytype, dest_path: []const u8) !bool {
     if (builtin.is_test) return false;
 
     // Check for CI environments
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "CI")) |ci_val| {
-        defer std.heap.page_allocator.free(ci_val);
+    if (std.process.getEnvVarOwned(allocator, "CI")) |ci_val| {
+        defer allocator.free(ci_val);
         return false;
     } else |_| {}
 
     try stderr_writer.print("cp: overwrite '{s}'? ", .{dest_path});
-    return promptYesNo();
+    return promptYesNo(allocator);
 }
 
 /// Prompt user with a yes/no question
-fn promptYesNo() !bool {
+fn promptYesNo(allocator: Allocator) !bool {
     if (builtin.is_test) return false;
 
     // Check environment variables before any file operations
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "CI")) |ci_val| {
-        defer std.heap.page_allocator.free(ci_val);
+    if (std.process.getEnvVarOwned(allocator, "CI")) |ci_val| {
+        defer allocator.free(ci_val);
         return false;
     } else |_| {}
 
-    if (std.process.getEnvVarOwned(std.heap.page_allocator, "GITHUB_ACTIONS")) |ga_val| {
-        defer std.heap.page_allocator.free(ga_val);
+    if (std.process.getEnvVarOwned(allocator, "GITHUB_ACTIONS")) |ga_val| {
+        defer allocator.free(ga_val);
         return false;
     } else |_| {}
 
@@ -580,11 +561,10 @@ fn handleForceOverwrite(dest_path: []const u8) !void {
 
 /// Print help message for cp
 fn printHelp(writer: anytype) !void {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
     try writer.print(
-        \\Usage: {s} [OPTION]... [-T] SOURCE DEST
-        \\   or: {s} [OPTION]... SOURCE... DIRECTORY
-        \\   or: {s} [OPTION]... -t DIRECTORY SOURCE...
+        \\Usage: cp [OPTION]... [-T] SOURCE DEST
+        \\   or: cp [OPTION]... SOURCE... DIRECTORY
+        \\   or: cp [OPTION]... -t DIRECTORY SOURCE...
         \\Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
         \\
         \\Options:
@@ -597,92 +577,12 @@ fn printHelp(writer: anytype) !void {
         \\  -V, --version            output version information and exit
         \\
         \\Examples:
-        \\  {s} foo.txt bar.txt    Copy foo.txt to bar.txt
-        \\  {s} -r dir1 dir2       Copy dir1 and its contents to dir2
-        \\  {s} file1 file2 dir/   Copy multiple files into dir/
+        \\  cp foo.txt bar.txt    Copy foo.txt to bar.txt
+        \\  cp -r dir1 dir2       Copy dir1 and its contents to dir2
+        \\  cp file1 file2 dir/   Copy multiple files into dir/
         \\
-    , .{ prog_name, prog_name, prog_name, prog_name, prog_name, prog_name });
+    , .{});
 }
-
-// Simple test directory helper (inlined from TestUtils)
-const TestDir = struct {
-    tmp_dir: testing.TmpDir,
-    allocator: std.mem.Allocator,
-    original_cwd: ?std.fs.Dir,
-
-    fn init(allocator: std.mem.Allocator) TestDir {
-        return TestDir{
-            .tmp_dir = testing.tmpDir(.{}),
-            .allocator = allocator,
-            .original_cwd = null,
-        };
-    }
-
-    fn deinit(self: *TestDir) void {
-        // Restore original directory
-        if (self.original_cwd) |*cwd| {
-            std.posix.fchdir(cwd.fd) catch {};
-            cwd.close();
-        }
-        self.tmp_dir.cleanup();
-    }
-
-    fn setup(self: *TestDir) !void {
-        // Save current directory
-        self.original_cwd = std.fs.cwd().openDir(".", .{}) catch null;
-        // Change to test directory
-        try std.posix.fchdir(self.tmp_dir.dir.fd);
-    }
-
-    fn createFile(self: *TestDir, name: []const u8, content: []const u8, mode: ?std.fs.File.Mode) !void {
-        const file_options = if (mode) |m| std.fs.File.CreateFlags{ .mode = m } else std.fs.File.CreateFlags{};
-        const file = try self.tmp_dir.dir.createFile(name, file_options);
-        defer file.close();
-        try file.writeAll(content);
-    }
-
-    fn createDir(self: *TestDir, name: []const u8) !void {
-        try self.tmp_dir.dir.makeDir(name);
-    }
-
-    fn createSymlink(self: *TestDir, target: []const u8, link_name: []const u8) !void {
-        try self.tmp_dir.dir.symLink(target, link_name, .{});
-    }
-
-    fn expectFileContent(self: *TestDir, name: []const u8, expected: []const u8) !void {
-        const actual = try self.readFileAlloc(name);
-        defer self.allocator.free(actual);
-        try testing.expectEqualStrings(expected, actual);
-    }
-
-    fn readFileAlloc(self: *TestDir, name: []const u8) ![]u8 {
-        const file = try self.tmp_dir.dir.openFile(name, .{});
-        defer file.close();
-        const file_size = try file.getEndPos();
-        const contents = try self.allocator.alloc(u8, file_size);
-        _ = try file.readAll(contents);
-        return contents;
-    }
-
-    fn isSymlink(self: *TestDir, name: []const u8) !bool {
-        var test_buf: [1]u8 = undefined;
-        _ = self.tmp_dir.dir.readLink(name, &test_buf) catch |err| switch (err) {
-            error.NotLink => return false,
-            else => return err,
-        };
-        return true;
-    }
-
-    fn getSymlinkTarget(self: *TestDir, name: []const u8) ![]u8 {
-        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const target = try self.tmp_dir.dir.readLink(name, &target_buf);
-        return try self.allocator.dupe(u8, target);
-    }
-
-    fn getFileStat(self: *TestDir, name: []const u8) !std.fs.File.Stat {
-        return try self.tmp_dir.dir.statFile(name);
-    }
-};
 
 // Tests
 
@@ -876,6 +776,35 @@ test "cp: large file copy" {
     try testing.expectEqualSlices(u8, content, copied_content);
 }
 
+test "privileged: permission preservation with mode bits" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege();
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    // Create source file with specific permissions
+    try test_dir.createFile("source.txt", "Test content", 0o755);
+
+    var stderr_buffer = std.ArrayList(u8).init(allocator);
+    defer stderr_buffer.deinit();
+
+    const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
+    const exit_code = try runUtility(allocator, &args, common.null_writer, stderr_buffer.writer());
+
+    try testing.expectEqual(common.ExitCode.success, exit_code);
+
+    const source_stat = try test_dir.getFileStat("source.txt");
+    const dest_stat = try test_dir.getFileStat("dest.txt");
+
+    // With privilege, full mode bits should be preserved
+    try testing.expectEqual(source_stat.mode & 0o777, dest_stat.mode & 0o777);
+}
+
 // Fuzzing
 
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("cp");
@@ -886,6 +815,6 @@ test "cp fuzz intelligent" {
 }
 
 fn testCpIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    const CpIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(CpArgs, runUtility);
+    const CpIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(CpConfig, runUtility);
     try CpIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

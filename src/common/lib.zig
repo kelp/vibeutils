@@ -57,6 +57,9 @@ pub const unicode = @import("unicode.zig");
 /// Fuzzing utilities and helpers for property-based testing
 pub const fuzz = @import("fuzz.zig");
 
+/// Test directory utilities for managing temporary file systems in tests
+pub const test_dir = @import("test_dir.zig");
+
 /// Version information from build configuration
 pub const version = build_options.version;
 
