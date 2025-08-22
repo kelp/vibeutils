@@ -188,53 +188,21 @@ When implementing a new command, always consult POSIX specifications, OpenBSD, a
 
 ### Testing Patterns
 
-```zig
-// Use testing allocator to detect leaks
-test "description" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
-    
-    // Test against buffer output
-    try function(&args, buffer.writer());
-    try testing.expectEqualStrings("expected", buffer.items);
-}
-```
+**📖 See `docs/TESTING_STRATEGY.md` for comprehensive testing guide**
+**📖 See `docs/ZIG_PATTERNS.md` for Zig-specific patterns**
 
-### Fuzzing (Zig 0.15.1)
+Quick note: Always use `testing.allocator` to detect memory leaks.
 
-**⚠️ Critical Limitations:**
-- **Linux-only** - Returns "no fuzz tests found" on macOS
-- **Cannot select specific tests** - `zig build test --fuzz` runs ALL fuzz tests, gets stuck on first forever
-- **No workaround** - No `--test-filter` support for fuzzing
+### Fuzzing
 
-**Required Pattern (wrapper function needed):**
-```zig
-// At end of src/myutil.zig (NOT separate _fuzz.zig files)
-const enable_fuzz_tests = builtin.os.tag == .linux;
+**📖 See `docs/FUZZING.md` for complete fuzzing guide**
+**📖 See `docs/SELECTIVE_FUZZING.md` for selective fuzzing system**
+**📖 See `docs/FUZZ_ARCHITECTURE.md` for architecture details**
 
-test "myutil fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testWrapper, .{});
-}
-
-fn testWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    const Fuzzer = common.fuzz.createIntelligentFuzzer(MyUtilArgs, runMyUtil);
-    try Fuzzer.testComprehensive(allocator, input, common.null_writer);
-}
-```
-
-**Zig 0.15.1 Changes to Watch For:**
-- I/O changes affect fuzz test output handling
-- ArrayList API changes may affect buffer management
-- Stricter `undefined` handling in comptime code
-- Type introspection API may have changed
-
-**Use Intelligent Fuzzer** (`common/fuzz.zig`):
-- Automatic flag discovery via compile-time reflection
-- Understands flag relationships (force vs interactive, etc.)
-- 70% less code than manual fuzz tests
-
-See `docs/FUZZING.md` for full details.
+Quick notes:
+- Linux-only (returns "no fuzz tests found" on macOS)
+- Use `zig build fuzz-<utility>` for selective fuzzing
+- Fuzz tests go at end of utility files (not separate files)
 
 
 ## Zig 0.15.1 Critical Changes
@@ -255,23 +223,66 @@ See `docs/FUZZING.md` for full details.
 - More restrictive compile-time type coercion
 - Cannot store `type` fields in runtime structs
 
-## Zig Documentation Tools
+## ⚠️ CRITICAL: Dealing with Zig's Rapid Evolution
 
-### context7 MCP Tool
+**Zig 0.15.1 has breaking changes that happened after your training cutoff. You MUST verify everything.**
 
-The `context7` MCP (Model Context Protocol) tool provides instant access to up-to-date documentation for any library, including Zig. 
+### How to Find Current Zig 0.15.1 APIs
 
-**CRITICAL: Zig changes regularly between versions. ALWAYS use context7 liberally when:**
-- Looking up any Zig standard library function or type
-- Checking function signatures, parameters, or error sets
-- Verifying if a feature exists in Zig 0.14.1
-- Understanding memory allocator behavior
-- Implementing any new functionality
-- **Even when you think you know the answer** - Zig's APIs evolve frequently
+**When you encounter a Zig compilation error or need to look up an API:**
 
-Available commands:
-- `mcp__context7__resolve-library-id` - Search for and get the Context7-compatible library ID
-- `mcp__context7__get-library-docs` - Fetch comprehensive documentation with code examples
+1. **First, check the release notes for breaking changes:**
+   ```
+   Use Grep tool:
+   - pattern: "ArrayList" or "Writergate" or the specific API
+   - path: docs/zig-0.15.1-release-notes.md
+   - This file is only 1,620 lines, documents all breaking changes
+   ```
+
+2. **Then look up the current API in the full docs:**
+   ```
+   Use Grep tool:
+   - pattern: "std\.ArrayList" or "std\.fs\.File" or specific function
+   - path: docs/zig-0.15.1-docs.md  
+   - This file is 15,664 lines but Grep with -C flag gives context
+   ```
+
+3. **Find working examples in our codebase:**
+   ```
+   Use Grep tool:
+   - pattern: "initCapacity" or "writer\(&" or the new pattern
+   - path: src/
+   - Look especially at src/basename.zig (already migrated)
+   ```
+
+### Example: When you see "no member named 'init'" error
+
+```
+1. Grep "ArrayList.*init" in docs/zig-0.15.1-release-notes.md
+   → Find: "ArrayList: make unmanaged the default"
+   
+2. Grep "ArrayList" in src/basename.zig
+   → Find: "std.ArrayList(u8).initCapacity(allocator, 0)"
+   
+3. Now you know: init() → initCapacity(allocator, 0)
+```
+
+### Quick Reference for Common Breaking Changes
+
+Instead of remembering these, use Grep to find them:
+- **I/O changes**: Grep "Writergate" in release notes
+- **ArrayList changes**: Grep "ArrayList: make unmanaged" in release notes  
+- **Removed features**: Grep "usingnamespace|async|BoundedArray" in release notes
+
+### Documentation Priority Order
+
+1. **Compiler errors are truth** - If it doesn't compile, the API changed
+2. **docs/zig-0.15.1-release-notes.md** - Explains what changed and why
+3. **docs/zig-0.15.1-docs.md** - Shows current API syntax
+4. **src/basename.zig** - Working example of migrated code
+5. **docs/ZIG_0_15_1_WRITER_MIGRATION.md** - Our migration guide
+
+**Remember: You have Grep tool. Use it liberally on these docs rather than guessing!**
 
 #### Project Zig Version
 
@@ -524,40 +535,22 @@ When implementing utilities:
 3. Don't try to be smarter than the OS
 4. Focus on correctness, not security
 
-## Writing Style Guidelines
+## Documentation References
 
-Follow "The Elements of Style" principles for all documentation and code comments:
+**📖 Core Documentation:**
+- `docs/ZIG_PATTERNS.md` - Zig idioms and patterns
+- `docs/ZIG_STYLE_GUIDE.md` - Code style conventions
+- `docs/STD_LIBRARY_SUMMARY.md` - Zig std library reference
+- `docs/TESTING_STRATEGY.md` - Testing patterns and practices
+- `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
+- `docs/ZIG_0_15_1_WRITER_MIGRATION.md` - I/O migration guide
 
-### Core Principles
-- **Brevity**: Omit needless words - every word should serve a purpose
-- **Active voice**: Prefer "The function validates input" over "Input is validated by the function"
-- **Avoid repetition**: State information once in the most logical location
-- **Parallel construction**: Keep lists and series grammatically consistent
-- **Positive form**: Say what something is, not what it isn't
-- **Specific over general**: Use concrete, specific language instead of abstract terms
+**📖 Fuzzing Documentation:**
+- `docs/FUZZING.md` - Main fuzzing guide
+- `docs/SELECTIVE_FUZZING.md` - Selective fuzzing system
+- `docs/FUZZ_ARCHITECTURE.md` - Fuzzing architecture
 
-### List Organization
-- **Alphabetize lists** unless there's a logical reason not to (e.g., order of operations, priority)
-- Examples where alphabetization is appropriate:
-  - Import statements (after grouping by std/third-party/local)
-  - Error set members
-  - Struct field lists (unless grouped by functionality)
-  - Command-line flag documentation
-- Examples where order matters:
-  - Step-by-step instructions
-  - Priority-based lists
-  - Chronological sequences
-  - Build dependencies
-
-### Avoiding Repetition
-- **Single source of truth**: State facts once in the most appropriate location
-- **Cross-reference don't duplicate**: Link to information rather than restating it
-- **Maintenance burden**: Every repeated fact must be updated in multiple places
-- Examples of unnecessary repetition:
-  - Stating test count in multiple sections
-  - Listing features in both overview and details
-  - Repeating build commands in different contexts
-  - Duplicating flag descriptions across documents
+**⚠️ IMPORTANT: Use grep/search to find examples in these docs**
 
 ### Documentation Examples
 
@@ -623,102 +616,11 @@ pub fn runUtil(allocator: Allocator, args: []const []const u8,
 - Pre-allocate buffers when size is known
 - Consider parallel processing for independent operations (e.g., multiple files)
 
-### Idiomatic Zig Practices
+### Code Style and Patterns
 
-#### Documentation Comments
-Zig uses special doc comments (`///`) for generating documentation. Follow these guidelines:
-
-**Required Documentation:**
-- All public functions, types, and constants
-- Error sets with descriptions of when each error occurs
-- Complex algorithms or non-obvious implementation details
-- Parameters and return values for public functions
-
-**Documentation Format:**
-```zig
-/// Process file at given path and return its content.
-/// The file is read entirely into memory using the provided allocator.
-/// Returns error if file cannot be read or memory allocation fails.
-pub fn processFile(allocator: Allocator, path: []const u8, options: FileOptions) ![]u8 {
-    // Implementation
-}
-
-/// Copy file attributes including permissions and timestamps.
-/// Requires appropriate permissions on both source and destination.
-pub fn copyAttributes(source: []const u8, dest: []const u8) !void {
-    // Implementation
-}
-
-/// Configuration options for file processing.
-pub const FileOptions = struct {
-    /// Skip files larger than this size in bytes (0 = no limit)
-    max_size: usize = 0,
-    
-    /// Follow symbolic links when traversing directories
-    follow_symlinks: bool = true,
-    
-    /// Validation mode for input data
-    validation: enum {
-        /// No validation performed
-        none,
-        /// Basic syntax checking
-        basic,
-        /// Full validation with schema
-        strict,
-    } = .basic,
-};
-```
-
-**Best Practices:**
-- Start with a brief sentence that could stand alone
-- Use present tense ("Returns" not "Will return")
-- Document assumptions and preconditions
-- Include examples for non-trivial usage
-- Cross-reference related functions with `see also:`
-
-#### Common Zig Idioms
-- **Comptime**: Use `comptime` for compile-time computation and type generation
-- **Error Sets**: Define explicit error sets for functions that can fail
-- **Optionals**: Use `?T` for nullable values, not sentinel values
-- **Slices**: Prefer slices (`[]const u8`) over pointers for string/array parameters
-- **Allocators**: Always accept an allocator parameter for functions that allocate
-- **Defer**: Use `defer` for cleanup immediately after resource acquisition
-- **Error Unions**: Return `!T` for fallible operations, not success/failure booleans
-
-```zig
-// Good: Explicit error set
-const FileError = error{
-    NotFound,
-    PermissionDenied,
-    DiskFull,
-};
-
-// Good: Slice parameter with clear ownership
-pub fn processFile(allocator: Allocator, path: []const u8) FileError!void {
-    const file = try openFile(path);
-    defer file.close();  // Cleanup immediately after acquisition
-    
-    // Process file...
-}
-
-// Good: Optional for nullable value
-pub fn findChar(str: []const u8, char: u8) ?usize {
-    for (str, 0..) |c, i| {
-        if (c == char) return i;
-    }
-    return null;
-}
-```
-
-#### Build System Integration
-For documentation generation, ensure all public APIs have doc comments:
-```bash
-# Generate documentation
-zig build docs
-
-# Documentation will be in zig-out/docs/
-# Can be served locally or published to GitHub Pages
-```
+**📖 See `docs/ZIG_STYLE_GUIDE.md` for complete style guide**
+**📖 See `docs/ZIG_PATTERNS.md` for idiomatic Zig patterns**
+**📖 See `docs/STD_LIBRARY_SUMMARY.md` for std library reference**
 
 ### Zig Style Guide Quick Reference
 
