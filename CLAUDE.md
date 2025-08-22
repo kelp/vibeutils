@@ -275,7 +275,7 @@ Available commands:
 
 #### Project Zig Version
 
-This project requires **Zig 0.15.1** (update `build.zig.zon` when upgrading). When looking up documentation, ensure compatibility with this version.
+This project requires **Zig 0.15.1** (minimum version set in `build.zig.zon`). When looking up documentation, ensure compatibility with this version.
 
 **⚠️ CRITICAL: Zig 0.15.1 Breaking Changes ("Writergate")**
 
@@ -300,6 +300,52 @@ defer stdout.flush() catch {};
 
 **See `docs/ZIG_0_15_1_WRITER_MIGRATION.md` for complete migration guide.**
 
+### Critical Zig 0.15.1 Migration Notes (From Real Experience)
+
+#### ArrayList API Changes
+ArrayList is now "unmanaged" by default, requiring allocator parameters everywhere:
+
+```zig
+// OLD (Zig 0.14.1)
+var list = std.ArrayList(u8).init(allocator);
+defer list.deinit();
+try list.append(value);
+const slice = try list.toOwnedSlice();
+const writer = list.writer();
+
+// NEW (Zig 0.15.1) - allocator required for ALL operations
+var list = try std.ArrayList(u8).initCapacity(allocator, 0);
+defer list.deinit(allocator);  // Note: allocator parameter
+try list.append(allocator, value);  // Note: allocator parameter
+const slice = try list.toOwnedSlice(allocator);  // Note: allocator parameter
+const writer = list.writer(allocator);  // Note: allocator parameter
+```
+
+#### Migration Order (Learned from basename.zig)
+1. **Fix main() first** - Update I/O patterns
+2. **Fix ArrayList usage** - Add allocator parameters everywhere
+3. **Fix tests** - Update test helpers and ArrayList usage
+4. **Fix common libraries** - argparse.zig, test_utils.zig, etc.
+
+#### Common Compilation Errors and Fixes
+```zig
+// ERROR: struct 'Io' has no member named 'getStdOut'
+// OLD: std.io.getStdOut()
+// NEW: std.fs.File.stdout()
+
+// ERROR: struct 'array_list.Aligned' has no member named 'init'
+// OLD: std.ArrayList(T).init(allocator)
+// NEW: std.ArrayList(T).initCapacity(allocator, 0)
+
+// ERROR: member function expected 1 argument(s), found 0
+// OLD: list.deinit()
+// NEW: list.deinit(allocator)
+
+// ERROR: member function expected 1 argument(s), found 0
+// OLD: list.writer()
+// NEW: list.writer(allocator)
+```
+
 #### Recommended Zig Documentation Sources
 
 When working with Zig, use the following library IDs for best results:
@@ -309,8 +355,8 @@ When working with Zig, use the following library IDs for best results:
 - `/ziglang/zig` - Official Zig documentation (279 code snippets, version 0.14.1 available)
 
 For version-specific documentation:
-- Some libraries support version queries (e.g., `/ziglang/zig/0.14.1`)
-- When in doubt, check the documentation source to ensure it covers Zig 0.14.1 features
+- Some libraries support version queries (e.g., `/ziglang/zig/0.15.1`)
+- When in doubt, check the documentation source to ensure it covers Zig 0.15.1 features
 
 #### Example Usage
 
@@ -324,7 +370,7 @@ When implementing file operations:
 
 // For version-specific documentation (when available):
 // Use: mcp__context7__get-library-docs with:
-//   - context7CompatibleLibraryID: "/ziglang/zig/0.14.1"
+//   - context7CompatibleLibraryID: "/ziglang/zig/0.15.1"
 //   - topic: "std.fs"
 
 // For memory management:
@@ -334,12 +380,12 @@ When implementing file operations:
 // - topic: "std.process" for process operations
 // - topic: "std.io" for I/O operations
 // - topic: "builtin" for builtin functions
-// - topic: "std.heap" for heap allocators (note: SmpAllocator is recommended in 0.14.1)
+// - topic: "std.heap" for heap allocators
 ```
 
 **Best Practices for Using context7:**
 1. **Check early and often** - Don't wait until you're stuck
-2. **Verify assumptions** - What worked in Zig 0.13 may have changed in 0.14.1
+2. **Verify assumptions** - What worked in Zig 0.14 may have changed in 0.15.1
 3. **Look for examples** - Request code snippets showing actual usage
 4. **Check multiple sources** - Try different library IDs if needed
 5. **Be specific with topics** - Use precise module names like "std.fs.File" not just "file"

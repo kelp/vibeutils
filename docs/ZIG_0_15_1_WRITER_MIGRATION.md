@@ -244,9 +244,56 @@ These no longer exist in 0.15.1:
 4. **New Features**: Support for peek, discard, vector operations
 5. **Simpler Code**: Less generic complexity
 
+## ArrayList API Changes
+
+Zig 0.15.1 also changed ArrayList to be "unmanaged" by default, requiring allocator parameters:
+
+### Key Changes:
+```zig
+// OLD (Zig 0.14.1)
+var list = std.ArrayList(u8).init(allocator);
+defer list.deinit();
+list.append(value);
+list.toOwnedSlice();
+list.writer();
+
+// NEW (Zig 0.15.1)
+var list = try std.ArrayList(u8).initCapacity(allocator, 0);
+defer list.deinit(allocator);
+try list.append(allocator, value);
+list.toOwnedSlice(allocator);
+list.writer(allocator);
+```
+
+### Test Helper Pattern:
+```zig
+// For test helpers that use ArrayLists
+const TestBuffers = struct {
+    stdout: std.ArrayList(u8),
+    stderr: std.ArrayList(u8),
+
+    fn init() TestBuffers {
+        return TestBuffers{
+            .stdout = std.ArrayList(u8).initCapacity(testing.allocator, 0) catch unreachable,
+            .stderr = std.ArrayList(u8).initCapacity(testing.allocator, 0) catch unreachable,
+        };
+    }
+
+    fn deinit(self: *TestBuffers) void {
+        self.stdout.deinit(testing.allocator);
+        self.stderr.deinit(testing.allocator);
+    }
+
+    fn stdoutWriter(self: *TestBuffers) @TypeOf(self.stdout.writer(testing.allocator)) {
+        return self.stdout.writer(testing.allocator);
+    }
+};
+```
+
 ## Migration Checklist for vibeutils
 
-- [ ] Update all `main()` functions to use buffered writers
+- [x] Update all `main()` functions to use buffered writers
+- [x] Fix ArrayList API usage throughout codebase
 - [ ] Update all file reading code to use buffered readers
 - [ ] Update all test code to handle new writer pattern
 - [ ] Add explicit flush calls where needed
@@ -262,47 +309,48 @@ These no longer exist in 0.15.1:
 3. **Wrong buffer size**: Too small causes frequent flushes, too large wastes memory
 4. **Not using `&writer.interface`**: Pass the interface pointer, not the writer struct
 
-## Example: Complete Migration
+## Example: Complete Migration (Real basename.zig)
 
-**Before (echo.zig main):**
+**Before (basename.zig main - Zig 0.14.1):**
 ```zig
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-    
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
-    
-    const exit_code = try runEcho(allocator, args[1..], stdout_writer, stderr_writer);
+
+    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
+
+    const exit_code = try runBasename(allocator, args[1..], stdout, stderr);
     std.process.exit(exit_code);
 }
 ```
 
-**After:**
+**After (basename.zig main - Zig 0.15.1):**
 ```zig
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-    
+
+    // Set up buffered writers for stdout and stderr
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.io.getStdOut().writer(&stdout_buffer);
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
     
     var stderr_buffer: [4096]u8 = undefined;
-    var stderr_writer = std.io.getStdErr().writer(&stderr_buffer);
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
+
+    const exit_code = try runBasename(allocator, args[1..], stdout, stderr);
     
-    const exit_code = try runEcho(allocator, args[1..], stdout, stderr);
-    
-    // Flush before exit
+    // CRITICAL: Flush buffers before exit!
     stdout.flush() catch {};
     stderr.flush() catch {};
     

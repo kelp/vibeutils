@@ -49,8 +49,8 @@ pub const ArgParser = struct {
     /// Returns a parsed struct with all fields populated according to the command-line arguments
     pub fn parse(comptime T: type, allocator: std.mem.Allocator, args: []const []const u8) ParseError!T {
         var result: T = .{};
-        var positionals = std.ArrayList([]const u8).init(allocator);
-        defer positionals.deinit();
+        var positionals = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        defer positionals.deinit(allocator);
 
         const type_info = @typeInfo(T);
         if (type_info != .@"struct") {
@@ -66,7 +66,7 @@ pub const ArgParser = struct {
                 // Everything after -- is positional
                 i += 1;
                 while (i < args.len) : (i += 1) {
-                    try positionals.append(args[i]);
+                    try positionals.append(allocator, args[i]);
                 }
                 break;
             }
@@ -145,7 +145,7 @@ pub const ArgParser = struct {
                 }
             } else {
                 // Positional argument
-                try positionals.append(arg);
+                try positionals.append(allocator, arg);
             }
         }
 
@@ -153,7 +153,7 @@ pub const ArgParser = struct {
         inline for (type_info.@"struct".fields) |field| {
             if (comptime std.mem.eql(u8, field.name, "positionals")) {
                 if (field.type == []const []const u8) {
-                    const positionals_slice = try positionals.toOwnedSlice();
+                    const positionals_slice = try positionals.toOwnedSlice(allocator);
                     @field(result, "positionals") = positionals_slice;
                 }
             }
@@ -164,8 +164,8 @@ pub const ArgParser = struct {
 
     /// Parse arguments from process.args() iterator
     pub fn parseProcess(comptime T: type, allocator: std.mem.Allocator) !T {
-        var args = std.ArrayList([]const u8).init(allocator);
-        defer args.deinit();
+        var args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        defer args.deinit(allocator);
 
         var iter = try std.process.argsWithAllocator(allocator);
         defer iter.deinit();
@@ -174,7 +174,7 @@ pub const ArgParser = struct {
         _ = iter.next();
 
         while (iter.next()) |arg| {
-            try args.append(arg);
+            try args.append(allocator, arg);
         }
 
         return parse(T, allocator, args.items);
@@ -599,10 +599,10 @@ test "print help" {
         ;
     };
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
-    try ArgParser.printHelp(TestArgs, "echo", buffer.writer());
+    try ArgParser.printHelp(TestArgs, "echo", buffer.writer(testing.allocator));
     const output = buffer.items;
 
     // Check for expected content
@@ -619,10 +619,10 @@ test "auto-generated help" {
         all: bool = false,
     };
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer());
+    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
     const output = buffer.items;
 
     // Check auto-generated content
@@ -785,10 +785,10 @@ test "string option help generation" {
         verbose: bool = false,
     };
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer());
+    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
     const output = buffer.items;
 
     // Check that string options show VALUE indicator
@@ -941,10 +941,10 @@ test "custom metadata" {
     }
 
     // Test help generation with custom metadata
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer());
+    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
     const output = buffer.items;
 
     // Check custom descriptions
@@ -1104,10 +1104,10 @@ test "help text for all types" {
         };
     };
 
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer());
+    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
     const output = buffer.items;
 
     // Check all types are properly displayed

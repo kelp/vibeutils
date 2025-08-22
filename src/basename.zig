@@ -111,10 +111,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const exit_code = try runBasename(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -203,14 +214,14 @@ const TestBuffers = struct {
 
     fn init() TestBuffers {
         return TestBuffers{
-            .stdout = std.ArrayList(u8).init(testing.allocator),
-            .stderr = std.ArrayList(u8).init(testing.allocator),
+            .stdout = std.ArrayList(u8).initCapacity(testing.allocator, 0) catch unreachable,
+            .stderr = std.ArrayList(u8).initCapacity(testing.allocator, 0) catch unreachable,
         };
     }
 
     fn deinit(self: *TestBuffers) void {
-        self.stdout.deinit();
-        self.stderr.deinit();
+        self.stdout.deinit(testing.allocator);
+        self.stderr.deinit(testing.allocator);
     }
 
     fn clear(self: *TestBuffers) void {
@@ -218,12 +229,12 @@ const TestBuffers = struct {
         self.stderr.clearRetainingCapacity();
     }
 
-    fn stdoutWriter(self: *TestBuffers) @TypeOf(self.stdout.writer()) {
-        return self.stdout.writer();
+    fn stdoutWriter(self: *TestBuffers) @TypeOf(self.stdout.writer(testing.allocator)) {
+        return self.stdout.writer(testing.allocator);
     }
 
-    fn stderrWriter(self: *TestBuffers) @TypeOf(self.stderr.writer()) {
-        return self.stderr.writer();
+    fn stderrWriter(self: *TestBuffers) @TypeOf(self.stderr.writer(testing.allocator)) {
+        return self.stderr.writer(testing.allocator);
     }
 
     fn expectStdout(self: *TestBuffers, expected: []const u8) !void {
@@ -236,15 +247,15 @@ const TestBuffers = struct {
 };
 
 test "basename basic functionality" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Basic case: strip directory
     const args1 = [_][]const u8{"/usr/bin/tail"};
-    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expectEqualStrings("tail\n", stdout_buffer.items);
     try testing.expectEqualStrings("", stderr_buffer.items);
@@ -254,22 +265,22 @@ test "basename basic functionality" {
 
     // With suffix removal
     const args2 = [_][]const u8{ "file.txt", ".txt" };
-    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expectEqualStrings("file\n", stdout_buffer.items);
     try testing.expectEqualStrings("", stderr_buffer.items);
 }
 
 test "basename edge cases" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Root directory
     const args1 = [_][]const u8{"/"};
-    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expectEqualStrings("/\n", stdout_buffer.items);
 
@@ -277,7 +288,7 @@ test "basename edge cases" {
 
     // Double slash (should return /)
     const args2 = [_][]const u8{"//"};
-    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expectEqualStrings("/\n", stdout_buffer.items);
 
@@ -285,7 +296,7 @@ test "basename edge cases" {
 
     // No slash (relative path)
     const args3 = [_][]const u8{"filename"};
-    const result3 = try runBasename(testing.allocator, &args3, stdout_buffer.writer(), stderr_buffer.writer());
+    const result3 = try runBasename(testing.allocator, &args3, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result3);
     try testing.expectEqualStrings("filename\n", stdout_buffer.items);
 
@@ -293,21 +304,21 @@ test "basename edge cases" {
 
     // Trailing slashes
     const args4 = [_][]const u8{"/usr/bin/"};
-    const result4 = try runBasename(testing.allocator, &args4, stdout_buffer.writer(), stderr_buffer.writer());
+    const result4 = try runBasename(testing.allocator, &args4, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result4);
     try testing.expectEqualStrings("bin\n", stdout_buffer.items);
 }
 
 test "basename suffix removal" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Remove .txt suffix
     const args1 = [_][]const u8{ "document.txt", ".txt" };
-    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expectEqualStrings("document\n", stdout_buffer.items);
 
@@ -315,7 +326,7 @@ test "basename suffix removal" {
 
     // Suffix doesn't match - no removal
     const args2 = [_][]const u8{ "document.pdf", ".txt" };
-    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expectEqualStrings("document.pdf\n", stdout_buffer.items);
 
@@ -323,7 +334,7 @@ test "basename suffix removal" {
 
     // Suffix is entire basename - no removal (GNU behavior)
     const args3 = [_][]const u8{ ".txt", ".txt" };
-    const result3 = try runBasename(testing.allocator, &args3, stdout_buffer.writer(), stderr_buffer.writer());
+    const result3 = try runBasename(testing.allocator, &args3, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result3);
     try testing.expectEqualStrings(".txt\n", stdout_buffer.items);
 
@@ -331,21 +342,21 @@ test "basename suffix removal" {
 
     // Empty suffix - no removal
     const args4 = [_][]const u8{ "file.txt", "" };
-    const result4 = try runBasename(testing.allocator, &args4, stdout_buffer.writer(), stderr_buffer.writer());
+    const result4 = try runBasename(testing.allocator, &args4, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result4);
     try testing.expectEqualStrings("file.txt\n", stdout_buffer.items);
 }
 
 test "basename multiple files (-a flag)" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Multiple files without suffix
     const args1 = [_][]const u8{ "-a", "/usr/bin/ls", "/home/user/file.txt", "simple" };
-    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expectEqualStrings("ls\nfile.txt\nsimple\n", stdout_buffer.items);
 
@@ -353,18 +364,18 @@ test "basename multiple files (-a flag)" {
 
     // Multiple files with suffix removal
     const args2 = [_][]const u8{ "-a", "-s", ".txt", "file1.txt", "file2.txt", "file3.pdf" };
-    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expectEqualStrings("file1\nfile2\nfile3.pdf\n", stdout_buffer.items);
 }
 
 test "basename zero delimiter (-z flag)" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     // Single file with zero delimiter
     const args1 = [_][]const u8{ "-z", "/usr/bin/test" };
-    const result1 = try runBasename(testing.allocator, &args1, buffer.writer(), common.null_writer);
+    const result1 = try runBasename(testing.allocator, &args1, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expectEqual(@as(usize, 5), buffer.items.len);
     try testing.expectEqualStrings("test", buffer.items[0..4]);
@@ -374,7 +385,7 @@ test "basename zero delimiter (-z flag)" {
 
     // Multiple files with zero delimiter
     const args2 = [_][]const u8{ "-az", "file1", "file2" };
-    const result2 = try runBasename(testing.allocator, &args2, buffer.writer(), common.null_writer);
+    const result2 = try runBasename(testing.allocator, &args2, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expectEqual(@as(usize, 12), buffer.items.len);
     try testing.expectEqualStrings("file1", buffer.items[0..5]);
@@ -384,15 +395,15 @@ test "basename zero delimiter (-z flag)" {
 }
 
 test "basename error handling" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     // No arguments provided
     const args1 = [_][]const u8{};
-    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result1);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 
@@ -401,18 +412,18 @@ test "basename error handling" {
 
     // Too many arguments in standard mode
     const args2 = [_][]const u8{ "path1", "suffix", "extra" };
-    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result2);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
 }
 
 test "basename help and version" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     // Test help
     const args1 = [_][]const u8{"--help"};
-    const result1 = try runBasename(testing.allocator, &args1, buffer.writer(), common.null_writer);
+    const result1 = try runBasename(testing.allocator, &args1, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: basename") != null);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "--multiple") != null);
@@ -421,7 +432,7 @@ test "basename help and version" {
 
     // Test version
     const args2 = [_][]const u8{"--version"};
-    const result2 = try runBasename(testing.allocator, &args2, buffer.writer(), common.null_writer);
+    const result2 = try runBasename(testing.allocator, &args2, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "basename") != null);
     try testing.expect(std.mem.indexOf(u8, buffer.items, common.name) != null);
@@ -444,15 +455,15 @@ test "computeBasename function directly" {
 }
 
 test "basename complex path cases" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Multiple trailing slashes
     const args1 = [_][]const u8{"/usr/bin///"};
-    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result1);
     try testing.expectEqualStrings("bin\n", stdout_buffer.items);
 
@@ -460,7 +471,7 @@ test "basename complex path cases" {
 
     // Complex path with many components
     const args2 = [_][]const u8{"/very/long/path/to/some/file.extension"};
-    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result2);
     try testing.expectEqualStrings("file.extension\n", stdout_buffer.items);
 
@@ -468,21 +479,21 @@ test "basename complex path cases" {
 
     // Path with dots but not at end
     const args3 = [_][]const u8{ "/path/to/file.name.ext", ".ext" };
-    const result3 = try runBasename(testing.allocator, &args3, stdout_buffer.writer(), stderr_buffer.writer());
+    const result3 = try runBasename(testing.allocator, &args3, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result3);
     try testing.expectEqualStrings("file.name\n", stdout_buffer.items);
 }
 
 test "basename with -s flag (GNU extension)" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Using -s flag (should imply -a)
     const args = [_][]const u8{ "-s", ".c", "hello.c", "world.c", "test.h" };
-    const result = try runBasename(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runBasename(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\ntest.h\n", stdout_buffer.items);
 }
