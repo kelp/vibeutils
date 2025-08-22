@@ -101,10 +101,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -683,17 +694,17 @@ test "privileged: applyModeToFile basic functionality" {
             defer test_file.close();
 
             // Test applying mode 644
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const mode = Mode.fromOctal(0o644);
             const options = ChmodOptions{ .verbose = true };
 
             const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, test_file_path);
 
-            try applyModeToFile(inner_allocator, abs_path, mode, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try applyModeToFile(inner_allocator, abs_path, mode, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             // Verify the file mode changed
             const stat = try std.fs.cwd().statFile(abs_path);
@@ -719,25 +730,25 @@ test "privileged: chmodFiles handles multiple files" {
             defer tmp_dir.cleanup();
 
             const test_files_rel = [_][]const u8{ "file1.txt", "file2.txt" };
-            var test_files_abs = std.ArrayList([]u8).init(inner_allocator);
-            defer test_files_abs.deinit();
+            var test_files_abs = try std.ArrayList([]u8).initCapacity(inner_allocator, 0);
+            defer test_files_abs.deinit(inner_allocator);
 
             for (test_files_rel) |filename| {
                 const file = try tmp_dir.dir.createFile(filename, .{});
                 file.close();
 
                 const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, filename);
-                try test_files_abs.append(abs_path);
+                try test_files_abs.append(inner_allocator, abs_path);
             }
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const options = ChmodOptions{ .changes_only = true };
 
-            try chmodFiles(inner_allocator, "755", test_files_abs.items, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try chmodFiles(inner_allocator, "755", test_files_abs.items, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             // Verify both files were processed
             for (test_files_abs.items) |abs_path| {
@@ -749,16 +760,16 @@ test "privileged: chmodFiles handles multiple files" {
 }
 
 test "chmodFiles handles nonexistent files gracefully" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
     const options = ChmodOptions{ .quiet = true };
 
     // Should not crash on nonexistent files
-    try chmodFiles(testing.allocator, "644", &nonexistent_files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+    try chmodFiles(testing.allocator, "644", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options);
 
     // Should produce no output due to quiet mode
     try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
@@ -781,15 +792,15 @@ test "privileged: chmod integration test with octal mode" {
             const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
             defer test_file.close();
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, test_file_path);
 
             const args = [_][]const u8{ "755", abs_path };
-            try chmod(inner_allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+            try chmod(inner_allocator, &args, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
 
             // Verify the mode was applied
             const stat = try std.fs.cwd().statFile(abs_path);
@@ -998,15 +1009,15 @@ test "privileged: recursive chmod on directory structure" {
 
             const abs_root = try tmp_dir.dir.realpathAlloc(inner_allocator, ".");
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const options = ChmodOptions{ .recursive = true, .verbose = true };
             const files = [_][]const u8{abs_root};
 
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             // Basic verification
             try testing.expect(stdout_buffer.items.len > 0); // Should have verbose output
@@ -1032,15 +1043,15 @@ test "privileged: recursive flag processes files and directories" {
 
             const abs_dir = try tmp_dir.dir.realpathAlloc(inner_allocator, "testdir");
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const options = ChmodOptions{ .recursive = true, .changes_only = true };
             const files = [_][]const u8{abs_dir};
 
-            try chmodFiles(inner_allocator, "644", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try chmodFiles(inner_allocator, "644", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             // The test passes if no errors are thrown
         }
@@ -1066,15 +1077,15 @@ test "privileged: verbose flag outputs changes" {
 
             const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, "test_verbose.txt");
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const options = ChmodOptions{ .verbose = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             // Should have verbose output
             try testing.expect(stdout_buffer.items.len > 0);
@@ -1101,15 +1112,15 @@ test "privileged: changes flag only outputs when mode changes" {
 
             const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, "test_changes.txt");
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             const options = ChmodOptions{ .changes_only = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             // Should have output when mode changes
             try testing.expect(stdout_buffer.items.len > 0);
@@ -1117,7 +1128,7 @@ test "privileged: changes flag only outputs when mode changes" {
             // Clear buffer and apply same mode again
             stdout_buffer.clearRetainingCapacity();
             stderr_buffer.clearRetainingCapacity();
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
 
             try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
         }
@@ -1125,16 +1136,16 @@ test "privileged: changes flag only outputs when mode changes" {
 }
 
 test "quiet flag suppresses error messages" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const nonexistent_files = [_][]const u8{"nonexistent_file.txt"};
     const options = ChmodOptions{ .quiet = true };
 
     // Should produce no output due to quiet mode
-    try chmodFiles(testing.allocator, "755", &nonexistent_files, stdout_buffer.writer(), stderr_buffer.writer(), options);
+    try chmodFiles(testing.allocator, "755", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options);
 
     // Should produce no output due to quiet mode
     try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
