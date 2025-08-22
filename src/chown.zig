@@ -70,10 +70,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
-    const exit_code = try runChown(allocator, args[1..], stdout_writer, stderr_writer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    const exit_code = try runChown(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    try stdout.flush();
+    try stderr.flush();
+
     std.process.exit(exit_code);
 }
 
@@ -431,11 +442,11 @@ test "privileged: chown basic functionality" {
             const options = ChownOptions{};
 
             // This should work for changing to the same ownership
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -456,11 +467,11 @@ test "chown with invalid owner specification" {
     const options = ChownOptions{};
 
     // Empty specification should fail
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-    try testing.expectError(error.InvalidFormat, chownFile(testing.allocator, test_file, "", options, stdout_buffer.writer(), stderr_buffer.writer()));
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+    try testing.expectError(error.InvalidFormat, chownFile(testing.allocator, test_file, "", options, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator)));
 }
 
 test "privileged: chown user only specification" {
@@ -491,11 +502,11 @@ test "privileged: chown user only specification" {
             const options = ChownOptions{};
 
             // Should work for user-only specification
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -528,11 +539,11 @@ test "privileged: chown group only specification" {
             const options = ChownOptions{};
 
             // Should work for group-only specification
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -568,11 +579,11 @@ test "privileged: chown with reference file" {
             const options = ChownOptions{ .reference_file = ref_path };
 
             // Should use reference file's ownership
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, target_path, "", options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, target_path, "", options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -584,11 +595,11 @@ test "chown nonexistent file" {
     defer testing.allocator.free(owner_spec);
 
     // Should fail for nonexistent file
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-    try testing.expectError(error.FileNotFound, chownFile(testing.allocator, "/nonexistent/file", owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer()));
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+    try testing.expectError(error.FileNotFound, chownFile(testing.allocator, "/nonexistent/file", owner_spec, options, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator)));
 }
 
 test "OwnershipSpec parsing" {
@@ -694,11 +705,11 @@ test "privileged: chownSingle basic operation" {
             const options = ChownOptions{};
 
             // Should work for same ownership
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownSingle(inner_allocator, test_file, ownership, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownSingle(inner_allocator, test_file, ownership, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -735,11 +746,11 @@ test "privileged: chown recursive option" {
             const options = ChownOptions{ .recursive = true };
 
             // Should work recursively
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_dir, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_dir, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -772,11 +783,11 @@ test "privileged: chown with verbose option" {
             const options = ChownOptions{ .verbose = true };
 
             // Should work with verbose output
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -809,11 +820,11 @@ test "privileged: chown with changes option" {
             const options = ChownOptions{ .changes = true };
 
             // Should work with changes option
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_file, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -852,11 +863,11 @@ test "privileged: chown with no-dereference option" {
             const options = ChownOptions{ .no_dereference = true };
 
             // Should work with no-dereference option
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
-            try chownFile(inner_allocator, test_link, owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+            try chownFile(inner_allocator, test_link, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -869,11 +880,11 @@ test "chown with silent option suppresses errors" {
     const options = ChownOptions{ .silent = true };
 
     // Should not panic or output errors for nonexistent file in silent mode
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
-    const result = chownFile(testing.allocator, "/nonexistent/path", owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+    const result = chownFile(testing.allocator, "/nonexistent/path", owner_spec, options, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectError(error.FileNotFound, result);
 }
 
@@ -902,22 +913,22 @@ test "privileged: chown traverse options" {
             const current_uid = common.user_group.getCurrentUserId();
             const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}", .{current_uid});
 
-            var stdout_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stdout_buffer.deinit();
-            var stderr_buffer = std.ArrayList(u8).init(inner_allocator);
-            defer stderr_buffer.deinit();
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
 
             // Test traverse command line symlinks
             const options_h = ChownOptions{ .traverse_command_line_symlinks = true };
-            try chownFile(inner_allocator, test_file, owner_spec, options_h, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options_h, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
 
             // Test traverse all symlinks
             const options_l = ChownOptions{ .traverse_all_symlinks = true };
-            try chownFile(inner_allocator, test_file, owner_spec, options_l, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options_l, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
 
             // Test no traverse symlinks (default)
             const options_p = ChownOptions{ .no_traverse_symlinks = true };
-            try chownFile(inner_allocator, test_file, owner_spec, options_p, stdout_buffer.writer(), stderr_buffer.writer());
+            try chownFile(inner_allocator, test_file, owner_spec, options_p, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
         }
     }.testFn);
 }
@@ -925,13 +936,13 @@ test "privileged: chown traverse options" {
 test "error handling different error types" {
     const options = ChownOptions{};
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     // Test invalid owner specification
-    const result1 = chownFile(testing.allocator, "/tmp/test", "", options, stdout_buffer.writer(), stderr_buffer.writer());
+    const result1 = chownFile(testing.allocator, "/nonexistent/test", "", options, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectError(error.InvalidFormat, result1);
 
     // Test nonexistent file (with valid owner spec)
@@ -939,19 +950,19 @@ test "error handling different error types" {
     const owner_spec = try std.fmt.allocPrint(testing.allocator, "{d}", .{current_uid});
     defer testing.allocator.free(owner_spec);
 
-    const result2 = chownFile(testing.allocator, "/nonexistent/file", owner_spec, options, stdout_buffer.writer(), stderr_buffer.writer());
+    const result2 = chownFile(testing.allocator, "/nonexistent/file", owner_spec, options, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectError(error.FileNotFound, result2);
 }
 
 test "reportChange function" {
     // The reportChange and reportNoChange functions now accept writer: anytype
     // and return !void. This is verified by compilation.
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     // Test that the functions can be called without error
-    try reportChange(stdout_buffer.writer(), "/test", 1000, 100, 1001, 101);
-    try reportNoChange(stdout_buffer.writer(), "/test");
+    try reportChange(stdout_buffer.writer(testing.allocator), "/test", 1000, 100, 1001, 101);
+    try reportNoChange(stdout_buffer.writer(testing.allocator), "/test");
 
     // Verify output was written
     try testing.expect(stdout_buffer.items.len > 0);
