@@ -89,9 +89,11 @@ fn buildUtility(
 ) !void {
     const exe = b.addExecutable(.{
         .name = util.name,
-        .root_source_file = b.path(util.path),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(util.path),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     // Add imports
@@ -138,9 +140,11 @@ fn buildTests(
     // Test each utility
     for (utils.utilities) |util| {
         const util_tests = b.addTest(.{
-            .root_source_file = b.path(util.path),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
 
         util_tests.root_module.addImport("common", common);
@@ -163,9 +167,11 @@ fn buildTests(
 
     // Common library tests
     const common_tests = b.addTest(.{
-        .root_source_file = b.path("src/common/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/common/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     common_tests.root_module.addImport("build_options", build_options_module);
 
@@ -188,9 +194,11 @@ fn buildTests(
 
     for (utils.utilities) |util| {
         const util_tests = b.addTest(.{
-            .root_source_file = b.path(util.path),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = optimize,
+            }),
             .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
             .name = b.fmt("{s}_privileged_test", .{util.name}), // Unique name to avoid conflicts
         });
@@ -222,9 +230,11 @@ fn buildTests(
 
     // Also add common library privileged tests if any
     const common_tests_priv = b.addTest(.{
-        .root_source_file = b.path("src/common/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/common/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
         .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
         .name = "common_privileged_test", // Unique name to avoid conflicts
     });
@@ -264,9 +274,11 @@ fn buildIntegrationTests(
 
     // Core infrastructure integration tests
     const core_integration_tests = b.addTest(.{
-        .root_source_file = b.path("src/common/privilege_test_integration.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/common/privilege_test_integration.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     core_integration_tests.root_module.addImport("build_options", build_options_module);
 
@@ -279,9 +291,11 @@ fn buildIntegrationTests(
 
     // Workflow integration tests
     const workflow_tests = b.addTest(.{
-        .root_source_file = b.path("tests/privilege_integration/workflow_test.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/privilege_integration/workflow_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     workflow_tests.root_module.addImport("common", common);
 
@@ -294,9 +308,11 @@ fn buildIntegrationTests(
 
     // File operations integration tests
     const file_ops_tests = b.addTest(.{
-        .root_source_file = b.path("tests/privilege_integration/file_ops_test.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/privilege_integration/file_ops_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     file_ops_tests.root_module.addImport("common", common);
 
@@ -365,9 +381,11 @@ fn addCoverageSteps(
         // Run tests with coverage enabled
         for (utils.utilities) |util| {
             const util_tests = b.addTest(.{
-                .root_source_file = b.path(util.path),
-                .target = target,
-                .optimize = optimize,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(util.path),
+                    .target = target,
+                    .optimize = optimize,
+                }),
             });
 
             util_tests.root_module.addImport("common", common);
@@ -423,11 +441,14 @@ fn addDocsStep(
     // Generate documentation for the common module
     // We need to create a dummy executable that imports the common module
     // to generate its documentation
-    const common_docs_exe = b.addStaticLibrary(.{
+    const common_docs_exe = b.addLibrary(.{
         .name = "common-docs",
-        .root_source_file = b.path("src/common/lib.zig"),
-        .target = target,
-        .optimize = optimize,
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/common/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
     common_docs_exe.root_module.addImport("build_options", build_options_module);
 
@@ -444,9 +465,11 @@ fn addDocsStep(
     for (utils.utilities) |util| {
         const util_exe = b.addExecutable(.{
             .name = util.name,
-            .root_source_file = b.path(util.path),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
 
         // Add imports needed for the utility
@@ -505,9 +528,11 @@ fn addFuzzSteps(
 
         // Create a test step for this specific utility with fuzzing enabled
         const util_fuzz_test = b.addTest(.{
-            .root_source_file = b.path(util.path),
-            .target = target,
-            .optimize = optimize,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = optimize,
+            }),
         });
 
         // Add imports

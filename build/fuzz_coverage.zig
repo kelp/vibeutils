@@ -51,8 +51,8 @@ pub const ValidationResult = struct {
 /// Validate that all utilities have integrated fuzz tests
 /// Returns detailed validation results including which utilities are missing fuzz tests
 pub fn validateFuzzCoverage(allocator: std.mem.Allocator) FuzzCoverageError!ValidationResult {
-    var missing_list = std.ArrayList([]const u8).init(allocator);
-    defer missing_list.deinit();
+    var missing_list = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer missing_list.deinit(allocator);
 
     var covered_count: usize = 0;
 
@@ -83,14 +83,14 @@ pub fn validateFuzzCoverage(allocator: std.mem.Allocator) FuzzCoverageError!Vali
             const missing_name = allocator.dupe(u8, util.name) catch {
                 return FuzzCoverageError.FileSystemError;
             };
-            try missing_list.append(missing_name);
+            try missing_list.append(allocator, missing_name);
         }
     }
 
     return ValidationResult{
         .covered = covered_count,
         .total = utils.utilities.len,
-        .missing = try missing_list.toOwnedSlice(),
+        .missing = try missing_list.toOwnedSlice(allocator),
     };
 }
 

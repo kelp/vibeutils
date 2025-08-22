@@ -200,7 +200,7 @@ test "description" {
 }
 ```
 
-### Fuzzing (Zig 0.14)
+### Fuzzing (Zig 0.15.1)
 
 **⚠️ Critical Limitations:**
 - **Linux-only** - Returns "no fuzz tests found" on macOS
@@ -223,11 +223,11 @@ fn testWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
 }
 ```
 
-**Zig 0.14 Fixes We've Applied:**
-- `@typeInfo(T).@"struct"` not `.Struct`
-- `@setEvalBranchQuota(10000)` for compile-time loops
-- Cannot store `type` fields in runtime structs
-- Use `&array` for pointer iteration on arrays
+**Zig 0.15.1 Changes to Watch For:**
+- I/O changes affect fuzz test output handling
+- ArrayList API changes may affect buffer management
+- Stricter `undefined` handling in comptime code
+- Type introspection API may have changed
 
 **Use Intelligent Fuzzer** (`common/fuzz.zig`):
 - Automatic flag discovery via compile-time reflection
@@ -236,6 +236,24 @@ fn testWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
 
 See `docs/FUZZING.md` for full details.
 
+
+## Zig 0.15.1 Critical Changes
+
+### Removed Features (Will Not Compile)
+- **`usingnamespace`** keyword - completely removed
+- **`async`/`await`** - removed from language
+- **`BoundedArray`** - use regular arrays or ArrayList
+- **Generic readers/writers** - see Writer Migration above
+
+### Changed APIs
+- **ArrayList** now defaults to unmanaged version
+- **Build system** requires explicit `root_module` configuration
+- **I/O completely redesigned** - see migration guide
+
+### New Restrictions
+- Stricter `undefined` usage in arithmetic
+- More restrictive compile-time type coercion
+- Cannot store `type` fields in runtime structs
 
 ## Zig Documentation Tools
 
@@ -257,7 +275,30 @@ Available commands:
 
 #### Project Zig Version
 
-This project requires **Zig 0.14.1** (as specified in `build.zig.zon`). When looking up documentation, ensure compatibility with this version.
+This project requires **Zig 0.15.1** (update `build.zig.zon` when upgrading). When looking up documentation, ensure compatibility with this version.
+
+**⚠️ CRITICAL: Zig 0.15.1 Breaking Changes ("Writergate")**
+
+Zig 0.15.1 fundamentally changed how I/O works. **Readers and Writers are no longer generic** - they use `std.Io.Writer` and `std.Io.Reader` (capital I, lowercase o) with explicit buffers:
+
+```zig
+// OLD (Zig 0.14.1) - DO NOT USE
+const stdout = std.io.getStdOut().writer();
+
+// NEW (Zig 0.15.1) - REQUIRED PATTERN
+var stdout_buffer: [4096]u8 = undefined;
+var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+const stdout = &stdout_writer.interface;
+// MUST flush before buffer goes out of scope!
+defer stdout.flush() catch {};
+```
+
+**Key changes:**
+- `std.io.getStdOut()` → `std.fs.File.stdout()`
+- `std.io.bufferedWriter` → REMOVED (use buffer in writer)
+- Writers return `std.Io.Writer` interface (not generic!)
+
+**See `docs/ZIG_0_15_1_WRITER_MIGRATION.md` for complete migration guide.**
 
 #### Recommended Zig Documentation Sources
 
