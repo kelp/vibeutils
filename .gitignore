@@ -3,9 +3,10 @@ zig-out/
 .zig-cache/
 dev.zig
 
-# Editor files
-.vscode/
+# Editor files (user-specific)
 .idea/
+.vscode/launch.json
+.vscode/tasks.json
 *.swp
 *.swo
 *~

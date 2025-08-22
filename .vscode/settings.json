@@ -1,0 +1,31 @@
+{
+  "editor.rulers": [100],
+  "editor.insertSpaces": true,
+  "editor.tabSize": 4,
+  "editor.trimAutoWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  
+  "[zig]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ziglang.vscode-zig"
+  },
+  
+  "[markdown]": {
+    "editor.rulers": [78],
+    "editor.wordWrap": "wordWrapColumn",
+    "editor.wordWrapColumn": 78,
+    "files.trimTrailingWhitespace": false
+  },
+  
+  "[yaml]": {
+    "editor.tabSize": 2
+  },
+  
+  "[json]": {
+    "editor.tabSize": 2
+  },
+  
+  "zig.path": "zig",
+  "zig.zls.path": "zls"
+}
