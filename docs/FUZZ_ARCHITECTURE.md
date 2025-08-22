@@ -133,10 +133,10 @@ fn testEchoEscapeSequences(allocator: std.mem.Allocator, input: []const u8) !voi
     defer allocator.free(escape_seq);
     
     const args = [_][]const u8{ "-e", escape_seq };
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
     
-    _ = echo_util.runUtility(allocator, &args, stdout_buf.writer(), common.null_writer) catch {
+    _ = echo_util.runUtility(allocator, &args, stdout_buf.writer(allocator), common.null_writer) catch {
         return; // Errors are acceptable in fuzz testing
     };
 }

@@ -76,8 +76,8 @@ All tests use `testing.allocator` to detect memory leaks:
 
 ```zig
 test "no memory leaks" {
-    var list = std.ArrayList(u8).init(testing.allocator);
-    defer list.deinit();
+    var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer list.deinit(testing.allocator);
     
     // Test operations that allocate memory
     try list.append('a');
@@ -210,10 +210,10 @@ Capture and verify command output:
 
 ```zig
 test "command output" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
     
-    try runCommand(&args, buffer.writer());
+    try runCommand(&args, buffer.writer(testing.allocator));
     
     try testing.expectEqualStrings(
         "expected output\n",

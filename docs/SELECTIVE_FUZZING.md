@@ -4,7 +4,7 @@ This document describes the selective fuzzing system implemented for vibeutils, 
 
 ## Problem Solved
 
-Previously, `zig build test --fuzz` would run ALL fuzz tests and get stuck on the first one forever since Zig 0.14 fuzzing runs indefinitely. This made it impossible to:
+Previously, `zig build test --fuzz` would run ALL fuzz tests and get stuck on the first one forever since Zig 0.15.1 fuzzing runs indefinitely. This made it impossible to:
 - Test individual utilities selectively
 - Rotate through multiple utilities with time limits
 - Run focused fuzzing sessions on specific utilities
@@ -193,7 +193,7 @@ The following utilities support selective fuzzing:
 ## Platform Requirements
 
 - **Linux Only**: Fuzzing only works on Linux systems
-- **Zig 0.14.1**: Requires the specific Zig version used by the project
+- **Zig 0.15.1**: Requires the specific Zig version used by the project
 - **Bash**: The fuzzing script requires bash for advanced features
 
 ## Best Practices

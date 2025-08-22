@@ -1,7 +1,9 @@
 # Zig Patterns for vibeutils
 
-This document contains Zig 0.14.1 patterns and idioms commonly used in this
+This document contains Zig 0.15.1 patterns and idioms commonly used in this
 codebase. It serves as a quick reference for implementing GNU coreutils in Zig.
+
+**⚠️ IMPORTANT: See `ZIG_0_15_1_WRITER_MIGRATION.md` for critical I/O changes in Zig 0.15.1**
 
 ## Memory Management
 
@@ -41,14 +43,27 @@ while (args_iter.next()) |arg| {
 
 ## I/O Operations
 
-### Standard Streams
+### Standard Streams (Zig 0.15.1)
 ```zig
-const stdout = std.io.getStdOut().writer();
-const stderr = std.io.getStdErr().writer();
-const stdin = std.io.getStdIn().reader();
+// NEW: Explicit buffers required
+var stdout_buffer: [4096]u8 = undefined;
+var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+const stdout = &stdout_writer.interface;
+
+var stderr_buffer: [4096]u8 = undefined;
+var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+const stderr = &stderr_writer.interface;
+
+var stdin_buffer: [4096]u8 = undefined;
+var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+const stdin = &stdin_reader.interface;
 
 try stdout.print("Hello {s}\n", .{"world"});
 try stdout.writeAll("Raw string\n");
+
+// CRITICAL: Must flush before buffer goes out of scope!
+stdout.flush() catch {};
+stderr.flush() catch {};
 ```
 
 ### File Operations
@@ -66,14 +81,20 @@ const content = try file.readToEndAlloc(allocator, max_size);
 try std.fs.cwd().writeFile("output.txt", "content");
 ```
 
-### Buffered I/O
+### File I/O with Buffers (Zig 0.15.1)
 ```zig
-var buf_reader = std.io.bufferedReader(file.reader());
-var reader = buf_reader.reader();
+// Reading with buffer
+var read_buffer: [8192]u8 = undefined;
+var file_reader = file.reader(&read_buffer);
+const reader = &file_reader.interface;
 
-var buf_writer = std.io.bufferedWriter(file.writer());
-var writer = buf_writer.writer();
-defer buf_writer.flush() catch {};
+// Writing with buffer
+var write_buffer: [8192]u8 = undefined;
+var file_writer = file.writer(&write_buffer);
+const writer = &file_writer.interface;
+defer writer.flush() catch {};
+
+// Note: std.io.bufferedReader/Writer no longer exist!
 ```
 
 ## Error Handling
@@ -145,13 +166,15 @@ test "with allocation" {
 }
 ```
 
-### Testing Output
+### Testing Output (Zig 0.15.1)
 ```zig
 test "test output" {
-    var buffer = std.ArrayList(u8).init(std.testing.allocator);
-    defer buffer.deinit();
+    // ArrayList now requires allocator for all operations
+    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
+    defer buffer.deinit(std.testing.allocator);
     
-    try myFunction(buffer.writer());
+    // writer() now requires allocator parameter
+    try myFunction(buffer.writer(std.testing.allocator));
     try std.testing.expectEqualStrings("expected output", buffer.items);
 }
 ```
@@ -219,18 +242,23 @@ const ext = std.fs.path.extension("file.txt"); // ".txt"
 std.process.exit(1); // Non-zero for error
 ```
 
-### Print Error and Exit
+### Print Error and Exit (Zig 0.15.1)
 ```zig
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
-    std.io.getStdErr().writer().print(fmt ++ "\n", args) catch {};
+    // Note: For simple error printing, can still use unbuffered
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    stderr.print(fmt ++ "\n", args) catch {};
+    stderr.flush() catch {};
     std.process.exit(1);
 }
 ```
 
-### Argument Parsing Pattern
+### Argument Parsing Pattern (Zig 0.15.1)
 ```zig
-var positional_args = std.ArrayList([]const u8).init(allocator);
-defer positional_args.deinit();
+var positional_args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+defer positional_args.deinit(allocator);
 
 var i: usize = 1; // Skip program name
 while (i < args.len) : (i += 1) {
@@ -239,12 +267,12 @@ while (i < args.len) : (i += 1) {
         suppress_newline = true;
     } else if (std.mem.eql(u8, arg, "--")) {
         // Everything after -- is positional
-        try positional_args.appendSlice(args[i + 1 ..]);
+        try positional_args.appendSlice(allocator, args[i + 1 ..]);
         break;
     } else if (arg[0] == '-') {
         fatal("Unknown option: {s}", .{arg});
     } else {
-        try positional_args.append(arg);
+        try positional_args.append(allocator, arg);
     }
 }
 ```

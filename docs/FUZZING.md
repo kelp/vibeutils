@@ -5,7 +5,7 @@ vibeutils, including what actually works, limitations, and workarounds.
 
 ## Overview
 
-vibeutils uses Zig 0.14's built-in fuzzing support based on LibFuzzer. After 
+vibeutils uses Zig 0.15.1's built-in fuzzing support based on LibFuzzer. After 
 extensive testing and debugging, we've learned the real capabilities and 
 limitations of this system.
 
@@ -101,15 +101,15 @@ accepts functions with exactly 2 parameters: `(allocator, input)`.
 
 ## Common Compilation Errors and Fixes
 
-We encountered many Zig 0.14-specific issues. Here are the solutions:
+We encountered many Zig version-specific issues. Here are the solutions:
 
 ### Type Info Changes
 ```zig
-// WRONG (Zig 0.13)
+// WRONG (Zig 0.14 and earlier)
 @typeInfo(T).Struct.fields
 @typeInfo(T).Optional
 
-// CORRECT (Zig 0.14)
+// CORRECT (Zig 0.15.1)
 @typeInfo(T).@"struct".fields  
 @typeInfo(T).optional
 @typeInfo(T).pointer

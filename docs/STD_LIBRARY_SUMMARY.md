@@ -2,7 +2,9 @@
 
 This document summarizes the most relevant parts of Zig's standard library for
 implementing GNU coreutils. For full documentation, run `zig std` or visit
-https://ziglang.org/documentation/0.14.1/std/
+https://ziglang.org/documentation/0.15.1/std/
+
+**⚠️ CRITICAL: Zig 0.15.1 has major I/O changes. See `ZIG_0_15_1_WRITER_MIGRATION.md`**
 
 ## Essential Imports
 
@@ -35,12 +37,18 @@ const std = @import("std");
   - `extension()` - Get file extension
   - `isAbsolute()` - Check if path is absolute
 
-### std.io
-- `getStdOut()` - Standard output stream
-- `getStdErr()` - Standard error stream  
-- `getStdIn()` - Standard input stream
-- `bufferedReader()` - Buffered reading
-- `bufferedWriter()` - Buffered writing
+### std.io (CHANGED in 0.15.1)
+
+**OLD APIs (NO LONGER EXIST):**
+- ~~`getStdOut()`~~ → Use `std.fs.File.stdout()`
+- ~~`getStdErr()`~~ → Use `std.fs.File.stderr()`
+- ~~`getStdIn()`~~ → Use `std.fs.File.stdin()`
+- ~~`bufferedReader()`~~ → Use reader with explicit buffer
+- ~~`bufferedWriter()`~~ → Use writer with explicit buffer
+
+**NEW APIs:**
+- `std.Io.Writer` - Non-generic writer interface
+- `std.Io.Reader` - Non-generic reader interface
 
 ### std.mem
 - `eql()` - Compare slices
@@ -76,13 +84,15 @@ const std = @import("std");
 - `ArenaAllocator` - Arena allocator (bulk free)
 - `GeneralPurposeAllocator` - Debug allocator
 
-### std.ArrayList
-- Dynamic arrays with methods:
-  - `init()` - Create new list
-  - `append()` - Add single item
-  - `appendSlice()` - Add multiple items
-  - `items` - Get slice of contents
-  - `clearAndFree()` - Clear and free memory
+### std.ArrayList (CHANGED in 0.15.1)
+- Dynamic arrays (now "unmanaged" by default):
+  - `initCapacity(allocator, size)` - Create new list (replaces `init()`)
+  - `append(allocator, item)` - Add single item (needs allocator)
+  - `appendSlice(allocator, items)` - Add multiple items (needs allocator)
+  - `items` - Get slice of contents (unchanged)
+  - `deinit(allocator)` - Free memory (needs allocator)
+  - `writer(allocator)` - Get writer interface (needs allocator)
+  - `toOwnedSlice(allocator)` - Take ownership of items (needs allocator)
 
 ### std.hash_map
 - `StringHashMap` - String-keyed hash map
@@ -100,11 +110,12 @@ const std = @import("std");
 // Read entire file
 const content = try fs.cwd().readFileAlloc(allocator, path, max_size);
 
-// Read line by line
+// Read line by line (Zig 0.15.1)
 const file = try fs.cwd().openFile(path, .{});
 defer file.close();
-var buf_reader = io.bufferedReader(file.reader());
-const reader = buf_reader.reader();
+var read_buffer: [8192]u8 = undefined;
+var file_reader = file.reader(&read_buffer);
+const reader = &file_reader.interface;
 while (try reader.readUntilDelimiterOrEofAlloc(allocator, '\n', max_line_size)) |line| {
     defer allocator.free(line);
     // Process line
@@ -116,13 +127,14 @@ while (try reader.readUntilDelimiterOrEofAlloc(allocator, '\n', max_line_size)) 
 // Write entire file
 try fs.cwd().writeFile(path, content);
 
-// Write with buffering
+// Write with buffering (Zig 0.15.1)
 const file = try fs.cwd().createFile(path, .{});
 defer file.close();
-var buf_writer = io.bufferedWriter(file.writer());
-const writer = buf_writer.writer();
+var write_buffer: [4096]u8 = undefined;
+var file_writer = file.writer(&write_buffer);
+const writer = &file_writer.interface;
 try writer.writeAll(content);
-try buf_writer.flush();
+try writer.flush();
 ```
 
 ## Error Handling for Coreutils
