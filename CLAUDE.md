@@ -60,10 +60,31 @@ make test           # Run tests
 make coverage       # Generate coverage report
 make fmt            # Format code
 
+# Single Utility Development (NEW!)
+make build UTIL=chown      # Build only chown
+make test UTIL=chown       # Test only chown (smoke test + binary check)
+make run UTIL=chown ARGS="-h"  # Run chown with arguments
+
 # Zig-specific
 zig build test --summary all     # Test summary
 zig build -Doptimize=ReleaseFast # Optimized build
-zig test src/echo.zig            # Test single file
+zig test src/echo.zig            # Test single file (requires module setup)
+```
+
+### Working with Individual Utilities
+
+When developing or debugging a specific utility, use the `UTIL` variable:
+
+```bash
+# Build and test workflow for a single utility
+make build UTIL=basename   # Build just basename
+make test UTIL=basename    # Quick test of basename
+make run UTIL=basename ARGS="/path/to/file"  # Run it
+
+# The UTIL variable works consistently across operations:
+make build UTIL=cp         # Build cp
+make test UTIL=cp          # Test cp  
+make fuzz UTIL=cp          # Fuzz cp (Linux only)
 ```
 
 ## Git Hooks

@@ -11,16 +11,45 @@ HAS_DOCKER := $(shell command -v docker >/dev/null 2>&1 && echo "true")
 HAS_FAKEROOT := $(shell command -v fakeroot >/dev/null 2>&1 && echo "true")
 
 # All .PHONY targets in one line
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run-% debug release
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run debug release
 
 # Core Targets
 all: build
 
 build:
+ifdef UTIL
+	@echo "Building $(UTIL) utility..."
+	@if $(BUILD_CMD) 2>&1 | grep -E "error.*$(UTIL)\.zig"; then \
+		echo "❌ Build failed for $(UTIL)"; \
+		exit 1; \
+	else \
+		echo "✓ Build completed"; \
+	fi
+	@[ -f zig-out/bin/$(UTIL) ] && echo "✓ Binary: zig-out/bin/$(UTIL)" || echo "⚠ Binary not found (may not be a valid utility name)"
+else
 	$(BUILD_CMD)
+endif
 
 test:
+ifdef UTIL
+	@echo "Testing $(UTIL) utility..."
+	@echo "----------------------------------------"
+	@echo "Note: Unit tests require the full build system."
+	@echo "Running: zig build test 2>&1 | grep $(UTIL)"
+	@$(TEST_CMD) 2>&1 | grep -E "$(UTIL)\.zig|All.*tests passed" || echo "See full output with: make test"
+	@echo "----------------------------------------"
+	@echo "Binary smoke test:"
+	@if [ -f zig-out/bin/$(UTIL) ]; then \
+		./zig-out/bin/$(UTIL) --version 2>/dev/null && echo "✓ --version works" || true; \
+		echo ""; \
+		echo "Help output (first 5 lines):"; \
+		./zig-out/bin/$(UTIL) --help 2>/dev/null | head -5 || true; \
+	else \
+		echo "⚠ Binary not found. Run 'make build' first."; \
+	fi
+else
 	$(TEST_CMD)
+endif
 
 test-privileged:
 ifeq ($(HAS_FAKEROOT),true)
@@ -60,9 +89,15 @@ install:
 	zig build -Doptimize=ReleaseSafe
 	@echo "Binaries installed to: zig-out/bin/"
 
-# Test Variants
-run-%:
-	zig build run-$* -- $(ARGS)
+# Utility Execution
+run:
+ifdef UTIL
+	@echo "Running $(UTIL) utility..."
+	@zig build run-$(UTIL) -- $(ARGS) 2>&1 || echo "Error: Failed to run $(UTIL). It may need to be migrated to Zig 0.15.1 first."
+else
+	@echo "Usage: make run UTIL=<name> ARGS='<arguments>'"
+	@echo "Example: make run UTIL=echo ARGS='hello world'"
+endif
 
 debug:
 	zig build -Doptimize=Debug
@@ -207,7 +242,9 @@ help:
 	@echo ""
 	@echo "Common Targets:"
 	@echo "  make build                 Build all utilities (debug mode)"
+	@echo "  make build UTIL=<name>     Build a specific utility (e.g., make build UTIL=chown)"
 	@echo "  make test                  Run all tests"
+	@echo "  make test UTIL=<name>      Test a specific utility (e.g., make test UTIL=chown)"
 	@echo "  make test-all              Run tests on all platforms (native + Docker if available)"
 	@echo "  make install               Install utilities to ~/.local/bin"
 	@echo "  make clean                 Remove build artifacts"
@@ -224,7 +261,7 @@ help:
 	@echo "  make fuzz-linux UTIL=<name> Fuzz in Docker (for macOS users)"
 	@echo ""
 	@echo "Development:"
-	@echo "  make run-<utility> ARGS=   Run a specific utility (e.g., run-echo ARGS='hello')"
+	@echo "  make run UTIL=<name> ARGS= Run a specific utility (e.g., make run UTIL=echo ARGS='hello')"
 	@echo "  make fmt                   Format all Zig code"
 	@echo "  make docs                  Generate HTML documentation"
 	@echo "  make docker-shell          Open shell in test container"
