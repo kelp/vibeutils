@@ -79,10 +79,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
-    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
+
+    // CRITICAL: Flush buffers before exit!
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(@intFromEnum(exit_code));
 }
 
@@ -534,11 +545,13 @@ fn promptYesNo(allocator: Allocator) !bool {
         return false;
     } else |_| {}
 
-    const stdin_file = std.io.getStdIn();
+    const stdin_file = std.fs.File.stdin();
     if (!stdin_file.isTty()) return false;
 
     var buffer: [10]u8 = undefined;
-    const stdin = stdin_file.reader();
+    var stdin_buffer: [1024]u8 = undefined;
+    var stdin_reader = stdin_file.reader(&stdin_buffer);
+    const stdin = &stdin_reader.interface;
 
     if (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) |line| {
         if (line.len > 0) {
@@ -593,11 +606,11 @@ test "cp: single file copy" {
 
     try test_dir.createFile("source.txt", "Hello, World!", null);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "source.txt", "dest.txt" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
@@ -611,11 +624,11 @@ test "cp: copy to existing directory" {
     try test_dir.createFile("source.txt", "Test content", null);
     try test_dir.createDir("dest_dir");
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "source.txt", "dest_dir" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
@@ -628,11 +641,11 @@ test "cp: error on directory without recursive flag" {
 
     try test_dir.createDir("source_dir");
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "source_dir", "dest_dir" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.general_error, exit_code);
 }
@@ -648,11 +661,11 @@ test "cp: recursive directory copy" {
     try test_dir.createFile("source_dir/file1.txt", "File 1 content", null);
     try test_dir.createFile("source_dir/subdir/file2.txt", "File 2 content", null);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-r", "source_dir", "dest_dir" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
@@ -666,11 +679,11 @@ test "cp: preserve attributes" {
 
     try test_dir.createFile("source.txt", "Test content", 0o644);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
@@ -691,11 +704,11 @@ test "cp: symbolic link handling - follow by default" {
     try test_dir.createFile("original.txt", "Original content", null);
     try test_dir.createSymlink("original.txt", "link.txt");
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "link.txt", "copied.txt" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("copied.txt", "Original content");
@@ -710,11 +723,11 @@ test "cp: symbolic link handling - no dereference (-d)" {
     try test_dir.createFile("original.txt", "Original content", null);
     try test_dir.createSymlink("original.txt", "link.txt");
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-d", "link.txt", "copied_link.txt" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
     try testing.expect(try test_dir.isSymlink("copied_link.txt"));
@@ -732,11 +745,11 @@ test "cp: multiple sources to directory" {
     try test_dir.createFile("file2.txt", "Content 2", null);
     try test_dir.createDir("dest_dir");
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "file1.txt", "file2.txt", "dest_dir" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
@@ -760,11 +773,11 @@ test "cp: large file copy" {
 
     try test_dir.createFile("large_source.bin", content, null);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "large_source.bin", "large_dest.bin" };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
 
@@ -790,11 +803,11 @@ test "privileged: permission preservation with mode bits" {
     // Create source file with specific permissions
     try test_dir.createFile("source.txt", "Test content", 0o755);
 
-    var stderr_buffer = std.ArrayList(u8).init(allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stderr_buffer.deinit(allocator);
 
     const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
-    const exit_code = try runUtility(allocator, &args, common.null_writer, stderr_buffer.writer());
+    const exit_code = try runUtility(allocator, &args, common.null_writer, stderr_buffer.writer(allocator));
 
     try testing.expectEqual(common.ExitCode.success, exit_code);
 

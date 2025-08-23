@@ -115,10 +115,20 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const exit_code = try runEcho(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
     std.process.exit(exit_code);
 }
 
@@ -277,183 +287,183 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
 }
 
 test "echo outputs single argument" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"hello"};
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\n", buffer.items);
 }
 
 test "echo outputs multiple arguments with spaces" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "hello", "world" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello world\n", buffer.items);
 }
 
 test "echo -n suppresses newline" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-n", "hello" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello", buffer.items);
 }
 
 test "echo handles empty input" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\n", buffer.items);
 }
 
 test "echo with -n and multiple arguments" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-n", "hello", "world", "test" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello world test", buffer.items);
 }
 
 test "echo preserves empty strings" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "hello", "", "world" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello  world\n", buffer.items);
 }
 
 test "echo handles special characters" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "hello\tworld", "test\nline" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\tworld test\nline\n", buffer.items);
 }
 
 test "echo -e interprets escape sequences" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-e", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\n", buffer.items);
 }
 
 test "echo -e handles multiple escape sequences" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-e", "\\t\\tindented\\nline\\ttwo\\\\backslash" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\t\tindented\nline\ttwo\\backslash\n", buffer.items);
 }
 
 test "echo -e with octal sequences" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-e", "\\101\\040\\102" }; // A B in octal
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A B\n", buffer.items);
 }
 
 test "echo -e with hex sequences" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-e", "\\x41\\x20\\x42" }; // A B in hex
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("A B\n", buffer.items);
 }
 
 test "echo -e with incomplete hex sequences" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     // Test incomplete hex sequences that should be output literally
     const args = [_][]const u8{ "-e", "\\x4\\x\\xZ" }; // incomplete and invalid hex
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("\\x4\\x\\xZ\n", buffer.items);
 }
 
 test "echo -e with valid hex at end of string" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     // Test valid hex sequence at the end of string (boundary condition)
     const args = [_][]const u8{ "-e", "test\\x41" }; // should produce "testA"
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("testA\n", buffer.items);
 }
 
 test "echo -en combines flags" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-en", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld", buffer.items);
 }
 
 test "echo -ne combines flags (different order)" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-ne", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld", buffer.items);
 }
 
 test "echo -E disables escape sequences" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-E", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\\nworld\n", buffer.items);
 }
 
 test "echo -E overrides previous -e" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-e", "-E", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\\nworld\n", buffer.items);
 }
 
 test "echo -e overrides previous -E" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-E", "-e", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(), common.null_writer);
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\n", buffer.items);
 }
@@ -482,10 +492,10 @@ test "fuzz: echo never panics with arbitrary arguments" {
         const args = fuzz.generateArgs(&arg_storage, input);
 
         // Echo should never panic, only return success or error
-        var buffer = std.ArrayList(u8).init(allocator);
-        defer buffer.deinit();
+        var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        defer buffer.deinit(allocator);
 
-        const result = runEcho(allocator, args, buffer.writer(), common.null_writer) catch {
+        const result = runEcho(allocator, args, buffer.writer(allocator), common.null_writer) catch {
             // Errors are acceptable (e.g., argument parsing errors)
             continue;
         };
@@ -524,10 +534,10 @@ test "fuzz: echo with escape sequences never panics" {
         };
 
         for (test_cases) |args| {
-            var buffer = std.ArrayList(u8).init(allocator);
-            defer buffer.deinit();
+            var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+            defer buffer.deinit(allocator);
 
-            const result = runEcho(allocator, args, buffer.writer(), common.null_writer) catch {
+            const result = runEcho(allocator, args, buffer.writer(allocator), common.null_writer) catch {
                 // Parsing errors are acceptable
                 continue;
             };
@@ -550,13 +560,13 @@ test "fuzz: echo output is deterministic for same input" {
     const args = fuzz.generateArgs(&arg_storage, test_input[0..]);
 
     // Run echo twice with the same arguments
-    var buffer1 = std.ArrayList(u8).init(allocator);
-    defer buffer1.deinit();
-    var buffer2 = std.ArrayList(u8).init(allocator);
-    defer buffer2.deinit();
+    var buffer1 = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buffer1.deinit(allocator);
+    var buffer2 = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buffer2.deinit(allocator);
 
-    const result1 = runEcho(allocator, args, buffer1.writer(), common.null_writer) catch return;
-    const result2 = runEcho(allocator, args, buffer2.writer(), common.null_writer) catch return;
+    const result1 = runEcho(allocator, args, buffer1.writer(allocator), common.null_writer) catch return;
+    const result2 = runEcho(allocator, args, buffer2.writer(allocator), common.null_writer) catch return;
 
     // Should produce identical results
     try testing.expectEqual(result1, result2);
@@ -567,24 +577,24 @@ test "fuzz: echo handles maximum argument counts gracefully" {
     const allocator = testing.allocator;
 
     // Create maximum number of arguments
-    var args = std.ArrayList([]const u8).init(allocator);
+    var args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
     defer {
         for (args.items) |arg| allocator.free(arg);
-        args.deinit();
+        args.deinit(allocator);
     }
 
     // Add up to 1000 arguments
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
         const arg = try std.fmt.allocPrint(allocator, "arg{}", .{i});
-        try args.append(arg);
+        try args.append(allocator, arg);
     }
 
-    var buffer = std.ArrayList(u8).init(allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buffer.deinit(allocator);
 
     // Should handle large argument counts without crashing
-    const result = runEcho(allocator, args.items, buffer.writer(), common.null_writer) catch {
+    const result = runEcho(allocator, args.items, buffer.writer(allocator), common.null_writer) catch {
         // Out of memory or other resource errors are acceptable
         return;
     };
@@ -626,10 +636,10 @@ fn testEchoEscapeSequences(allocator: std.mem.Allocator, input: []const u8) !voi
     const escape_seq = common.fuzz.generateEscapeSequence(&escape_buffer, input);
 
     const args = [_][]const u8{ "-e", escape_seq };
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
 
-    _ = runEcho(allocator, &args, stdout_buf.writer(), common.null_writer) catch {
+    _ = runEcho(allocator, &args, stdout_buf.writer(allocator), common.null_writer) catch {
         // Errors are acceptable in fuzz testing
         return;
     };
@@ -660,18 +670,18 @@ fn testEchoFlagCombinations(allocator: std.mem.Allocator, input: []const u8) !vo
     const flags = flag_combinations[input[0] % flag_combinations.len];
     const text = if (input.len > 1) input[1..] else "test";
 
-    var args = std.ArrayList([]const u8).init(allocator);
-    defer args.deinit();
+    var args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer args.deinit(allocator);
 
     for (flags) |flag| {
-        try args.append(flag);
+        try args.append(allocator, flag);
     }
-    try args.append(text);
+    try args.append(allocator, text);
 
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
 
-    _ = runEcho(allocator, args.items, stdout_buf.writer(), common.null_writer) catch {
+    _ = runEcho(allocator, args.items, stdout_buf.writer(allocator), common.null_writer) catch {
         // Errors are acceptable
         return;
     };

@@ -149,10 +149,19 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const exit_code = try runDirname(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
     std.process.exit(exit_code);
 }
 
@@ -246,11 +255,11 @@ test "dirname: multiple paths" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "/usr/bin", "file.txt", "dir/subdir/" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr\n.\ndir\n", stdout_buffer.items);
@@ -261,11 +270,11 @@ test "dirname: zero flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-z", "/usr/bin", "file.txt", "/" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/usr\x00.\x00/\x00", stdout_buffer.items);
@@ -276,11 +285,11 @@ test "dirname: long zero flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "--zero", "path/to/file" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("path/to\x00", stdout_buffer.items);
@@ -291,10 +300,10 @@ test "dirname: missing operand error" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runDirname(allocator, &.{}, common.null_writer, stderr_buffer.writer());
+    const result = try runDirname(allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
@@ -305,11 +314,11 @@ test "dirname: help flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: dirname") != null);
@@ -320,11 +329,11 @@ test "dirname: version flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"--version"};
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "dirname") != null);
@@ -335,12 +344,12 @@ test "dirname: combined flags" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     // Test that -z and paths work together
     const args = [_][]const u8{ "-z", "a/b", "c/d", "e" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\x00c\x00.\x00", stdout_buffer.items);
