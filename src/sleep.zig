@@ -138,7 +138,7 @@ fn parseTotalTime(args: []const []const u8) !u64 {
 fn sleepNanos(nanos: u64) void {
     if (nanos == 0) return;
 
-    std.time.sleep(nanos);
+    std.Thread.sleep(nanos);
 }
 
 /// Print help message
@@ -235,10 +235,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const exit_code = try runSleep(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -335,60 +346,60 @@ test "parseTotalTime - invalid arguments" {
 }
 
 test "runSleep - help option" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"--help"}, stdout_buffer.writer(), common.null_writer);
+    const result = try runSleep(testing.allocator, &.{"--help"}, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: sleep NUMBER[SUFFIX]") != null);
 }
 
 test "runSleep - version option" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"--version"}, stdout_buffer.writer(), common.null_writer);
+    const result = try runSleep(testing.allocator, &.{"--version"}, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "sleep (vibeutils)") != null);
 }
 
 test "runSleep - missing arguments" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer());
+    const result = try runSleep(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 }
 
 test "runSleep - invalid time format" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"invalid"}, common.null_writer, stderr_buffer.writer());
+    const result = try runSleep(testing.allocator, &.{"invalid"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
 }
 
 test "runSleep - negative time (with separator)" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{ "--", "-1" }, common.null_writer, stderr_buffer.writer());
+    const result = try runSleep(testing.allocator, &.{ "--", "-1" }, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
 }
 
 test "runSleep - negative flag treated as unknown argument" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"-1"}, common.null_writer, stderr_buffer.writer());
+    const result = try runSleep(testing.allocator, &.{"-1"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);

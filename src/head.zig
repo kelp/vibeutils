@@ -104,7 +104,9 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 if (options.show_headers) {
                     try stdout_writer.print("==> {s} <==\n", .{file_path});
                 }
-                try processInput(file.reader(), stdout_writer, options);
+                var file_buffer: [4096]u8 = undefined;
+                var file_reader = file.reader(&file_buffer);
+                try processInput(&file_reader.interface, stdout_writer, options);
             }
         }
     }
@@ -237,7 +239,7 @@ fn processBytes(reader: anytype, writer: anytype, byte_count: u64) !void {
             try writer.writeAll(available_bytes[0..bytes_to_write]);
 
             // Try to discard - this works in production but may fail in tests
-            input.discard(bytes_to_write) catch break;
+            _ = input.discard(@enumFromInt(bytes_to_write)) catch break;
             bytes_written += bytes_to_write;
         } else {
             break; // Prevent infinite loops in tests

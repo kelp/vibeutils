@@ -15,7 +15,7 @@ const Entry = types.Entry;
 pub fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, visited_fs_ids: *common.directory.FileSystemIdSet, git_context: ?*types.GitContext) anyerror!void {
     // Collect and prepare entries
     var entries = try collectAndPrepareEntries(allocator, dir, options, git_context, stderr_writer);
-    defer entries.deinit();
+    defer entries.deinit(allocator);
     defer entry_collector.freeEntries(entries.items, allocator);
 
     // Sort entries based on options
@@ -32,7 +32,7 @@ pub fn listDirectoryImplWithVisited(dir: std.fs.Dir, path: []const u8, writer: a
 pub fn collectAndPrepareEntries(allocator: std.mem.Allocator, dir: std.fs.Dir, options: LsOptions, git_context: ?*types.GitContext, stderr_writer: anytype) !std.ArrayList(Entry) {
     // Collect and filter entries based on options
     var entries = try entry_collector.collectFilteredEntries(allocator, dir, options);
-    errdefer entries.deinit();
+    errdefer entries.deinit(allocator);
     errdefer entry_collector.freeEntries(entries.items, allocator);
 
     // Enhance with metadata if needed for sorting or display

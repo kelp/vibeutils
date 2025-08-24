@@ -49,10 +49,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout_writer_interface = &stdout_writer.interface;
 
-    const exit_code = try runTouch(allocator, args[1..], stdout_writer, stderr_writer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr_writer_interface = &stderr_writer.interface;
+
+    const exit_code = try runTouch(allocator, args[1..], stdout_writer_interface, stderr_writer_interface);
+
+    // Flush buffers before exit
+    stdout_writer_interface.flush() catch {};
+    stderr_writer_interface.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -570,7 +581,7 @@ test "touch updates existing file timestamp" {
     const stat_before = try common.file.FileInfo.stat(test_file);
 
     // Wait a bit to ensure timestamp difference
-    std.time.sleep(1_000_000_000); // 1 second
+    std.Thread.sleep(1_000_000_000); // 1 second
 
     // Touch the file
     const options = TouchOptions{};
@@ -619,7 +630,7 @@ test "touch -a updates only access time" {
     const stat_before = try common.file.FileInfo.stat(test_file);
 
     // Wait to ensure timestamp difference
-    std.time.sleep(1_000_000_000); // 1 second
+    std.Thread.sleep(1_000_000_000); // 1 second
 
     // Touch with -a
     const options = TouchOptions{ .access_only = true };
@@ -650,7 +661,7 @@ test "touch -m updates only modification time" {
     const stat_before = try common.file.FileInfo.stat(test_file);
 
     // Wait to ensure timestamp difference
-    std.time.sleep(1_000_000_000); // 1 second
+    std.Thread.sleep(1_000_000_000); // 1 second
 
     // Touch with -m
     const options = TouchOptions{ .modify_only = true };
@@ -684,7 +695,7 @@ test "touch -r uses reference file times" {
     defer testing.allocator.free(target_path);
 
     // Wait to ensure different timestamps
-    std.time.sleep(1_000_000_000); // 1 second
+    std.Thread.sleep(1_000_000_000); // 1 second
 
     // Touch target with reference
     const options = TouchOptions{ .reference_file = ref_path };
@@ -744,7 +755,7 @@ test "touch --time=access updates only access time" {
     defer testing.allocator.free(test_file);
 
     const stat_before = try common.file.FileInfo.stat(test_file);
-    std.time.sleep(1_000_000_000); // 1 second
+    std.Thread.sleep(1_000_000_000); // 1 second
 
     const options = TouchOptions{ .time_arg = "access" };
     try touchFile(test_file, options, testing.allocator);
@@ -769,7 +780,7 @@ test "touch --time=modify updates only modification time" {
     defer testing.allocator.free(test_file);
 
     const stat_before = try common.file.FileInfo.stat(test_file);
-    std.time.sleep(1_000_000_000); // 1 second
+    std.Thread.sleep(1_000_000_000); // 1 second
 
     const options = TouchOptions{ .time_arg = "modify" };
     try touchFile(test_file, options, testing.allocator);

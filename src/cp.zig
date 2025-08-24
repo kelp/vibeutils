@@ -548,16 +548,18 @@ fn promptYesNo(allocator: Allocator) !bool {
     const stdin_file = std.fs.File.stdin();
     if (!stdin_file.isTty()) return false;
 
-    var buffer: [10]u8 = undefined;
     var stdin_buffer: [1024]u8 = undefined;
     var stdin_reader = stdin_file.reader(&stdin_buffer);
     const stdin = &stdin_reader.interface;
 
-    if (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) |line| {
-        if (line.len > 0) {
-            const first_char = std.ascii.toLower(line[0]);
-            return first_char == 'y';
-        }
+    const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => return false,
+        else => return err,
+    };
+
+    if (line.len > 0) {
+        const first_char = std.ascii.toLower(line[0]);
+        return first_char == 'y';
     }
 
     return false;

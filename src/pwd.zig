@@ -74,10 +74,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     const exit_code = try runPwd(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -241,14 +252,14 @@ test "PwdArgs defaults" {
 }
 
 test "runPwd with help flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -262,14 +273,14 @@ test "runPwd with help flag" {
 }
 
 test "runPwd with version flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"--version"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -283,14 +294,14 @@ test "runPwd with version flag" {
 }
 
 test "runPwd with short help flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-h"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -301,14 +312,14 @@ test "runPwd with short help flag" {
 }
 
 test "runPwd with short version flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-V"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -319,14 +330,14 @@ test "runPwd with short version flag" {
 }
 
 test "runPwd with no arguments" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -341,14 +352,14 @@ test "runPwd with no arguments" {
 }
 
 test "runPwd with -L flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-L"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -363,14 +374,14 @@ test "runPwd with -L flag" {
 }
 
 test "runPwd with -P flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-P"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return success exit code
     try testing.expectEqual(@as(u8, 0), result);
@@ -385,14 +396,14 @@ test "runPwd with -P flag" {
 }
 
 test "runPwd with invalid flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(), stderr_buffer.writer());
+    const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should return error exit code
     try testing.expectEqual(@as(u8, 1), result);

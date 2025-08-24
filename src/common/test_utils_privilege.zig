@@ -273,13 +273,13 @@ test "TestUtils with writer API" {
     var utils = TestUtils.init(allocator);
     defer utils.deinit();
 
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(allocator);
-    defer stderr_buf.deinit();
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stderr_buf.deinit(allocator);
 
     // Test that runCommandExpectError works with writers
-    try utils.runCommandExpectError(&.{"false"}, stdout_buf.writer(), stderr_buf.writer());
+    try utils.runCommandExpectError(&.{"false"}, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
 
     // The command should have failed (that's expected)
     // This test just verifies the API works

@@ -112,13 +112,13 @@ test "Symlink processing - error handling via metadata enhancement" {
     };
     defer testing.allocator.free(entries[0].name);
 
-    var error_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer error_buffer.deinit();
+    var error_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer error_buffer.deinit(testing.allocator);
 
     // This should handle the error gracefully and not crash
     try entry_collector.enhanceEntriesWithMetadata(testing.allocator, &entries, test_dir, types.LsOptions{ .long_format = true }, // Request symlink target reading
         null, // No git context
-        error_buffer.writer());
+        error_buffer.writer(testing.allocator));
 
     // Should complete without crashing (symlink_target will be null)
     try testing.expect(entries[0].symlink_target == null);

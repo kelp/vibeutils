@@ -33,4 +33,6 @@ docs/*.tar
 *_report.md
 
 # Local settings
-.claude/settings.local.json
+.claude/settings.local.jsontest-output/
+test_output.txt
+test-utilities.sh

@@ -546,10 +546,10 @@ pub fn testUtilityBasic(comptime run_fn: anytype, allocator: std.mem.Allocator, 
     var arg_storage = ArgStorage.init();
     const args = generateArgs(&arg_storage, input);
 
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
 
-    _ = run_fn(allocator, args, stdout_buf.writer(), stderr_writer) catch {
+    _ = run_fn(allocator, args, stdout_buf.writer(allocator), stderr_writer) catch {
         // Errors are expected and acceptable during fuzzing
         return;
     };
@@ -560,21 +560,21 @@ pub fn testUtilityDeterministic(comptime run_fn: anytype, allocator: std.mem.All
     var arg_storage = ArgStorage.init();
     const args = generateArgs(&arg_storage, input);
 
-    var buffer1 = std.ArrayList(u8).init(allocator);
-    defer buffer1.deinit();
-    var buffer2 = std.ArrayList(u8).init(allocator);
-    defer buffer2.deinit();
+    var buffer1 = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buffer1.deinit(allocator);
+    var buffer2 = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer buffer2.deinit(allocator);
 
-    const result1 = run_fn(allocator, args, buffer1.writer(), stderr_writer) catch |err| {
+    const result1 = run_fn(allocator, args, buffer1.writer(allocator), stderr_writer) catch |err| {
         // If first fails, second should also fail
-        const result2 = run_fn(allocator, args, buffer2.writer(), stderr_writer) catch {
+        const result2 = run_fn(allocator, args, buffer2.writer(allocator), stderr_writer) catch {
             return; // Both failed consistently
         };
         _ = result2;
         return err; // Inconsistent behavior
     };
 
-    const result2 = run_fn(allocator, args, buffer2.writer(), stderr_writer) catch {
+    const result2 = run_fn(allocator, args, buffer2.writer(allocator), stderr_writer) catch {
         return error.InconsistentBehavior;
     };
 
@@ -588,10 +588,10 @@ pub fn testUtilityPaths(comptime run_fn: anytype, allocator: std.mem.Allocator, 
     const path = generatePath(&path_buffer, input);
 
     const args = [_][]const u8{path};
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
 
-    _ = run_fn(allocator, &args, stdout_buf.writer(), stderr_writer) catch {
+    _ = run_fn(allocator, &args, stdout_buf.writer(allocator), stderr_writer) catch {
         // Errors are expected and acceptable during fuzzing
         return;
     };
@@ -805,13 +805,13 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
             }
 
             // Use fuzzer input to generate arguments
-            var args = std.ArrayList([]const u8).init(allocator);
+            var args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
             defer {
                 // Free all allocated argument strings
                 for (args.items) |arg| {
                     allocator.free(arg);
                 }
-                args.deinit();
+                args.deinit(allocator);
             }
 
             var input_idx: usize = 0;
@@ -830,11 +830,11 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
                 if (flag_info.short != null and (flag_byte & 2) != 0) {
                     // Use short form
                     var flag_buf: [2]u8 = .{ '-', flag_info.short.? };
-                    try args.append(try allocator.dupe(u8, &flag_buf));
+                    try args.append(allocator, try allocator.dupe(u8, &flag_buf));
                 } else {
                     // Use long form
                     const long_flag = try std.fmt.allocPrint(allocator, "--{s}", .{flag_info.name});
-                    try args.append(long_flag);
+                    try args.append(allocator, long_flag);
                 }
 
                 // Add value if needed
@@ -846,7 +846,7 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
 
                         if (input_idx + value_len <= input.len) {
                             const value = try allocator.dupe(u8, input[input_idx .. input_idx + value_len]);
-                            try args.append(value);
+                            try args.append(allocator, value);
                             input_idx += value_len;
                         }
                     }
@@ -863,7 +863,7 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
                 while (i < num_positionals and input_idx < input.len) : (i += 1) {
                     var path_buffer: [FuzzConfig.PATH_BUFFER_SIZE]u8 = undefined;
                     const path = generatePath(&path_buffer, input[input_idx..]);
-                    try args.append(try allocator.dupe(u8, path));
+                    try args.append(allocator, try allocator.dupe(u8, path));
                     input_idx = @min(input_idx + 10, input.len); // Skip some bytes
                 }
             }
@@ -877,24 +877,24 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
         /// Test for deterministic behavior with same flags
         pub fn testDeterministic(allocator: std.mem.Allocator, input: []const u8, stderr_writer: anytype) !void {
             // First run
-            var stdout_buf1 = std.ArrayList(u8).init(allocator);
-            defer stdout_buf1.deinit();
-            var stderr_buf1 = std.ArrayList(u8).init(allocator);
-            defer stderr_buf1.deinit();
+            var stdout_buf1 = try std.ArrayList(u8).initCapacity(allocator, 0);
+            defer stdout_buf1.deinit(allocator);
+            var stderr_buf1 = try std.ArrayList(u8).initCapacity(allocator, 0);
+            defer stderr_buf1.deinit(allocator);
 
-            var args1 = std.ArrayList([]const u8).init(allocator);
+            var args1 = try std.ArrayList([]const u8).initCapacity(allocator, 0);
             defer {
                 for (args1.items) |arg| allocator.free(arg);
-                args1.deinit();
+                args1.deinit(allocator);
             }
             try generateArgsFromInput(ArgsType, &args1, allocator, input);
 
-            const result1 = runFn(allocator, args1.items, stdout_buf1.writer(), stderr_writer) catch |err| {
+            const result1 = runFn(allocator, args1.items, stdout_buf1.writer(allocator), stderr_writer) catch |err| {
                 // If it fails once, it should fail consistently
-                var args2 = std.ArrayList([]const u8).init(allocator);
+                var args2 = try std.ArrayList([]const u8).initCapacity(allocator, 0);
                 defer {
                     for (args2.items) |arg| allocator.free(arg);
-                    args2.deinit();
+                    args2.deinit(allocator);
                 }
                 try generateArgsFromInput(ArgsType, &args2, allocator, input);
 
@@ -905,19 +905,19 @@ pub fn createSmartFuzzer(comptime ArgsType: type, comptime runFn: anytype) type 
             };
 
             // Second run
-            var stdout_buf2 = std.ArrayList(u8).init(allocator);
-            defer stdout_buf2.deinit();
-            var stderr_buf2 = std.ArrayList(u8).init(allocator);
-            defer stderr_buf2.deinit();
+            var stdout_buf2 = try std.ArrayList(u8).initCapacity(allocator, 0);
+            defer stdout_buf2.deinit(allocator);
+            var stderr_buf2 = try std.ArrayList(u8).initCapacity(allocator, 0);
+            defer stderr_buf2.deinit(allocator);
 
-            var args2 = std.ArrayList([]const u8).init(allocator);
+            var args2 = try std.ArrayList([]const u8).initCapacity(allocator, 0);
             defer {
                 for (args2.items) |arg| allocator.free(arg);
-                args2.deinit();
+                args2.deinit(allocator);
             }
             try generateArgsFromInput(ArgsType, &args2, allocator, input);
 
-            const result2 = runFn(allocator, args2.items, stdout_buf2.writer(), stderr_writer) catch {
+            const result2 = runFn(allocator, args2.items, stdout_buf2.writer(allocator), stderr_writer) catch {
                 return error.InconsistentBehavior;
             };
 
@@ -940,14 +940,14 @@ fn generateArgsFromInput(comptime ArgsType: type, args: *std.ArrayList([]const u
 
     // Just add a simple flag for now
     if (byte & 1 != 0) {
-        try args.append(try allocator.dupe(u8, "-v"));
+        try args.append(allocator, try allocator.dupe(u8, "-v"));
     }
     if (byte & 2 != 0) {
-        try args.append(try allocator.dupe(u8, "--parents"));
+        try args.append(allocator, try allocator.dupe(u8, "--parents"));
     }
     if (input.len > 1) {
         const path = try std.fmt.allocPrint(allocator, "dir{d}", .{input[1]});
-        try args.append(path);
+        try args.append(allocator, path);
     }
 }
 
@@ -1297,11 +1297,11 @@ pub const SmartArgumentBuilder = struct {
     selected_flags: std.ArrayList([]const u8),
     value_generator: SmartValueGenerator,
 
-    pub fn init(allocator: std.mem.Allocator, input: []const u8) SmartArgumentBuilder {
+    pub fn init(allocator: std.mem.Allocator, input: []const u8) !SmartArgumentBuilder {
         return .{
             .allocator = allocator,
-            .args = std.ArrayList([]const u8).init(allocator),
-            .selected_flags = std.ArrayList([]const u8).init(allocator),
+            .args = try std.ArrayList([]const u8).initCapacity(allocator, 0),
+            .selected_flags = try std.ArrayList([]const u8).initCapacity(allocator, 0),
             .value_generator = SmartValueGenerator.init(allocator, input),
         };
     }
@@ -1311,8 +1311,8 @@ pub const SmartArgumentBuilder = struct {
         for (self.args.items) |arg| {
             self.allocator.free(arg);
         }
-        self.args.deinit();
-        self.selected_flags.deinit();
+        self.args.deinit(self.allocator);
+        self.selected_flags.deinit(self.allocator);
     }
 
     pub fn canAddFlag(self: *const SmartArgumentBuilder, flag: *const SmartFlagInfo) bool {
@@ -1356,7 +1356,7 @@ pub const SmartArgumentBuilder = struct {
         }
 
         // Track this flag as selected
-        try self.selected_flags.append(flag.name);
+        try self.selected_flags.append(self.allocator, flag.name);
     }
 
     pub fn addPositionalArgs(self: *SmartArgumentBuilder, count: u8) !void {
@@ -1394,7 +1394,7 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
                 return;
             }
 
-            var builder = SmartArgumentBuilder.init(allocator, input);
+            var builder = try SmartArgumentBuilder.init(allocator, input);
             defer builder.deinit();
 
             var input_idx: usize = 0;
@@ -1430,7 +1430,7 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
 
         /// Test specific flag categories systematically
         pub fn testByCategory(allocator: std.mem.Allocator, input: []const u8, category: SemanticCategory, stderr_writer: anytype) !void {
-            var builder = SmartArgumentBuilder.init(allocator, input);
+            var builder = try SmartArgumentBuilder.init(allocator, input);
             defer builder.deinit();
 
             // Focus on flags from specific category
@@ -1465,7 +1465,7 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
         }
 
         fn testConflictingFlags(allocator: std.mem.Allocator, input: []const u8, stderr_writer: anytype) !void {
-            var builder = SmartArgumentBuilder.init(allocator, input);
+            var builder = try SmartArgumentBuilder.init(allocator, input);
             defer builder.deinit();
 
             // Intentionally try to add conflicting flags (should be filtered out)
@@ -1483,19 +1483,19 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
             for (&Analyzer.flag_infos) |*flag| {
                 if (flag.requires.len == 0) continue;
 
-                var builder = SmartArgumentBuilder.init(allocator, input);
+                var builder = try SmartArgumentBuilder.init(allocator, input);
                 defer builder.deinit();
 
                 // Add flag without its requirements
                 const long_flag = try std.fmt.allocPrint(allocator, "--{s}", .{flag.name});
-                try builder.args.append(long_flag);
+                try builder.args.append(builder.allocator, long_flag);
 
                 _ = runFn(allocator, builder.getArgs(), common.null_writer, stderr_writer) catch {};
             }
         }
 
         fn testInvalidValues(allocator: std.mem.Allocator, input: []const u8, stderr_writer: anytype) !void {
-            var builder = SmartArgumentBuilder.init(allocator, input);
+            var builder = try SmartArgumentBuilder.init(allocator, input);
             defer builder.deinit();
 
             // Add flags with intentionally problematic values
@@ -1503,7 +1503,7 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
                 if (!flag.takes_value) continue;
 
                 const long_flag = try std.fmt.allocPrint(allocator, "--{s}", .{flag.name});
-                try builder.args.append(long_flag);
+                try builder.args.append(builder.allocator, long_flag);
 
                 // Generate problematic values based on input
                 const problematic_values = [_][]const u8{
@@ -1518,7 +1518,7 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
 
                 if (input.len > 0) {
                     const value_idx = input[0] % problematic_values.len;
-                    try builder.args.append(try allocator.dupe(u8, problematic_values[value_idx]));
+                    try builder.args.append(builder.allocator, try allocator.dupe(u8, problematic_values[value_idx]));
                 }
 
                 _ = runFn(allocator, builder.getArgs(), common.null_writer, stderr_writer) catch {};
@@ -1530,7 +1530,7 @@ pub fn createIntelligentFuzzer(comptime ArgsType: type, comptime runFn: anytype)
         }
 
         fn testExcessiveFlags(allocator: std.mem.Allocator, input: []const u8, stderr_writer: anytype) !void {
-            var builder = SmartArgumentBuilder.init(allocator, input);
+            var builder = try SmartArgumentBuilder.init(allocator, input);
             defer builder.deinit();
 
             // Try to add every possible flag (within reason)
@@ -1596,7 +1596,7 @@ test "intelligent fuzzer components work correctly" {
 
     // Test SmartArgumentBuilder
     {
-        var builder = SmartArgumentBuilder.init(allocator, &[_]u8{ 10, 20, 30 });
+        var builder = try SmartArgumentBuilder.init(allocator, &[_]u8{ 10, 20, 30 });
         defer builder.deinit(); // deinit now properly frees allocated strings
 
         try builder.addPositionalArgs(2);

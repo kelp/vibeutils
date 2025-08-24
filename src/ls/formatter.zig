@@ -279,8 +279,8 @@ test "formatter - formatTimeWithStyle iso" {
 }
 
 test "formatter - printColumnar basic" {
-    var buffer = std.ArrayList(u8).init(testing.allocator);
-    defer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
 
     var entries = [_]Entry{
         .{ .name = "file1", .kind = .file },
@@ -289,9 +289,9 @@ test "formatter - printColumnar basic" {
     };
 
     const options = LsOptions{ .terminal_width = 40 };
-    const style = try display.initStyle(testing.allocator, buffer.writer(), .never);
+    const style = try display.initStyle(testing.allocator, buffer.writer(testing.allocator), .never);
 
-    try printColumnar(testing.allocator, &entries, buffer.writer(), options, style);
+    try printColumnar(testing.allocator, &entries, buffer.writer(testing.allocator), options, style);
 
     const output = buffer.items;
 

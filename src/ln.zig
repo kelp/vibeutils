@@ -48,21 +48,21 @@ fn createTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void 
 /// Used for creating symbolic links with --relative option
 fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: []const u8) ![]u8 {
     // Split both paths into components
-    var from_parts = std.ArrayList([]const u8).init(allocator);
-    defer from_parts.deinit();
-    var to_parts = std.ArrayList([]const u8).init(allocator);
-    defer to_parts.deinit();
+    var from_parts = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer from_parts.deinit(allocator);
+    var to_parts = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer to_parts.deinit(allocator);
 
     // Parse from path
     var from_it = std.mem.tokenizeScalar(u8, from_abs, '/');
     while (from_it.next()) |part| {
-        try from_parts.append(part);
+        try from_parts.append(allocator, part);
     }
 
     // Parse to path
     var to_it = std.mem.tokenizeScalar(u8, to_abs, '/');
     while (to_it.next()) |part| {
-        try to_parts.append(part);
+        try to_parts.append(allocator, part);
     }
 
     // Find common prefix
@@ -77,32 +77,32 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
     }
 
     // Build relative path
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer result.deinit(allocator);
 
     // Add ".." for each directory up to common ancestor
     const dirs_up = from_parts.items.len - common_prefix_len;
     for (0..dirs_up) |_| {
         if (result.items.len > 0) {
-            try result.append('/');
+            try result.append(allocator, '/');
         }
-        try result.appendSlice("..");
+        try result.appendSlice(allocator, "..");
     }
 
     // Add the remaining parts of 'to' path
     for (common_prefix_len..to_parts.items.len) |i| {
         if (result.items.len > 0) {
-            try result.append('/');
+            try result.append(allocator, '/');
         }
-        try result.appendSlice(to_parts.items[i]);
+        try result.appendSlice(allocator, to_parts.items[i]);
     }
 
     // Empty result means same path
     if (result.items.len == 0) {
-        try result.appendSlice(".");
+        try result.appendSlice(allocator, ".");
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Main entry point for ln command
@@ -115,10 +115,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
-    const exit_code = try runLn(allocator, args[1..], stdout_writer, stderr_writer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    const exit_code = try runLn(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -360,12 +371,16 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 return error.FileExists;
             } else {
                 // Interactive prompt
-                const stdin = std.io.getStdIn().reader();
+                var stdin_buffer: [4096]u8 = undefined;
+                var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+                const stdin = &stdin_reader.interface;
 
                 try stderr_writer.print("ln: replace '{s}'? ", .{link_name});
 
-                var buffer: [10]u8 = undefined;
-                const input = (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) orelse return;
+                const input = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
+                    error.EndOfStream => return,
+                    else => return err,
+                };
 
                 // Proceed only on 'y' or 'Y'
                 if (input.len == 0 or (input[0] != 'y' and input[0] != 'Y')) {

@@ -267,3 +267,24 @@ help:
 	@echo "  make docker-shell          Open shell in test container"
 	@echo ""
 	@echo "For more details on any target, see the Makefile or run 'make <target>'"
+
+# Integration Testing
+test-integration: build
+	@echo "Running integration tests..."
+	@./test-utilities.sh
+
+test-integration-zig: build
+	@echo "Running Zig integration tests..."
+	@zig test src/integration_tests.zig --main-mod-path . --deps common
+
+test-utility: build
+ifdef UTIL
+	@./test-utilities.sh $(UTIL)
+else
+	@echo "Usage: make test-utility UTIL=<name>"
+	@echo "Example: make test-utility UTIL=echo"
+endif
+
+benchmark: build
+	@echo "Running performance benchmarks..."
+	@RUN_BENCHMARKS=1 zig test src/integration_tests.zig --main-mod-path . --deps common --test-filter "benchmark"

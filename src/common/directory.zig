@@ -126,12 +126,12 @@ pub fn collectSubdirectories(
     base_path: []const u8,
     allocator: std.mem.Allocator,
 ) !std.ArrayList(SubdirEntry) {
-    var subdirs = std.ArrayList(SubdirEntry).init(allocator);
+    var subdirs = try std.ArrayList(SubdirEntry).initCapacity(allocator, 0);
     errdefer {
         for (subdirs.items) |subdir| {
             allocator.free(subdir.path);
         }
-        subdirs.deinit();
+        subdirs.deinit(allocator);
     }
 
     for (entries) |entry| {
@@ -143,7 +143,7 @@ pub fn collectSubdirectories(
 
             const full_path = try std.fs.path.join(allocator, &[_][]const u8{ base_path, entry.name });
             errdefer allocator.free(full_path);
-            try subdirs.append(SubdirEntry{ .name = entry.name, .path = full_path });
+            try subdirs.append(allocator, SubdirEntry{ .name = entry.name, .path = full_path });
         }
     }
 

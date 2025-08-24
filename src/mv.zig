@@ -112,11 +112,11 @@ test "mv: file rename in same directory" {
     defer testing.allocator.free(new_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, old_path, new_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, old_path, new_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify old file is gone
     try testing.expect(!test_dir.fileExists(old_name));
@@ -149,11 +149,11 @@ test "mv: move to different directory" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify original is gone
     try testing.expect(!test_dir.fileExists(source_name));
@@ -189,11 +189,11 @@ test "mv: directory move" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify original directory is gone
     test_dir.tmp_dir.dir.access("source_dir", .{}) catch |err| {
@@ -227,11 +227,11 @@ test "mv: force mode overwrites existing file" {
 
     // With force mode, should overwrite without error
     const options = MoveOptions{ .force = true };
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify source is gone and dest has new content
     try testing.expect(!test_dir.fileExists(source_name));
@@ -261,11 +261,11 @@ test "mv: no-clobber mode preserves existing file" {
 
     // With no-clobber mode, should not overwrite
     const options = MoveOptions{ .no_clobber = true };
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify source still exists and dest is unchanged
     try testing.expect(test_dir.fileExists(source_name));
@@ -293,11 +293,11 @@ test "mv: files with spaces in names" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -326,11 +326,11 @@ test "mv: files with unicode characters" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -359,11 +359,11 @@ test "mv: files with special characters" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -392,11 +392,11 @@ test "mv: empty file" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buf.deinit();
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(), stderr_buf.writer());
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -609,16 +609,19 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 
 /// Prompt user for overwrite confirmation
 fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
-    const stdin = std.io.getStdIn().reader();
+    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    const stdin = &stdin_reader.interface;
 
     try stderr_writer.print("mv: overwrite '{s}'? ", .{dest});
 
-    var buf: [PROMPT_BUFFER_SIZE]u8 = undefined;
-    if (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r\n");
-        return trimmed.len > 0 and (trimmed[0] == 'y' or trimmed[0] == 'Y');
-    }
-    return false;
+    const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
+        error.EndOfStream => return false,
+        else => return err,
+    };
+
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    return trimmed.len > 0 and (trimmed[0] == 'y' or trimmed[0] == 'Y');
 }
 
 /// Move file or directory with atomic rename or cross-filesystem copy
@@ -739,10 +742,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
-    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 

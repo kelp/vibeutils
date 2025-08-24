@@ -46,7 +46,7 @@ pub fn listDirectoryTest(
     var entries = try entry_collector.collectFilteredEntries(allocator, dir, test_options);
     defer {
         entry_collector.freeEntries(entries.items, allocator);
-        entries.deinit();
+        entries.deinit(allocator);
     }
 
     // Enhance with metadata if needed
@@ -99,19 +99,19 @@ pub fn freeTestEntry(entry: types.Entry, allocator: std.mem.Allocator) void {
 /// Returns an owned slice containing file, directory, and symlink entries.
 /// Memory must be freed with freeTestEntries().
 pub fn createTestEntries(allocator: std.mem.Allocator) ![]types.Entry {
-    var entries = std.ArrayList(types.Entry).init(allocator);
+    var entries = try std.ArrayList(types.Entry).initCapacity(allocator, 0);
     errdefer {
         for (entries.items) |entry| {
             freeTestEntry(entry, allocator);
         }
-        entries.deinit();
+        entries.deinit(allocator);
     }
 
-    try entries.append(try createTestEntry(allocator, "file1.txt", .file));
-    try entries.append(try createTestEntry(allocator, "directory", .directory));
-    try entries.append(try createTestEntry(allocator, "symlink", .sym_link));
+    try entries.append(allocator, try createTestEntry(allocator, "file1.txt", .file));
+    try entries.append(allocator, try createTestEntry(allocator, "directory", .directory));
+    try entries.append(allocator, try createTestEntry(allocator, "symlink", .sym_link));
 
-    return entries.toOwnedSlice();
+    return entries.toOwnedSlice(allocator);
 }
 
 /// Free test entries array and all contained entry data.
@@ -148,16 +148,16 @@ pub const LsTestEnv = struct {
         return LsTestEnv{
             .tmp_dir = tmp_dir,
             .test_dir = test_dir,
-            .stdout_buffer = std.ArrayList(u8).init(allocator),
-            .stderr_buffer = std.ArrayList(u8).init(allocator),
+            .stdout_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .stderr_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
             .allocator = allocator,
         };
     }
 
     /// Clean up all resources including temporary directory and buffers.
     pub fn deinit(self: *LsTestEnv) void {
-        self.stdout_buffer.deinit();
-        self.stderr_buffer.deinit();
+        self.stdout_buffer.deinit(self.allocator);
+        self.stderr_buffer.deinit(self.allocator);
         self.test_dir.close();
         self.tmp_dir.cleanup();
     }
@@ -214,8 +214,8 @@ pub const LsTestEnv = struct {
         try listDirectoryTest(
             self.test_dir,
             ".",
-            self.stdout_buffer.writer(),
-            self.stderr_buffer.writer(),
+            self.stdout_buffer.writer(self.allocator),
+            self.stderr_buffer.writer(self.allocator),
             options,
             self.allocator,
         );

@@ -388,8 +388,14 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     var args_iter = try std.process.argsWithAllocator(allocator);
     defer args_iter.deinit();
@@ -398,21 +404,25 @@ pub fn main() !void {
     const program_name = args_iter.next() orelse return;
     const is_bracket_form = std.mem.endsWith(u8, program_name, "[");
 
-    var args = ArrayList([]const u8).init(allocator);
-    defer args.deinit();
+    var args = try ArrayList([]const u8).initCapacity(allocator, 0);
+    defer args.deinit(allocator);
 
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
             try stdout.print("{s}", .{help_text});
             return;
         }
-        try args.append(arg);
+        try args.append(allocator, arg);
     }
 
     const exit_code = if (is_bracket_form)
         try runBracketTest(allocator, args.items, stdout, stderr)
     else
         try runTest(allocator, args.items, stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
 
     std.process.exit(exit_code);
 }
@@ -594,10 +604,10 @@ test "file size tests" {
 }
 
 test "bracket form requires closing bracket" {
-    var stderr_output = ArrayList(u8).init(testing.allocator);
-    defer stderr_output.deinit();
+    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_output.deinit(testing.allocator);
 
-    const result = try runTest(testing.allocator, &[_][]const u8{ "[", "hello" }, common.null_writer, stderr_output.writer());
+    const result = try runTest(testing.allocator, &[_][]const u8{ "[", "hello" }, common.null_writer, stderr_output.writer(testing.allocator));
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
     try testing.expect(std.mem.indexOf(u8, stderr_output.items, "missing closing ']'") != null);
 }
@@ -628,25 +638,25 @@ test "terminal test with valid fd" {
 }
 
 test "numeric comparison with invalid numbers" {
-    var stderr_output = ArrayList(u8).init(testing.allocator);
-    defer stderr_output.deinit();
+    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_output.deinit(testing.allocator);
 
     // Invalid numbers should return error for numeric operations (not false)
-    const result = try runTest(testing.allocator, &[_][]const u8{ "abc", "-eq", "5" }, common.null_writer, stderr_output.writer());
+    const result = try runTest(testing.allocator, &[_][]const u8{ "abc", "-eq", "5" }, common.null_writer, stderr_output.writer(testing.allocator));
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 }
 
 test "invalid expressions return error" {
-    var stderr_output = ArrayList(u8).init(testing.allocator);
-    defer stderr_output.deinit();
+    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_output.deinit(testing.allocator);
 
     // Test with incomplete unary expression (missing argument)
-    var result = try runTest(testing.allocator, &[_][]const u8{"-e"}, common.null_writer, stderr_output.writer());
+    var result = try runTest(testing.allocator, &[_][]const u8{"-e"}, common.null_writer, stderr_output.writer(testing.allocator));
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 
     // Test with incomplete binary expression (missing second operand)
     stderr_output.clearRetainingCapacity();
-    result = try runTest(testing.allocator, &[_][]const u8{ "hello", "=" }, common.null_writer, stderr_output.writer());
+    result = try runTest(testing.allocator, &[_][]const u8{ "hello", "=" }, common.null_writer, stderr_output.writer(testing.allocator));
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 }
 
@@ -734,16 +744,16 @@ test "complex nested expressions" {
 }
 
 test "error handling for malformed expressions" {
-    var stderr_output = ArrayList(u8).init(testing.allocator);
-    defer stderr_output.deinit();
+    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_output.deinit(testing.allocator);
 
     // Test with mixed operators that don't make sense
-    var result = try runTest(testing.allocator, &[_][]const u8{ "-e", "-f", "hello" }, common.null_writer, stderr_output.writer());
+    var result = try runTest(testing.allocator, &[_][]const u8{ "-e", "-f", "hello" }, common.null_writer, stderr_output.writer(testing.allocator));
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 
     // Test with unbalanced parentheses
     stderr_output.clearRetainingCapacity();
-    result = try runTest(testing.allocator, &[_][]const u8{ "(", "hello" }, common.null_writer, stderr_output.writer());
+    result = try runTest(testing.allocator, &[_][]const u8{ "(", "hello" }, common.null_writer, stderr_output.writer(testing.allocator));
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
 }
 

@@ -8,7 +8,7 @@
 //! ## TestWriter
 //! Simple buffer-based writer for capturing output:
 //! ```zig
-//! var test_writer = TestWriter.init(testing.allocator);
+//! var test_writer = try TestWriter.init(testing.allocator);
 //! defer test_writer.deinit();
 //! try some_function(test_writer.writer());
 //! try testing.expectEqualStrings("expected output", test_writer.getContent());
@@ -17,7 +17,7 @@
 //! ## StdoutCapture
 //! Comprehensive stdout/stderr capture with assertion helpers:
 //! ```zig
-//! var capture = StdoutCapture.init(testing.allocator);
+//! var capture = try StdoutCapture.init(testing.allocator);
 //! defer capture.deinit();
 //! try some_function(capture.stdoutWriter(), capture.stderrWriter());
 //! try capture.expectStdout("expected stdout");
@@ -73,24 +73,26 @@ pub fn createUniqueTestFile(dir: std.fs.Dir, allocator: std.mem.Allocator, base_
 /// A test writer that captures output to a buffer for testing
 pub const TestWriter = struct {
     buffer: std.ArrayList(u8),
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
     /// Initialize with an allocator
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .allocator = allocator,
         };
     }
 
     /// Deinitialize and free the buffer
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
 
     /// Get the writer interface
     pub fn writer(self: *Self) std.ArrayList(u8).Writer {
-        return self.buffer.writer();
+        return self.buffer.writer(self.allocator);
     }
 
     /// Get the captured content as a string
@@ -118,28 +120,28 @@ pub const StdoutCapture = struct {
     const Self = @This();
 
     /// Initialize stdout capture
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .allocator = allocator,
-            .output = std.ArrayList(u8).init(allocator),
-            .error_output = std.ArrayList(u8).init(allocator),
+            .output = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .error_output = try std.ArrayList(u8).initCapacity(allocator, 0),
         };
     }
 
     /// Deinitialize and free buffers
     pub fn deinit(self: *Self) void {
-        self.output.deinit();
-        self.error_output.deinit();
+        self.output.deinit(self.allocator);
+        self.error_output.deinit(self.allocator);
     }
 
     /// Get stdout writer
     pub fn stdoutWriter(self: *Self) std.ArrayList(u8).Writer {
-        return self.output.writer();
+        return self.output.writer(self.allocator);
     }
 
     /// Get stderr writer
     pub fn stderrWriter(self: *Self) std.ArrayList(u8).Writer {
-        return self.error_output.writer();
+        return self.error_output.writer(self.allocator);
     }
 
     /// Get stdout content
@@ -220,8 +222,8 @@ pub const StdoutCapture = struct {
 /// Strip ANSI escape codes from text
 /// Handles multiple escape sequence types: CSI, OSC, and other ANSI sequences
 pub fn stripAnsiCodes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
+    var result = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer result.deinit(allocator);
 
     var i: usize = 0;
     while (i < input.len) {
@@ -274,17 +276,17 @@ pub fn stripAnsiCodes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
                 i += 2;
             } else {
                 // Unknown escape sequence, skip ESC and continue
-                try result.append(input[i]);
+                try result.append(allocator, input[i]);
                 i += 1;
             }
         } else {
             // Regular character, add to result
-            try result.append(input[i]);
+            try result.append(allocator, input[i]);
             i += 1;
         }
     }
 
-    return result.toOwnedSlice();
+    return result.toOwnedSlice(allocator);
 }
 
 /// Helper function to run a command and capture its output
@@ -322,7 +324,7 @@ pub fn captureOutput(
     comptime func: anytype,
     args: anytype,
 ) ![]u8 {
-    var test_writer = TestWriter.init(allocator);
+    var test_writer = try TestWriter.init(allocator);
     defer test_writer.deinit();
 
     try @call(.auto, func, .{test_writer.writer()} ++ args);
@@ -335,7 +337,7 @@ pub fn captureOutput(
 // ============================================================================
 
 test "TestWriter basic functionality" {
-    var test_writer = TestWriter.init(testing.allocator);
+    var test_writer = try TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
     try test_writer.writer().writeAll("Hello, ");
@@ -345,7 +347,7 @@ test "TestWriter basic functionality" {
 }
 
 test "TestWriter clear functionality" {
-    var test_writer = TestWriter.init(testing.allocator);
+    var test_writer = try TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
     try test_writer.writer().writeAll("Initial content");
@@ -359,7 +361,7 @@ test "TestWriter clear functionality" {
 }
 
 test "StdoutCapture basic functionality" {
-    var capture = StdoutCapture.init(testing.allocator);
+    var capture = try StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("stdout content");
@@ -370,7 +372,7 @@ test "StdoutCapture basic functionality" {
 }
 
 test "StdoutCapture assertion methods" {
-    var capture = StdoutCapture.init(testing.allocator);
+    var capture = try StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("test output");
@@ -388,7 +390,7 @@ test "StdoutCapture assertion methods" {
 }
 
 test "StdoutCapture clear functionality" {
-    var capture = StdoutCapture.init(testing.allocator);
+    var capture = try StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("initial stdout");
@@ -515,7 +517,7 @@ test "stripAnsiCodes mixed sequence types" {
 }
 
 test "TestWriter with ANSI stripping" {
-    var test_writer = TestWriter.init(testing.allocator);
+    var test_writer = try TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
     try test_writer.writer().writeAll("Hello \x1b[31mRed\x1b[0m World");
@@ -527,7 +529,7 @@ test "TestWriter with ANSI stripping" {
 }
 
 test "StdoutCapture with ANSI stripping" {
-    var capture = StdoutCapture.init(testing.allocator);
+    var capture = try StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("Hello \x1b[31mRed\x1b[0m World");
@@ -565,7 +567,7 @@ test "integration example: testing a simple echo function" {
     };
 
     // Test with TestWriter
-    var test_writer = TestWriter.init(testing.allocator);
+    var test_writer = try TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
     const args = [_][]const u8{ "hello", "world" };
@@ -574,7 +576,7 @@ test "integration example: testing a simple echo function" {
     try testing.expectEqualStrings("hello world\n", test_writer.getContent());
 
     // Test with StdoutCapture
-    var capture = StdoutCapture.init(testing.allocator);
+    var capture = try StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try EchoFunc.echo(capture.stdoutWriter(), &args, false);
@@ -595,7 +597,7 @@ test "integration example: testing colored output" {
     };
 
     // Test with ANSI stripping
-    var capture = StdoutCapture.init(testing.allocator);
+    var capture = try StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try ColorFunc.coloredOutput(capture.stdoutWriter(), "red text");

@@ -45,10 +45,21 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const stdout_writer = std.io.getStdOut().writer();
-    const stderr_writer = std.io.getStdErr().writer();
+    // Set up buffered writers for stdout and stderr
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
 
-    const exit_code = try runUtility(allocator, args[1..], stdout_writer, stderr_writer);
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+
     std.process.exit(exit_code);
 }
 
@@ -159,7 +170,7 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
     }
 
     // Use C chmod function for directories on POSIX systems
-    const path_z = try std.fmt.allocPrintZ(allocator, "{s}", .{path});
+    const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
     const result = std.c.chmod(path_z, mode);
@@ -252,12 +263,12 @@ fn createDirectoryWithParents(path: []const u8, options: MkdirOptions, prog_name
 // ============================================================================
 
 test "mkdir creates single directory" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteDir("test_dir") catch {};
 
     const args = [_][]const u8{"test_dir"};
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -269,12 +280,12 @@ test "mkdir creates single directory" {
 }
 
 test "mkdir with parents flag creates directory tree" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteTree("test_parent") catch {};
 
     const args = [_][]const u8{ "-p", "test_parent/test_child" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -291,12 +302,12 @@ test "mkdir with parents flag creates directory tree" {
 }
 
 test "mkdir with verbose flag prints creation messages" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteDir("test_verbose") catch {};
 
     const args = [_][]const u8{ "-v", "test_verbose" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mkdir: created directory 'test_verbose'") != null);
@@ -308,12 +319,12 @@ test "mkdir with mode flag sets permissions" {
         return;
     }
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteDir("test_mode") catch {};
 
     const args = [_][]const u8{ "-m", "755", "test_mode" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -329,11 +340,11 @@ test "mkdir fails for existing directory without parents flag" {
     try std.fs.cwd().makeDir("test_existing");
     defer std.fs.cwd().deleteDir("test_existing") catch {};
 
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"test_existing"};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "PathAlreadyExists") != null);
@@ -344,32 +355,32 @@ test "mkdir with parents flag succeeds for existing directory" {
     try std.fs.cwd().makeDir("test_existing_p");
     defer std.fs.cwd().deleteDir("test_existing_p") catch {};
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-p", "test_existing_p" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "mkdir fails with missing operand" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 }
 
 test "mkdir shows help with -h flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-h"};
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: mkdir") != null);
@@ -377,48 +388,48 @@ test "mkdir shows help with -h flag" {
 }
 
 test "mkdir shows version with -V flag" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-V"};
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mkdir (vibeutils)") != null);
 }
 
 test "mkdir handles invalid mode" {
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-m", "999", "test_invalid" };
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer());
+    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid mode") != null);
 }
 
 test "mkdir combines parents and verbose flags" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteTree("test_combo") catch {};
 
     const args = [_][]const u8{ "-pv", "test_combo/sub/deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
 }
 
 test "mkdir handles multiple directories" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteDir("test_multi1") catch {};
     defer std.fs.cwd().deleteDir("test_multi2") catch {};
     defer std.fs.cwd().deleteDir("test_multi3") catch {};
 
     const args = [_][]const u8{ "test_multi1", "test_multi2", "test_multi3" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -454,12 +465,12 @@ test "parseMode rejects invalid modes" {
 }
 
 test "mkdir handles paths with double slashes" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteTree("test_slashes") catch {};
 
     const args = [_][]const u8{ "-p", "test_slashes//sub//deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -471,12 +482,12 @@ test "mkdir handles paths with double slashes" {
 }
 
 test "mkdir handles paths with dot components" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteTree("test_dots") catch {};
 
     const args = [_][]const u8{ "-p", "test_dots/../test_dots/./sub" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -488,12 +499,12 @@ test "mkdir handles paths with dot components" {
 }
 
 test "mkdir verbose with parents shows directory creation" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteTree("test_verbose_parents") catch {};
 
     const args = [_][]const u8{ "-pv", "test_verbose_parents/new_child" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
@@ -505,12 +516,12 @@ test "mkdir with mode applies to all created directories with -p" {
         return;
     }
 
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
     defer std.fs.cwd().deleteTree("test_mode_parents") catch {};
 
     const args = [_][]const u8{ "-pm", "755", "test_mode_parents/sub/deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(), common.null_writer);
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 

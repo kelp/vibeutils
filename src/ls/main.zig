@@ -98,16 +98,27 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
         // Use specific error information instead of generic "invalid argument"
-        const stderr = std.io.getStdErr().writer();
+        var stderr_buffer: [4096]u8 = undefined;
+        var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+        const stderr = &stderr_writer.interface;
         common.fatalWithWriter(stderr, "argument parsing failed: {s}", .{@errorName(err)});
     };
     defer allocator.free(args.positionals);
 
     // Create stdout and stderr writers and pass them through
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
     try runLs(allocator, args, stdout, stderr);
+
+    // Flush buffers before exit
+    stdout.flush() catch {};
+    stderr.flush() catch {};
 }
 
 /// Wrapper function for consistent fuzz testing interface
@@ -183,7 +194,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     }
 
     // Detect terminal status for icons and colors
-    const stdout_file = std.io.getStdOut();
+    const stdout_file = std.fs.File.stdout();
     const is_terminal = stdout_file.isTty();
 
     // Create options struct by consolidating all parsed arguments
@@ -409,17 +420,17 @@ test {
 
 // Test the refactored lsMain function with writer parameter
 test "lsMain help works with different writers" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = LsArgs{
         .help = true,
         .positionals = &.{},
     };
 
-    try lsMain(stdout_buffer.writer(), stderr_buffer.writer(), args, testing.allocator);
+    try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
 
     // Should contain help text
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
@@ -429,17 +440,17 @@ test "lsMain help works with different writers" {
 }
 
 test "lsMain version works with different writers" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = LsArgs{
         .version = true,
         .positionals = &.{},
     };
 
-    try lsMain(stdout_buffer.writer(), stderr_buffer.writer(), args, testing.allocator);
+    try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
 
     // Should contain version info
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "ls (") != null);
@@ -448,17 +459,17 @@ test "lsMain version works with different writers" {
 }
 
 test "runLs function works with separate writers" {
-    var stdout_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stdout_buffer.deinit();
-    var stderr_buffer = std.ArrayList(u8).init(testing.allocator);
-    defer stderr_buffer.deinit();
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = LsArgs{
         .help = true,
         .positionals = &.{},
     };
 
-    try runLs(testing.allocator, args, stdout_buffer.writer(), stderr_buffer.writer());
+    try runLs(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should contain help text in stdout
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);

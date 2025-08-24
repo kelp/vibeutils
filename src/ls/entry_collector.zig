@@ -11,7 +11,7 @@ pub fn collectFilteredEntries(
     dir: std.fs.Dir,
     options: LsOptions,
 ) anyerror!std.ArrayList(Entry) {
-    var entries = std.ArrayList(Entry).init(allocator);
+    var entries = try std.ArrayList(Entry).initCapacity(allocator, 0);
     errdefer {
         // Clean up any entries allocated so far
         for (entries.items) |entry| {
@@ -20,7 +20,7 @@ pub fn collectFilteredEntries(
                 allocator.free(target);
             }
         }
-        entries.deinit();
+        entries.deinit(allocator);
     }
 
     // Create filter based on options
@@ -46,7 +46,7 @@ pub fn collectFilteredEntries(
             .kind = entry.kind,
         };
 
-        try entries.append(e);
+        try entries.append(allocator, e);
     }
 
     return entries;
@@ -99,20 +99,20 @@ pub fn enhanceEntriesWithMetadataBatch(
     const needs_git = options.show_git_status and git_context != null;
 
     // Create batches of entries by operation type
-    var stat_indices = std.ArrayList(usize).init(temp_allocator);
-    var symlink_indices = std.ArrayList(usize).init(temp_allocator);
-    var git_indices = std.ArrayList(usize).init(temp_allocator);
+    var stat_indices = try std.ArrayList(usize).initCapacity(temp_allocator, 0);
+    var symlink_indices = try std.ArrayList(usize).initCapacity(temp_allocator, 0);
+    var git_indices = try std.ArrayList(usize).initCapacity(temp_allocator, 0);
 
     // Group entries by required operations
     for (entries, 0..) |entry, i| {
         if (needs_stat) {
-            try stat_indices.append(i);
+            try stat_indices.append(temp_allocator, i);
         }
         if (needs_symlink and entry.kind == .sym_link) {
-            try symlink_indices.append(i);
+            try symlink_indices.append(temp_allocator, i);
         }
         if (needs_git) {
-            try git_indices.append(i);
+            try git_indices.append(temp_allocator, i);
         }
     }
 
@@ -168,7 +168,7 @@ pub fn processSubdirectoriesRecursively(
     var subdirs = try common.directory.collectSubdirectories(Entry, entries, base_path, allocator);
     defer {
         common.directory.freeSubdirectoryPaths(subdirs.items, allocator);
-        subdirs.deinit();
+        subdirs.deinit(allocator);
     }
 
     // Create cycle detector
@@ -270,7 +270,7 @@ test "entry_collector - collectFilteredEntries basic" {
     var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{});
     defer {
         freeEntries(entries.items, testing.allocator);
-        entries.deinit();
+        entries.deinit(testing.allocator);
     }
 
     // Should only contain visible file
@@ -295,7 +295,7 @@ test "entry_collector - collectFilteredEntries with all option" {
     var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{ .all = true });
     defer {
         freeEntries(entries.items, testing.allocator);
-        entries.deinit();
+        entries.deinit(testing.allocator);
     }
 
     // Should contain both files (note: . and .. might also be included depending on filesystem)
