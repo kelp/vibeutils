@@ -34,6 +34,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "yes", .path = "src/yes.zig", .needs_libc = true, .description = "Output a string repeatedly until killed" },
     .{ .name = "head", .path = "src/head.zig", .needs_libc = true, .description = "Output the first part of files" },
     .{ .name = "tail", .path = "src/tail.zig", .needs_libc = true, .description = "Display the last part of files" },
+    .{ .name = "wc", .path = "src/wc.zig", .needs_libc = true, .description = "Print newline, word, and byte counts" },
 };
 
 /// Parse version from ZON content string

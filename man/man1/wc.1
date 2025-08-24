@@ -1,0 +1,105 @@
+.Dd August 24, 2025
+.Dt WC 1
+.Os vibeutils
+.Sh NAME
+.Nm wc
+.Nd print newline, word, and byte counts for each file
+.Sh SYNOPSIS
+.Nm wc
+.Op Fl clmwL
+.Op Fl -help
+.Op Fl -version
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the number of lines, words, and bytes contained in each input
+.Ar file ,
+or standard input (if no file is specified) to the standard output.
+.Pp
+A line is defined as a string of characters delimited by a newline character.
+Characters beyond the final newline character will not be included in the line count.
+.Pp
+A word is defined as a string of characters delimited by white space
+characters. White space characters are the set of characters for which the
+.Xr isspace 3
+function returns true.
+.Pp
+If more than one input file is specified, a line of cumulative counts
+for all the files is displayed on a separate line after the output for
+the last file.
+.Pp
+The following options are available:
+.Bl -tag -width Ds
+.It Fl c , Fl -bytes
+The number of bytes in each input file is written to the standard output.
+This will cancel out any prior usage of the
+.Fl m
+option.
+.It Fl l , Fl -lines
+The number of lines in each input file is written to the standard output.
+.It Fl m , Fl -chars
+The number of characters in each input file is written to the standard output.
+If the current locale does not support multibyte characters, this is equivalent to the
+.Fl c
+option.
+This will cancel out any prior usage of the
+.Fl c
+option.
+.It Fl w , Fl -words
+The number of words in each input file is written to the standard output.
+.It Fl L , Fl -max-line-length
+Write the length of the longest line to the standard output.
+.It Fl -help
+Display help and exit.
+.It Fl -version
+Output version information and exit.
+.El
+.Pp
+When an option is specified,
+.Nm
+only reports the information requested by that option.
+The order of output always takes the form of line, word, byte, and file name.
+The default action is equivalent to specifying the
+.Fl c , l
+and
+.Fl w
+options.
+.Pp
+If no files are specified, the standard input is used and no file name is displayed.
+The prompt will accept input until receiving EOF, or
+.Dq ^D
+in most environments.
+.Sh EXIT STATUS
+.Ex -std wc
+.Sh EXAMPLES
+Count the number of lines in each of two files and display totals:
+.Pp
+.Dl "wc -l file1.txt file2.txt"
+.Pp
+Count the number of words in standard input:
+.Pp
+.Dl "echo 'Hello world' | wc -w"
+.Pp
+Count the number of bytes and characters in a UTF-8 file:
+.Pp
+.Dl "wc -c -m utf8.txt"
+.Pp
+Display the length of the longest line:
+.Pp
+.Dl "wc -L document.txt"
+.Sh SEE ALSO
+.Xr cksum 1 ,
+.Xr isspace 3
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2001
+specification.
+.Pp
+The
+.Fl L
+option is a GNU extension.
+.Sh AUTHORS
+vibeutils implementation by Travis Cole.
