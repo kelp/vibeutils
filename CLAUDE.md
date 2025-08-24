@@ -212,92 +212,21 @@ Quick notes:
 - Fuzz tests go at end of utility files (not separate files)
 
 
-## Zig 0.15.1 Critical Changes
+## Zig 0.15.1 Migration Guide
 
-### Removed Features (Will Not Compile)
+This project requires **Zig 0.15.1** (minimum version set in `build.zig.zon`).
+
+**⚠️ CRITICAL: Zig 0.15.1 has breaking changes that happened after your training cutoff. You MUST verify everything.**
+
+### Major Breaking Changes
+
+#### Removed Features (Will Not Compile)
 - **`usingnamespace`** keyword - completely removed
-- **`async`/`await`** - removed from language
+- **`async`/`await`** - removed from language  
 - **`BoundedArray`** - use regular arrays or ArrayList
-- **Generic readers/writers** - see Writer Migration above
 
-### Changed APIs
-- **ArrayList** now defaults to unmanaged version
-- **Build system** requires explicit `root_module` configuration
-- **I/O completely redesigned** - see migration guide
-
-### New Restrictions
-- Stricter `undefined` usage in arithmetic
-- More restrictive compile-time type coercion
-- Cannot store `type` fields in runtime structs
-
-## ⚠️ CRITICAL: Dealing with Zig's Rapid Evolution
-
-**Zig 0.15.1 has breaking changes that happened after your training cutoff. You MUST verify everything.**
-
-### How to Find Current Zig 0.15.1 APIs
-
-**When you encounter a Zig compilation error or need to look up an API:**
-
-1. **First, check the release notes for breaking changes:**
-   ```
-   Use Grep tool:
-   - pattern: "ArrayList" or "Writergate" or the specific API
-   - path: docs/zig-0.15.1-release-notes.md
-   - This file is only 1,620 lines, documents all breaking changes
-   ```
-
-2. **Then look up the current API in the full docs:**
-   ```
-   Use Grep tool:
-   - pattern: "std\.ArrayList" or "std\.fs\.File" or specific function
-   - path: docs/zig-0.15.1-docs.md  
-   - This file is 15,664 lines but Grep with -C flag gives context
-   ```
-
-3. **Find working examples in our codebase:**
-   ```
-   Use Grep tool:
-   - pattern: "initCapacity" or "writer\(&" or the new pattern
-   - path: src/
-   - Look especially at src/basename.zig (already migrated)
-   ```
-
-### Example: When you see "no member named 'init'" error
-
-```
-1. Grep "ArrayList.*init" in docs/zig-0.15.1-release-notes.md
-   → Find: "ArrayList: make unmanaged the default"
-   
-2. Grep "ArrayList" in src/basename.zig
-   → Find: "std.ArrayList(u8).initCapacity(allocator, 0)"
-   
-3. Now you know: init() → initCapacity(allocator, 0)
-```
-
-### Quick Reference for Common Breaking Changes
-
-Instead of remembering these, use Grep to find them:
-- **I/O changes**: Grep "Writergate" in release notes
-- **ArrayList changes**: Grep "ArrayList: make unmanaged" in release notes  
-- **Removed features**: Grep "usingnamespace|async|BoundedArray" in release notes
-
-### Documentation Priority Order
-
-1. **Compiler errors are truth** - If it doesn't compile, the API changed
-2. **docs/zig-0.15.1-release-notes.md** - Explains what changed and why
-3. **docs/zig-0.15.1-docs.md** - Shows current API syntax
-4. **src/basename.zig** - Working example of migrated code
-5. **docs/ZIG_0_15_1_WRITER_MIGRATION.md** - Our migration guide
-
-**Remember: You have Grep tool. Use it liberally on these docs rather than guessing!**
-
-#### Project Zig Version
-
-This project requires **Zig 0.15.1** (minimum version set in `build.zig.zon`). When looking up documentation, ensure compatibility with this version.
-
-**⚠️ CRITICAL: Zig 0.15.1 Breaking Changes ("Writergate")**
-
-Zig 0.15.1 fundamentally changed how I/O works. **Readers and Writers are no longer generic** - they use `std.Io.Writer` and `std.Io.Reader` (capital I, lowercase o) with explicit buffers:
+#### I/O "Writergate" - Complete Redesign
+Readers and Writers are no longer generic. They use `std.Io.Writer` and `std.Io.Reader` with explicit buffers:
 
 ```zig
 // OLD (Zig 0.14.1) - DO NOT USE
@@ -311,104 +240,53 @@ const stdout = &stdout_writer.interface;
 defer stdout.flush() catch {};
 ```
 
-**Key changes:**
-- `std.io.getStdOut()` → `std.fs.File.stdout()`
-- `std.io.bufferedWriter` → REMOVED (use buffer in writer)
-- Writers return `std.Io.Writer` interface (not generic!)
-
-**See `docs/ZIG_0_15_1_WRITER_MIGRATION.md` for complete migration guide.**
-
-### Critical Zig 0.15.1 Migration Notes (From Real Experience)
-
-#### ArrayList API Changes
-ArrayList is now "unmanaged" by default, requiring allocator parameters everywhere:
+#### ArrayList Now Unmanaged by Default
+ArrayList requires allocator parameters for ALL operations:
 
 ```zig
 // OLD (Zig 0.14.1)
 var list = std.ArrayList(u8).init(allocator);
 defer list.deinit();
 try list.append(value);
-const slice = try list.toOwnedSlice();
-const writer = list.writer();
 
-// NEW (Zig 0.15.1) - allocator required for ALL operations
+// NEW (Zig 0.15.1) - allocator required everywhere
 var list = try std.ArrayList(u8).initCapacity(allocator, 0);
 defer list.deinit(allocator);  // Note: allocator parameter
 try list.append(allocator, value);  // Note: allocator parameter
-const slice = try list.toOwnedSlice(allocator);  // Note: allocator parameter
-const writer = list.writer(allocator);  // Note: allocator parameter
 ```
 
-#### Migration Order (Learned from basename.zig)
-1. **Fix main() first** - Update I/O patterns
-2. **Fix ArrayList usage** - Add allocator parameters everywhere
-3. **Fix tests** - Update test helpers and ArrayList usage
-4. **Fix common libraries** - argparse.zig, test_utils.zig, etc.
+### How to Find Current Zig 0.15.1 APIs
 
-#### Common Compilation Errors and Fixes
-```zig
-// ERROR: struct 'Io' has no member named 'getStdOut'
-// OLD: std.io.getStdOut()
-// NEW: std.fs.File.stdout()
+**When you encounter a Zig compilation error or need to look up an API:**
 
-// ERROR: struct 'array_list.Aligned' has no member named 'init'
-// OLD: std.ArrayList(T).init(allocator)
-// NEW: std.ArrayList(T).initCapacity(allocator, 0)
+1. **Check release notes for breaking changes:**
+   ```
+   Use Grep tool:
+   - pattern: "ArrayList" or "Writergate" or the specific API
+   - path: docs/zig-0.15.1-release-notes.md
+   ```
 
-// ERROR: member function expected 1 argument(s), found 0
-// OLD: list.deinit()
-// NEW: list.deinit(allocator)
+2. **Look up current API in full docs:**
+   ```
+   Use Grep tool:
+   - pattern: "std\.ArrayList" or "std\.fs\.File" or specific function
+   - path: docs/zig-0.15.1-docs.md
+   ```
 
-// ERROR: member function expected 1 argument(s), found 0
-// OLD: list.writer()
-// NEW: list.writer(allocator)
-```
+3. **Find working examples in our codebase:**
+   ```
+   Use Grep tool:
+   - pattern: "initCapacity" or "writer\(&" or the new pattern
+   - path: src/
+   - Look especially at src/basename.zig (already migrated)
+   ```
 
-#### Recommended Zig Documentation Sources
-
-When working with Zig, use the following library IDs for best results:
-- `/jedisct1/zig-mcp-doc` - MCP-friendly Zig documentation (9054 code snippets, trust score 9.7)
-- `/context7/ziglang` - General Zig documentation (5449 code snippets, trust score 7.5)
-- `/jedisct1/zig-for-mcp` - Alternative MCP-friendly docs (8836 code snippets, trust score 9.7)
-- `/ziglang/zig` - Official Zig documentation (279 code snippets, version 0.14.1 available)
-
-For version-specific documentation:
-- Some libraries support version queries (e.g., `/ziglang/zig/0.15.1`)
-- When in doubt, check the documentation source to ensure it covers Zig 0.15.1 features
-
-#### Example Usage
-
-When implementing file operations:
-```zig
-// Step 1: Get documentation for file system operations
-// Use: mcp__context7__get-library-docs with:
-//   - context7CompatibleLibraryID: "/jedisct1/zig-mcp-doc"
-//   - topic: "std.fs"  // For file system operations
-//   - tokens: 5000     // Adjust based on how much context you need
-
-// For version-specific documentation (when available):
-// Use: mcp__context7__get-library-docs with:
-//   - context7CompatibleLibraryID: "/ziglang/zig/0.15.1"
-//   - topic: "std.fs"
-
-// For memory management:
-// Use same command but with topic: "allocator" or "std.mem"
-
-// For specific modules:
-// - topic: "std.process" for process operations
-// - topic: "std.io" for I/O operations
-// - topic: "builtin" for builtin functions
-// - topic: "std.heap" for heap allocators
-```
-
-**Best Practices for Using context7:**
-1. **Check early and often** - Don't wait until you're stuck
-2. **Verify assumptions** - What worked in Zig 0.14 may have changed in 0.15.1
-3. **Look for examples** - Request code snippets showing actual usage
-4. **Check multiple sources** - Try different library IDs if needed
-5. **Be specific with topics** - Use precise module names like "std.fs.File" not just "file"
-
-The tool returns actual code snippets from real Zig projects, making it more reliable than memory or outdated documentation.
+**Documentation Priority Order:**
+1. **Compiler errors are truth** - If it doesn't compile, the API changed
+2. **docs/zig-0.15.1-release-notes.md** - Explains what changed and why
+3. **docs/zig-0.15.1-docs.md** - Shows current API syntax
+4. **src/basename.zig** - Working example of migrated code
+5. **docs/ZIG_0_15_1_WRITER_MIGRATION.md** - Our migration guide
 
 ## Agent Workflow Details
 
@@ -551,13 +429,15 @@ When implementing utilities:
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
 - `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
 - `docs/ZIG_0_15_1_WRITER_MIGRATION.md` - I/O migration guide
+- `docs/zig-0.15.1-release-notes.md` - Breaking changes reference
+- `docs/zig-0.15.1-docs.md` - Full Zig 0.15.1 documentation
 
 **📖 Fuzzing Documentation:**
 - `docs/FUZZING.md` - Main fuzzing guide
 - `docs/SELECTIVE_FUZZING.md` - Selective fuzzing system
 - `docs/FUZZ_ARCHITECTURE.md` - Fuzzing architecture
 
-**⚠️ IMPORTANT: Use grep/search to find examples in these docs**
+**⚠️ IMPORTANT: Use Grep tool to find examples in these docs**
 
 ### Documentation Examples
 
@@ -576,24 +456,27 @@ When implementing utilities:
 
 ## Code Style and Conventions
 
-### Writer-Based Error Handling
+### I/O Patterns with Zig 0.15.1
 
-All utilities accept `stdout_writer` and `stderr_writer` parameters to prevent test pollution:
+Due to "Writergate", all I/O uses explicit buffers. Utilities follow this pattern:
 
 ```zig
+pub fn main() !void {
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
+    
+    // Similar for stderr
+}
+
 pub fn runUtil(allocator: Allocator, args: []const []const u8,
                stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Output to stdout_writer, errors to stderr_writer
-    common.printErrorWithProgram(stderr_writer, "util", "error: {s}", .{msg});
+    // Use passed writers for output
+    common.printErrorWithProgram(allocator, stderr_writer, "util", "error: {s}", .{msg});
     return @intFromEnum(common.ExitCode.general_error);
 }
 ```
-
-**Key points:**
-- Pass writers explicitly, no abstractions
-- Use `common.printErrorWithProgram()` for errors
-- Tests use `common.null_writer` to suppress stderr
-- Old functions (`common.fatal()`, `common.printError()`) cause compile errors
 
 
 ### Memory Management
@@ -614,7 +497,7 @@ pub fn runUtil(allocator: Allocator, args: []const []const u8,
 - Pass allocator as first parameter to functions that allocate
 
 ### Argument Parsing
-- Use zig-clap for consistent GNU-style argument parsing
+- Use our custom argparse module (`src/common/argparse.zig`)
 - Support both short (`-n`) and long (`--number`) options
 - Include `--help` and `--version` for all utilities
 
