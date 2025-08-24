@@ -246,7 +246,6 @@ Only validate for **correctness**:
 - `docs/STD_LIBRARY_SUMMARY.md` - Zig std library reference
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
 - `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
-- `docs/ZIG_0_15_1_WRITER_MIGRATION.md` - I/O migration guide
 - `docs/zig-0.15.1-release-notes.md` - Full release notes
 - `docs/zig-0.15.1-docs.md` - Full Zig 0.15.1 documentation
 
