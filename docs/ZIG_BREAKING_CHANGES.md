@@ -511,7 +511,7 @@ Things that didn't exist in your training:
 |--------------|--------------|-------|
 | `std.io.getStdOut()` | `std.fs.File.stdout()` | Returns File, not writer |
 | `std.mem.tokenize` | `std.mem.tokenizeAny` | Multiple variants now |
-| `std.ArrayList(T)` | `std.ArrayListUnmanaged(T)` | Default is unmanaged |
+| `std.ArrayList(T)` | `std.ArrayListUnmanaged(T)` preferred | Managed still exists as `std.array_list.Managed(T)` |
 | `std.BoundedArray` | Use `ArrayListUnmanaged.initBuffer` | Completely removed |
 | `std.json.Parser` | `std.json.parseFromSlice` | Complete API change |
 | `std.fifo.LinearFifo` | Use `std.Io.Reader/Writer` | Removed |
@@ -519,10 +519,38 @@ Things that didn't exist in your training:
 | `std.hash_map.HashMap` | `std.hash_map.AutoHashMap` | Or `std.hash.Map` |
 | `std.fmt.format` | `std.Io.Writer.print` | Different API |
 | `std.io.BufferedWriter` | Built into writers | No separate type |
-| `std.process.args()` | `std.process.argsAlloc()` | Returns owned slice |
+| `std.process.args()` | `std.process.argsAlloc()` | Returns owned slice, must free |
 | `std.compress.deflate` | REMOVED | Copy old code if needed |
 | `std.http.Client/Server` | Complete rewrite | New stream-based API |
 | Package management | Built-in with `build.zig.zon` | No more git submodules/manual deps |
+
+## 🔧 Critical System Calls (std.posix)
+
+**VERIFIED**: These system calls are available in `std.posix` namespace:
+
+### File Operations
+- `chmod()` - Change file permissions
+- `chown()` - Change file ownership  
+- `link()` - Create hard link
+- `symlink()` - Create symbolic link
+- `unlink()` - Delete file
+- `rename()` - Rename/move file
+
+### Directory Operations  
+- `mkdir()` - Create directory
+- `rmdir()` - Remove directory
+- `getcwd()` - Get current directory
+- `chdir()` - Change directory
+
+### File Information
+- `stat()` - Get file info
+- `fstat()` - Get file info from handle
+- `lstat()` - Get symlink info
+- `access()` - Check file accessibility
+
+### Process Operations
+- `kill()` - Send signal
+- `signal()` - Set signal handler
 
 ## ⚠️ Subtle Gotchas
 

@@ -76,11 +76,11 @@ All tests use `testing.allocator` to detect memory leaks:
 
 ```zig
 test "no memory leaks" {
-    var list = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    var list = std.ArrayListUnmanaged(u8){};
     defer list.deinit(testing.allocator);
     
     // Test operations that allocate memory
-    try list.append('a');
+    try list.append(testing.allocator, 'a');
     
     // Allocator automatically checks for leaks when test ends
 }

@@ -3,7 +3,7 @@
 This document contains Zig 0.15.1 patterns and idioms commonly used in this
 codebase. It serves as a quick reference for implementing GNU coreutils in Zig.
 
-**⚠️ IMPORTANT: See `ZIG_0_15_1_WRITER_MIGRATION.md` for critical I/O changes in Zig 0.15.1**
+**⚠️ IMPORTANT: See `ZIG_BREAKING_CHANGES.md` for critical I/O changes in Zig 0.15.1**
 
 ## Memory Management
 
@@ -316,3 +316,170 @@ fn handleSignal(sig: i32) callconv(.C) void {
 - `std.sort` - Sorting algorithms
 - `std.hash_map` - Hash maps
 - `std.ArrayList` - Dynamic arrays
+
+## Documentation Patterns
+
+### Doc Comment Types
+
+Zig has three types of comments with specific purposes:
+
+1. **Normal Comments** (`//`) - Implementation details, not included in docs
+2. **Doc Comments** (`///`) - Document declarations below them
+3. **Top-Level Doc Comments** (`//!`) - Document the current module/file
+
+### Doc Comment Rules
+- Doc comments must immediately precede the declaration they document
+- No blank lines between doc comment and declaration
+- Multiple doc comments merge into a multiline comment
+- Doc comments in unexpected places cause compile errors
+
+### Good Documentation Examples
+
+```zig
+//! vibeutils common library - shared functionality for all utilities
+
+const std = @import("std");
+
+/// Common error types used across vibeutils
+pub const Error = error{
+    ArgumentError,
+    FileNotFound,
+    PermissionDenied,
+};
+
+/// Execute a copy operation with progress tracking
+/// Returns error if source cannot be read or destination cannot be written
+pub fn executeCopy(self: *CopyEngine, operation: types.CopyOperation) !void {
+    // Implementation details use normal comments
+    // These won't appear in generated documentation
+}
+
+/// Options controlling copy behavior
+pub const CopyOptions = struct {
+    /// Preserve file attributes (permissions, timestamps)
+    preserve: bool = false,
+    /// Prompt before overwriting existing files
+    interactive: bool = false,
+    /// Copy directories recursively
+    recursive: bool = false,
+};
+
+/// Errors specific to copy operations
+pub const CopyError = error{
+    /// Source and destination refer to the same file
+    SameFile,
+    /// Filesystem does not support the requested operation
+    UnsupportedFileType,
+    /// Destination exists and would be overwritten
+    DestinationExists,
+};
+```
+
+### What NOT to Do
+
+```zig
+// ❌ BAD - Don't use JavaDoc tags
+/// @param allocator The allocator to use
+/// @return A new instance
+/// @throws OutOfMemory if allocation fails
+
+// ❌ BAD - Don't use markdown formatting
+/// Creates a **new** instance with `default` values
+/// See [documentation](https://example.com)
+
+// ❌ BAD - Don't state the obvious
+/// Adds two numbers
+pub fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
+
+// ❌ BAD - Zig doesn't support /* */ comments
+/*
+ * This style is not valid in Zig
+ */
+```
+
+### Naming Conventions
+
+- **Functions**: camelCase (`copyFile`, `printError`)
+- **Types**: PascalCase (`CopyEngine`, `FileType`)
+- **Constants**: UPPER_SNAKE_CASE for truly constant values, otherwise camelCase
+- **Variables**: snake_case (`file_path`, `dest_exists`)
+- **Error Sets**: PascalCase ending with `Error` (`CopyError`, `ParseError`)
+
+```zig
+// Function names should be verbs or verb phrases
+pub fn executeCopy() !void {}
+pub fn validatePath() !void {}
+pub fn shouldOverwrite() !bool {}
+
+// Types should be nouns
+pub const CopyOperation = struct {};
+pub const FileMetadata = struct {};
+
+// Boolean variables should ask a question
+const is_directory: bool = false;
+const has_permissions: bool = true;
+const should_recurse: bool = false;
+```
+
+### When to Document
+
+**Always Document:**
+- Public functions, types, and constants
+- Complex algorithms or non-obvious logic
+- Error conditions and edge cases
+- Module-level purpose with `//!`
+
+**Let Code Speak:**
+- Simple getters/setters with obvious behavior
+- Internal implementation details
+- Temporary variables with clear names
+- Standard library usage patterns
+
+### Documentation Best Practices
+
+1. **Be Concise**: One or two lines is often sufficient
+2. **Focus on "Why"**: Explain purpose and behavior, not implementation
+3. **Document Contracts**: Preconditions, postconditions, and invariants
+4. **Use Present Tense**: "Returns" not "Will return"
+5. **Avoid Pronouns**: "Parse the string" not "This parses the string"
+6. **Document Errors**: When functions return errors, explain when they occur
+
+### File Headers
+
+Start each file with a top-level doc comment:
+
+```zig
+//! Copy engine implementation for vibeutils cp command
+//! Handles file copying with progress tracking and error recovery
+
+const std = @import("std");
+// ...
+```
+
+### Doctests
+
+Use doctests to provide executable examples:
+
+```zig
+/// Parse a file mode string into numeric form
+pub fn parseMode(mode_str: []const u8) !u32 {
+    // ...
+}
+
+test parseMode {
+    try testing.expectEqual(@as(u32, 0o755), try parseMode("755"));
+    try testing.expectEqual(@as(u32, 0o644), try parseMode("644"));
+    try testing.expectError(error.InvalidMode, parseMode("999"));
+}
+```
+
+## Summary
+
+These patterns have been battle-tested in this codebase and follow Zig 0.15.1
+best practices. When in doubt, look at existing implementations in `src/` for
+examples of these patterns in action.
+
+Good Zig documentation is clear, concise, free from formatting markup, focused 
+on behavior (not implementation), and helpful without being redundant.
