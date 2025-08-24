@@ -1,9 +1,9 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 21/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, head, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, test, touch, true, yes)
+- **Completed**: 22/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, head, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, tail, test, touch, true, yes)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
-- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O
+- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.1 migration complete**
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
 
 ## Project Goals
@@ -666,16 +666,20 @@ For each utility:
 - [x] Implement: Multi-file handling
 - [x] Man page: Write concise man page with examples
 
-#### 37. tail
-- [ ] Test: Default 10 lines
-- [ ] Test: Custom line count (-n)
-- [ ] Test: Follow mode (-f)
-- [ ] Test: Byte count (-c)
-- [ ] Test: Multiple files
-- [ ] Test: Reverse line reading
-- [ ] Implement: Efficient line reading from end
-- [ ] Implement: Follow mode with inotify
-- [ ] Implement: Ring buffer for performance
+#### 37. tail ✓
+- [x] Test: Default 10 lines
+- [x] Test: Custom line count (-n)
+- [ ] Test: Follow mode (-f) (deferred - complex feature)
+- [x] Test: Byte count (-c)
+- [x] Test: Multiple files
+- [x] Test: Reverse line reading
+- [x] Test: Zero-terminated lines (-z)
+- [x] Test: Files without final newline
+- [x] Implement: Efficient line reading from end
+- [ ] Implement: Follow mode with inotify (deferred - complex feature)
+- [x] Implement: CircularLineBuffer for performance
+- [x] Implement: Zero-terminated line support
+- [x] Implement: Zig 0.15.1 Reader API migration
 - [ ] Man page: Write concise man page with examples
 
 #### 38. wc
