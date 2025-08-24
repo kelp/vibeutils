@@ -6,9 +6,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Coverage option - now uses Zig's native coverage
-    const coverage = b.option(bool, "coverage", "Generate test coverage") orelse false;
-
     // CI option - enables CI-specific behavior
     const ci = b.option(bool, "ci", "Enable CI-specific behavior") orelse false;
 
@@ -50,14 +47,14 @@ pub fn build(b: *std.Build) void {
 
     // Build utilities using metadata-driven approach
     for (utils.utilities) |util| {
-        buildUtility(b, util, target, optimize, coverage, common, build_options_module) catch |err| {
+        buildUtility(b, util, target, optimize, common, build_options_module) catch |err| {
             std.log.err("Failed to build utility {s}: {}", .{ util.name, err });
             return; // Abort build configuration
         };
     }
 
     // Unit tests
-    buildTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
+    buildTests(b, target, optimize, common, build_options_module) catch |err| {
         std.log.err("Failed to configure tests: {}", .{err});
         return; // Abort build configuration
     };
@@ -65,7 +62,6 @@ pub fn build(b: *std.Build) void {
     // Add additional build steps
     addFormatSteps(b);
     addCleanStep(b);
-    addCoverageSteps(b, target, optimize, common, build_options_module);
     addFuzzSteps(b, target, optimize, common, build_options_module);
     addFuzzCoverageStep(b);
     addCIValidateStep(b, ci);
@@ -80,7 +76,6 @@ fn buildUtility(
     util: utils.UtilityMeta,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    coverage: bool,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
 ) !void {
@@ -100,12 +95,6 @@ fn buildUtility(
     // Metadata-driven library linking
     if (util.needs_libc) {
         exe.linkLibC();
-    }
-
-    // Enable coverage if requested
-    if (coverage) {
-        // For now, just ensure debug info is preserved for coverage tools
-        exe.root_module.strip = false;
     }
 
     b.installArtifact(exe);
@@ -128,7 +117,6 @@ fn buildTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    coverage: bool,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
 ) !void {
@@ -152,12 +140,6 @@ fn buildTests(
             util_tests.linkLibC();
         }
 
-        // Configure coverage
-        if (coverage) {
-            // Preserve debug info for coverage tools
-            util_tests.root_module.strip = false;
-        }
-
         const run_util_tests = b.addRunArtifact(util_tests);
         test_step.dependOn(&run_util_tests.step);
     }
@@ -171,12 +153,6 @@ fn buildTests(
         }),
     });
     common_tests.root_module.addImport("build_options", build_options_module);
-
-    // Configure coverage for common tests
-    if (coverage) {
-        // Preserve debug info for coverage tools
-        common_tests.root_module.strip = false;
-    }
 
     const run_common_tests = b.addRunArtifact(common_tests);
     test_step.dependOn(&run_common_tests.step);
@@ -252,7 +228,7 @@ fn buildTests(
     privileged_test_step.dependOn(&run_common_tests_priv.step);
 
     // Integration tests
-    buildIntegrationTests(b, target, optimize, coverage, common, build_options_module) catch |err| {
+    buildIntegrationTests(b, target, optimize, common, build_options_module) catch |err| {
         std.log.err("Failed to configure integration tests: {}", .{err});
         return; // Abort build configuration
     };
@@ -263,7 +239,6 @@ fn buildIntegrationTests(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    coverage: bool,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
 ) !void {
@@ -279,10 +254,6 @@ fn buildIntegrationTests(
     });
     core_integration_tests.root_module.addImport("build_options", build_options_module);
 
-    if (coverage) {
-        core_integration_tests.root_module.strip = false;
-    }
-
     const run_core_integration = b.addRunArtifact(core_integration_tests);
     integration_test_step.dependOn(&run_core_integration.step);
 
@@ -296,10 +267,6 @@ fn buildIntegrationTests(
     });
     workflow_tests.root_module.addImport("common", common);
 
-    if (coverage) {
-        workflow_tests.root_module.strip = false;
-    }
-
     const run_workflow_tests = b.addRunArtifact(workflow_tests);
     integration_test_step.dependOn(&run_workflow_tests.step);
 
@@ -312,10 +279,6 @@ fn buildIntegrationTests(
         }),
     });
     file_ops_tests.root_module.addImport("common", common);
-
-    if (coverage) {
-        file_ops_tests.root_module.strip = false;
-    }
 
     const run_file_ops_tests = b.addRunArtifact(file_ops_tests);
     integration_test_step.dependOn(&run_file_ops_tests.step);
@@ -345,59 +308,6 @@ fn addCleanStep(b: *std.Build) void {
     // Remove zig-out directory
     const rm_out = b.addRemoveDirTree(b.path("zig-out"));
     clean_step.dependOn(&rm_out.step);
-
-    // Remove coverage directory
-    const rm_coverage = b.addRemoveDirTree(b.path("coverage"));
-    clean_step.dependOn(&rm_coverage.step);
-}
-
-/// Add coverage steps using Zig's native coverage
-fn addCoverageSteps(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    common: *std.Build.Module,
-    build_options_module: *std.Build.Module,
-) void {
-    const coverage_step = b.step("coverage", "Run tests with native Zig coverage");
-
-    // Run tests with coverage enabled
-    for (utils.utilities) |util| {
-        const util_tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(util.path),
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-
-        util_tests.root_module.addImport("common", common);
-        util_tests.root_module.addImport("build_options", build_options_module);
-
-        if (util.needs_libc) {
-            util_tests.linkLibC();
-        }
-
-        // Enable coverage by preserving debug info
-        util_tests.root_module.strip = false;
-
-        const run_util_tests = b.addRunArtifact(util_tests);
-        coverage_step.dependOn(&run_util_tests.step);
-    }
-
-    // Add common library tests with coverage
-    const common_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/common/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    common_tests.root_module.addImport("build_options", build_options_module);
-    common_tests.root_module.strip = false;
-
-    const run_common_tests = b.addRunArtifact(common_tests);
-    coverage_step.dependOn(&run_common_tests.step);
 }
 
 /// Add fuzz coverage reporting step
