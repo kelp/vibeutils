@@ -27,7 +27,8 @@ max_line_length = 100
 # Markdown files
 [*.md]
 max_line_length = 78
-trim_trailing_whitespace = false  # Preserve trailing spaces for line breaks
+# Preserve trailing spaces for line breaks
+trim_trailing_whitespace = false
 
 # Man pages (mdoc format)
 [*.1]
