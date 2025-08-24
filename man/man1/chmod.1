@@ -1,147 +1,168 @@
-.\" OpenBSD-style concise man page
-.Dd August 2, 2025
+.Dd August 24, 2025
 .Dt CHMOD 1
-.Os
+.Os vibeutils
 .Sh NAME
 .Nm chmod
-.Nd change file mode bits
+.Nd change file modes
 .Sh SYNOPSIS
-.Nm
-.Op Fl R Fl v
+.Nm chmod
+.Op Fl fhRv
 .Ar mode
 .Ar file ...
 .Sh DESCRIPTION
 The
 .Nm
-utility modifies the file mode bits of the listed files
-as specified by the
+utility modifies the file mode bits of the listed files as specified by the
 .Ar mode
 operand.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
-.It Fl R
-Recursively change file mode bits.
-For each
-.Ar file
-operand that names a directory,
+.It Fl f
+Do not display a diagnostic message if
 .Nm
-changes the file mode bits of the directory
-and all files in the file hierarchy below it.
+could not modify the mode for
+.Ar file ,
+nor exit with a non-zero status.
+.It Fl h
+If the file is a symbolic link, change the mode of the link itself rather than
+the file that the link points to.
+.It Fl R
+Change the modes of the file hierarchies rooted in the files instead of just
+the files themselves.
 .It Fl v
-Verbose mode.
-Explain what is being done.
+Verbose mode. Output a diagnostic for every file processed.
+.It Fl -help
+Display help and exit.
+.It Fl -version
+Output version information and exit.
 .El
 .Pp
-The
-.Ar mode
-may be either an octal number or a symbolic value.
+Modes may be absolute or symbolic.
+An absolute mode is an octal number constructed from the sum of one or more
+of the following values:
 .Pp
-An octal mode is specified with three or four octal digits (0-7):
-.Bl -tag -width "4000" -compact
+.Bl -tag -width 6n -compact -offset indent
 .It Li 4000
-Set-user-ID on execution
+setuid on execution
 .It Li 2000
-Set-group-ID on execution
+setgid on execution
 .It Li 1000
-Sticky bit
+sticky bit
 .It Li 0400
-Read by owner
+read by owner
 .It Li 0200
-Write by owner
+write by owner
 .It Li 0100
-Execute by owner
+execute (or search for directories) by owner
 .It Li 0040
-Read by group
+read by group
 .It Li 0020
-Write by group
+write by group
 .It Li 0010
-Execute by group
+execute/search by group
 .It Li 0004
-Read by others
+read by others
 .It Li 0002
-Write by others
+write by others
 .It Li 0001
-Execute by others
+execute/search by others
 .El
 .Pp
-A symbolic mode has the form:
+The symbolic mode is described by the following grammar:
 .Bd -literal -offset indent
-[who] op [perm]
+mode         ::= clause [, clause ...]
+clause       ::= [who ...] [action ...] action
+action       ::= op [perm ...]
+who          ::= a | u | g | o
+op           ::= + | - | =
+perm         ::= r | s | t | w | x | X | u | g | o
 .Ed
 .Pp
 The
 .Ar who
-symbols are:
-.Bl -tag -width Ds -compact
-.It Li u
-User (owner) permissions
-.It Li g
-Group permissions
-.It Li o
-Other permissions
-.It Li a
-All permissions (equivalent to
-.Li ugo )
+symbols specify who is granted or denied permissions:
+.Pp
+.Bl -tag -width 4n -compact -offset indent
+.It u
+the owner (user) permissions
+.It g
+the group permissions
+.It o
+other (everyone else) permissions
+.It a
+all of the above (default)
 .El
 .Pp
 The
 .Ar op
-symbols are:
-.Bl -tag -width Ds -compact
-.It Li +
-Add permissions
-.It Li -
-Remove permissions
-.It Li =
-Set permissions explicitly
+symbols represent the operation performed:
+.Pp
+.Bl -tag -width 4n -compact -offset indent
+.It +
+grant the specified permissions
+.It -
+deny the specified permissions
+.It =
+set the specified permissions, clearing all others
 .El
 .Pp
 The
 .Ar perm
-symbols are:
-.Bl -tag -width Ds -compact
-.It Li r
-Read permission
-.It Li w
-Write permission
-.It Li x
-Execute permission
-.It Li X
-Execute only if file is a directory or already has execute permission
-.It Li s
-Set-user-ID or set-group-ID
-.It Li t
-Sticky bit
+symbols represent the permissions:
+.Pp
+.Bl -tag -width 4n -compact -offset indent
+.It r
+read
+.It w
+write
+.It x
+execute/search
+.It X
+execute/search only if file is a directory or already has execute bit
+.It s
+set user or group ID on execution
+.It t
+sticky bit
+.It u
+user's current permissions
+.It g
+group's current permissions
+.It o
+other's current permissions
 .El
 .Sh EXIT STATUS
-.Ex -std
+.Ex -std chmod
 .Sh EXAMPLES
-Make a file executable by the owner:
-.Dl $ chmod u+x script.sh
+Make a file readable/writable by everyone and executable by the owner only:
+.Pp
+.Dl "chmod 644 file"
+.Pp
+Make a file executable by everyone:
+.Pp
+.Dl "chmod a+x file"
 .Pp
 Remove write permission for group and others:
-.Dl $ chmod go-w document.txt
 .Pp
-Set specific permissions using octal notation:
-.Dl $ chmod 755 program
+.Dl "chmod go-w file"
 .Pp
-Recursively make all files in a directory tree readable by everyone:
-.Dl $ chmod -R a+r project/
+Set permissions to match another file:
+.Pp
+.Dl "chmod g=u file"
+.Pp
+Recursively give the owner read, write and execute permissions:
+.Pp
+.Dl "chmod -R u+rwx directory"
 .Sh SEE ALSO
 .Xr chown 1 ,
-.Xr ls 1
+.Xr find 1 ,
+.Xr stat 2 ,
+.Xr umask 2
 .Sh STANDARDS
 The
 .Nm
 utility is compliant with the
-.St -p1003.1-2008
+.St -p1003.2
 specification.
 .Sh AUTHORS
-.An "vibeutils implementation by Travis Cole"
-.Sh CAVEATS
-Only the file's owner or the superuser may change a file's mode.
-.Pp
-The
-.Fl R
-option does not follow symbolic links.
+vibeutils implementation by Travis Cole.

@@ -723,7 +723,29 @@ Run with: `make test-privileged` or `scripts/run-privileged-tests.sh`
 
 ## Cross-Platform Testing
 
-Docker-based Linux testing from macOS:
+### OrbStack Linux Testing
+Use OrbStack to run commands on Linux distributions directly from macOS:
+```bash
+orb list                          # List available Linux VMs
+orb -m ubuntu <command>           # Run command on Ubuntu
+orb -m debian <command>           # Run command on Debian  
+orb -m arch <command>             # Run command on Arch Linux
+
+# Examples:
+orb -m ubuntu zig build test      # Run tests on Ubuntu
+orb -m debian make build          # Build on Debian
+orb -m arch ./zig-out/bin/ls -la  # Test binary on Arch
+
+# The repo is accessible at the same path in all VMs:
+# /Users/tcole/code/vibeutils-project/vibeutils
+```
+
+**Available distributions:**
+- ubuntu (plucky) - arm64
+- debian (trixie) - arm64  
+- arch (current) - arm64
+
+### Docker-based Testing (Alternative)
 ```bash
 make test-linux        # Ubuntu tests
 make shell-linux       # Interactive Ubuntu shell

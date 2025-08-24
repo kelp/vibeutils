@@ -335,7 +335,7 @@ For each utility:
 - [x] Implement: Numeric mode parser
 - [x] Implement: Symbolic mode parser
 - [x] Implement: Recursive directory walker
-- [ ] Man page: Write concise man page with examples
+- [x] Man page: Write concise man page with examples
 
 #### 12. chown ✓
 - [x] Test: Basic ownership change (user:group)
@@ -347,7 +347,7 @@ For each utility:
 - [x] Implement: User/group parsing
 - [x] Implement: Ownership change syscalls
 - [x] Implement: Recursive walker with symlink handling
-- [ ] Man page: Write concise man page with examples
+- [x] Man page: Write concise man page with examples
 
 #### 13. ln ✓
 - [x] Test: Create hard link
@@ -813,9 +813,9 @@ For each utility:
 - **Unit Tests**: Individual flags, combinations, edge cases
 - **Integration Tests**: Pipes, signals, GNU compatibility, benchmarks
 
-### Custom Argument Parser Implementation
+### Custom Argument Parser Implementation ✓
 
-#### Replace zig-clap Dependency (TDD)
+#### Replace zig-clap Dependency (COMPLETED)
 **Goal**: Replace zig-clap's 3,000 lines with focused ~400-line library supporting 95% of real usage patterns
 
 **Design Philosophy**:
@@ -825,68 +825,68 @@ For each utility:
 - Self-documenting through struct field names
 - OpenBSD-inspired simplicity with GNU compatibility
 
-##### Phase 1: Core Parsing Engine (TDD)
-- [ ] Test: Boolean flag parsing (-h, --help, -v, --verbose)
-- [ ] Test: Combined short flags (-abc = -a -b -c)
-- [ ] Test: Unknown flag error handling
-- [ ] Test: Flag mapping generation from struct reflection
-- [ ] Test: Memory management (no leaks)
-- [ ] Implement: Core `Args.parse()` function with generic struct support
-- [ ] Implement: Comptime flag mapping using `@typeInfo()`
-- [ ] Implement: Boolean flag state management
-- [ ] Implement: ParseResult with proper cleanup
-- [ ] Implement: Error types (InvalidArgument, UnknownFlag, MissingValue)
+##### Phase 1: Core Parsing Engine (COMPLETED) ✓
+- [x] Test: Boolean flag parsing (-h, --help, -v, --verbose)
+- [x] Test: Combined short flags (-abc = -a -b -c)
+- [x] Test: Unknown flag error handling
+- [x] Test: Flag mapping generation from struct reflection
+- [x] Test: Memory management (no leaks)
+- [x] Implement: Core `ArgParser.parse()` function with generic struct support
+- [x] Implement: Comptime flag mapping using `@typeInfo()`
+- [x] Implement: Boolean flag state management
+- [x] Implement: ParseResult with proper cleanup
+- [x] Implement: Error types (InvalidArgument, UnknownFlag, MissingValue)
 
-##### Phase 2: String Options and Positionals (TDD)
-- [ ] Test: String option parsing (--color=auto, --output file)
-- [ ] Test: Both `--option=value` and `--option value` syntax
-- [ ] Test: Missing value error for string options
-- [ ] Test: Positional argument collection
-- [ ] Test: GNU `--` separator handling
-- [ ] Test: Single `-` as positional (stdin convention)
-- [ ] Implement: String option value extraction
-- [ ] Implement: Two-pass parsing (flags first, then values)
-- [ ] Implement: Positional argument allocation and management
-- [ ] Implement: State machine for parsing stages
+##### Phase 2: String Options and Positionals (COMPLETED) ✓
+- [x] Test: String option parsing (--color=auto, --output file)
+- [x] Test: Both `--option=value` and `--option value` syntax
+- [x] Test: Missing value error for string options
+- [x] Test: Positional argument collection
+- [x] Test: GNU `--` separator handling
+- [x] Test: Single `-` as positional (stdin convention)
+- [x] Implement: String option value extraction
+- [x] Implement: Two-pass parsing (flags first, then values)
+- [x] Implement: Positional argument allocation and management
+- [x] Implement: State machine for parsing stages
 
-##### Phase 3: Help Generation System (TDD)
-- [ ] Test: Help text parsing from struct `help_text` field
-- [ ] Test: Automatic help formatting matching GNU style
-- [ ] Test: Usage line generation with positional indicators
-- [ ] Test: Option description alignment and formatting
-- [ ] Test: Integration with existing --help flag patterns
-- [ ] Implement: `Args.printHelp()` function
-- [ ] Implement: Help text parser for embedded descriptions
-- [ ] Implement: GNU-style help formatting
-- [ ] Implement: Usage line generation based on struct analysis
+##### Phase 3: Help Generation System (COMPLETED) ✓
+- [x] Test: Help text parsing from struct `meta` field
+- [x] Test: Automatic help formatting matching GNU style
+- [x] Test: Usage line generation with positional indicators
+- [x] Test: Option description alignment and formatting
+- [x] Test: Integration with existing --help flag patterns
+- [x] Implement: `printHelp()` function
+- [x] Implement: Help text parser for embedded descriptions
+- [x] Implement: GNU-style help formatting
+- [x] Implement: Usage line generation based on struct analysis
 
-##### Phase 4: GNU Compatibility and Edge Cases (TDD)
-- [ ] Test: POSIX compliance for argument ordering
-- [ ] Test: Error message format matching GNU conventions
-- [ ] Test: Complex combined flags with string options
-- [ ] Test: Edge cases (empty args, only positionals, only flags)
-- [ ] Test: Integration with all existing utility patterns
-- [ ] Implement: Full GNU argument parsing compatibility
-- [ ] Implement: Comprehensive error reporting
-- [ ] Implement: Performance optimization (comptime where possible)
+##### Phase 4: GNU Compatibility and Edge Cases (COMPLETED) ✓
+- [x] Test: POSIX compliance for argument ordering
+- [x] Test: Error message format matching GNU conventions
+- [x] Test: Complex combined flags with string options
+- [x] Test: Edge cases (empty args, only positionals, only flags)
+- [x] Test: Integration with all existing utility patterns
+- [x] Implement: Full GNU argument parsing compatibility
+- [x] Implement: Comprehensive error reporting
+- [x] Implement: Performance optimization (comptime where possible)
 
-##### Migration Plan (Utility-by-Utility)
-- [ ] **echo**: Migrate simplest case (boolean flags only)
-- [ ] **cat**: Multiple boolean flags, combination flags (-A, -e, -t)
-- [ ] **ls**: Complex case with string options (--color, --time-style)
-- [ ] **cp/mv/rm**: Interactive flags and mixed option types
-- [ ] **mkdir/rmdir/touch**: Mode settings and timestamp options
-- [ ] **Remaining utilities**: Complete migration for all 9 implemented utilities
+##### Migration Plan (COMPLETED) ✓
+- [x] **echo**: Migrated simplest case (boolean flags only)
+- [x] **cat**: Multiple boolean flags, combination flags (-A, -e, -t)
+- [x] **ls**: Complex case with string options (--color, --time-style)
+- [x] **cp/mv/rm**: Interactive flags and mixed option types
+- [x] **mkdir/rmdir/touch**: Mode settings and timestamp options
+- [x] **All utilities**: Complete migration for all 22 implemented utilities
 
-##### Integration and Cleanup
-- [ ] Test: Drop-in compatibility with existing utility code
-- [ ] Test: Performance benchmarks vs zig-clap
-- [ ] Test: Binary size comparison
-- [ ] Test: Compile time comparison
-- [ ] Update: build.zig to remove zig-clap dependency
-- [ ] Update: build.zig.zon to remove clap entry
-- [ ] Verify: All existing tests pass with new parser
-- [ ] Document: Migration guide and API documentation
+##### Integration and Cleanup (COMPLETED) ✓
+- [x] Test: Drop-in compatibility with existing utility code
+- [x] Test: Performance benchmarks vs zig-clap
+- [x] Test: Binary size comparison
+- [x] Test: Compile time comparison
+- [x] Update: build.zig to remove zig-clap dependency
+- [x] Update: build.zig.zon to remove clap entry
+- [x] Verify: All existing tests pass with new parser
+- [x] Document: API documentation in argparse.zig
 
 **Success Criteria**:
 - Library under 500 lines total (vs 3,000 for zig-clap)
