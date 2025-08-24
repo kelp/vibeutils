@@ -12,9 +12,6 @@ pub fn build(b: *std.Build) void {
     // CI option - enables CI-specific behavior
     const ci = b.option(bool, "ci", "Enable CI-specific behavior") orelse false;
 
-    // Coverage backend option
-    const coverage_backend = b.option([]const u8, "coverage-backend", "Coverage backend: native, kcov") orelse "native";
-
     // Validate utilities exist before building
     utils.validateUtilities() catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
@@ -68,7 +65,7 @@ pub fn build(b: *std.Build) void {
     // Add additional build steps
     addFormatSteps(b);
     addCleanStep(b);
-    addCoverageSteps(b, target, optimize, coverage_backend, common, build_options_module);
+    addCoverageSteps(b, target, optimize, common, build_options_module);
     addFuzzSteps(b, target, optimize, common, build_options_module);
     addFuzzCoverageStep(b);
     addCIValidateStep(b, ci);
@@ -354,57 +351,53 @@ fn addCleanStep(b: *std.Build) void {
     clean_step.dependOn(&rm_coverage.step);
 }
 
-/// Add coverage steps with multiple backend support
+/// Add coverage steps using Zig's native coverage
 fn addCoverageSteps(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    backend: []const u8,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
 ) void {
-    const coverage_step = b.step("coverage", "Run tests with coverage");
+    const coverage_step = b.step("coverage", "Run tests with native Zig coverage");
 
-    if (std.mem.eql(u8, backend, "kcov")) {
-        // Create coverage directory
-        const mkdir_cmd = b.addSystemCommand(&.{ "mkdir", "-p", "coverage/kcov" });
-        coverage_step.dependOn(&mkdir_cmd.step);
+    // Run tests with coverage enabled
+    for (utils.utilities) |util| {
+        const util_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
 
-        // Run kcov coverage script
-        const kcov_script = b.addSystemCommand(&.{"scripts/run-kcov-coverage.sh"});
-        kcov_script.step.dependOn(&mkdir_cmd.step);
-        coverage_step.dependOn(&kcov_script.step);
-    } else {
-        // Native Zig coverage
-        const test_with_coverage = b.step("test-coverage", "Run tests with native coverage");
+        util_tests.root_module.addImport("common", common);
+        util_tests.root_module.addImport("build_options", build_options_module);
 
-        // Run tests with coverage enabled
-        for (utils.utilities) |util| {
-            const util_tests = b.addTest(.{
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path(util.path),
-                    .target = target,
-                    .optimize = optimize,
-                }),
-            });
-
-            util_tests.root_module.addImport("common", common);
-            util_tests.root_module.addImport("build_options", build_options_module);
-
-            if (util.needs_libc) {
-                util_tests.linkLibC();
-            }
-
-            // Enable coverage
-            util_tests.root_module.strip = false;
-            util_tests.setExecCmd(&.{ "zig", "build", "test", "-Dcoverage=true" });
-
-            const run_util_tests = b.addRunArtifact(util_tests);
-            test_with_coverage.dependOn(&run_util_tests.step);
+        if (util.needs_libc) {
+            util_tests.linkLibC();
         }
 
-        coverage_step.dependOn(test_with_coverage);
+        // Enable coverage by preserving debug info
+        util_tests.root_module.strip = false;
+
+        const run_util_tests = b.addRunArtifact(util_tests);
+        coverage_step.dependOn(&run_util_tests.step);
     }
+
+    // Add common library tests with coverage
+    const common_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/common/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    common_tests.root_module.addImport("build_options", build_options_module);
+    common_tests.root_module.strip = false;
+
+    const run_common_tests = b.addRunArtifact(common_tests);
+    coverage_step.dependOn(&run_common_tests.step);
 }
 
 /// Add fuzz coverage reporting step
