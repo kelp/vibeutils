@@ -1,62 +1,95 @@
 # Fuzzing Guide
 
-This document captures hard-won knowledge about the fuzzing infrastructure for 
-vibeutils, including what actually works, limitations, and workarounds.
+This document provides comprehensive guidance on fuzzing vibeutils, covering quick start commands, architecture, and advanced usage patterns.
 
-## Overview
-
-vibeutils uses Zig 0.15.1's built-in fuzzing support based on LibFuzzer. After 
-extensive testing and debugging, we've learned the real capabilities and 
-limitations of this system.
-
-## Critical Information
+## Quick Start
 
 ### Platform Requirements
-- **Fuzzing only works on Linux** (x86_64 or aarch64)
-- On macOS: Tests skip with "no fuzz tests found" 
-- On Windows: Not supported
+- **Linux**: Full fuzzing support with all features
+- **macOS**: Use `make fuzz-linux-*` targets (runs in Docker container) 
+- **Windows**: Not supported
 
-### Fundamental Limitation (SOLVED)
-**Previously, you couldn't select which fuzz test to run.** This has been solved with our selective fuzzing system:
-
-**Old Problem:**
-- `zig build test --fuzz` ran ALL tests and got stuck on the first one
-- No built-in `--test-filter` support for fuzzing
-
-**Our Solution:**
-- Individual build targets: `zig build fuzz-<utility>` 
-- Environment variable control: `VIBEUTILS_FUZZ_TARGET=<utility>`
-- Intelligent fuzzing script with timeouts and rotation
-- Full control over which utilities get fuzzed and for how long
-
-## Quick Start (Linux Only)
+### Essential Commands
 
 ```bash
-# Fuzz a specific utility (RECOMMENDED)
-zig build fuzz-cat         # Fuzz cat utility only
-zig build fuzz-echo        # Fuzz echo utility only
+# Show available fuzzing options
+make fuzz
 
-# Alternative: Use environment variable
+# Fuzz specific utilities (RECOMMENDED)
+make fuzz UTIL=cat
+make fuzz UTIL=echo
+make fuzz UTIL=ls
+
+# List all available utilities
+make fuzz-list
+
+# Quick workflows
+make fuzz-quick    # Quick test all utilities (30s each)
+make fuzz-all      # Fuzz all utilities (5 min each)
+make fuzz-rotate   # Continuous rotation (2 min each)
+
+# For macOS users (runs in Docker)
+make fuzz-linux UTIL=cat
+make fuzz-linux-all
+make fuzz-linux-quick
+```
+
+### Direct Build System Usage
+
+```bash
+# Individual utility targets
+zig build fuzz-cat
+zig build fuzz-echo
+zig build fuzz-basename
+# ... 22 total targets available
+
+# Environment variable control
 VIBEUTILS_FUZZ_TARGET=cat zig build test --fuzz
+VIBEUTILS_FUZZ_TARGET=all zig build test --fuzz
 
-# Use the fuzzing script for advanced control
-./scripts/fuzz-utilities.sh cat          # Fuzz cat with default timeout
-./scripts/fuzz-utilities.sh -t 60 echo   # Fuzz echo for 1 minute
-./scripts/fuzz-utilities.sh all          # Fuzz all utilities sequentially
-
-# View web UI (check output for actual port, usually 8000)
-# Browse to http://127.0.0.1:8000
+# Using the script directly
+./scripts/fuzz-utilities.sh cat          # Default 5 min timeout
+./scripts/fuzz-utilities.sh -t 60 echo   # Custom 60s timeout
+./scripts/fuzz-utilities.sh all          # All utilities sequentially
+./scripts/fuzz-utilities.sh -r -t 120    # Rotation mode, 2 min each
 ```
 
-### Docker/Container Usage
+## Selective Fuzzing System
+
+### Problem Solved
+Previously, `zig build test --fuzz` would run ALL fuzz tests and get stuck on the first one forever since Zig 0.15.1 fuzzing runs indefinitely. Our selective fuzzing system allows:
+- Testing individual utilities selectively
+- Rotating through multiple utilities with time limits
+- Running focused fuzzing sessions on specific utilities
+
+### How It Works
+
+#### Environment Variable Control
+The `VIBEUTILS_FUZZ_TARGET` environment variable controls which utility gets fuzzed:
+- `VIBEUTILS_FUZZ_TARGET=cat` - Fuzz only the cat utility
+- `VIBEUTILS_FUZZ_TARGET=all` - Fuzz all utilities  
+- Unset variable - No fuzzing runs (opt-in behavior)
+
+#### Runtime Selection
+Each fuzz test includes a runtime check:
+```zig
+fn testUtilityWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+    // Check runtime condition for selective fuzzing
+    if (!common.fuzz.shouldFuzzUtilityRuntime("utility_name")) return;
+    
+    // ... rest of fuzz test
+}
+```
+
+#### Individual Build Targets
+The build system creates individual targets for each utility:
 ```bash
-# Run in Docker (may have port binding issues)
-docker run -it -v $(pwd):/workspace -w /workspace ubuntu:latest
-apt update && apt install -y zig
-zig build test --fuzz
+zig build fuzz-cat      # Fuzz only cat
+zig build fuzz-echo     # Fuzz only echo
+zig build fuzz-ls       # Fuzz only ls
 ```
 
-## Architecture
+## Architecture & Implementation
 
 ### Core Infrastructure
 
@@ -72,10 +105,16 @@ zig build test --fuzz
    - Simpler version with automatic flag discovery
    - Less sophisticated than intelligent fuzzer
 
-3. **Helper Functions**
+3. **Unified Fuzz Test Builder** (`createUtilityFuzzTests`)
+   - Eliminates code duplication across 22+ utilities
+   - Generates standardized fuzz test functions
+   - Reduces boilerplate from ~70% duplication to reusable components
+
+4. **Helper Functions**
    - `generatePath()` - Path strings with edge cases
    - `generateArgs()` - Command-line arguments from fuzz input
    - `ArgStorage` - Pre-allocated storage for arguments
+   - `shouldFuzzUtilityRuntime()` - Runtime fuzzing control
 
 ### Integration Pattern
 
@@ -96,186 +135,196 @@ fn testMyUtilIntelligent(allocator: std.mem.Allocator, input: []const u8) !void 
 }
 ```
 
-**Critical**: The wrapper function is required because `std.testing.fuzz()` only 
-accepts functions with exactly 2 parameters: `(allocator, input)`.
+**Critical**: The wrapper function is required because `std.testing.fuzz()` only accepts functions with exactly 2 parameters: `(allocator, input)`.
 
-## Common Compilation Errors and Fixes
+### Modern Architecture Improvements
 
-We encountered many Zig version-specific issues. Here are the solutions:
-
-### Type Info Changes
+#### Unified Test Builder
+**Before**:
 ```zig
-// WRONG (Zig 0.14 and earlier)
-@typeInfo(T).Struct.fields
-@typeInfo(T).Optional
+// Repetitive in every utility file
+test "utility fuzz basic" {
+    try std.testing.fuzz(testing.allocator, testUtilityBasic, .{});
+}
 
-// CORRECT (Zig 0.15.1)
-@typeInfo(T).@"struct".fields  
-@typeInfo(T).optional
-@typeInfo(T).pointer
-```
-
-### Compile-Time Evaluation Limits
-```zig
-// If you get "evaluation exceeded 1000 backwards branches"
-pub const flag_infos = blk: {
-    @setEvalBranchQuota(10000);  // Add this
-    // ... rest of compile-time code
-};
-```
-
-### Cannot Store Types at Runtime
-```zig
-// WRONG - causes "global variable contains reference to comptime var"
-pub const Info = struct {
-    field_type: type,  // Can't do this!
-};
-
-// CORRECT - remove type fields
-pub const Info = struct {
-    takes_value: bool,  // Store computed properties instead
-};
-```
-
-### Function Signature Mismatches
-```zig
-// WRONG - generic functions can't be stored in function pointers
-const test_fn: fn(...) = testWithAnytype;
-
-// CORRECT - use a switch or wrapper functions
-fn wrapper(allocator: Allocator, input: []const u8) !void {
-    try testWithAnytype(allocator, input, common.null_writer);
+fn testUtilityBasic(allocator: std.mem.Allocator, input: []const u8) !void {
+    try common.fuzz.testUtilityBasic(utility.runUtility, allocator, input);
 }
 ```
 
-### Array Iteration with Pointer Capture
+**After**:
 ```zig
-// WRONG for arrays (not slices)
-for (array) |*item| { }
+// Create standardized fuzz tests using the unified builder
+const UtilityFuzzTests = common.fuzz.createUtilityFuzzTests(utility.runUtility);
 
-// CORRECT for arrays
-for (&array) |*item| { }  // Need & for arrays
+test "utility fuzz basic" {
+    try std.testing.fuzz(testing.allocator, UtilityFuzzTests.testBasic, .{});
+}
 ```
 
-## Special Cases
-
-### Utilities with Different API Signatures
-
-Some utilities (like `ls`) take parsed Args structs instead of raw string arrays:
+#### Configuration Constants
+All magic numbers are now documented in `FuzzConfig`:
 
 ```zig
-fn testLsIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Create wrapper that parses arguments first
-    const runLsWrapper = struct {
-        fn run(alloc: std.mem.Allocator, args: []const []const u8, 
-               stdout_writer: anytype, stderr_writer: anytype) !u8 {
-            // Parse using our custom argparse (NOT clap - we removed that)
-            const parsed_args = common.argparse.ArgParser.parse(LsArgs, alloc, args) catch |err| {
-                common.printErrorWithProgram(alloc, stderr_writer, "ls", 
-                                           "error: {s}", .{@errorName(err)});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            defer alloc.free(parsed_args.positionals);
-            
-            runLs(alloc, parsed_args, stdout_writer, stderr_writer) catch |err| {
-                common.printErrorWithProgram(alloc, stderr_writer, "ls", 
-                                           "error: {s}", .{@errorName(err)});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            return @intFromEnum(common.ExitCode.success);
-        }
-    }.run;
+pub const FuzzConfig = struct {
+    /// Maximum argument size varies by build mode for performance
+    /// Debug: 1000 bytes (fast iteration), Release: 10KB (comprehensive testing)
+    /// Based on typical shell command limits and reasonable fuzz test duration
+    pub const MAX_ARG_SIZE = if (builtin.mode == .Debug) 1000 else 10_000;
     
-    const LsIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(LsArgs, runLsWrapper);
-    try LsIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}
+    /// Maximum path size for generated test paths
+    /// 4096 bytes matches typical POSIX PATH_MAX and Linux kernel limits
+    pub const MAX_PATH_SIZE = 4096;
+};
 ```
 
-### Utilities Without Metadata
-
-Simple utilities like `yes`, `true`, `false` don't have complex Args structs. The 
-fuzzer handles this with:
+#### Cross-Platform Path Handling
 ```zig
-if (!@hasField(ArgsType, "meta")) continue;
+// Cross-platform temp directory selection
+const temp_dir = if (builtin.os.tag == .windows) "C:\\temp\\test.txt" else "/tmp/test.txt";
+
+// Relative paths for testing (OS handles permissions)
+const test_dir = "fuzz_test_dir"; // Instead of "/tmp/fuzz_test_dir"
 ```
 
-## Selective Fuzzing System
+## Usage Patterns
 
-We've implemented a comprehensive solution for selective fuzzing:
+### Development Workflow
 
-### Individual Build Targets
 ```bash
-# Fuzz specific utilities directly
+# After implementing a new feature in cat
+make fuzz UTIL=cat
+
+# Quick test before commit
+make fuzz-quick
+
+# Comprehensive testing session
+make fuzz-all  # Linux
+make fuzz-linux-all  # From macOS
+```
+
+### CI/CD Integration
+
+```yaml
+# GitHub Actions example
+- name: Quick Fuzz Test
+  run: make fuzz-quick
+  
+- name: Fuzz Critical Utilities
+  run: |
+    make fuzz UTIL=rm
+    make fuzz UTIL=cp
+    make fuzz UTIL=mv
+```
+
+### Debugging Fuzz Failures
+
+```bash
+# Interactive shell for manual fuzzing
+make fuzz-linux-shell
+
+# Then inside the container:
 zig build fuzz-cat
-zig build fuzz-echo
-zig build fuzz-basename
-# ... and 19 more targets
+# Or use the script:
+./scripts/fuzz-utilities.sh -t 60 cat
 ```
 
-### Environment Variable Control
+## Available Utilities
+
+All utilities support fuzzing:
+- **File Operations**: `cat`, `cp`, `mv`, `rm`, `touch`, `ln`, `head`, `tail`
+- **Directory Operations**: `ls`, `mkdir`, `rmdir`, `pwd`
+- **Permissions**: `chmod`, `chown` 
+- **Text Processing**: `echo`, `basename`, `dirname`, `test`
+- **System**: `true`, `false`, `sleep`, `yes`
+
+## Advanced Features
+
+### Fuzzing Script Options
+
+The `scripts/fuzz-utilities.sh` script provides comprehensive control:
+
 ```bash
-# Set target via environment variable
-VIBEUTILS_FUZZ_TARGET=cat zig build test --fuzz
-VIBEUTILS_FUZZ_TARGET=all zig build test --fuzz  # Fuzz all utilities
+# Basic usage
+./scripts/fuzz-utilities.sh cat          # Default 5 min timeout
+./scripts/fuzz-utilities.sh -t 60 echo   # Custom 60s timeout
+
+# Batch operations
+./scripts/fuzz-utilities.sh all          # All utilities sequentially
+./scripts/fuzz-utilities.sh -r -t 120    # Rotation mode, 2 min each
+
+# List and help
+./scripts/fuzz-utilities.sh --list       # Show available utilities
+./scripts/fuzz-utilities.sh -h           # Show help
 ```
 
-### Advanced Fuzzing Script
+### Docker/Container Usage
 ```bash
-# Use our intelligent fuzzing script
-./scripts/fuzz-utilities.sh cat           # Default 5 minute timeout
-./scripts/fuzz-utilities.sh -t 60 echo    # Custom timeout (seconds)
-./scripts/fuzz-utilities.sh all           # Sequential fuzzing of all
-./scripts/fuzz-utilities.sh -r -t 30      # Rotation mode, 30s each
+# Run in Docker (for macOS or custom environments)
+docker run -it -v $(pwd):/workspace -w /workspace ubuntu:latest
+apt update && apt install -y zig
+zig build test --fuzz
 ```
 
-### How It Works
-1. Each utility checks `VIBEUTILS_FUZZ_TARGET` environment variable
-2. Only enables fuzzing if the variable matches its name or equals "all"
-3. Build system creates individual targets that set the appropriate variable
-4. Script provides advanced control with timeouts and logging
+### Web UI Access
+Some fuzz configurations may start a web interface:
+```bash
+# Check output for actual port, usually 8000
+# Browse to http://127.0.0.1:8000
+```
 
-## What Actually Works
+## Troubleshooting
 
-✅ **Working:**
-- **Selective fuzzing of individual utilities** (FIXED!)
-- Fuzzing infrastructure compiles and runs on Linux
-- Intelligent fuzzer with semantic understanding
-- Automatic flag discovery via compile-time reflection  
-- Web UI starts and shows coverage (Linux only)
-- Individual build targets for each utility
-- Environment variable control for utility selection
-- Advanced fuzzing script with timeouts and rotation
-- Sequential fuzzing of all utilities
+### Common Issues
 
-❌ **Not Working:**
-- macOS fuzzing (platform limitation - Linux only)
-- Corpus persistence between runs (Zig limitation)
-- Parallel fuzzing of multiple utilities (sequential only)
+1. **"no fuzz tests found" on macOS**
+   - Expected behavior - use `make fuzz-linux-*` commands instead
 
-⚠️ **Resolved Issues:**
-- ~~Cannot select specific utilities to fuzz~~ ✅ FIXED with selective fuzzing
-- ~~Only fuzzes first test found, runs forever~~ ✅ FIXED with environment variables
-- ~~No built-in time limits~~ ✅ FIXED with fuzzing script
-- ~~Must manually manage which tests run~~ ✅ FIXED with build targets
+2. **Tests get stuck on first utility**
+   - Use selective fuzzing: `make fuzz UTIL=specific_utility`
+   - Don't use `zig build test --fuzz` without `VIBEUTILS_FUZZ_TARGET`
 
-## Summary
+3. **Port binding issues in Docker**
+   - Check Docker port forwarding configuration
+   - Use `make fuzz-linux-shell` for interactive debugging
 
-We built a sophisticated fuzzing infrastructure with intelligent test generation 
-and semantic understanding of command-line arguments. We then **solved the major
-limitation** of Zig's fuzzing implementation by implementing selective fuzzing.
+4. **Memory allocation errors**
+   - Fuzz tests use `testing.allocator` for leak detection
+   - Check allocator usage in utility implementation
 
-**Key Achievements**: 
-- ✅ Successfully integrated fuzzing into all 23 utilities
-- ✅ Automatic flag discovery and intelligent test generation
-- ✅ Reduced code duplication by ~70% compared to manual fuzz test writing
-- ✅ **SOLVED the selection problem** with environment variables and build targets
-- ✅ Created practical tooling for development and CI/CD integration
+### Performance Tuning
 
-The fuzzing system is now **fully practical and usable** on Linux, with:
-- Individual utility fuzzing via `zig build fuzz-<utility>`
-- Time-limited fuzzing via the script
-- Sequential coverage of all utilities
-- Clear documentation and examples
+- Debug builds: Faster iteration, smaller argument sizes
+- Release builds: Comprehensive testing, larger test cases  
+- Timeout adjustments: Use `-t` flag for custom durations
+- Rotation mode: Prevents any single utility from monopolizing time
 
-This transforms fuzzing from "gets stuck on first test forever" to a powerful,
-controlled testing tool that can systematically validate all utilities.
+## Security Testing
+
+The fuzzing system includes intentional security probes:
+- Path traversal attempts: `../../../test/fuzz_traversal_probe`
+- Edge case path handling
+- Malformed argument combinations
+- Buffer boundary testing
+
+These are legitimate security tests, not malicious code.
+
+## Technical Notes
+
+### LibFuzzer Integration
+vibeutils uses Zig 0.15.1's built-in fuzzing support based on LibFuzzer:
+- Automatic test case minimization
+- Coverage-guided fuzzing
+- Crash reproduction capabilities
+- Integration with Zig's testing framework
+
+### Memory Safety
+- All fuzz tests use explicit allocator parameters
+- `testing.allocator` detects memory leaks automatically
+- Cross-platform allocator handling
+- Proper cleanup in error paths
+
+### Platform Limitations
+- Linux: Full support (x86_64, aarch64)
+- macOS: Docker-based fuzzing only
+- Windows: Not supported by Zig's LibFuzzer integration

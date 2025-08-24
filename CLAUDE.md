@@ -250,9 +250,7 @@ Only validate for **correctness**:
 - `docs/zig-0.15.1-docs.md` - Full Zig 0.15.1 documentation
 
 **📖 Fuzzing Documentation:**
-- `docs/FUZZING.md` - Main fuzzing guide
-- `docs/SELECTIVE_FUZZING.md` - Selective fuzzing system
-- `docs/FUZZ_ARCHITECTURE.md` - Fuzzing architecture
+- `docs/FUZZING.md` - Comprehensive fuzzing guide (quick start, architecture, usage patterns)
 
 **⚠️ IMPORTANT: Use Grep tool to find examples in these docs**
 
