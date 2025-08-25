@@ -1,0 +1,69 @@
+.\" tee(1) man page
+.\" Copyright (c) vibeutils implementation by Travis Cole
+.\"
+.Dd August 24, 2025
+.Dt TEE 1
+.Os
+.Sh NAME
+.Nm tee
+.Nd copy standard input to standard output and files
+.Sh SYNOPSIS
+.Nm
+.Op Fl aip
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility copies standard input to standard output,
+making a copy in zero or more files.
+The output is unbuffered.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl a , Fl Fl append
+Append the output to the files rather than
+overwriting them.
+.It Fl i , Fl Fl ignore-interrupts
+Ignore the SIGINT signal.
+.It Fl p
+Diagnose errors writing to non pipes.
+.It Fl Fl help
+Display help information and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The following operands are available:
+.Bl -tag -width Ds
+.It Ar file
+A pathname of an output file.
+If a file named
+.Ql -
+is specified, the standard output is used.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Copy standard input to standard output and save a copy to
+.Pa output.txt :
+.Pp
+.Dl $ echo "hello world" | tee output.txt
+.Pp
+Append to multiple files:
+.Pp
+.Dl $ date | tee -a log1.txt log2.txt
+.Pp
+Create a T-junction in a pipeline:
+.Pp
+.Dl $ ls | tee filelist.txt | grep ".txt"
+.Sh SEE ALSO
+.Xr cat 1 ,
+.Xr cp 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Sh AUTHORS
+vibeutils implementation by Travis Cole
+.Aq Mt kelp@plek.org
