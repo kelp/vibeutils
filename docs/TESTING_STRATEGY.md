@@ -361,6 +361,37 @@ Before implementing any utility:
 4. **Review POSIX spec**: Understand required behavior and exit codes
 5. **Design testable architecture**: Consider `runUtilWithInput()` pattern for filters
 
+### Post-Implementation Verification
+
+**CRITICAL: Always run the FULL test suite before declaring a utility complete**:
+
+```bash
+# ❌ WRONG: Only testing your utility
+make test UTIL=tee  # Not sufficient!
+
+# ✅ RIGHT: Full test suite verification
+zig build test           # Run ALL tests
+make test                # Full test suite with smoke tests
+make test-privileged     # If applicable
+
+# Also verify no hanging tests with timeout
+timeout 60 zig build test || echo "Tests hung!"
+```
+
+**Why this matters**:
+- Your utility's tests might pass in isolation but cause hangs in full suite
+- Your changes might break other utilities' tests
+- Memory leaks might only show up in full test runs
+- Integration issues between utilities only appear in full suite
+
+**Completion Checklist**:
+1. ✅ Individual utility tests pass (`make test UTIL=yourutil`)
+2. ✅ Full test suite passes (`zig build test`)
+3. ✅ No test hangs (completes within reasonable time)
+4. ✅ Binary smoke tests pass
+5. ✅ No new compiler warnings
+6. ✅ Code formatted (`make fmt`)
+
 ### Binary Smoke Tests
 
 For filter utilities, rely on binary smoke tests in the Makefile:

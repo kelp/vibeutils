@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **programmer agent** → Implement the code  
 3. **reviewer agent** → Review for quality
 4. **optimizer agent** → Optimize if needed
+5. **CRITICAL**: Run FULL test suite (`zig build test`) before declaring success!
 
 ### Agent Usage Required For:
 - Implementing new utilities or features
@@ -119,7 +120,9 @@ The styling system (`src/common/style.zig`) automatically detects:
 - [ ] Add to `build.zig`
 - [ ] Write tests first (TDD)
 - [ ] Create man page `man/man1/<utility>.1`
-- [ ] Update TODO.md
+- [ ] **Run FULL test suite**: `zig build test` (not just `make test UTIL=name`)
+- [ ] Verify no test hangs: `timeout 60 zig build test`
+- [ ] Update TODO.md only AFTER full test suite passes
 
 ### Man Page Style Guide
 
