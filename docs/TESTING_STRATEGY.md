@@ -244,6 +244,147 @@ test "parses long options" {
 }
 ```
 
+## Filter Utilities and Stdin-Dependent Testing
+
+### The Problem
+
+Filter utilities that read from stdin (like `tee`, `cat`, `sort`, `uniq`, `tr`, `cut`, `nl`, `tac`) 
+present a special challenge for unit testing. Calling their main `runUtil()` function in tests will 
+block indefinitely waiting for stdin input that never comes, causing test hangs.
+
+### Utility Categories
+
+Before implementing a utility, identify its category:
+
+**A. Filter Utilities** (read stdin by default):
+- `cat`, `tee`, `sort`, `uniq`, `tr`, `cut`, `nl`, `tac`, `head`, `tail`, `wc`
+- **Testing Challenge**: Will block on stdin in unit tests
+- **Solution**: Skip unit tests or create `runUtilWithInput()` variant
+
+**B. File/Path Utilities** (operate on files/paths):
+- `ls`, `cp`, `mv`, `rm`, `mkdir`, `chmod`, `chown`, `ln`, `du`, `stat`
+- **Testing**: Standard unit tests work fine
+- **Solution**: Mock file operations as needed
+
+**C. Generator Utilities** (produce output):
+- `echo`, `yes`, `seq`, `date`, `printf`, `whoami`, `id`
+- **Testing**: Standard unit tests work fine
+- **Solution**: Capture and verify output
+
+**D. Process Utilities** (spawn processes):
+- `env`, `timeout`, `nice`, `nohup`
+- **Testing Challenge**: Process spawning in tests
+- **Solution**: Mock process operations or skip tests
+
+### Testing Patterns for Filter Utilities
+
+#### Pattern 1: Skip Unit Tests (Simple)
+
+```zig
+test "filter utility basic test" {
+    // Skip this test as it would block waiting for stdin
+    // This functionality is tested via binary smoke tests
+    return error.SkipZigTest;
+}
+```
+
+#### Pattern 2: Dual Function Architecture (Recommended)
+
+Create two functions - one for public API, one for testing:
+
+```zig
+// Public API that reads from stdin
+pub fn runUtil(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const stdin_file = std.fs.File.stdin();
+    return runUtilWithInput(allocator, args, stdin_file, stdout_writer, stderr_writer);
+}
+
+// Testable function that accepts input
+fn runUtilWithInput(allocator: Allocator, args: []const []const u8, input_file: std.fs.File, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    // Implementation here
+}
+
+// Test using the input variant
+test "filter utility with mock input" {
+    // Create mock input (this is still challenging in Zig 0.15.1)
+    // May still need to skip or use binary smoke tests
+}
+```
+
+### Common Pitfalls and Solutions
+
+#### 1. Fuzz Tests with Stdin Dependencies
+
+**Problem**: Fuzz tests calling `runUtil()` will hang
+```zig
+// ❌ WRONG
+fn testFuzz(allocator: Allocator, input: []const u8) !void {
+    _ = runUtil(allocator, &args, writer, writer) catch {};  // HANGS!
+}
+```
+
+**Solution**: Skip execution or test only parsing
+```zig
+// ✅ RIGHT
+fn testFuzz(allocator: Allocator, input: []const u8) !void {
+    _ = allocator;  // Must be FIRST to avoid "pointless discard" error
+    _ = input;
+    if (!common.fuzz.shouldFuzzUtilityRuntime("util")) return;
+    // Skip actual execution for stdin-dependent utilities
+}
+```
+
+#### 2. Exit Code Conventions
+
+**Always use correct POSIX exit codes**:
+```zig
+// Argument errors should return 2 (misuse), not 1 (general_error)
+error.UnknownFlag => return @intFromEnum(common.ExitCode.misuse),    // Returns 2
+error.MissingValue => return @intFromEnum(common.ExitCode.misuse),   // Returns 2
+error.InvalidValue => return @intFromEnum(common.ExitCode.misuse),   // Returns 2
+```
+
+#### 3. Buffer Size Consistency
+
+Always use **8192 bytes** for I/O buffers to maintain consistency:
+```zig
+var buffer: [8192]u8 = undefined;  // Not 4096
+```
+
+### Pre-Implementation Checklist
+
+Before implementing any utility:
+
+1. **Identify category**: Is it a filter/file/generator/process utility?
+2. **Plan test strategy**: Can you unit test it or need smoke tests?
+3. **Check similar utilities**: Look for existing patterns to follow
+4. **Review POSIX spec**: Understand required behavior and exit codes
+5. **Design testable architecture**: Consider `runUtilWithInput()` pattern for filters
+
+### Binary Smoke Tests
+
+For filter utilities, rely on binary smoke tests in the Makefile:
+
+```bash
+# Test via Makefile's smoke test infrastructure
+make test UTIL=tee
+
+# These tests can properly pipe input:
+echo "test" | ./zig-out/bin/tee output.txt
+```
+
+### Documentation Requirements
+
+When tests must be skipped, always document why:
+
+```zig
+test "utility test" {
+    // Skip this test as it would block waiting for stdin
+    // This functionality is tested via binary smoke tests
+    return error.SkipZigTest;
+}
+```
+
 ## Coverage Guidelines
 
 ### Target Coverage

@@ -175,6 +175,17 @@ When implementing a new command, always consult POSIX specifications, OpenBSD, a
 
 **Target: 90%+ coverage** (`make coverage`)
 
+### ⚠️ CRITICAL: Filter Utilities Testing
+**Before implementing any utility, read `docs/TESTING_STRATEGY.md` section "Filter Utilities and Stdin-Dependent Testing"**
+
+Filter utilities (`tee`, `cat`, `sort`, `uniq`, etc.) that read from stdin will **hang in unit tests**. You must:
+1. Identify if your utility is a filter utility
+2. Use the `runUtilWithInput()` pattern or skip unit tests
+3. Ensure exit codes are correct (`ExitCode.misuse` for arg errors)
+4. Use 8192-byte buffers consistently
+
+See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and patterns.
+
 ### Standard Tests
 - Use `testing.allocator` to detect memory leaks
 - Tests embedded in same file as implementation
