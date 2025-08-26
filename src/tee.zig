@@ -317,8 +317,12 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
             // In real usage, the main() function handles flushing
             _ = self.stdout_writer; // Suppress unused variable warning
 
-            // Sync all files
+            // Sync all files (skip stdout/stderr as they don't support sync)
             for (self.files) |file| {
+                // Skip syncing stdout and stderr - they don't support sync() on all platforms
+                if (file.handle == std.fs.File.stdout().handle or file.handle == std.fs.File.stderr().handle) {
+                    continue;
+                }
                 file.sync() catch {
                     // Error will be handled by caller via any_error flag
                     any_error = true;

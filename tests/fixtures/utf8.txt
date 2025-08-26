@@ -1,0 +1,42 @@
+UTF-8 Test Data
+================
+
+Basic ASCII: Hello World!
+
+Latin Extended: Café, naïve, résumé
+Greek: Ελληνικά (Greek)
+Cyrillic: Русский язык (Russian)
+Arabic: العربية (Arabic) - right-to-left text
+Chinese: 中文 (Chinese)
+Japanese: 日本語 (Japanese)
+Korean: 한국어 (Korean)
+
+Emoji: 🌍🌎🌏 🚀 💻 🎉 ✨ 🔥 💎 🌟
+
+Mathematical symbols: ∑∞≠≤≥∈∅∩∪
+Currency: €£¥₹₽¢
+
+Special characters:
+- Zero-width space: ​
+- Non-breaking space:  
+- Various quotes: ""''‚„«»‹›
+- Dashes: –—
+- Bullet points: •‣⁃
+
+Multi-byte sequences:
+- Three-byte: ☃ (snowman)
+- Four-byte: 𝕳𝖊𝖑𝖑𝖔 (mathematical script)
+- Combining characters: é (e + acute accent)
+
+Line endings test:
+Unix LF: ↵
+Windows CRLF: ↵
+Mac CR: ↵
+
+Control characters mixed with text:
+	Tab character before this line
+Form feed: 
+
+Null bytes and special cases should be handled carefully.
+
+This file tests various UTF-8 encoding scenarios for comprehensive testing.

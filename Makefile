@@ -11,7 +11,7 @@ HAS_DOCKER := $(shell command -v docker >/dev/null 2>&1 && echo "true")
 HAS_FAKEROOT := $(shell command -v fakeroot >/dev/null 2>&1 && echo "true")
 
 # All .PHONY targets in one line
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run debug release
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run debug release test-integration test-integration-util test-integration-validate test-integration-list
 
 # Core Targets
 all: build
@@ -254,6 +254,13 @@ help:
 	@echo "  make coverage              Generate test coverage report"
 	@echo "  make test-linux            Run tests in Ubuntu Docker container"
 	@echo ""
+	@echo "Integration Testing:"
+	@echo "  make test-integration      Run all integration tests"
+	@echo "  make test-integration UTIL=<name>  Run tests for specific utility"
+	@echo "  make it UTIL=<name>        Short form of test-integration"
+	@echo "  make itest UTIL=<name>     Alternative short form"
+	@echo "  make test-integration-list List available test utilities"
+	@echo ""
 	@echo "Fuzzing (Linux only):"
 	@echo "  make fuzz UTIL=<name>      Fuzz a specific utility"
 	@echo "  make fuzz-all              Fuzz all utilities comprehensively"
@@ -268,22 +275,31 @@ help:
 	@echo ""
 	@echo "For more details on any target, see the Makefile or run 'make <target>'"
 
-# Integration Testing
+# Integration Testing Framework
 test-integration: build
-	@echo "Running integration tests..."
-	@./test-utilities.sh
-
-test-integration-zig: build
-	@echo "Running Zig integration tests..."
-	@zig test src/integration_tests.zig --main-mod-path . --deps common
-
-test-utility: build
 ifdef UTIL
-	@./test-utilities.sh $(UTIL)
+	@echo "Running integration tests for $(UTIL) utility..."
+	@tests/integration/run.sh $(UTIL)
 else
-	@echo "Usage: make test-utility UTIL=<name>"
-	@echo "Example: make test-utility UTIL=echo"
+	@echo "Running comprehensive integration tests..."
+	@tests/integration/run.sh
 endif
+
+# Short aliases for integration testing
+itest: test-integration
+
+it: test-integration
+
+# Validate integration framework
+test-integration-validate:
+	@echo "Validating integration testing framework..."
+	@tests/integration/run.sh --validate
+
+# List available integration tests
+test-integration-list:
+	@echo "Listing available integration tests..."
+	@tests/integration/run.sh --list
+
 
 benchmark: build
 	@echo "Running performance benchmarks..."

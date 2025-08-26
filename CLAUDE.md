@@ -36,6 +36,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **This is pre-1.0 software with zero external users. We prioritize getting the design right over backward compatibility.**
 
 ### Migration Principles:
+- **NEVER maintain backwards compatibility**: Delete old code immediately when replacing it
 - **Break things to fix them**: If the current API is wrong, change it completely
 - **No deprecated code**: Remove old patterns entirely rather than maintaining compatibility layers
 - **Full migrations only**: When changing a pattern, update ALL code to use the new pattern
@@ -47,6 +48,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Inconsistent error handling patterns
 - Over-engineered abstractions that add complexity
 - Any API that makes the codebase harder to understand or maintain
+- Any change you just made - don't preserve intermediate iterations
 
 This philosophy allows us to iterate quickly and find the right abstractions before 1.0.
 

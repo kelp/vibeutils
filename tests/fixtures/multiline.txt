@@ -1,0 +1,15 @@
+Line 1: This is the first line
+Line 2: This is the second line
+Line 3: This is the third line
+Line 4: This line has special chars: !@#$%^&*()
+Line 5: This line has Unicode: ñáéíóú ∑∞≠
+Line 6: This line has a very long content that extends well beyond typical line lengths to test how utilities handle long lines of text that might exceed buffer sizes or cause word wrapping issues in terminal displays
+Line 7: 	This line starts with a tab character
+Line 8: This line has trailing spaces   
+Line 9: 
+
+Line 11: Previous line was empty
+Line 12: Numbers: 123456789 0.123 -456 +789
+Line 13: File paths: /usr/bin/test ./relative ../parent ~/.home
+Line 14: URLs: https://example.com http://test.org ftp://files.example.net
+Line 15: Final line without newline
