@@ -11,7 +11,7 @@ HAS_DOCKER := $(shell command -v docker >/dev/null 2>&1 && echo "true")
 HAS_FAKEROOT := $(shell command -v fakeroot >/dev/null 2>&1 && echo "true")
 
 # All .PHONY targets in one line
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run debug release test-integration test-integration-util test-integration-validate test-integration-list
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run debug release it test-integration-validate it-list
 
 # Core Targets
 all: build
@@ -255,11 +255,9 @@ help:
 	@echo "  make test-linux            Run tests in Ubuntu Docker container"
 	@echo ""
 	@echo "Integration Testing:"
-	@echo "  make test-integration      Run all integration tests"
-	@echo "  make test-integration UTIL=<name>  Run tests for specific utility"
-	@echo "  make it UTIL=<name>        Short form of test-integration"
-	@echo "  make itest UTIL=<name>     Alternative short form"
-	@echo "  make test-integration-list List available test utilities"
+	@echo "  make it                    Run all integration tests"
+	@echo "  make it UTIL=<name>        Run tests for specific utility"
+	@echo "  make it-list               List available test utilities"
 	@echo ""
 	@echo "Fuzzing (Linux only):"
 	@echo "  make fuzz UTIL=<name>      Fuzz a specific utility"
@@ -276,7 +274,7 @@ help:
 	@echo "For more details on any target, see the Makefile or run 'make <target>'"
 
 # Integration Testing Framework
-test-integration: build
+it: build
 ifdef UTIL
 	@echo "Running integration tests for $(UTIL) utility..."
 	@tests/integration/run.sh $(UTIL)
@@ -285,18 +283,13 @@ else
 	@tests/integration/run.sh
 endif
 
-# Short aliases for integration testing
-itest: test-integration
-
-it: test-integration
-
 # Validate integration framework
 test-integration-validate:
 	@echo "Validating integration testing framework..."
 	@tests/integration/run.sh --validate
 
 # List available integration tests
-test-integration-list:
+it-list:
 	@echo "Listing available integration tests..."
 	@tests/integration/run.sh --list
 
