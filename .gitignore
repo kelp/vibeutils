@@ -33,6 +33,29 @@ docs/*.tar
 *_report.md
 
 # Local settings
-.claude/settings.local.jsontest-output/
+.claude/settings.local.json
+
+# Test outputs and temporary files
+test-output/
 test_output.txt
 test-utilities.sh
+tests/integration/.tmp/
+
+# Fuzzing artifacts
+*_fuzz_*
+fuzz_*.log
+
+# Benchmark outputs
+benchmark_results.txt
+*.benchmark
+
+# Development artifacts
+*.orig
+*.bak
+*.patch
+core.*
+
+# Local development files
+.env
+.env.local
+local_*
