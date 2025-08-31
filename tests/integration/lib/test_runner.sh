@@ -288,12 +288,14 @@ wait_for_test_completion() {
     # Remove PID from tracking arrays
     local new_pids=()
     local new_names=()
-    for i in "${!RUNNER_PIDS[@]}"; do
-        if [[ "${RUNNER_PIDS[i]}" != "$pid" ]]; then
-            new_pids+=("${RUNNER_PIDS[i]}")
-            new_names+=("${RUNNER_TEST_NAMES[i]}")
-        fi
-    done
+    if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
+        for i in "${!RUNNER_PIDS[@]}"; do
+            if [[ "${RUNNER_PIDS[i]}" != "$pid" ]]; then
+                new_pids+=("${RUNNER_PIDS[i]}")
+                new_names+=("${RUNNER_TEST_NAMES[i]}")
+            fi
+        done
+    fi
     if [[ ${#new_pids[@]} -gt 0 ]]; then
         RUNNER_PIDS=("${new_pids[@]}")
         RUNNER_TEST_NAMES=("${new_names[@]}")
@@ -380,13 +382,15 @@ execute_test_batch() {
             
             if [[ -n "$completed_pid" ]]; then
                 # Find which test completed
-                for i in "${!RUNNER_PIDS[@]}"; do
-                    if [[ "${RUNNER_PIDS[i]}" == "$completed_pid" ]]; then
-                        wait_for_test_completion "$completed_pid" "${RUNNER_TEST_NAMES[i]}"
-                        ((completed_tests++))
-                        break
-                    fi
-                done
+                if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
+                    for i in "${!RUNNER_PIDS[@]}"; do
+                        if [[ "${RUNNER_PIDS[i]}" == "$completed_pid" ]]; then
+                            wait_for_test_completion "$completed_pid" "${RUNNER_TEST_NAMES[i]}"
+                            ((completed_tests++))
+                            break
+                        fi
+                    done
+                fi
             else
                 # If wait -n failed, check all PIDs individually
                 local new_pids=()
@@ -450,28 +454,32 @@ execute_test_batch() {
         completed_pid=$(wait -n "${RUNNER_PIDS[@]}" 2>/dev/null || echo "")
         
         if [[ -n "$completed_pid" ]]; then
-            for i in "${!RUNNER_PIDS[@]}"; do
-                if [[ "${RUNNER_PIDS[i]}" == "$completed_pid" ]]; then
-                    wait_for_test_completion "$completed_pid" "${RUNNER_TEST_NAMES[i]}"
-                    ((completed_tests++))
-                    break
-                fi
-            done
+            if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
+                for i in "${!RUNNER_PIDS[@]}"; do
+                    if [[ "${RUNNER_PIDS[i]}" == "$completed_pid" ]]; then
+                        wait_for_test_completion "$completed_pid" "${RUNNER_TEST_NAMES[i]}"
+                        ((completed_tests++))
+                        break
+                    fi
+                done
+            fi
         else
             # Check all PIDs if wait -n failed
             local new_pids=()
             local new_names=()
-            for i in "${!RUNNER_PIDS[@]}"; do
-                local pid="${RUNNER_PIDS[i]}"
-                local name="${RUNNER_TEST_NAMES[i]}"
-                if kill -0 "$pid" 2>/dev/null; then
-                    new_pids+=("$pid")
-                    new_names+=("$name")
-                else
-                    wait_for_test_completion "$pid" "$name"
-                    ((completed_tests++))
-                fi
-            done
+            if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
+                for i in "${!RUNNER_PIDS[@]}"; do
+                    local pid="${RUNNER_PIDS[i]}"
+                    local name="${RUNNER_TEST_NAMES[i]}"
+                    if kill -0 "$pid" 2>/dev/null; then
+                        new_pids+=("$pid")
+                        new_names+=("$name")
+                    else
+                        wait_for_test_completion "$pid" "$name"
+                        ((completed_tests++))
+                    fi
+                done
+            fi
             if [[ ${#new_pids[@]} -gt 0 ]]; then
                 RUNNER_PIDS=("${new_pids[@]}")
                 RUNNER_TEST_NAMES=("${new_names[@]}")
