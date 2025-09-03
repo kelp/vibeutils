@@ -263,11 +263,10 @@ wait_for_test_completion() {
     local output_file="${RUNNER_TEMP_BASE}/${test_name//\//_}.out"
     local status_file="${RUNNER_TEMP_BASE}/${test_name//\//_}.status"
     
-    # Wait for process to complete
+    # Process has already completed (checked by caller with kill -0)
+    # Try to get exit code, but don't rely on wait since process may be reaped
     local exit_code=0
-    if ! wait "$pid"; then
-        exit_code=$?
-    fi
+    wait "$pid" 2>/dev/null || exit_code=$?
     
     # Read status information
     local duration=0
@@ -338,7 +337,8 @@ wait_for_test_completion() {
     return $exit_code
 }
 
-# Execute tests with parallelism management
+# Execute tests with parallelism management using sequential batching
+# This fixes the race condition where fast tests complete before tracking
 execute_test_batch() {
     local -a test_specs=("$@")
     
@@ -349,159 +349,132 @@ execute_test_batch() {
     
     local total_tests=${#test_specs[@]}
     local completed_tests=0
-    local active_jobs=0
+    local current_batch_start=0
     
-    print_info "Executing $total_tests tests (max ${RUNNER_PARALLEL_JOBS} parallel)"
+    print_info "Executing $total_tests tests (max ${RUNNER_PARALLEL_JOBS} parallel, sequential batching)"
     
-    for test_spec in "${test_specs[@]}"; do
-        # Parse test specification (format: "name|function|timeout")
-        IFS='|' read -ra spec_parts <<< "$test_spec"
-        local test_name="${spec_parts[0]:-}"
-        local test_function="${spec_parts[1]:-}"
-        local test_timeout="${spec_parts[2]:-$RUNNER_TIMEOUT}"
+    # Process tests in sequential batches to avoid race conditions
+    while [[ $current_batch_start -lt ${#test_specs[@]} ]]; do
+        local -a batch_tests=()
+        local -a batch_pids=()
+        local -a batch_names=()
+        local batch_size=0
         
-        # Check filters
-        if ! test_matches_filter "$test_name"; then
-            skip_test "$test_name" "filtered out"
-            ((completed_tests++))
-            continue
-        fi
-        
-        # Check if we should skip due to dry run
-        if [[ "$RUNNER_DRY_RUN" == "true" ]]; then
-            print_info "[DRY RUN] Would execute: $test_name"
-            ((completed_tests++))
-            continue
-        fi
-        
-        # Wait for available slot if we're at max parallelism
-        while [[ ${#RUNNER_PIDS[@]} -ge $RUNNER_PARALLEL_JOBS ]]; do
-            # Wait for any job to complete
-            local completed_pid
-            completed_pid=$(wait -n "${RUNNER_PIDS[@]}" 2>/dev/null || echo "")
+        # Build current batch (up to RUNNER_PARALLEL_JOBS tests)
+        local batch_index
+        for ((batch_index = 0; batch_index < RUNNER_PARALLEL_JOBS && (current_batch_start + batch_index) < ${#test_specs[@]}; batch_index++)); do
+            local test_spec="${test_specs[current_batch_start + batch_index]}"
             
-            if [[ -n "$completed_pid" ]]; then
-                # Find which test completed
-                if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
-                    for i in "${!RUNNER_PIDS[@]}"; do
-                        if [[ "${RUNNER_PIDS[i]}" == "$completed_pid" ]]; then
-                            wait_for_test_completion "$completed_pid" "${RUNNER_TEST_NAMES[i]}"
-                            ((completed_tests++))
-                            break
-                        fi
-                    done
-                fi
-            else
-                # If wait -n failed, check all PIDs individually
-                local new_pids=()
-                local new_names=()
-                if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
-                    for i in "${!RUNNER_PIDS[@]}"; do
-                        local pid="${RUNNER_PIDS[$i]:-}"
-                        local name="${RUNNER_TEST_NAMES[$i]:-}"
-                        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-                            new_pids+=("$pid")
-                            new_names+=("$name")
-                        elif [[ -n "$pid" ]]; then
-                            wait_for_test_completion "$pid" "$name"
-                            ((completed_tests++))
-                        fi
-                    done
-                fi
-                RUNNER_PIDS=()
-                RUNNER_TEST_NAMES=()
-                if [[ ${#new_pids[@]} -gt 0 ]]; then
-                    RUNNER_PIDS=("${new_pids[@]}")
-                    RUNNER_TEST_NAMES=("${new_names[@]}")
-                fi
-                
-                # If no jobs are running, break the loop
-                if [[ ${#RUNNER_PIDS[@]} -eq 0 ]]; then
-                    break
-                fi
+            # Parse test specification (format: "name|function|timeout")
+            IFS='|' read -ra spec_parts <<< "$test_spec"
+            local test_name="${spec_parts[0]:-}"
+            local test_function="${spec_parts[1]:-}"
+            local test_timeout="${spec_parts[2]:-$RUNNER_TIMEOUT}"
+            
+            # Check filters
+            if ! test_matches_filter "$test_name"; then
+                skip_test "$test_name" "filtered out"
+                ((completed_tests++))
+                continue
             fi
             
-            # Check stop conditions
-            if [[ "$RUNNER_STOP_ON_FAILURE" == "true" ]] && [[ ${#RUNNER_FAILED_TESTS[@]} -gt 0 ]]; then
-                print_warning "Stopping execution due to test failure"
-                cleanup_test_runner
-                return 1
+            # Check if we should skip due to dry run
+            if [[ "$RUNNER_DRY_RUN" == "true" ]]; then
+                print_info "[DRY RUN] Would execute: $test_name"
+                ((completed_tests++))
+                continue
             fi
             
-            if [[ $RUNNER_MAX_FAILURES -gt 0 ]] && [[ ${#RUNNER_FAILED_TESTS[@]} -ge $RUNNER_MAX_FAILURES ]]; then
-                print_warning "Stopping execution: reached maximum failures ($RUNNER_MAX_FAILURES)"
-                cleanup_test_runner
-                return 1
-            fi
-            
-            # Brief sleep to prevent tight loop
-            sleep 0.1
+            batch_tests+=("$test_spec")
+            batch_names+=("$test_name")
         done
         
-        # Start the test
-        ((TEST_TOTAL++))
-        execute_test_background "$test_name" "$test_function" "$test_timeout" "$RUNNER_TEST_FILE"
-        
-        # Show progress
-        if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
-            print_progress $((completed_tests + ${#RUNNER_PIDS[@]})) "$total_tests" "tests"
-        fi
-    done
-    
-    # Wait for remaining tests to complete
-    while [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; do
-        local completed_pid
-        completed_pid=$(wait -n "${RUNNER_PIDS[@]}" 2>/dev/null || echo "")
-        
-        if [[ -n "$completed_pid" ]]; then
-            if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
-                for i in "${!RUNNER_PIDS[@]}"; do
-                    if [[ "${RUNNER_PIDS[i]}" == "$completed_pid" ]]; then
-                        wait_for_test_completion "$completed_pid" "${RUNNER_TEST_NAMES[i]}"
-                        ((completed_tests++))
-                        break
-                    fi
-                done
+        # Launch all tests in current batch
+        for test_spec in "${batch_tests[@]}"; do
+            IFS='|' read -ra spec_parts <<< "$test_spec"
+            local test_name="${spec_parts[0]:-}"
+            local test_function="${spec_parts[1]:-}"
+            local test_timeout="${spec_parts[2]:-$RUNNER_TIMEOUT}"
+            
+            ((TEST_TOTAL++))
+            local pid
+            pid=$(execute_test_background "$test_name" "$test_function" "$test_timeout" "$RUNNER_TEST_FILE")
+            batch_pids+=("$pid")
+            
+            if [[ "${TEST_VERBOSE:-false}" == "true" ]]; then
+                print_debug "Launched batch test '$test_name' (PID: $pid)"
             fi
-        else
-            # Check all PIDs if wait -n failed
-            local new_pids=()
-            local new_names=()
-            if [[ ${#RUNNER_PIDS[@]} -gt 0 ]]; then
-                for i in "${!RUNNER_PIDS[@]}"; do
-                    local pid="${RUNNER_PIDS[i]}"
-                    local name="${RUNNER_TEST_NAMES[i]}"
+        done
+        
+        # Wait for ALL tests in current batch to complete
+        if [[ ${#batch_pids[@]} -gt 0 ]]; then
+            if [[ "${TEST_VERBOSE:-false}" == "true" ]]; then
+                print_debug "Waiting for batch of ${#batch_pids[@]} tests to complete..."
+            fi
+            
+            local remaining_pids=("${batch_pids[@]}")
+            local remaining_names=("${batch_names[@]}")
+            
+            while [[ ${#remaining_pids[@]} -gt 0 ]]; do
+                local new_pids=()
+                local new_names=()
+                
+                # Check each PID in the batch
+                for i in "${!remaining_pids[@]}"; do
+                    local pid="${remaining_pids[i]}"
+                    local name="${remaining_names[i]}"
+                    
                     if kill -0 "$pid" 2>/dev/null; then
+                        # Still running - keep in remaining list
                         new_pids+=("$pid")
                         new_names+=("$name")
                     else
+                        # Completed - process results
                         wait_for_test_completion "$pid" "$name"
                         ((completed_tests++))
+                        
+                        # Check stop conditions after each completion
+                        if [[ "$RUNNER_STOP_ON_FAILURE" == "true" ]] && [[ ${#RUNNER_FAILED_TESTS[@]} -gt 0 ]]; then
+                            print_warning "Stopping execution due to test failure"
+                            cleanup_test_runner
+                            return 1
+                        fi
+                        
+                        if [[ $RUNNER_MAX_FAILURES -gt 0 ]] && [[ ${#RUNNER_FAILED_TESTS[@]} -ge $RUNNER_MAX_FAILURES ]]; then
+                            print_warning "Stopping execution: reached maximum failures ($RUNNER_MAX_FAILURES)"
+                            cleanup_test_runner
+                            return 1
+                        fi
                     fi
                 done
-            fi
-            if [[ ${#new_pids[@]} -gt 0 ]]; then
-                RUNNER_PIDS=("${new_pids[@]}")
-                RUNNER_TEST_NAMES=("${new_names[@]}")
-            else
-                RUNNER_PIDS=()
-                RUNNER_TEST_NAMES=()
-            fi
-            
-            if [[ ${#RUNNER_PIDS[@]} -eq 0 ]]; then
-                break
-            fi
+                
+                # Update remaining lists
+                remaining_pids=()
+                remaining_names=()
+                if [[ ${#new_pids[@]} -gt 0 ]]; then
+                    remaining_pids=("${new_pids[@]}")
+                    remaining_names=("${new_names[@]}")
+                fi
+                
+                # Brief sleep to prevent tight polling if tests are still running
+                if [[ ${#remaining_pids[@]} -gt 0 ]]; then
+                    sleep 0.1
+                fi
+                
+                # Show progress
+                if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
+                    print_progress "$completed_tests" "$total_tests" "tests"
+                fi
+            done
         fi
         
-        if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
-            print_progress "$completed_tests" "$total_tests" "tests"
-        fi
-        
-        # Brief sleep to prevent tight loop
-        sleep 0.1
+        # Move to next batch
+        current_batch_start=$((current_batch_start + RUNNER_PARALLEL_JOBS))
     done
     
+    # Complete the progress bar
     if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
+        print_progress "$completed_tests" "$total_tests" "tests"
         printf "\\n"  # Complete the progress bar
     fi
     
@@ -598,6 +571,14 @@ run_test_suite() {
     print_separator
     print_info "Test execution completed in ${duration}s"
     print_info "Completed: ${#RUNNER_COMPLETED_TESTS[@]}, Failed: ${#RUNNER_FAILED_TESTS[@]}, Skipped: $TEST_SKIPPED"
+    
+    # Debug: Show what tests actually completed
+    if [[ "${TEST_VERBOSE:-false}" == "true" ]]; then
+        print_info "Completed tests list:"
+        for completed_test in "${RUNNER_COMPLETED_TESTS[@]}"; do
+            print_indented 1 "- $completed_test"
+        done
+    fi
     
     if [[ ${#RUNNER_FAILED_TESTS[@]} -gt 0 ]]; then
         print_error "Failed tests:"
