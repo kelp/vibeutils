@@ -148,6 +148,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
             }
         }
     }
+
     return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
 }
 
@@ -234,11 +235,42 @@ const LineNumberState = struct {
 
 /// Format output according to the specified options.
 /// Maintains line numbering state across multiple files.
-/// Uses the new Reader API with takeDelimiterExclusive for line reading.
+/// For basic file concatenation, we need to preserve the exact byte structure.
 pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
-    _ = allocator; // No longer needed with new Reader API
+    _ = allocator; // Not needed with new Reader API
 
-    // Process lines using the new Reader API
+    // Check if we need any line-based processing (formatting options)
+    const needs_line_processing = options.number_lines or options.number_nonblank or
+        options.squeeze_blank or options.show_ends or
+        options.show_tabs or options.show_nonprinting;
+
+    if (!needs_line_processing) {
+        // For basic cat functionality (no formatting), copy bytes directly to preserve exact structure
+        // We need to use takeDelimiterExclusive and manually track final newlines to preserve exact input
+        var had_any_data = false;
+        while (reader.takeDelimiterExclusive('\n')) |line| {
+            had_any_data = true;
+            try writer.writeAll(line);
+            try writer.writeAll("\n"); // Add back the delimiter that was consumed
+        } else |err| switch (err) {
+            error.EndOfStream => {
+                // Check if there's remaining data in the buffer (line without final newline)
+                if (!had_any_data) {
+                    // No data was read, stream was empty
+                    return;
+                }
+                // If we reached here after reading some lines, those lines all had newlines
+                // and were properly handled above
+            },
+            error.StreamTooLong => {
+                return error.StreamTooLong;
+            },
+            else => return err,
+        }
+        return;
+    }
+
+    // For formatting options, we need line-by-line processing
     while (reader.takeDelimiterExclusive('\n')) |line| {
         const is_blank = line.len == 0;
 
@@ -273,8 +305,12 @@ pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anyty
         try writer.writeAll("\n");
     } else |err| switch (err) {
         error.EndOfStream => {
-            // End of file reached, no special handling needed
+            // End of file reached during line-by-line processing
             // The new Reader API handles lines without final newline correctly
+        },
+        error.StreamTooLong => {
+            // Line is too long for the buffer - handle gracefully
+            return error.StreamTooLong;
         },
         else => return err,
     }

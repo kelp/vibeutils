@@ -456,7 +456,8 @@ test_basename_many_files() {
         if [[ $i -eq 1 ]]; then
             expected_output="file${i}.txt"
         else
-            expected_output="${expected_output}\nfile${i}.txt"
+            expected_output="${expected_output}
+file${i}.txt"
         fi
     done
     

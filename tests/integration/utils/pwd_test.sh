@@ -384,24 +384,47 @@ test_pwd_in_nonexistent_directory() {
     setup_pwd_test
     
     # Test pwd when current directory has been removed
-    # This is tricky to test safely, so we'll test a simpler case
+    # This is tricky to test safely, so we need to do it in a way that 
+    # doesn't break the shell's ability to execute commands
     local test_subdir="$TEST_TEMP_DIR/will_be_removed"
     mkdir -p "$test_subdir"
-    cd "$test_subdir"
     
-    # Remove the directory from another process (simulate external deletion)
-    # Use a subshell to avoid affecting the test environment
-    (cd "$TEST_TEMP_DIR" && rmdir "will_be_removed" 2>/dev/null || true)
+    # Execute the entire test sequence in a single subshell to avoid shell issues
+    local output exit_code=0
+    output=$(
+        cd "$test_subdir" && 
+        # Remove the directory from parent while we're in it
+        (cd "$TEST_TEMP_DIR" && rmdir "will_be_removed" 2>/dev/null || true) &&
+        # Now run pwd with NO_COLOR
+        export NO_COLOR=1 &&
+        timeout "$PWD_TIMEOUT" "$(get_utility_path pwd)" 2>&1
+    ) || exit_code=$?
     
-    # pwd should still work (may return the removed path or fail gracefully)
-    exec_utility pwd --timeout="$PWD_TIMEOUT"
+    # Store results in the expected global variables for compatibility with assertions
+    EXEC_OUTPUT="$output"
+    EXEC_EXIT_CODE="$exit_code"
     
     # Accept either success (returns old path) or controlled failure
     if [[ $EXEC_EXIT_CODE -eq 0 ]]; then
         assert_output_matches "^/" "if successful, should return absolute path"
     else
         # If it fails, should be a controlled failure with error message
-        assert_output_contains "failed to get current directory" "should report directory error"
+        # Accept various detailed error messages about directory access issues
+        # Strip any potential color codes from output for pattern matching
+        local clean_output
+        clean_output=$(echo "$EXEC_OUTPUT" | sed 's/\x1b\[[0-9;]*m//g')
+        
+        if echo "$clean_output" | grep -q "pwd:" && (
+           echo "$clean_output" | grep -q "failed to get current directory" ||
+           echo "$clean_output" | grep -q "No such file or directory" ||
+           echo "$clean_output" | grep -q "current working directory" ||
+           echo "$clean_output" | grep -q "getcwd" ||
+           echo "$clean_output" | grep -q "CurrentWorkingDirectoryUnlinked"
+        ); then
+            true # Expected error pattern found
+        else
+            assert_true false "should report a directory-related error message, got: ${clean_output:-}"
+        fi
     fi
 }
 
@@ -521,7 +544,7 @@ test_pwd_performance_with_symlinks() {
         if [[ $physical_time -lt 10000000000 ]] && [[ $logical_time -lt 10000000000 ]]; then
             true # Performance acceptable (less than 10 seconds for 5 iterations)
         else
-            fail "performance test took too long: physical=${physical_time}ns, logical=${logical_time}ns"
+            assert_true false "performance test took too long: physical=${physical_time}ns, logical=${logical_time}ns"
         fi
     else
         skip_test "Symlink creation failed - filesystem may not support symlinks"

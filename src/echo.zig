@@ -176,7 +176,9 @@ pub fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOp
         if (i > 0) try writer.writeAll(" ");
 
         if (options.interpret_escapes) {
-            try writeWithEscapes(str, writer);
+            const terminated = try writeWithEscapes(str, writer);
+            // If \c was encountered, stop processing all remaining arguments
+            if (terminated) return;
         } else {
             try writer.writeAll(str);
         }
@@ -190,12 +192,14 @@ pub fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOp
 /// Write string while interpreting backslash escape sequences
 /// Invalid escape sequences are passed through literally
 ///
+/// Returns true if \c was encountered (indicating termination), false otherwise
+///
 /// Edge cases handled:
 /// - Incomplete escape sequences at end of string (e.g., "\") are output as literal backslash
 /// - Octal sequences overflow wraps around (values > 255 wrap to low 8 bits)
 /// - Hex sequences without valid digits after \x are output literally
 /// - Single backslash at end of string outputs the backslash character
-fn writeWithEscapes(s: []const u8, writer: anytype) !void {
+fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '\\' and i + 1 < s.len) {
@@ -211,7 +215,7 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
                 'c' => {
                     // \c suppresses all further output, including the trailing newline
                     // This matches GNU echo behavior
-                    return;
+                    return true;
                 },
                 'e' => {
                     try writer.writeByte('\x1b'); // Escape
@@ -284,6 +288,7 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !void {
             i += 1;
         }
     }
+    return false;
 }
 
 test "echo outputs single argument" {
@@ -466,6 +471,28 @@ test "echo -e overrides previous -E" {
     const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\n", buffer.items);
+}
+
+test "echo -e with \\c stops all remaining arguments" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // Test that \c stops processing ALL remaining arguments, not just current one
+    const args = [_][]const u8{ "-e", "start", "middle\\c", "should", "not", "appear" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("start middle", buffer.items);
+}
+
+test "echo -e with \\c at start of argument stops all" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // Test that \c at start of argument stops everything
+    const args = [_][]const u8{ "-e", "start", "\\cfollowed", "by", "more" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("start ", buffer.items);
 }
 
 // Fuzzing tests - these test properties that should hold for all inputs

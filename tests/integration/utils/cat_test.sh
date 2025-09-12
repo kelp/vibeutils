@@ -63,7 +63,8 @@ test_cat_multiple_files() {
     exec_utility cat --timeout="$CAT_TIMEOUT" "$file1" "$file2"
     
     assert_success "cat should succeed with multiple files"
-    assert_output_equals "${content1}${content2}" "output should concatenate both files"
+    assert_output_equals "${content1}
+${content2}" "output should concatenate both files with their trailing newlines"
     
     cleanup_cat_files "$file1" "$file2"
 }

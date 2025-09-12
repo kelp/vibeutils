@@ -183,7 +183,12 @@ init_framework
 
 # Source the test file if provided
 if [[ -n "$TEST_FILE" ]]; then
-    source "$TEST_FILE"
+    if ! source "$TEST_FILE"; then
+        echo "FATAL: Failed to source test file: $TEST_FILE" >&2
+        echo "Current directory: $PWD" >&2
+        echo "Test file exists: $(test -f "$TEST_FILE" && echo "yes" || echo "no")" >&2
+        exit 1
+    fi
 fi
 
 # Reset assertion counters
@@ -206,6 +211,18 @@ SCRIPT_EOF
         # Make script executable
         chmod +x "$script_file"
         
+        # Ensure TEST_FILE is absolute path for proper sourcing
+        local absolute_test_file=""
+        if [[ -n "$test_file" ]]; then
+            if [[ "$test_file" = /* ]]; then
+                # Already absolute
+                absolute_test_file="$test_file"
+            else
+                # Make it absolute
+                absolute_test_file="$(realpath "$test_file" 2>/dev/null || readlink -f "$test_file" 2>/dev/null || echo "$PWD/$test_file")"
+            fi
+        fi
+        
         # Run the test function with timeout and proper isolation
         if timeout "$test_timeout" env \
             TEST_ROOT_DIR="$TEST_ROOT_DIR" \
@@ -217,7 +234,7 @@ SCRIPT_EOF
             FRAMEWORK_DIR="$FRAMEWORK_DIR" \
             TEST_TEMP_DIR="$TEST_TEMP_DIR/${test_name//\//_}_$$" \
             CURRENT_TEST_NAME="$test_name" \
-            TEST_FILE="$test_file" \
+            TEST_FILE="$absolute_test_file" \
             TEST_FUNCTION="$test_function" \
             bash "$script_file" 2>&1; then
             exit_code=0
