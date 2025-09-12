@@ -1,4 +1,4 @@
-name: Test
+name: Integration Tests
 
 on:
   push:
@@ -8,12 +8,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  integration:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
-      - run: make test
-      - run: make test-privileged
+      - name: Run integration tests
+        run: make it
