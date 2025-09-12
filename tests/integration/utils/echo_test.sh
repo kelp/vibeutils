@@ -478,7 +478,7 @@ test_echo_rapid_execution() {
 # =============================================================================
 
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "echo"; then
         print_error "echo utility not found in ${TEST_BIN_DIR}"

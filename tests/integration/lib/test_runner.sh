@@ -450,6 +450,11 @@ execute_test_batch() {
                         wait_for_test_completion "$pid" "$name"
                         ((completed_tests++))
                         
+                        # Display progress after test completion
+                        if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
+                            print_progress "$completed_tests" "$total_tests" "tests"
+                        fi
+                        
                         # Check stop conditions after each completion
                         if [[ "$RUNNER_STOP_ON_FAILURE" == "true" ]] && [[ ${#RUNNER_FAILED_TESTS[@]} -gt 0 ]]; then
                             print_warning "Stopping execution due to test failure"
@@ -560,14 +565,26 @@ run_test_suite() {
     if [[ $RUNNER_PARALLEL_JOBS -gt 1 ]]; then
         execute_test_batch "${test_specs[@]}"
     else
-        # Serial execution
+        # Serial execution with progress display
+        local completed_tests=0
         for test_spec in "${test_specs[@]}"; do
             IFS='|' read -ra spec_parts <<< "$test_spec"
             local test_name="${spec_parts[0]:-}"
             local test_function="${spec_parts[1]:-}"
             local test_timeout="${spec_parts[2]:-$RUNNER_TIMEOUT}"
             
+            # Show progress before executing test
+            if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
+                print_progress "$completed_tests" "$total_tests" "tests"
+            fi
+            
             execute_test_sync "$test_name" "$test_function" "$test_timeout"
+            ((completed_tests++))
+            
+            # Show progress after completing test
+            if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
+                print_progress "$completed_tests" "$total_tests" "tests"
+            fi
             
             # Check stop conditions
             if [[ "$RUNNER_STOP_ON_FAILURE" == "true" ]] && [[ ${#RUNNER_FAILED_TESTS[@]} -gt 0 ]]; then
@@ -578,6 +595,12 @@ run_test_suite() {
                 break
             fi
         done
+        
+        # Complete the progress bar for serial execution
+        if [[ "${TEST_VERBOSE:-false}" == "false" ]]; then
+            print_progress "$completed_tests" "$total_tests" "tests"
+            printf "\\n"  # Complete the progress bar
+        fi
     fi
     
     local end_time duration

@@ -563,7 +563,7 @@ test_tee_rapid_small_writes() {
 
 # Main test execution
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "tee"; then
         print_error "tee utility not found in ${TEST_BIN_DIR}"

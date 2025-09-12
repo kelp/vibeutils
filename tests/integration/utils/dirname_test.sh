@@ -626,7 +626,7 @@ test_dirname_version_long() {
 # =============================================================================
 
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "dirname"; then
         print_error "dirname utility not found in ${TEST_BIN_DIR}"

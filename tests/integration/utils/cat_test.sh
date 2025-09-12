@@ -705,7 +705,7 @@ test_cat_short_help() {
 # =============================================================================
 
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "cat"; then
         print_error "cat utility not found in ${TEST_BIN_DIR}"

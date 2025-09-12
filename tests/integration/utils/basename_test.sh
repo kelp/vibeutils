@@ -495,7 +495,7 @@ test_basename_rapid_execution() {
 # =============================================================================
 
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "basename"; then
         print_error "basename utility not found in ${TEST_BIN_DIR}"

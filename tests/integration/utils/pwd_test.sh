@@ -558,7 +558,7 @@ test_pwd_performance_with_symlinks() {
 # =============================================================================
 
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "pwd"; then
         print_error "pwd utility not found in ${TEST_BIN_DIR}"

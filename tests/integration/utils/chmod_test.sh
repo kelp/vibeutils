@@ -1414,7 +1414,7 @@ test_chmod_reference_file_output_format() {
 # =============================================================================
 
 main() {
-    init_framework --verbose
+    init_framework
     
     if ! has_utility "chmod"; then
         print_error "chmod utility not found in ${TEST_BIN_DIR}"
