@@ -12,17 +12,13 @@ source "${SCRIPT_DIR}/../lib/lib.sh"
 CAT_TIMEOUT=10
 LARGE_FILE_TIMEOUT=20
 
-# Test helper functions
+# Test helper functions (using shared helpers from lib.sh)
 setup_cat_test() {
-    # Ensure we have a clean test environment
-    cd "$TEST_TEMP_DIR"
+    setup_test  # Use shared setup function
 }
 
 cleanup_cat_files() {
-    local files=("$@")
-    for file in "${files[@]}"; do
-        rm -f "$file" 2>/dev/null || true
-    done
+    cleanup_test_files "$@"  # Use shared cleanup function
 }
 
 # =============================================================================
@@ -39,7 +35,7 @@ test_cat_basic_functionality() {
     printf "%s\n" "$content" > "$test_file"
     
     # Test basic cat functionality
-    exec_utility cat --timeout="$CAT_TIMEOUT" "$test_file"
+    run_utility_test cat "$CAT_TIMEOUT" "$test_file"
     
     assert_success "cat should succeed with basic file reading"
     assert_output_equals "${content}" "output should match file content"
@@ -60,7 +56,7 @@ test_cat_multiple_files() {
     printf "%s\n" "$content2" > "$file2"
     
     # Test concatenating multiple files
-    exec_utility cat --timeout="$CAT_TIMEOUT" "$file1" "$file2"
+    run_utility_test cat "$CAT_TIMEOUT" "$file1" "$file2"
     
     assert_success "cat should succeed with multiple files"
     assert_output_equals "${content1}
@@ -707,11 +703,8 @@ test_cat_short_help() {
 main() {
     init_framework
     
-    if ! has_utility "cat"; then
-        print_error "cat utility not found in ${TEST_BIN_DIR}"
-        print_error "Run 'make build' to build the utilities first"
-        return 1
-    fi
+    # Validate utility is available
+    validate_utility_available "cat" || return 1
     
     start_suite "cat Integration Tests"
     

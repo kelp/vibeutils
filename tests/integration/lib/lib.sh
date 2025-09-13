@@ -173,24 +173,30 @@ run_test() {
         print_info "Running test: $test_name"
     fi
     
-    # Create isolated temp directory for this test
-    local test_temp_dir="${TEST_TEMP_DIR}/$(basename "$test_name" | tr ' ' '_')_$$"
-    mkdir -p "$test_temp_dir"
+    # Create isolated temp directory for this test atomically
+    local test_temp_dir
+    test_temp_dir=$(mktemp -d "${TEST_TEMP_DIR}/$(basename "$test_name" | tr ' ' '_').XXXXXX")
     
-    # Run test in subshell with timeout
+    # Run test in subshell with timeout using proper quoting
     local test_result
-    if timeout "$timeout" bash -c "
+    if timeout "$timeout" bash -c '
         set -euo pipefail
-        cd '$test_temp_dir'
-        export TEST_TEMP_DIR='$test_temp_dir'
-        export CURRENT_TEST_NAME='$test_name'
+        cd "$1"
+        export TEST_TEMP_DIR="$1"
+        export CURRENT_TEST_NAME="$2"
         
         # Source framework again in subshell
-        source '${FRAMEWORK_DIR}/lib.sh'
+        source "$3"
         
-        # Run the actual test function
-        $test_function
-    " 2>&1; then
+        # Validate test function name (security)
+        if [[ "$4" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            # Run the actual test function
+            "$4"
+        else
+            echo "Invalid test function name: $4" >&2
+            exit 1
+        fi
+    ' -- "$test_temp_dir" "$test_name" "${FRAMEWORK_DIR}/lib.sh" "$test_function" 2>&1; then
         test_result="PASS"
         ((TEST_PASSED++))
         print_test_pass "$test_name"
@@ -283,7 +289,14 @@ get_utility_path() {
 create_temp_file() {
     local content="${1:-}"
     local suffix="${2:-tmp}"
-    local temp_file="${TEST_TEMP_DIR}/test_${RANDOM}_$$.${suffix}"
+    local temp_file
+    temp_file=$(mktemp "${TEST_TEMP_DIR}/test.XXXXXX")
+    # Add suffix by renaming if needed
+    if [[ "$suffix" != "tmp" ]]; then
+        local new_temp_file="${temp_file}.${suffix}"
+        mv "$temp_file" "$new_temp_file"
+        temp_file="$new_temp_file"
+    fi
     
     if [[ -n "$content" ]]; then
         printf "%s" "$content" > "$temp_file"
@@ -298,9 +311,13 @@ create_temp_file() {
 # Usage: create_temp_dir [name]
 create_temp_dir() {
     local name="${1:-test_dir_${RANDOM}_$$}"
-    local temp_dir="${TEST_TEMP_DIR}/${name}"
-    
-    mkdir -p "$temp_dir"
+    local temp_dir
+    if [[ -n "${name:-}" ]]; then
+        # Use provided name as template
+        temp_dir=$(mktemp -d "${TEST_TEMP_DIR}/${name}.XXXXXX")
+    else
+        temp_dir=$(mktemp -d "${TEST_TEMP_DIR}/test_dir.XXXXXX")
+    fi
     echo "$temp_dir"
 }
 
@@ -490,6 +507,17 @@ UTILITY FUNCTIONS:
     load_fixture "name"    Load test fixture content
     copy_fixture "name"    Copy fixture to temp directory
 
+COMMON TEST HELPERS:
+    setup_test             Standard test setup (cd to temp dir)
+    cleanup_test_files files... Remove test files safely
+    create_test_file_with_lines file count [prefix] Create file with N lines
+    create_test_file_with_binary file content Create binary content file
+    create_test_file_with_perms file perms [content] Create file with permissions
+    create_test_input [content] Create test input string
+    run_utility_test util timeout args... Execute utility test safely
+    run_utility_test_expecting_failure util timeout args... Execute expecting failure
+    validate_utility_available util Check utility exists and error if not
+
 ASSERTION FUNCTIONS:
     assert_equals expected actual [message]
     assert_not_equals unexpected actual [message]
@@ -518,9 +546,118 @@ VARIABLES:
 EOF
 }
 
+# =============================================================================
+# Common Test Helper Functions (reduce duplication across utility tests)
+# =============================================================================
+
+# Generic test setup - changes to temp directory
+# Usage: setup_test
+setup_test() {
+    # Ensure we have a clean test environment
+    cd "$TEST_TEMP_DIR"
+}
+
+# Generic cleanup for test files
+# Usage: cleanup_test_files file1 file2 ...
+cleanup_test_files() {
+    local files=("$@")
+    for file in "${files[@]}"; do
+        rm -f "$file" 2>/dev/null || true
+    done
+}
+
+# Create test file with specified number of lines
+# Usage: create_test_file_with_lines filename line_count [prefix]
+create_test_file_with_lines() {
+    local file="$1"
+    local line_count="$2"
+    local prefix="${3:-line}"
+    
+    for ((i = 1; i <= line_count; i++)); do
+        printf "%s %d\n" "$prefix" "$i"
+    done > "$file"
+}
+
+# Create test file with binary content
+# Usage: create_test_file_with_binary filename content
+create_test_file_with_binary() {
+    local filename="$1"
+    local content="$2"
+    printf '%s' "$content" > "$filename"
+}
+
+# Create test file with specific permissions
+# Usage: create_test_file_with_perms filename permissions [content]
+create_test_file_with_perms() {
+    local filename="$1"
+    local permissions="$2"
+    local content="${3:-test file content}"
+    
+    printf "%s\n" "$content" > "$filename"
+    chmod "$permissions" "$filename"
+}
+
+# Create test input data helper
+# Usage: create_test_input [content]
+create_test_input() {
+    local content="${1:-test input data}"
+    printf "%s" "$content"
+}
+
+# Common test execution pattern with utility validation
+# Usage: run_utility_test utility_name timeout_seconds [...args]
+run_utility_test() {
+    local utility="$1"
+    local timeout="$2"
+    shift 2
+    
+    if ! has_utility "$utility"; then
+        print_error "$utility utility not found in ${TEST_BIN_DIR}"
+        print_error "Run 'make build' to build the utilities first"
+        return 1
+    fi
+    
+    exec_utility "$utility" --timeout="$timeout" "$@"
+}
+
+# Common test execution pattern expecting failure
+# Usage: run_utility_test_expecting_failure utility_name timeout_seconds [...args]
+run_utility_test_expecting_failure() {
+    local utility="$1"
+    local timeout="$2"
+    shift 2
+    
+    if ! has_utility "$utility"; then
+        print_error "$utility utility not found in ${TEST_BIN_DIR}"
+        print_error "Run 'make build' to build the utilities first"
+        return 1
+    fi
+    
+    exec_utility "$utility" --timeout="$timeout" --expect-failure "$@"
+}
+
+# Standard utility test validation
+# Usage: validate_utility_available utility_name
+validate_utility_available() {
+    local utility="$1"
+    
+    if ! has_utility "$utility"; then
+        print_error "$utility utility not found in ${TEST_BIN_DIR}"
+        print_error "Run 'make build' to build the utilities first"
+        return 1
+    fi
+    
+    return 0
+}
+
+# =============================================================================
+
 # Export all public functions
 export -f init_framework cleanup_framework validate_framework
 export -f start_suite end_suite run_test skip_test print_final_summary
 export -f has_utility get_utility_path exec_utility
 export -f create_temp_file create_temp_dir load_fixture copy_fixture
 export -f is_platform is_privileged print_framework_help
+export -f setup_test cleanup_test_files create_test_file_with_lines create_test_file_with_binary
+export -f create_test_file_with_perms create_test_input run_utility_test run_utility_test_expecting_failure
+export -f validate_utility_available

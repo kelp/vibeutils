@@ -417,26 +417,29 @@ test_false_consistent_across_invocations() {
     setup_false_test
     
     # Test that false is perfectly consistent across different argument patterns
-    local test_patterns=(
-        ""
-        "--help"
-        "--version"
-        "-h -V"
-        "normal arguments"
-        "--flag=value"
-        "/path/to/file"
-        "arg1 arg2 arg3"
+    local -a test_pattern_sets=(
+        '()' # Empty arguments
+        '("--help")'
+        '("--version")'
+        '("-h" "-V")'
+        '("normal" "arguments")'
+        '("--flag=value")'
+        '("/path/to/file")'
+        '("arg1" "arg2" "arg3")'
     )
     
-    for pattern in "${test_patterns[@]}"; do
-        if [[ -z "$pattern" ]]; then
+    for pattern_set in "${test_pattern_sets[@]}"; do
+        # Safely execute with proper argument array handling
+        local -a args
+        eval "args=$pattern_set"  # This is safe - we control the input completely
+        
+        if [[ ${#args[@]} -eq 0 ]]; then
             exec_utility false --timeout="$FALSE_TIMEOUT" --expect-failure
         else
-            # Use eval to properly handle the argument patterns
-            eval "exec_utility false --timeout=\"$FALSE_TIMEOUT\" --expect-failure $pattern"
+            exec_utility false --timeout="$FALSE_TIMEOUT" --expect-failure "${args[@]}"
         fi
         
-        assert_failure "false should fail consistently with pattern: '$pattern'"
+        assert_failure "false should fail consistently with args: ${args[*]}"
         assert_output_equals "" "false should produce no output with pattern: '$pattern'"
         assert_exit_code 1 "false should have exit code 1 with pattern: '$pattern'"
     done

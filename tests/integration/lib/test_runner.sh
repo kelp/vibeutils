@@ -85,9 +85,8 @@ init_test_runner() {
         RUNNER_PARALLEL_JOBS=16
     fi
     
-    # Create temp directory for runner state
-    RUNNER_TEMP_BASE="${TEST_TEMP_DIR}/runner_$$"
-    mkdir -p "$RUNNER_TEMP_BASE"
+    # Create temp directory for runner state atomically
+    RUNNER_TEMP_BASE=$(mktemp -d "${TEST_TEMP_DIR}/runner.XXXXXX")
     
     # Set up signal handling for cleanup
     trap cleanup_test_runner EXIT INT TERM
@@ -194,8 +193,13 @@ fi
 # Reset assertion counters
 reset_assertions
 
-# Execute the test function
-"$TEST_FUNCTION"
+# Validate and execute the test function (security)
+if [[ "$TEST_FUNCTION" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    "$TEST_FUNCTION"
+else
+    echo "FATAL: Invalid test function name: $TEST_FUNCTION" >&2
+    exit 1
+fi
 
 # Check assertion results
 if [[ $ASSERTION_FAILED -gt 0 ]]; then
@@ -223,6 +227,10 @@ SCRIPT_EOF
             fi
         fi
         
+        # Create isolated temp directory for this test
+        local isolated_temp_dir
+        isolated_temp_dir=$(mktemp -d "$TEST_TEMP_DIR/${test_name//\//_}.XXXXXX")
+        
         # Run the test function with timeout and proper isolation
         if timeout "$test_timeout" env \
             TEST_ROOT_DIR="$TEST_ROOT_DIR" \
@@ -232,7 +240,7 @@ SCRIPT_EOF
             TEST_PARALLEL="$TEST_PARALLEL" \
             TEST_TIMEOUT="$TEST_TIMEOUT" \
             FRAMEWORK_DIR="$FRAMEWORK_DIR" \
-            TEST_TEMP_DIR="$TEST_TEMP_DIR/${test_name//\//_}_$$" \
+            TEST_TEMP_DIR="$isolated_temp_dir" \
             CURRENT_TEST_NAME="$test_name" \
             TEST_FILE="$absolute_test_file" \
             TEST_FUNCTION="$test_function" \

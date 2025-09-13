@@ -12,16 +12,9 @@ source "${SCRIPT_DIR}/../lib/lib.sh"
 ECHO_TIMEOUT=10
 PERFORMANCE_TIMEOUT=20
 
-# Test helper functions
+# Test helper functions (using shared helpers from lib.sh)
 setup_echo_test() {
-    # Ensure we have a clean test environment
-    cd "$TEST_TEMP_DIR"
-}
-
-create_test_file_with_binary() {
-    local filename="$1"
-    local content="$2"
-    printf '%s' "$content" > "$filename"
+    setup_test  # Use shared setup function
 }
 
 # =============================================================================
@@ -42,7 +35,7 @@ test_echo_multiple_arguments() {
     setup_echo_test
     
     # Test echo with multiple arguments
-    exec_utility echo --timeout="$ECHO_TIMEOUT" "first" "second" "third"
+    run_utility_test echo "$ECHO_TIMEOUT" "first" "second" "third"
     
     assert_success "echo should succeed with multiple arguments"
     assert_output_equals "first second third" "arguments should be separated by single spaces"
@@ -52,7 +45,7 @@ test_echo_no_arguments() {
     setup_echo_test
     
     # Test echo with no arguments (should output just a newline)
-    exec_utility echo --timeout="$ECHO_TIMEOUT"
+    run_utility_test echo "$ECHO_TIMEOUT"
     
     assert_success "echo should succeed with no arguments"
     assert_output_equals "" "echo with no arguments should output just newline"
