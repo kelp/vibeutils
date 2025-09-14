@@ -54,6 +54,12 @@ This philosophy allows us to iterate quickly and find the right abstractions bef
 
 ## Build and Test Commands
 
+**Prerequisites**: Integration tests require bash 4.0+ (macOS default is 3.2):
+```bash
+brew install bash
+# Ensure /usr/local/bin or /opt/homebrew/bin is in PATH before /bin
+```
+
 Run `make help` for all available commands. Key commands:
 
 ```bash

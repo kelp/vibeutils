@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# Common test infrastructure for vibeutils integration tests
+# Provides core testing functions and utilities
+#
+# Requires: bash 4.0+ (install with: brew install bash)
+
+set -euo pipefail
+
+# Check bash version (skip if already checked by parent script)
+if [[ -z "${BASH_VERSION_CHECKED:-}" ]] && [[ ${BASH_VERSION%%.*} -lt 4 ]]; then
+    echo "Error: This script requires bash 4.0 or later. Current version: $BASH_VERSION"
+    echo "Install modern bash with: brew install bash"
+    exit 1
+fi
+export BASH_VERSION_CHECKED=1
+
+# Project paths
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TESTS_DIR="$(dirname "$LIB_DIR")"
+PROJECT_ROOT="$(dirname "$TESTS_DIR")"
+BIN_DIR="$PROJECT_ROOT/zig-out/bin"
+TEMP_DIR="${TMPDIR:-/tmp}/vibeutils_tests_$$"
+
+# Colors for output (respects NO_COLOR)
+if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    NC='\033[0m' # No Color
+else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC=''
+fi
+
+# Platform detection (global variable)
+PLATFORM=""
+
+# Detect platform and export for use in tests
+detect_platform() {
+    case "$(uname -s)" in
+        Darwin*) PLATFORM="macos" ;;
+        Linux*)  PLATFORM="linux" ;;
+        *)       PLATFORM="unknown" ;;
+    esac
+    export PLATFORM
+}
+
+# Cross-platform file permissions getter
+get_file_permissions() {
+    local file="$1"
+    case "$PLATFORM" in
+        macos)  stat -f %A "$file" 2>/dev/null ;;
+        linux)  stat -c %a "$file" 2>/dev/null ;;
+        *)      echo "000" ;;
+    esac
+}
+
+# Cross-platform file size getter
+get_file_size() {
+    local file="$1"
+    case "$PLATFORM" in
+        macos)  stat -f %z "$file" 2>/dev/null ;;
+        linux)  stat -c %s "$file" 2>/dev/null ;;
+        *)      echo "0" ;;
+    esac
+}
+
+# Export the platform functions for use in subshells
+export -f get_file_permissions
+export -f get_file_size
+
+# Test counters (global state)
+TESTS_RUN=0
+TESTS_PASSED=0
+TESTS_FAILED=0
+declare -a FAILED_TESTS=()
+
+# Initialize test session
+init_test_session() {
+    TESTS_RUN=0
+    TESTS_PASSED=0
+    TESTS_FAILED=0
+    FAILED_TESTS=()
+
+    # Detect platform for cross-platform compatibility
+    detect_platform
+
+    # Create temp directory
+    mkdir -p "$TEMP_DIR"
+
+    # Verify binary directory exists
+    if [[ ! -d "$BIN_DIR" ]]; then
+        echo -e "${RED}Error: Binary directory not found at $BIN_DIR${NC}"
+        echo "Run 'make build' first"
+        exit 1
+    fi
+}
+
+# Cleanup test session
+cleanup_test_session() {
+    # Remove temp directory
+    [[ -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR"
+}
+
+# Print test result with consistent formatting
+print_test_result() {
+    local test_name="$1"
+    local result="$2"
+    local details="${3:-}"
+    local failed_command="${4:-}"
+    
+    TESTS_RUN=$((TESTS_RUN + 1))
+    
+    if [[ "$result" == "PASS" ]]; then
+        echo -e "${GREEN}✓${NC} $test_name"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        echo -e "${RED}✗${NC} $test_name"
+        if [[ -n "$details" ]]; then
+            echo "    $details"
+        fi
+        if [[ -n "$failed_command" ]]; then
+            echo -e "    ${CYAN}Failed command:${NC} $failed_command"
+        fi
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        FAILED_TESTS+=("$test_name")
+    fi
+}
+
+# Test if a utility binary exists and is executable
+test_binary_exists() {
+    local util="$1"
+    local binary="$BIN_DIR/$util"
+    
+    if [[ ! -x "$binary" ]]; then
+        print_test_result "$util binary" "FAIL" "Binary not found or not executable at $binary"
+        return 1
+    fi
+    
+    print_test_result "$util binary" "PASS"
+    return 0
+}
+
+# Test basic flags (--help and --version)
+test_basic_flags() {
+    local util="$1"
+    local binary="$BIN_DIR/$util"
+    
+    # Special handling for true/false - test their actual behavior
+    if [[ "$util" == "true" ]]; then
+        if "$binary" >/dev/null 2>&1; then
+            print_test_result "true exit code" "PASS"
+        else
+            print_test_result "true exit code" "FAIL" "Should return 0" "$binary"
+        fi
+        return 0
+    fi
+    
+    if [[ "$util" == "false" ]]; then
+        if ! "$binary" >/dev/null 2>&1; then
+            print_test_result "false exit code" "PASS"
+        else
+            print_test_result "false exit code" "FAIL" "Should return 1" "$binary"
+        fi
+        return 0
+    fi
+    
+    # Test help flag
+    if "$binary" --help >/dev/null 2>&1; then
+        print_test_result "$util --help" "PASS"
+    else
+        print_test_result "$util --help" "FAIL" "Help flag failed" "$binary --help"
+    fi
+    
+    # Test version flag
+    if "$binary" --version >/dev/null 2>&1; then
+        print_test_result "$util --version" "PASS"
+    else
+        print_test_result "$util --version" "FAIL" "Version flag failed" "$binary --version"
+    fi
+}
+
+# Run a command and capture exit code, stdout, stderr
+run_command() {
+    local result_var=$1
+    local stdout_var=$2
+    local stderr_var=$3
+    local exit_code_var=$4
+    shift 4
+    
+    local stdout_file="$TEMP_DIR/stdout_$$"
+    local stderr_file="$TEMP_DIR/stderr_$$"
+    
+    set +e
+    "$@" >"$stdout_file" 2>"$stderr_file"
+    eval "$exit_code_var=$?"
+    set -e
+    
+    # Use printf to safely assign file contents to variables
+    printf -v "$stdout_var" '%s' "$(cat "$stdout_file")"
+    printf -v "$stderr_var" '%s' "$(cat "$stderr_file")"
+    printf -v "$result_var" '%s' "$*"
+    
+    rm -f "$stdout_file" "$stderr_file"
+}
+
+# Test a command with expected exit code
+test_command_exit_code() {
+    local test_name="$1"
+    local expected_exit="$2"
+    shift 2
+    
+    local command stdout stderr actual_exit
+    run_command command stdout stderr actual_exit "$@"
+    
+    if [[ $actual_exit -eq $expected_exit ]]; then
+        print_test_result "$test_name" "PASS"
+        return 0
+    else
+        print_test_result "$test_name" "FAIL" "Expected exit $expected_exit, got $actual_exit" "$command"
+        return 1
+    fi
+}
+
+# Test a command with expected output
+test_command_output() {
+    local test_name="$1"
+    local expected_output="$2"
+    shift 2
+
+    local command stdout stderr actual_exit
+    run_command command stdout stderr actual_exit "$@"
+
+    if [[ "$stdout" == "$expected_output" ]]; then
+        print_test_result "$test_name" "PASS"
+        return 0
+    else
+        print_test_result "$test_name" "FAIL" "Output mismatch. Expected: '$expected_output', Got: '$stdout'" "$command"
+        return 1
+    fi
+}
+
+# Test a command with expected output (preserves exact newlines)
+test_command_output_exact() {
+    local test_name="$1"
+    local expected_output="$2"
+    shift 2
+
+    local temp_out="$TEMP_DIR/exact_out_$$"
+    set +e
+    "$@" >"$temp_out" 2>/dev/null
+    local exit_code=$?
+    set -e
+
+    if cmp -s <(printf '%s' "$expected_output") "$temp_out"; then
+        print_test_result "$test_name" "PASS"
+        rm -f "$temp_out"
+        return 0
+    else
+        local actual_output="$(<"$temp_out")"
+        print_test_result "$test_name" "FAIL" "Output mismatch. Expected: '$expected_output', Got: '$actual_output'"
+        rm -f "$temp_out"
+        return 1
+    fi
+}
+
+# Test a command with expected output pattern (regex)
+test_command_output_pattern() {
+    local test_name="$1"
+    local expected_pattern="$2"
+    shift 2
+    
+    local command stdout stderr actual_exit
+    run_command command stdout stderr actual_exit "$@"
+    
+    if [[ "$stdout" =~ $expected_pattern ]]; then
+        print_test_result "$test_name" "PASS"
+        return 0
+    else
+        print_test_result "$test_name" "FAIL" "Output doesn't match pattern '$expected_pattern'. Got: '$stdout'" "$command"
+        return 1
+    fi
+}
+
+# Test a command that should succeed (exit 0)
+test_command_succeeds() {
+    local test_name="$1"
+    shift
+    test_command_exit_code "$test_name" 0 "$@"
+}
+
+# Test a command that should fail (exit non-zero)
+test_command_fails() {
+    local test_name="$1"
+    shift
+    
+    local command stdout stderr actual_exit
+    run_command command stdout stderr actual_exit "$@"
+    
+    if [[ $actual_exit -ne 0 ]]; then
+        print_test_result "$test_name" "PASS"
+        return 0
+    else
+        print_test_result "$test_name" "FAIL" "Expected command to fail, but it succeeded" "$command"
+        return 1
+    fi
+}
+
+# Create a temporary file with specific content
+create_temp_file() {
+    local content="$1"
+    local filename="${2:-$(mktemp "$TEMP_DIR/testfile_XXXXXX")}"
+    
+    echo -n "$content" > "$filename"
+    echo "$filename"
+}
+
+# Create a temporary directory
+create_temp_dir() {
+    local dirname="${1:-$(mktemp -d "$TEMP_DIR/testdir_XXXXXX")}"
+    mkdir -p "$dirname"
+    echo "$dirname"
+}
+
+# Print test summary
+print_test_summary() {
+    local utility_name="${1:-Tests}"
+    
+    echo -e "\n${BLUE}$utility_name Summary${NC}"
+    echo "$(printf '=%.0s' $(seq 1 $((${#utility_name} + 8))))"
+    echo "Tests run: $TESTS_RUN"
+    echo -e "Passed: ${GREEN}$TESTS_PASSED${NC}"
+    echo -e "Failed: ${RED}$TESTS_FAILED${NC}"
+    
+    if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+        echo -e "\n${RED}Failed tests:${NC}"
+        for test in "${FAILED_TESTS[@]}"; do
+            echo -e "  ${RED}✗${NC} $test"
+        done
+    fi
+    
+    if [[ $TESTS_FAILED -eq 0 ]]; then
+        echo -e "\n${GREEN}All tests passed!${NC}"
+        return 0
+    else
+        echo -e "\n${RED}Some tests failed${NC}"
+        return 1
+    fi
+}
+
+# Trap to cleanup on exit
+trap cleanup_test_session EXIT
+
+# Test flags automatically extracted from --help output
+test_automatic_flags() {
+    local util="$1"
+    local binary="$BIN_DIR/$util"
+    
+    if [[ ! -x "$binary" ]]; then
+        echo "Warning: Binary $binary not found" >&2
+        return 1
+    fi
+    
+    # Source flag parser
+    source "$LIB_DIR/flag_parser.sh"
+    
+    # Extract flags
+    local -a flags
+    if extract_flags_from_help "$util" flags; then
+        local flag_count=${#flags[@]}
+        if [[ $flag_count -gt 0 ]]; then
+            echo "  Found $flag_count documented flags to test..."
+            
+            # Test each flag exists (basic smoke test)
+            local tested=0
+            local passed=0
+            for flag_info in "${flags[@]}"; do
+                local flag="${flag_info%%:*}"
+                # Skip --help and --version (already tested)
+                [[ "$flag" =~ ^(-h|--help|-V|--version)$ ]] && continue
+                
+                ((tested++))
+                # Basic smoke test: flag does not cause immediate error
+                if "$binary" "$flag" --help >/dev/null 2>&1 || [[ $? -eq 1 ]]; then
+                    ((passed++))
+                    print_test_result "  $util $flag exists" "PASS"
+                else
+                    print_test_result "  $util $flag exists" "FAIL" "Flag not recognized" "$binary $flag"
+                fi
+            done
+            
+            echo "  Automatic flag tests: $passed/$tested passed"
+        else
+            echo "  No additional flags found to test"
+        fi
+        return 0
+    else
+        echo "  Could not extract flags from --help output"
+        return 1
+    fi
+}

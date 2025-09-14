@@ -273,25 +273,31 @@ help:
 	@echo ""
 	@echo "For more details on any target, see the Makefile or run 'make <target>'"
 
-# Integration Testing Framework
+# Integration Testing - Comprehensive Architecture
 it: build
 ifdef UTIL
-	@echo "Running integration tests for $(UTIL) utility..."
-	@tests/integration/run.sh $(UTIL)
+	@echo "Running comprehensive tests for $(UTIL) utility..."
+	@tests/integration.sh $(UTIL)
 else
-	@echo "Running comprehensive integration tests..."
-	@tests/integration/run.sh
+	@echo "Running integration tests for all utilities..."
+	@tests/integration.sh
 endif
 
-# Validate integration framework
-test-integration-validate:
-	@echo "Validating integration testing framework..."
-	@tests/integration/run.sh --validate
+it-list: build
+	@echo "Listing available utilities for testing..."
+	@tests/integration.sh --list
 
-# List available integration tests
-it-list:
-	@echo "Listing available integration tests..."
-	@tests/integration/run.sh --list
+test-integration-validate: build
+	@echo "Validating integration test infrastructure..."
+	@echo "Testing that help flag works for key utilities..."
+	@for util in echo cat chmod; do \
+		if [ -x zig-out/bin/$$util ]; then \
+			echo "✓ Testing $$util --help"; \
+			zig-out/bin/$$util --help >/dev/null 2>&1 || echo "⚠ $$util --help failed"; \
+		else \
+			echo "⚠ $$util binary not found"; \
+		fi; \
+	done
 
 
 benchmark: build

@@ -371,40 +371,13 @@ fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: an
 
 /// Process input by bytes without seeking (for stdin/pipes)
 fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64) !void {
-    // Read all input by accumulating bytes using proper readAll calls
+    // Read all input by accumulating bytes
     var content_list = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer content_list.deinit(allocator);
 
-    // Read all data by reading lines until EOF and concatenating
-    var temp_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer temp_buffer.deinit(allocator);
-
-    while (true) {
-        temp_buffer.clearRetainingCapacity();
-
-        // Read a line or remaining data
-        const line = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
-            error.EndOfStream => {
-                // Check if there's any remaining data without delimiter
-                const remaining = reader.peek(BUFFER_SIZE) catch break;
-                if (remaining.len == 0) break;
-                _ = reader.discard(@enumFromInt(remaining.len)) catch break;
-                try content_list.appendSlice(allocator, remaining);
-                break;
-            },
-            else => return err,
-        };
-
-        // Add line plus newline back
-        try temp_buffer.appendSlice(allocator, line);
-        try temp_buffer.append(allocator, '\n');
-        try content_list.appendSlice(allocator, temp_buffer.items);
-
-        // Safety check to prevent unbounded memory usage
-        if (content_list.items.len > 1024 * 1024 * 1024) {
-            return error.InputTooLarge;
-        }
-    }
+    // Read all data using appendRemaining to preserve exact byte content
+    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024);
+    try reader.appendRemaining(allocator, &content_list, limit);
 
     const content = content_list.items;
 
