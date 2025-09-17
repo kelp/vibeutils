@@ -346,19 +346,10 @@ fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_str
 }
 
 /// Recursively apply chmod to a directory and all its contents
-/// Processes directories depth-first
+/// Processes directory contents first, then the directory itself to avoid permission conflicts
 fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, parsed_octal_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
-    // Apply mode to the directory itself first
-    // For directories, we want to propagate errors, so call the individual functions
-    if (use_reference) {
-        try applyModeToFile(allocator, dir_path, reference_mode.?, writer, stderr_writer, options);
-    } else if (is_symbolic) {
-        try applySymbolicModeToFile(allocator, dir_path, mode_str, writer, stderr_writer, options);
-    } else {
-        try applyModeToFile(allocator, dir_path, parsed_octal_mode.?, writer, stderr_writer, options);
-    }
-
-    // Open directory for iteration
+    // Open directory for iteration FIRST, before changing its permissions
+    // This ensures we can access the directory contents even if the new permissions would block access
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         if (!options.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, errorToMessage(err) });
@@ -370,7 +361,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
     // Track if any file operations failed in this directory
     var had_errors = false;
 
-    // Iterate through directory entries
+    // Process all directory contents FIRST
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
         if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
@@ -395,6 +386,22 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
                 }
             },
         }
+    }
+
+    // Apply mode to the directory itself LAST, after processing all contents
+    // This prevents the scenario where changing directory permissions blocks access to its contents
+    if (use_reference) {
+        applyModeToFile(allocator, dir_path, reference_mode.?, writer, stderr_writer, options) catch {
+            had_errors = true;
+        };
+    } else if (is_symbolic) {
+        applySymbolicModeToFile(allocator, dir_path, mode_str, writer, stderr_writer, options) catch {
+            had_errors = true;
+        };
+    } else {
+        applyModeToFile(allocator, dir_path, parsed_octal_mode.?, writer, stderr_writer, options) catch {
+            had_errors = true;
+        };
     }
 
     // If any operations failed, return an error

@@ -235,31 +235,27 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
 
             // Open all files
             for (file_names, 0..) |file_name, i| {
-                // Handle "-" as stdout (special case)
-                if (std.mem.eql(u8, file_name, "-")) {
-                    files[i] = std.fs.File.stdout();
-                } else {
-                    if (append_mode) {
-                        // For append mode: try to open existing file, create if not found
-                        files[i] = std.fs.cwd().openFile(file_name, .{ .mode = .write_only }) catch |open_err| switch (open_err) {
-                            error.FileNotFound => try std.fs.cwd().createFile(file_name, .{ .read = false }),
-                            else => {
-                                // Error reporting is handled by caller
-                                return open_err;
-                            },
-                        };
-                        // Seek to end for append mode (only if file supports seeking)
-                        files[i].seekFromEnd(0) catch {
-                            // Some file types (pipes, devices) don't support seeking
-                            // This is expected and not an error for tee
-                        };
-                    } else {
-                        // For normal mode, create/truncate file
-                        files[i] = std.fs.cwd().createFile(file_name, .{ .read = false, .truncate = true }) catch |err| {
+                // POSIX compliance: "-" should be treated as a literal filename "-", not stdout
+                if (append_mode) {
+                    // For append mode: try to open existing file, create if not found
+                    files[i] = std.fs.cwd().openFile(file_name, .{ .mode = .write_only }) catch |open_err| switch (open_err) {
+                        error.FileNotFound => try std.fs.cwd().createFile(file_name, .{ .read = false }),
+                        else => {
                             // Error reporting is handled by caller
-                            return err;
-                        };
-                    }
+                            return open_err;
+                        },
+                    };
+                    // Seek to end for append mode (only if file supports seeking)
+                    files[i].seekFromEnd(0) catch {
+                        // Some file types (pipes, devices) don't support seeking
+                        // This is expected and not an error for tee
+                    };
+                } else {
+                    // For normal mode, create/truncate file
+                    files[i] = std.fs.cwd().createFile(file_name, .{ .read = false, .truncate = true }) catch |err| {
+                        // Error reporting is handled by caller
+                        return err;
+                    };
                 }
                 files_opened += 1;
             }
@@ -275,12 +271,9 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
 
         /// Clean up resources
         pub fn deinit(self: *Self) void {
-            for (self.files, 0..) |file, i| {
-                // Don't close stdout if it was used as a file target
-                // Use string comparison for safer handling
-                if (!std.mem.eql(u8, self.file_names[i], "-")) {
-                    file.close();
-                }
+            for (self.files) |file| {
+                // Close all files since we no longer treat "-" as stdout
+                file.close();
             }
             self.allocator.free(self.files);
         }
@@ -313,16 +306,17 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
         pub fn flush(self: *Self) !void {
             var any_error = false;
 
-            // Skip flushing stdout writer to avoid issues with test writers
-            // In real usage, the main() function handles flushing
-            _ = self.stdout_writer; // Suppress unused variable warning
+            // Try to flush stdout writer if it has a flush method
+            // In real usage, the main() function also handles flushing
+            // Use comptime check to see if flush method exists
+            if (comptime std.meta.hasMethod(@TypeOf(self.stdout_writer), "flush")) {
+                self.stdout_writer.flush() catch {
+                    // Ignore flush errors for stdout writer to maintain test compatibility
+                };
+            }
 
-            // Sync all files (skip stdout/stderr as they don't support sync)
+            // Sync all files
             for (self.files) |file| {
-                // Skip syncing stdout and stderr - they don't support sync() on all platforms
-                if (file.handle == std.fs.File.stdout().handle or file.handle == std.fs.File.stderr().handle) {
-                    continue;
-                }
                 file.sync() catch {
                     // Error will be handled by caller via any_error flag
                     any_error = true;

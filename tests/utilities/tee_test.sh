@@ -74,15 +74,21 @@ test_tee() {
     
     echo -e "${CYAN}Testing file handling...${NC}"
     
-    # Dash argument (write to stdout twice)
-    test_command_output "tee with dash argument" $'stdout_data\nstdout_data' bash -c "echo 'stdout_data' | '$binary' -"
-    
+    # Dash argument (POSIX: create file named "-", output to stdout once)
+    rm -f ./-
+    test_command_output "tee with dash argument (stdout)" "stdout_data" bash -c "echo 'stdout_data' | '$binary' -"
+    test_command_output "tee with dash argument (dash file)" "stdout_data" cat ./-
+
     # Mix of files and dash
-    test_command_output "tee file and dash (stdout)" $'mixed_output\nmixed_output' bash -c "echo 'mixed_output' | '$binary' '$test_file1' -"
+    rm -f ./-
+    test_command_output "tee file and dash (stdout)" "mixed_output" bash -c "echo 'mixed_output' | '$binary' '$test_file1' -"
     test_command_output "tee file and dash (file content)" "mixed_output" cat "$test_file1"
-    
-    # Multiple dash arguments
-    test_command_output "tee multiple dash args" $'dash_test\ndash_test\ndash_test' bash -c "echo 'dash_test' | '$binary' - -"
+    test_command_output "tee file and dash (dash file)" "mixed_output" cat ./-
+
+    # Multiple dash arguments (creates multiple "-" files or overwrites)
+    rm -f ./-
+    test_command_output "tee multiple dash args (stdout)" "dash_test" bash -c "echo 'dash_test' | '$binary' - -"
+    test_command_output "tee multiple dash args (dash file)" "dash_test" cat ./-
     
     # File creation in subdirectories
     local subdir="$TEMP_DIR/subdir"
@@ -118,10 +124,12 @@ test_tee() {
     # Input with null bytes
     test_command_exit_code "tee null bytes processing" 0 bash -c "printf 'before\x00after' | '$binary' '$test_file1' >/dev/null"
     
-    # Input with special characters
-    local special_chars=$'tab\there\nquote"here\nsingle\'quote\nbackslash\\here'
-    test_command_output "tee special characters (stdout)" "$special_chars" bash -c "printf '%s' '$special_chars' | '$binary' '$test_file1'"
-    test_command_output "tee special characters (file)" "$special_chars" cat "$test_file1"
+    # Input with special characters (use printf to avoid shell escaping issues)
+    local special_input_file="$TEMP_DIR/special_input.txt"
+    printf 'tab\there\nquote"here\nsingle'\''quote\nbackslash\\here' > "$special_input_file"
+    local expected_special=$(cat "$special_input_file")
+    test_command_output "tee special characters (stdout)" "$expected_special" bash -c "cat '$special_input_file' | '$binary' '$test_file1'"
+    test_command_output "tee special characters (file)" "$expected_special" cat "$test_file1"
     
     echo -e "${CYAN}Testing signal handling (-i flag)...${NC}"
     
@@ -223,9 +231,9 @@ test_tee() {
     test_command_output "tee single character (stdout)" "A" bash -c "printf 'A' | '$binary' '$test_file1'"
     test_command_output "tee single character (file)" "A" cat "$test_file1"
     
-    # Only newline
-    test_command_output "tee only newline (stdout)" $'\n' bash -c "printf '\n' | '$binary' '$test_file1'"
-    test_command_output "tee only newline (file)" $'\n' cat "$test_file1"
+    # Only newline (use exact comparison to preserve newlines)
+    test_command_output_exact "tee only newline (stdout)" $'\n' bash -c "printf '\n' | '$binary' '$test_file1'"
+    test_command_output_exact "tee only newline (file)" $'\n' cat "$test_file1"
     
     # File name edge cases
     local weird_filename="$TEMP_DIR/file with spaces.txt"

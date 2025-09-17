@@ -54,6 +54,57 @@ const FileAccess = struct {
         return std.fs.cwd().statFile(path) catch null;
     }
 
+    /// Get link status using lstat (does not follow symlinks), returning null on any error
+    fn getLinkStat(path: []const u8) ?std.fs.File.Stat {
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        const c_path = allocator.dupeZ(u8, path) catch return null;
+
+        var stat_buf: std.c.Stat = undefined;
+        const result = std.c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
+        if (result != 0) return null;
+
+        // Convert to std.fs.File.Stat
+        const kind: std.fs.File.Kind = switch (stat_buf.mode & std.c.S.IFMT) {
+            std.c.S.IFREG => .file,
+            std.c.S.IFDIR => .directory,
+            std.c.S.IFCHR => .character_device,
+            std.c.S.IFBLK => .block_device,
+            std.c.S.IFIFO => .named_pipe,
+            std.c.S.IFLNK => .sym_link,
+            std.c.S.IFSOCK => .unix_domain_socket,
+            else => .unknown,
+        };
+
+        // Handle platform differences in timespec field names
+        const atime_sec = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.atimespec.sec
+        else
+            stat_buf.atim.sec;
+
+        const mtime_sec = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.mtimespec.sec
+        else
+            stat_buf.mtim.sec;
+
+        const ctime_sec = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+            stat_buf.ctimespec.sec
+        else
+            stat_buf.ctim.sec;
+
+        return std.fs.File.Stat{
+            .size = @intCast(stat_buf.size),
+            .mode = @intCast(stat_buf.mode),
+            .kind = kind,
+            .atime = @intCast(atime_sec),
+            .mtime = @intCast(mtime_sec),
+            .ctime = @intCast(ctime_sec),
+            .inode = stat_buf.ino,
+        };
+    }
+
     /// Check if path exists
     fn exists(path: []const u8) bool {
         std.fs.cwd().access(path, .{}) catch return false;
@@ -223,7 +274,7 @@ fn isNonEmpty(path: []const u8) bool {
 
 /// Check if path is a symbolic link
 fn isSymlink(path: []const u8) bool {
-    const stat = FileAccess.getStat(path) orelse return false;
+    const stat = FileAccess.getLinkStat(path) orelse return false;
     return stat.kind == .sym_link;
 }
 
@@ -807,6 +858,46 @@ test "FileAccess module" {
     try testing.expect(!FileAccess.exists("/nonexistent/file"));
     try testing.expect(!FileAccess.check("/nonexistent/file", std.posix.R_OK));
     try testing.expect(FileAccess.getStat("/nonexistent/file") == null);
+}
+
+test "symlink detection with -L and -h operators" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a regular file
+    const test_file = try tmp.dir.createFile("target_file", .{});
+    try test_file.writeAll("test content");
+    test_file.close();
+
+    // Create a symlink to the file
+    try tmp.dir.symLink("target_file", "link_to_file", .{});
+
+    // Get full paths
+    const target_path = try tmp.dir.realpathAlloc(testing.allocator, "target_file");
+    defer testing.allocator.free(target_path);
+
+    // Get the absolute path of the symlink without resolving it
+    const tmpdir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmpdir_path);
+
+    const link_path_abs = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_file", .{tmpdir_path});
+    defer testing.allocator.free(link_path_abs);
+
+    // Test -L operator on symlink (should return true)
+    var result = try runTest(testing.allocator, &[_][]const u8{ "-L", link_path_abs }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // Test -h operator on symlink (should return true)
+    result = try runTest(testing.allocator, &[_][]const u8{ "-h", link_path_abs }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // Test -L operator on regular file (should return false)
+    result = try runTest(testing.allocator, &[_][]const u8{ "-L", target_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Test -h operator on regular file (should return false)
+    result = try runTest(testing.allocator, &[_][]const u8{ "-h", target_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 // ============================================================================

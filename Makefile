@@ -1,5 +1,4 @@
-# vibeutils Makefile - Simplified Architecture
-# Reduces complexity while maintaining 100% functionality
+# vibeutils Makefile
 
 # Variables and Configuration
 BUILD_CMD := zig build
