@@ -125,9 +125,9 @@ run_legacy_smoke_tests() {
         fi
     done
 
-    # test utility returns exit 2 for --help (POSIX non-compliance)
+    # test utility treats --help as string expression (POSIX compliance)
     if [[ -x "$BIN_DIR/test" ]]; then
-        test_command_exit_code "test --help" 2 "$BIN_DIR/test" --help
+        test_command_exit_code "test --help" 0 "$BIN_DIR/test" --help
     fi
     
     print_test_summary "Legacy Smoke Tests"

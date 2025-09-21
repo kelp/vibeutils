@@ -483,15 +483,8 @@ fn isBinaryOperator(str: []const u8) bool {
 pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = stdout_writer; // Not used in test command
 
-    // Bracket form should reject --help and --version
-    if (args.len > 0) {
-        for (args) |arg| {
-            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "--version")) {
-                common.printErrorWithProgram(allocator, stderr_writer, "[", "unrecognized option '{s}'", .{arg});
-                return @intFromEnum(ExitCode.@"error");
-            }
-        }
-    }
+    // POSIX compliance: treat all arguments including --help and --version as expressions
+    // This matches BSD/OpenBSD behavior (see docs/DESIGN_PHILOSOPHY.md)
 
     // Bracket form requires closing ']'
     if (args.len == 0 or !std.mem.eql(u8, args[args.len - 1], "]")) {

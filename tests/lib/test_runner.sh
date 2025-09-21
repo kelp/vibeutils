@@ -26,10 +26,16 @@ run_utility_tests() {
         source "$test_file"
         
         # Call the main test function if it exists
-        if declare -f "test_${util}" >/dev/null; then
-            "test_${util}"
+        # Special case for [ utility since test_[ is not a valid bash function name
+        local test_func="test_${util}"
+        if [[ "$util" == "[" ]]; then
+            test_func="test_bracket"
+        fi
+
+        if declare -f "$test_func" >/dev/null; then
+            "$test_func"
         else
-            echo -e "${YELLOW}Warning: No test_${util} function found in $test_file${NC}"
+            echo -e "${YELLOW}Warning: No $test_func function found in $test_file${NC}"
         fi
     else
         echo -e "${YELLOW}No specific test file found at $test_file${NC}"

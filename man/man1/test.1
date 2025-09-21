@@ -177,6 +177,31 @@ Note that
 .Fl a
 has higher precedence than
 .Fl o .
+.Sh OPTIONS
+The
+.Nm
+utility does not support any options.
+In accordance with POSIX specifications,
+arguments such as
+.Fl Fl help
+and
+.Fl Fl version
+are treated as string expressions to be evaluated,
+not as command options.
+.Pp
+For example,
+.Ic test Fl Fl help
+returns 0 (true) because
+.Dq Fl Fl help
+is a non-empty string, and
+.Ic \&[ Fl Fl version \&]
+similarly returns 0.
+.Pp
+This behavior differs from GNU coreutils, where
+.Ic \&[
+may treat these as special flags.
+The vibeutils implementation follows the BSD/POSIX behavior
+for consistency and standards compliance.
 .Sh EXIT STATUS
 .Ex -std test
 Additionally:

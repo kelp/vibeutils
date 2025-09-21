@@ -266,7 +266,8 @@ test_test() {
     test_command_exit_code "test --version flag" 0 "$binary" --version >/dev/null 2>&1 || true
 
     # Bracket form also treats them as string arguments (with closing bracket required)
-    test_command_exit_code "[ should not accept --help" 2 "$bracket_binary" --help ] 2>/dev/null || true
+    # Per POSIX and BSD behavior, --help is treated as a non-empty string (returns 0)
+    test_command_exit_code "[ treats --help as expression" 0 "$bracket_binary" --help ]
 
     echo -e "${CYAN}Testing boundary conditions...${NC}"
 
