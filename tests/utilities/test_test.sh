@@ -261,11 +261,11 @@ test_test() {
 
     echo -e "${CYAN}Testing GNU compatibility extensions...${NC}"
 
-    # Test help and version (POSIX: test treats these as string arguments, [ rejects them)
+    # Test help and version (POSIX: both test and [ treat these as regular string arguments)
     test_command_exit_code "test --help flag" 0 "$binary" --help >/dev/null 2>&1 || true
     test_command_exit_code "test --version flag" 0 "$binary" --version >/dev/null 2>&1 || true
 
-    # Bracket form should not accept help/version
+    # Bracket form also treats them as string arguments (with closing bracket required)
     test_command_exit_code "[ should not accept --help" 2 "$bracket_binary" --help ] 2>/dev/null || true
 
     echo -e "${CYAN}Testing boundary conditions...${NC}"

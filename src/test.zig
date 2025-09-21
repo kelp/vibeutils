@@ -620,16 +620,8 @@ pub fn main() !void {
     defer args.deinit(allocator);
 
     while (args_iter.next()) |arg| {
-        // POSIX compliance: test utility should not recognize --help or --version as special flags
-        // These should be treated as regular string arguments (like GNU and BSD implementations)
-        if (is_bracket_form and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "--version"))) {
-            // Bracket form should reject --help and --version as invalid options
-            common.printErrorWithProgram(allocator, stderr, "[", "unrecognized option '{s}'", .{arg});
-            try stderr.flush();
-            std.process.exit(@intFromEnum(ExitCode.@"error"));
-        }
-        // For regular 'test' form, --help and --version are treated as normal string arguments
-        // and will be evaluated as non-empty strings (true)
+        // POSIX compliance: no special handling for any flags
+        // All arguments including --help and --version are treated as regular strings
         try args.append(allocator, arg);
     }
 
