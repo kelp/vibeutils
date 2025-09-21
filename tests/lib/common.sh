@@ -49,16 +49,73 @@ detect_platform() {
 # Cross-platform file permissions getter
 get_file_permissions() {
     local file="$1"
+    local perms=""
+
+    # Ensure platform is detected
+    if [[ -z "$PLATFORM" ]]; then
+        detect_platform
+    fi
+
+    # Debug: Check if file exists
+    if [[ ! -e "$file" ]]; then
+        echo "000"
+        return 0
+    fi
+
     case "$PLATFORM" in
-        macos)  stat -f %A "$file" 2>/dev/null ;;
-        linux)  stat -c %a "$file" 2>/dev/null ;;
-        *)      echo "000" ;;
+        macos)
+            perms=$(stat -f %A "$file" 2>/dev/null)
+            ;;
+        linux)
+            perms=$(stat -c %a "$file" 2>/dev/null)
+            ;;
+        *)
+            echo "000"
+            return 0
+            ;;
     esac
+
+    # If stat failed or returned empty, try fallback methods
+    if [[ -z "$perms" ]]; then
+        # Fallback: Use ls -l and parse permissions manually
+        if [[ -e "$file" ]]; then
+            local ls_output
+            ls_output=$(ls -ld "$file" 2>/dev/null | cut -c2-10)
+            if [[ -n "$ls_output" && ${#ls_output} -eq 9 ]]; then
+                # Convert rwxrwxrwx format to octal
+                local octal=0
+                # User permissions
+                [[ "${ls_output:0:1}" == "r" ]] && octal=$((octal + 400))
+                [[ "${ls_output:1:1}" == "w" ]] && octal=$((octal + 200))
+                [[ "${ls_output:2:1}" == "x" ]] && octal=$((octal + 100))
+                # Group permissions
+                [[ "${ls_output:3:1}" == "r" ]] && octal=$((octal + 40))
+                [[ "${ls_output:4:1}" == "w" ]] && octal=$((octal + 20))
+                [[ "${ls_output:5:1}" == "x" ]] && octal=$((octal + 10))
+                # Other permissions
+                [[ "${ls_output:6:1}" == "r" ]] && octal=$((octal + 4))
+                [[ "${ls_output:7:1}" == "w" ]] && octal=$((octal + 2))
+                [[ "${ls_output:8:1}" == "x" ]] && octal=$((octal + 1))
+
+                printf "%03d" "$octal"
+                return 0
+            fi
+        fi
+        echo "000"
+    else
+        echo "$perms"
+    fi
 }
 
 # Cross-platform file size getter
 get_file_size() {
     local file="$1"
+
+    # Ensure platform is detected
+    if [[ -z "$PLATFORM" ]]; then
+        detect_platform
+    fi
+
     case "$PLATFORM" in
         macos)  stat -f %z "$file" 2>/dev/null ;;
         linux)  stat -c %s "$file" 2>/dev/null ;;
@@ -99,8 +156,13 @@ init_test_session() {
 
 # Cleanup test session
 cleanup_test_session() {
-    # Remove temp directory
-    [[ -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR"
+    # Remove temp directory, but first restore permissions for any directories
+    # that may have been made inaccessible by chmod tests
+    if [[ -d "$TEMP_DIR" ]]; then
+        # Restore execute permissions on any directories that lost them
+        find "$TEMP_DIR" -type d -exec chmod u+x {} \; 2>/dev/null || true
+        rm -rf "$TEMP_DIR"
+    fi
 }
 
 # Print test result with consistent formatting
@@ -167,10 +229,21 @@ test_basic_flags() {
     fi
     
     # Test help flag
-    if "$binary" --help >/dev/null 2>&1; then
-        print_test_result "$util --help" "PASS"
+    # Special case: test utility should return exit code 2 for --help (POSIX non-compliance)
+    if [[ "$util" == "test" ]]; then
+        "$binary" --help >/dev/null 2>&1
+        local exit_code=$?
+        if [[ $exit_code -eq 2 ]]; then
+            print_test_result "$util --help" "PASS"
+        else
+            print_test_result "$util --help" "FAIL" "Expected exit code 2, got $exit_code" "$binary --help"
+        fi
     else
-        print_test_result "$util --help" "FAIL" "Help flag failed" "$binary --help"
+        if "$binary" --help >/dev/null 2>&1; then
+            print_test_result "$util --help" "PASS"
+        else
+            print_test_result "$util --help" "FAIL" "Help flag failed" "$binary --help"
+        fi
     fi
     
     # Test version flag
@@ -311,9 +384,14 @@ test_command_fails() {
 create_temp_file() {
     local content="$1"
     local filename="${2:-$(mktemp "$TEMP_DIR/testfile_XXXXXX")}"
-    
+
     echo -n "$content" > "$filename"
-    echo "$filename"
+    # Only echo the filename if it was auto-generated (no path provided)
+    # This allows: local file=$(create_temp_file "content")
+    # But prevents noise when: create_temp_file "content" "/specific/path"
+    if [[ $# -eq 1 ]]; then
+        echo "$filename"
+    fi
 }
 
 # Create a temporary directory

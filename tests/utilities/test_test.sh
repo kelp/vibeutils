@@ -262,7 +262,7 @@ test_test() {
     echo -e "${CYAN}Testing GNU compatibility extensions...${NC}"
 
     # Test help and version (only available for 'test', not '[')
-    test_command_exit_code "test --help flag" 0 "$binary" --help >/dev/null 2>&1 || true
+    test_command_exit_code "test --help flag" 2 "$binary" --help >/dev/null 2>&1 || true
     test_command_exit_code "test --version flag" 0 "$binary" --version >/dev/null 2>&1 || true
 
     # Bracket form should not accept help/version

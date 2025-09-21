@@ -512,6 +512,15 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
     }
     i += 1;
 
+    // Check if this is permission copying (g=u, o=g, u=o)
+    if (op == '=' and i < clause.len and clause.len == i + 1) {
+        const copy_from = clause[i];
+        if (copy_from == 'u' or copy_from == 'g' or copy_from == 'o') {
+            applyCopyingMode(mode, who, copy_from);
+            return;
+        }
+    }
+
     var perms: u8 = 0;
     while (i < clause.len) {
         switch (clause[i]) {
@@ -521,12 +530,46 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
             's' => perms |= 8, // Special bit (setuid/setgid)
             't' => perms |= 16, // Sticky bit
             'X' => perms |= 1, // Execute if directory or already has execute
+            // Support permission copying cases
+            'u', 'g', 'o' => {
+                if (op == '=' and clause.len == i + 1) {
+                    applyCopyingMode(mode, who, clause[i]);
+                    return;
+                } else {
+                    return ChmodError.InvalidMode;
+                }
+            },
             else => return ChmodError.InvalidMode,
         }
         i += 1;
     }
 
     applyPermissionChange(mode, who, op, perms);
+}
+
+/// Apply permission copying (g=u, o=g, u=o) between user classes
+fn applyCopyingMode(mode: *Mode, who: u8, copy_from: u8) void {
+    // Get source permissions
+    const source_perms = switch (copy_from) {
+        'u' => mode.user,
+        'g' => mode.group,
+        'o' => mode.other,
+        else => return, // Should never happen due to validation
+    };
+
+    // Apply to target(s)
+    if (who & 1 != 0) { // user
+        mode.user = source_perms;
+    }
+    if (who & 2 != 0) { // group
+        mode.group = source_perms;
+    }
+    if (who & 4 != 0) { // other
+        mode.other = source_perms;
+    }
+
+    // Note: Special bits (setuid/setgid/sticky) are not copied in standard chmod behavior
+    // Only the basic rwx permissions are copied between user classes
 }
 
 /// Apply permission changes based on parsed symbolic mode components
@@ -1175,6 +1218,43 @@ test "parseSymbolicModeString with special bits" {
     const mode2 = try parseSymbolicModeString("u=rwx,g=rx,o=r,u+s");
     try testing.expectEqual(@as(u32, 0o4754), mode2.toOctal());
     try testing.expect(mode2.setuid);
+}
+
+test "parseSymbolicMode permission copying" {
+    // Start with a known mode: rwx r-x r--  (754)
+    var mode = Mode.fromOctal(0o754);
+
+    // Test g=u: copy user permissions to group (should make it rwx rwx r--)
+    try applySymbolicMode(&mode, "g=u");
+    try testing.expectEqual(@as(u32, 0o774), mode.toOctal());
+    try testing.expectEqual(@as(u3, 7), mode.user);
+    try testing.expectEqual(@as(u3, 7), mode.group); // copied from user
+    try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
+
+    // Test o=g: copy group permissions to other (should make it rwx rwx rwx)
+    try applySymbolicMode(&mode, "o=g");
+    try testing.expectEqual(@as(u32, 0o777), mode.toOctal());
+    try testing.expectEqual(@as(u3, 7), mode.user);
+    try testing.expectEqual(@as(u3, 7), mode.group);
+    try testing.expectEqual(@as(u3, 7), mode.other); // copied from group
+
+    // Reset to different state: rw- --- ---  (600)
+    mode = Mode.fromOctal(0o600);
+
+    // Test u=o: copy other permissions to user (should make it --- --- ---)
+    try applySymbolicMode(&mode, "u=o");
+    try testing.expectEqual(@as(u32, 0o000), mode.toOctal());
+    try testing.expectEqual(@as(u3, 0), mode.user); // copied from other
+    try testing.expectEqual(@as(u3, 0), mode.group);
+    try testing.expectEqual(@as(u3, 0), mode.other);
+
+    // Test multiple targets: ug=o
+    mode = Mode.fromOctal(0o754); // rwx r-x r--
+    try applySymbolicMode(&mode, "ug=o");
+    try testing.expectEqual(@as(u32, 0o444), mode.toOctal());
+    try testing.expectEqual(@as(u3, 4), mode.user); // copied from other
+    try testing.expectEqual(@as(u3, 4), mode.group); // copied from other
+    try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
 }
 
 // Tests: Recursive operations

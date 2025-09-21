@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
+const ArrayList = std.ArrayListUnmanaged;
 const common = @import("common");
 
 /// Exit codes for test utility
@@ -124,19 +124,28 @@ const ExpressionParser = struct {
     /// Parse and evaluate complete expression
     fn parseAndEvaluate(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
         if (args.len == 0) return false;
+
         if (args.len == 1) return self.evaluateSingle(args[0]);
         if (args.len == 2) {
             // Check if it's a unary expression first
             if (isUnaryOperator(args[0])) {
                 return evaluateUnary(args[0], args[1]);
             }
-            // Otherwise it might be negation or other complex expression
+            // Otherwise it might be other complex expression
             return self.evaluateComplexExpression(args);
         }
         if (args.len == 3) {
             // Check if it's a binary expression first
             if (isBinaryOperator(args[1])) {
                 return evaluateBinary(args[0], args[1], args[2]);
+            }
+            // Check for invalid binary operators that look like operators but aren't recognized
+            // Only check args that start with '-' and have letters after it (potential operators)
+            if (args[1].len > 1 and args[1][0] == '-' and std.ascii.isAlphabetic(args[1][1])) {
+                // Valid operators: binary operators, unary operators, logical operators (-a, -o)
+                if (!isBinaryOperator(args[1]) and !isUnaryOperator(args[1]) and !std.mem.eql(u8, args[1], "-a") and !std.mem.eql(u8, args[1], "-o")) {
+                    return error.UnknownOperator;
+                }
             }
             // Otherwise it might be complex (parentheses, negation, etc.)
             return self.evaluateComplexExpression(args);
@@ -148,45 +157,164 @@ const ExpressionParser = struct {
     /// Evaluate single argument (non-empty string test)
     fn evaluateSingle(self: *ExpressionParser, arg: []const u8) ParseError!bool {
         _ = self;
+        // If it's a unary operator, it needs an argument, so this is an error
         if (isUnaryOperator(arg)) return error.InvalidExpression;
+        // Check for invalid operators that look like operators but aren't recognized
+        if (arg.len > 1 and arg[0] == '-' and std.ascii.isAlphabetic(arg[1])) {
+            // Check if it's potentially an operator but not in our lists
+            if (!isUnaryOperator(arg) and !isBinaryOperator(arg) and !std.mem.eql(u8, arg, "-a") and !std.mem.eql(u8, arg, "-o")) {
+                return error.UnknownOperator;
+            }
+        }
+        // Handle special boolean literals from parentheses evaluation
+        if (std.mem.eql(u8, arg, "true")) return true;
+        if (std.mem.eql(u8, arg, "false")) return false;
         return arg.len > 0;
     }
 
     /// Evaluate complex expressions with logical operators and grouping
     fn evaluateComplexExpression(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
-        // Handle negation first
-        if (std.mem.eql(u8, args[0], "!")) {
-            return self.evaluateNegation(args[1..]);
-        }
-
-        // Handle parentheses grouping
-        if (args.len >= 3 and std.mem.eql(u8, args[0], "(") and std.mem.eql(u8, args[args.len - 1], ")")) {
-            return self.parseAndEvaluate(args[1 .. args.len - 1]);
-        }
-
-        // Handle logical operators with proper precedence (-o has lower precedence than -a)
-        return self.evaluateLogicalExpression(args);
+        // Handle parentheses grouping with recursive evaluation first,
+        // then check for logical operators which have lower precedence than negation
+        return self.evaluateWithParentheses(args);
     }
 
-    /// Evaluate negation expressions
+    /// Evaluate negation expressions - apply negation to the next logical unit only
     fn evaluateNegation(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
         if (args.len == 0) return error.InvalidExpression;
 
-        // Special case: ! left op right becomes !(left op right)
-        if (args.len == 3 and isBinaryOperator(args[1])) {
-            const result = try evaluateBinary(args[0], args[1], args[2]);
-            return !result;
+        // For negation, we need to find what it applies to:
+        // If it starts with parentheses, find the matching closing paren
+        // Otherwise, it applies to the next single unit only
+
+        if (args.len > 0 and std.mem.eql(u8, args[0], "(")) {
+            // Find the matching closing parenthesis
+            var depth: usize = 1;
+            var i: usize = 1;
+
+            while (i < args.len and depth > 0) {
+                if (std.mem.eql(u8, args[i], "(")) {
+                    depth += 1;
+                } else if (std.mem.eql(u8, args[i], ")")) {
+                    depth -= 1;
+                }
+                i += 1;
+            }
+
+            if (depth > 0) {
+                return error.InvalidExpression; // Unmatched parentheses
+            }
+
+            // Evaluate the parenthesized expression
+            const paren_expr = args[1 .. i - 1];
+            const paren_result = try self.evaluateWithoutNegation(paren_expr);
+            return !paren_result;
+        } else {
+            // Negation applies to just the first argument/expression
+            if (args.len == 1) {
+                const result = try self.evaluateSingle(args[0]);
+                return !result;
+            } else if (args.len == 2 and isUnaryOperator(args[0])) {
+                const result = try evaluateUnary(args[0], args[1]);
+                return !result;
+            } else if (args.len == 3 and isBinaryOperator(args[1])) {
+                const result = try evaluateBinary(args[0], args[1], args[2]);
+                return !result;
+            } else {
+                // This case shouldn't happen with proper operator precedence
+                const result = try self.evaluateWithoutNegation(args);
+                return !result;
+            }
+        }
+    }
+
+    /// Evaluate expression without checking for negation (used by evaluateNegation)
+    fn evaluateWithoutNegation(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
+        if (args.len == 0) return false;
+        if (args.len == 1) return self.evaluateSingle(args[0]);
+        if (args.len == 2) {
+            // Check if it's a unary expression first
+            if (isUnaryOperator(args[0])) {
+                return evaluateUnary(args[0], args[1]);
+            }
+            // Otherwise it might be other complex expression
+            return self.evaluateWithParentheses(args);
+        }
+        if (args.len == 3) {
+            // Check if it's a binary expression first
+            if (isBinaryOperator(args[1])) {
+                return evaluateBinary(args[0], args[1], args[2]);
+            }
+            // Check for invalid binary operators that look like operators but aren't recognized
+            // Only check args that start with '-' and have letters after it (potential operators)
+            if (args[1].len > 1 and args[1][0] == '-' and std.ascii.isAlphabetic(args[1][1])) {
+                // Valid operators: binary operators, unary operators, logical operators (-a, -o)
+                if (!isBinaryOperator(args[1]) and !isUnaryOperator(args[1]) and !std.mem.eql(u8, args[1], "-a") and !std.mem.eql(u8, args[1], "-o")) {
+                    return error.UnknownOperator;
+                }
+            }
+            // Otherwise it might be complex (parentheses, negation, etc.)
+            return self.evaluateWithParentheses(args);
         }
 
-        // Special case: ! ( expr )
-        if (args.len >= 3 and std.mem.eql(u8, args[0], "(") and std.mem.eql(u8, args[args.len - 1], ")")) {
-            const result = try self.parseAndEvaluate(args[1 .. args.len - 1]);
-            return !result;
+        return self.evaluateWithParentheses(args);
+    }
+
+    /// Evaluate expressions with parentheses handling
+    fn evaluateWithParentheses(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
+        // If no parentheses, evaluate logical operators directly
+        var has_parens = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "(") or std.mem.eql(u8, arg, ")")) {
+                has_parens = true;
+                break;
+            }
         }
 
-        // General negation
-        const result = try self.parseAndEvaluate(args);
-        return !result;
+        if (!has_parens) {
+            return self.evaluateLogicalExpression(args);
+        }
+
+        // Process parentheses recursively
+        var processed_args = ArrayList([]const u8){};
+        defer processed_args.deinit(self.allocator);
+
+        var i: usize = 0;
+        while (i < args.len) {
+            if (std.mem.eql(u8, args[i], "(")) {
+                // Find matching closing parenthesis
+                const start = i;
+                var depth: usize = 1;
+                i += 1;
+
+                while (i < args.len and depth > 0) {
+                    if (std.mem.eql(u8, args[i], "(")) {
+                        depth += 1;
+                    } else if (std.mem.eql(u8, args[i], ")")) {
+                        depth -= 1;
+                    }
+                    i += 1;
+                }
+
+                if (depth > 0) {
+                    return error.InvalidExpression; // Unmatched parentheses
+                }
+
+                // Recursively evaluate the sub-expression
+                const sub_expr = args[start + 1 .. i - 1];
+                const sub_result = try self.evaluateWithoutNegation(sub_expr);
+
+                // Replace parenthesized expression with its boolean result
+                const result_str = if (sub_result) "true" else "false";
+                try processed_args.append(self.allocator, result_str);
+            } else {
+                try processed_args.append(self.allocator, args[i]);
+                i += 1;
+            }
+        }
+
+        // Now evaluate the processed expression
+        return self.evaluateLogicalExpression(processed_args.items);
     }
 
     /// Evaluate logical expressions with proper operator precedence
@@ -195,8 +323,8 @@ const ExpressionParser = struct {
         for (args, 0..) |arg, i| {
             if (std.mem.eql(u8, arg, "-o")) {
                 if (i == 0 or i == args.len - 1) return error.InvalidExpression;
-                const left = try self.parseAndEvaluate(args[0..i]);
-                const right = try self.parseAndEvaluate(args[i + 1 ..]);
+                const left = try self.evaluateLogicalExpression(args[0..i]);
+                const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
                 return left or right;
             }
         }
@@ -205,10 +333,33 @@ const ExpressionParser = struct {
         for (args, 0..) |arg, i| {
             if (std.mem.eql(u8, arg, "-a")) {
                 if (i == 0 or i == args.len - 1) return error.InvalidExpression;
-                const left = try self.parseAndEvaluate(args[0..i]);
-                const right = try self.parseAndEvaluate(args[i + 1 ..]);
+                const left = try self.evaluateLogicalExpression(args[0..i]);
+                const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
                 return left and right;
             }
+        }
+
+        // Handle negation (highest precedence)
+        if (args.len > 0 and std.mem.eql(u8, args[0], "!")) {
+            return self.evaluateNegation(args[1..]);
+        }
+
+        // No logical operators found, evaluate as basic expression without logical operators
+        if (args.len == 0) return false;
+        if (args.len == 1) return self.evaluateSingle(args[0]);
+        if (args.len == 2) {
+            // Check if it's a unary expression
+            if (isUnaryOperator(args[0])) {
+                return evaluateUnary(args[0], args[1]);
+            }
+            return error.InvalidExpression;
+        }
+        if (args.len == 3) {
+            // Check if it's a binary expression
+            if (isBinaryOperator(args[1])) {
+                return evaluateBinary(args[0], args[1], args[2]);
+            }
+            return error.InvalidExpression;
         }
 
         return error.InvalidExpression;
@@ -331,6 +482,16 @@ fn isBinaryOperator(str: []const u8) bool {
 /// Run test command in bracket form (when invoked as '[')
 pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = stdout_writer; // Not used in test command
+
+    // Bracket form should reject --help and --version
+    if (args.len > 0) {
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "--version")) {
+                common.printErrorWithProgram(allocator, stderr_writer, "[", "unrecognized option '{s}'", .{arg});
+                return @intFromEnum(ExitCode.@"error");
+            }
+        }
+    }
 
     // Bracket form requires closing ']'
     if (args.len == 0 or !std.mem.eql(u8, args[args.len - 1], "]")) {
@@ -455,13 +616,37 @@ pub fn main() !void {
     const program_name = args_iter.next() orelse return;
     const is_bracket_form = std.mem.endsWith(u8, program_name, "[");
 
-    var args = try ArrayList([]const u8).initCapacity(allocator, 0);
+    var args = ArrayList([]const u8){};
     defer args.deinit(allocator);
 
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
-            try stdout.print("{s}", .{help_text});
-            return;
+            if (is_bracket_form) {
+                // Bracket form should reject --help completely
+                common.printErrorWithProgram(allocator, stderr, "[", "unrecognized option '--help'", .{});
+                try stderr.flush();
+                std.process.exit(@intFromEnum(ExitCode.@"error"));
+            } else {
+                try stdout.print("{s}", .{help_text});
+                // For test utility, --help is not standard POSIX and should return error exit code
+                try stdout.flush();
+                try stderr.flush();
+                std.process.exit(@intFromEnum(ExitCode.@"error"));
+            }
+        }
+        if (std.mem.eql(u8, arg, "--version")) {
+            if (is_bracket_form) {
+                // Bracket form should reject --version completely
+                common.printErrorWithProgram(allocator, stderr, "[", "unrecognized option '--version'", .{});
+                try stderr.flush();
+                std.process.exit(@intFromEnum(ExitCode.@"error"));
+            } else {
+                // For test utility, print version and exit with code 0 (successful operation)
+                try stdout.print("test (vibeutils) {s}\n", .{common.version});
+                try stdout.flush();
+                try stderr.flush();
+                std.process.exit(@intFromEnum(ExitCode.true));
+            }
         }
         try args.append(allocator, arg);
     }
@@ -655,7 +840,7 @@ test "file size tests" {
 }
 
 test "bracket form requires closing bracket" {
-    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    var stderr_output = ArrayList(u8){};
     defer stderr_output.deinit(testing.allocator);
 
     const result = try runTest(testing.allocator, &[_][]const u8{ "[", "hello" }, common.null_writer, stderr_output.writer(testing.allocator));
@@ -689,7 +874,7 @@ test "terminal test with valid fd" {
 }
 
 test "numeric comparison with invalid numbers" {
-    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    var stderr_output = ArrayList(u8){};
     defer stderr_output.deinit(testing.allocator);
 
     // Invalid numbers should return error for numeric operations (not false)
@@ -698,7 +883,7 @@ test "numeric comparison with invalid numbers" {
 }
 
 test "invalid expressions return error" {
-    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    var stderr_output = ArrayList(u8){};
     defer stderr_output.deinit(testing.allocator);
 
     // Test with incomplete unary expression (missing argument)
@@ -795,7 +980,7 @@ test "complex nested expressions" {
 }
 
 test "error handling for malformed expressions" {
-    var stderr_output = try ArrayList(u8).initCapacity(testing.allocator, 0);
+    var stderr_output = ArrayList(u8){};
     defer stderr_output.deinit(testing.allocator);
 
     // Test with mixed operators that don't make sense
@@ -858,6 +1043,64 @@ test "FileAccess module" {
     try testing.expect(!FileAccess.exists("/nonexistent/file"));
     try testing.expect(!FileAccess.check("/nonexistent/file", std.posix.R_OK));
     try testing.expect(FileAccess.getStat("/nonexistent/file") == null);
+}
+
+// ========== BUG FIX TESTS ==========
+// Tests for specific bugs identified by architect agent
+
+test "Bug 3: invalid operator should return exit code 2" {
+    var stderr_output = ArrayList(u8){};
+    defer stderr_output.deinit(testing.allocator);
+
+    // Test with invalid unary operator - should return error exit code 2, not false (1)
+    const result = try runTest(testing.allocator, &[_][]const u8{"-invalid"}, common.null_writer, stderr_output.writer(testing.allocator));
+    try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result);
+
+    // Test with invalid binary operator - should return error exit code 2
+    stderr_output.clearRetainingCapacity();
+    const result2 = try runTest(testing.allocator, &[_][]const u8{ "hello", "-badop", "world" }, common.null_writer, stderr_output.writer(testing.allocator));
+    try testing.expectEqual(@intFromEnum(ExitCode.@"error"), result2);
+
+    // Debug: Test that valid operators still work
+    const result3 = try runTest(testing.allocator, &[_][]const u8{ "-e", "/nonexistent" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result3);
+}
+
+test "Bug 1: parentheses expression with logical operators should return correct exit code" {
+    // Test: test ( "" -o "hello" ) -a "" should return exit code 1 (false), not 2 (error)
+    // This tests proper parsing of parentheses expressions with logical operators
+    const result = try runTest(testing.allocator, &[_][]const u8{ "(", "", "-o", "hello", ")", "-a", "" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Test: test ( "hello" -a "world" ) -o "" should return exit code 0 (true)
+    const result2 = try runTest(testing.allocator, &[_][]const u8{ "(", "hello", "-a", "world", ")", "-o", "" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result2);
+}
+
+test "Bug 2: complex nested expressions should parse correctly" {
+    // Test: test ! ( ( "" ) ) -a "" should parse correctly and return false
+    const result = try runTest(testing.allocator, &[_][]const u8{ "!", "(", "(", "", ")", ")", "-a", "" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Test: test ! ( "hello" -o "" ) -a "world" should parse correctly
+    const result2 = try runTest(testing.allocator, &[_][]const u8{ "!", "(", "hello", "-o", "", ")", "-a", "world" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result2);
+}
+
+test "Bug 4: bracket form should handle errors identically to test command" {
+    var stderr_output = ArrayList(u8){};
+    defer stderr_output.deinit(testing.allocator);
+
+    // Test invalid operator in bracket form - should return same error as test command
+    const bracket_result = try runBracketTest(testing.allocator, &[_][]const u8{ "-invalid", "]" }, common.null_writer, stderr_output.writer(testing.allocator));
+
+    stderr_output.clearRetainingCapacity();
+    const test_result = try runTest(testing.allocator, &[_][]const u8{"-invalid"}, common.null_writer, stderr_output.writer(testing.allocator));
+
+    // Both should return error exit code 2
+    try testing.expectEqual(@intFromEnum(ExitCode.@"error"), bracket_result);
+    try testing.expectEqual(@intFromEnum(ExitCode.@"error"), test_result);
+    try testing.expectEqual(bracket_result, test_result);
 }
 
 test "symlink detection with -L and -h operators" {

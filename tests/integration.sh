@@ -119,11 +119,16 @@ run_legacy_smoke_tests() {
     done
     
     # Other utilities
-    for util in sleep test ls wc yes; do
+    for util in sleep ls wc yes; do
         if [[ -x "$BIN_DIR/$util" ]]; then
             test_command_succeeds "$util --help" "$BIN_DIR/$util" --help
         fi
     done
+
+    # test utility returns exit 2 for --help (POSIX non-compliance)
+    if [[ -x "$BIN_DIR/test" ]]; then
+        test_command_exit_code "test --help" 2 "$BIN_DIR/test" --help
+    fi
     
     print_test_summary "Legacy Smoke Tests"
 }
