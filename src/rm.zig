@@ -173,23 +173,16 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
     var any_errors = false;
 
     for (files) |file| {
-        // Basic safety checks
-        if (file.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
-            any_errors = true;
-            continue;
-        }
-
-        // Minimal root directory protection
-        if (std.mem.eql(u8, file, "/")) {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
-            any_errors = true;
-            continue;
-        }
-
-        // Block current and parent directory operations
-        if (std.mem.eql(u8, file, ".") or std.mem.eql(u8, file, "..")) {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "\".\" and \"..\" may not be removed", .{});
+        // Enhanced path validation using OpenBSD-style basename checking
+        if (!isPathSafeToRemove(file)) {
+            if (file.len == 0) {
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
+            } else if (std.mem.eql(u8, file, "/")) {
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
+            } else {
+                // Must be a "." or ".." pattern (including complex paths like "/path/to/.")
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "\".\" and \"..\" may not be removed", .{});
+            }
             any_errors = true;
             continue;
         }
@@ -307,6 +300,54 @@ fn removeDirectory(allocator: Allocator, dir_path: []const u8, stdout_writer: an
     }
 }
 
+/// Check if a basename is "." or ".." (OpenBSD ISDOT macro equivalent).
+fn isDotOrDotDot(basename: []const u8) bool {
+    return std.mem.eql(u8, basename, ".") or std.mem.eql(u8, basename, "..");
+}
+
+/// Extract basename from path, handling trailing slashes like OpenBSD basename().
+/// Returns the final component of the path, stripping trailing slashes.
+fn extractBasename(path: []const u8) []const u8 {
+    if (path.len == 0) return path;
+
+    // Strip trailing slashes
+    var end = path.len;
+    while (end > 1 and path[end - 1] == '/') {
+        end -= 1;
+    }
+
+    // Handle root directory case "/"
+    if (end == 1 and path[0] == '/') {
+        return "/";
+    }
+
+    // Find the last slash before the basename
+    var start: usize = 0;
+    for (0..end) |i| {
+        if (path[i] == '/') {
+            start = i + 1;
+        }
+    }
+
+    return path[start..end];
+}
+
+/// Enhanced path validation that combines all OpenBSD-style safety checks.
+/// Checks for empty paths, root directory, and dot/dotdot patterns.
+fn isPathSafeToRemove(path: []const u8) bool {
+    // Check for empty path
+    if (path.len == 0) return false;
+
+    // Check for root directory
+    if (std.mem.eql(u8, path, "/")) return false;
+
+    // Extract basename and check if it's "." or ".."
+    const basename = extractBasename(path);
+    if (isDotOrDotDot(basename)) return false;
+
+    return true;
+}
+
 // Tests
 
 test "rm: basic functionality test" {
@@ -398,6 +439,63 @@ test "rm: version flag" {
     // Should succeed and show version
     try testing.expect(exit_code == 0);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "vibeutils") != null);
+}
+
+test "isDotOrDotDot: basic dot detection" {
+    try testing.expect(isDotOrDotDot("."));
+    try testing.expect(isDotOrDotDot(".."));
+    try testing.expect(!isDotOrDotDot("file.txt"));
+    try testing.expect(!isDotOrDotDot("..."));
+    try testing.expect(!isDotOrDotDot(""));
+    try testing.expect(!isDotOrDotDot(".hidden"));
+    try testing.expect(!isDotOrDotDot("..test"));
+}
+
+test "extractBasename: path handling" {
+    try testing.expectEqualSlices(u8, "file.txt", extractBasename("file.txt"));
+    try testing.expectEqualSlices(u8, "file.txt", extractBasename("./file.txt"));
+    try testing.expectEqualSlices(u8, "file.txt", extractBasename("/path/to/file.txt"));
+    try testing.expectEqualSlices(u8, "file.txt", extractBasename("/path/to/file.txt/"));
+    try testing.expectEqualSlices(u8, "file.txt", extractBasename("/path/to/file.txt///"));
+    try testing.expectEqualSlices(u8, ".", extractBasename("."));
+    try testing.expectEqualSlices(u8, "..", extractBasename(".."));
+    try testing.expectEqualSlices(u8, ".", extractBasename("./"));
+    try testing.expectEqualSlices(u8, "..", extractBasename("../"));
+    try testing.expectEqualSlices(u8, ".", extractBasename("/path/to/."));
+    try testing.expectEqualSlices(u8, "..", extractBasename("/path/to/.."));
+    try testing.expectEqualSlices(u8, ".", extractBasename("/path/to/./"));
+    try testing.expectEqualSlices(u8, "..", extractBasename("/path/to/../"));
+}
+
+test "isPathSafeToRemove: comprehensive validation" {
+    // Test empty path (should be unsafe)
+    try testing.expect(!isPathSafeToRemove(""));
+
+    // Test root directory (should be unsafe)
+    try testing.expect(!isPathSafeToRemove("/"));
+
+    // Test current directory patterns (should be unsafe)
+    try testing.expect(!isPathSafeToRemove("."));
+    try testing.expect(!isPathSafeToRemove("./"));
+    try testing.expect(!isPathSafeToRemove("/path/to/."));
+    try testing.expect(!isPathSafeToRemove("/path/to/./"));
+
+    // Test parent directory patterns (should be unsafe)
+    try testing.expect(!isPathSafeToRemove(".."));
+    try testing.expect(!isPathSafeToRemove("../"));
+    try testing.expect(!isPathSafeToRemove("/path/to/.."));
+    try testing.expect(!isPathSafeToRemove("/path/to/../"));
+
+    // Test safe paths (should be safe)
+    try testing.expect(isPathSafeToRemove("file.txt"));
+    try testing.expect(isPathSafeToRemove("./file.txt"));
+    try testing.expect(isPathSafeToRemove("/path/to/file.txt"));
+    try testing.expect(isPathSafeToRemove(".hidden"));
+    try testing.expect(isPathSafeToRemove("..hidden"));
+    try testing.expect(isPathSafeToRemove("..."));
+    try testing.expect(isPathSafeToRemove("test."));
+    try testing.expect(isPathSafeToRemove("test.."));
+    try testing.expect(isPathSafeToRemove("/usr/local/bin"));
 }
 
 // ============================================================================
