@@ -187,6 +187,13 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
             continue;
         }
 
+        // Block current and parent directory operations
+        if (std.mem.eql(u8, file, ".") or std.mem.eql(u8, file, "..")) {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "\".\" and \"..\" may not be removed", .{});
+            any_errors = true;
+            continue;
+        }
+
         // Try to remove the file/directory
         removeItem(allocator, file, stdout_writer, stderr_writer, options) catch |err| switch (err) {
             error.FileNotFound => {
