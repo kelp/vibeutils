@@ -620,34 +620,16 @@ pub fn main() !void {
     defer args.deinit(allocator);
 
     while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help")) {
-            if (is_bracket_form) {
-                // Bracket form should reject --help completely
-                common.printErrorWithProgram(allocator, stderr, "[", "unrecognized option '--help'", .{});
-                try stderr.flush();
-                std.process.exit(@intFromEnum(ExitCode.@"error"));
-            } else {
-                try stdout.print("{s}", .{help_text});
-                // For test utility, --help is not standard POSIX and should return error exit code
-                try stdout.flush();
-                try stderr.flush();
-                std.process.exit(@intFromEnum(ExitCode.@"error"));
-            }
+        // POSIX compliance: test utility should not recognize --help or --version as special flags
+        // These should be treated as regular string arguments (like GNU and BSD implementations)
+        if (is_bracket_form and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "--version"))) {
+            // Bracket form should reject --help and --version as invalid options
+            common.printErrorWithProgram(allocator, stderr, "[", "unrecognized option '{s}'", .{arg});
+            try stderr.flush();
+            std.process.exit(@intFromEnum(ExitCode.@"error"));
         }
-        if (std.mem.eql(u8, arg, "--version")) {
-            if (is_bracket_form) {
-                // Bracket form should reject --version completely
-                common.printErrorWithProgram(allocator, stderr, "[", "unrecognized option '--version'", .{});
-                try stderr.flush();
-                std.process.exit(@intFromEnum(ExitCode.@"error"));
-            } else {
-                // For test utility, print version and exit with code 0 (successful operation)
-                try stdout.print("test (vibeutils) {s}\n", .{common.version});
-                try stdout.flush();
-                try stderr.flush();
-                std.process.exit(@intFromEnum(ExitCode.true));
-            }
-        }
+        // For regular 'test' form, --help and --version are treated as normal string arguments
+        // and will be evaluated as non-empty strings (true)
         try args.append(allocator, arg);
     }
 

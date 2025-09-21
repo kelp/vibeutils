@@ -229,8 +229,16 @@ test_basic_flags() {
     fi
     
     # Test help flag
-    # Special case: test utility should return exit code 2 for --help (POSIX non-compliance)
+    # Special case: test utility treats --help as string (exit code 0), [ rejects it (exit code 2)
     if [[ "$util" == "test" ]]; then
+        "$binary" --help >/dev/null 2>&1
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            print_test_result "$util --help" "PASS"
+        else
+            print_test_result "$util --help" "FAIL" "Expected exit code 0 (POSIX), got $exit_code" "$binary --help"
+        fi
+    elif [[ "$util" == "[" ]]; then
         "$binary" --help >/dev/null 2>&1
         local exit_code=$?
         if [[ $exit_code -eq 2 ]]; then
@@ -247,10 +255,29 @@ test_basic_flags() {
     fi
     
     # Test version flag
-    if "$binary" --version >/dev/null 2>&1; then
-        print_test_result "$util --version" "PASS"
+    # Special case: test utility treats --version as string (exit code 0), [ rejects it (exit code 2)
+    if [[ "$util" == "test" ]]; then
+        "$binary" --version >/dev/null 2>&1
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            print_test_result "$util --version" "PASS"
+        else
+            print_test_result "$util --version" "FAIL" "Expected exit code 0 (POSIX), got $exit_code" "$binary --version"
+        fi
+    elif [[ "$util" == "[" ]]; then
+        "$binary" --version >/dev/null 2>&1
+        local exit_code=$?
+        if [[ $exit_code -eq 2 ]]; then
+            print_test_result "$util --version" "PASS"
+        else
+            print_test_result "$util --version" "FAIL" "Expected exit code 2, got $exit_code" "$binary --version"
+        fi
     else
-        print_test_result "$util --version" "FAIL" "Version flag failed" "$binary --version"
+        if "$binary" --version >/dev/null 2>&1; then
+            print_test_result "$util --version" "PASS"
+        else
+            print_test_result "$util --version" "FAIL" "Version flag failed" "$binary --version"
+        fi
     fi
 }
 
