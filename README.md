@@ -14,7 +14,7 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 
 ## Project Status
 
-**Pre-1.0**: Expect breaking changes as we refine the design. 19 utilities implemented with comprehensive test coverage.
+**Pre-1.0**: Expect breaking changes as we refine the design. 24 utilities implemented with comprehensive test coverage.
 
 ### Implemented Utilities
 
@@ -26,6 +26,7 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 - ✅ `dirname` - Extract directory from path
 - ✅ `echo` - Display text
 - ✅ `false` - Return unsuccessful exit status
+- ✅ `head` - Display first lines of files
 - ✅ `ln` - Create links (hard and symbolic)
 - ✅ `ls` - List directory contents with colors and icons
 - ✅ `mkdir` - Create directories
@@ -34,18 +35,22 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 - ✅ `rm` - Remove files and directories safely
 - ✅ `rmdir` - Remove empty directories
 - ✅ `sleep` - Delay for specified time
+- ✅ `tail` - Display last lines of files
+- ✅ `tee` - Write to stdout and files simultaneously
+- ✅ `test` - Evaluate conditional expressions
 - ✅ `touch` - Update file timestamps
 - ✅ `true` - Return successful exit status
+- ✅ `wc` - Count lines, words, and characters
 - ✅ `yes` - Output string repeatedly until killed
 
 ### Coming Soon
-Text processing utilities (head, tail, wc, sort, uniq) and file information tools (stat, du, df).
+Text processing utilities (sort, uniq) and file information tools (stat, du, df).
 
 ## Installation
 
 ### Build from source
 
-Requirements: Zig 0.14.1 or later
+Requirements: Zig 0.15.1 or later
 
 ```bash
 git clone https://github.com/kelp/vibeutils.git
