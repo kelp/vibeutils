@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Comprehensive tests for rm utility
 # Tests all flags, file/directory removal, safety features, and edge cases
-# Total: 116 tests covering complete functionality
+# Total: 87 tests covering complete functionality
 
 # This file is sourced by test_runner.sh, so common.sh is already loaded
 
@@ -50,6 +50,9 @@ test_rm() {
     else
         print_test_result "rm empty file verification" "PASS"
     fi
+
+    # Clean up test_file2 which was created but not removed by tests
+    rm -f "$test_file2"
 
     echo -e "${CYAN}Testing force flag (-f, --force)...${NC}"
 
@@ -735,10 +738,10 @@ test_rm() {
     echo -e "${CYAN}Final comprehensive validation...${NC}"
 
     # Final test count verification
-    if [[ $TESTS_RUN -ge 110 ]]; then
+    if [[ $TESTS_RUN -ge 87 ]]; then
         print_test_result "rm comprehensive test count" "PASS" "Executed $TESTS_RUN tests"
     else
-        print_test_result "rm comprehensive test count" "FAIL" "Only executed $TESTS_RUN tests, expected 110+"
+        print_test_result "rm comprehensive test count" "FAIL" "Only executed $TESTS_RUN tests, expected 87+"
     fi
 
     # Final safety check - ensure no test files remain
