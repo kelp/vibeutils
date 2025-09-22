@@ -500,7 +500,7 @@ test_rm() {
     # 444 permissions without force
     local prot_444=$(create_temp_file "Protected 444")
     chmod 444 "$prot_444"
-    "$binary" "$prot_444" >/dev/null 2>&1
+    "$binary" "$prot_444" </dev/null >/dev/null 2>&1
     local prot_444_exit=$?
     if [[ $prot_444_exit -ne 0 ]]; then
         print_test_result "rm 444 file without force" "PASS"

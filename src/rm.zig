@@ -160,8 +160,8 @@ fn promptUser(prompt: []const u8, stderr_writer: anytype) !bool {
 
 /// Main file removal function that processes a list of files/directories.
 fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !bool {
-    // Handle interactive once mode (-I flag)
-    if (options.interactive_once and files.len > 3) {
+    // Handle interactive once mode (-I flag) - but force overrides
+    if (!options.force and options.interactive_once and files.len > 3) {
         const prompt = try std.fmt.allocPrint(allocator, "rm: remove {d} arguments? ", .{files.len});
         defer allocator.free(prompt);
 
@@ -203,7 +203,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                 if (options.recursive) {
                     removeDirectory(allocator, file, stdout_writer, stderr_writer, options) catch |dir_err| {
                         switch (dir_err) {
-                            error.UserCancelled => {}, // User said no, continue
+                            error.InteractiveUserCancelled => {}, // User said no in interactive mode, continue
                             else => {
                                 common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
                                 any_errors = true;
@@ -215,7 +215,13 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                     any_errors = true;
                 }
             },
-            error.UserCancelled => {}, // User said no, continue
+            error.InteractiveUserCancelled => {
+                // User declined in interactive mode - this is normal behavior, not an error
+            },
+            error.UserCancelled => {
+                // User declined write-protected file prompt - this is an error
+                any_errors = true;
+            },
             else => {
                 common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
                 any_errors = true;
@@ -241,16 +247,19 @@ fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytyp
         return error.IsDir;
     }
 
-    // Handle interactive prompts
-    if (options.interactive) {
+    // POSIX compliance: Force flag suppresses ALL prompts
+    if (options.force) {
+        // Force mode: no prompts, proceed with removal
+    } else if (options.interactive) {
+        // Interactive mode: always prompt
         const prompt = try std.fmt.allocPrint(allocator, "rm: remove regular file '{s}'? ", .{file_path});
         defer allocator.free(prompt);
 
         if (!try promptUser(prompt, stderr_writer)) {
-            return error.UserCancelled;
+            return error.InteractiveUserCancelled;
         }
-    } else if (!options.force) {
-        // Check if file is write-protected
+    } else {
+        // Default mode: prompt only for write-protected files
         const mode = stat_result.mode;
         const user_write = (mode & 0o200) != 0;
         if (!user_write) {
@@ -278,13 +287,16 @@ fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytyp
 
 /// Remove a directory recursively.
 fn removeDirectory(allocator: Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
-    // Handle interactive prompts for directories
-    if (options.interactive) {
+    // POSIX compliance: Force flag suppresses ALL prompts
+    if (options.force) {
+        // Force mode: no prompts, proceed with removal
+    } else if (options.interactive) {
+        // Interactive mode: always prompt for directories
         const prompt = try std.fmt.allocPrint(allocator, "rm: remove directory '{s}'? ", .{dir_path});
         defer allocator.free(prompt);
 
         if (!try promptUser(prompt, stderr_writer)) {
-            return error.UserCancelled;
+            return error.InteractiveUserCancelled;
         }
     }
 
