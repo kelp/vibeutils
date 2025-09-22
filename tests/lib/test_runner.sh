@@ -46,7 +46,17 @@ run_utility_tests() {
     fi
     
     # Print summary and return status
-    print_test_summary "$util"
+    local exit_status
+    if print_test_summary "$util"; then
+        exit_status=0
+    else
+        exit_status=1
+    fi
+
+    # Clean up temp files between utilities to ensure clean slate
+    cleanup_test_session
+
+    return $exit_status
 }
 
 # Run automatic tests based on flag parsing
