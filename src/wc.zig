@@ -94,8 +94,45 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return 0;
     }
 
-    // If no count options specified, default to lines, words, and bytes
+    // Handle -c/-m mutual exclusion: "last flag wins" behavior (GNU wc compatibility)
     var opts = options;
+    if (opts.bytes and opts.chars) {
+        // Both -c and -m specified, need to determine which was last
+        // Parse raw args to find the last occurrence
+        var last_c_pos: ?usize = null;
+        var last_m_pos: ?usize = null;
+
+        // Look through the args to find positions of -c/-m flags
+        for (args, 0..) |arg, i| {
+            if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--bytes")) {
+                last_c_pos = i;
+            } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--chars")) {
+                last_m_pos = i;
+            } else if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
+                // Handle combined flags like -cm or -mc
+                for (arg[1..]) |flag_char| {
+                    if (flag_char == 'c') last_c_pos = i;
+                    if (flag_char == 'm') last_m_pos = i;
+                }
+            }
+        }
+
+        // Last flag wins
+        if (last_c_pos != null and last_m_pos != null) {
+            if (last_c_pos.? > last_m_pos.?) {
+                // -c came after -m, so prefer bytes
+                opts.chars = false;
+            } else {
+                // -m came after -c, so prefer chars
+                opts.bytes = false;
+            }
+        } else {
+            // Fallback: prefer -m (this shouldn't happen if both flags are present)
+            opts.bytes = false;
+        }
+    }
+
+    // If no count options specified, default to lines, words, and bytes
     if (!opts.lines and !opts.words and !opts.bytes and !opts.chars and !opts.max_line_length) {
         opts.lines = true;
         opts.words = true;
@@ -126,6 +163,19 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 addStats(&total_stats, stats);
                 file_count += 1;
             } else {
+                // Check if it's a directory first
+                const stat = std.fs.cwd().statFile(file_path) catch |err| {
+                    try stderr_writer.print("wc: {s}: {s}\n", .{ file_path, @errorName(err) });
+                    has_error = true;
+                    continue;
+                };
+
+                if (stat.kind == .directory) {
+                    try stderr_writer.print("wc: {s}: Is a directory\n", .{file_path});
+                    has_error = true;
+                    continue;
+                }
+
                 // Regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                     try stderr_writer.print("wc: {s}: {s}\n", .{ file_path, @errorName(err) });
@@ -147,8 +197,8 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             }
         }
 
-        // Print total if multiple files
-        if (file_count > 1) {
+        // Print total if multiple files were requested (not just successful ones)
+        if (options.positionals.len > 1) {
             try printStats(stdout_writer, total_stats, "total", opts);
         }
     }
@@ -156,54 +206,75 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     return if (has_error) @as(u8, 1) else 0;
 }
 
-/// Count statistics from a reader
+/// Count statistics from a reader - POSIX compliant implementation
+/// Uses appendRemaining to get all data at once, then process byte by byte
+/// POSIX: lines are counted as the number of newline characters (\n)
+/// A file without a final newline has 0 lines (even if it has content)
 fn countReader(reader: anytype, options: WcOptions) !FileStats {
     var stats = FileStats{};
-    var in_word = false;
 
-    // Process the file line by line using the new Reader API
-    while (reader.takeDelimiterExclusive('\n')) |line| {
-        // Count the line
-        stats.lines += 1;
+    // Read all data into memory first using appendRemaining
+    var content_list = std.ArrayListUnmanaged(u8){};
+    defer content_list.deinit(std.heap.page_allocator);
 
-        // Count bytes (line + newline)
-        stats.bytes += line.len + 1; // +1 for the newline
-
-        // Count characters (UTF-8 aware)
-        if (options.chars) {
-            for (line) |byte| {
-                if ((byte & 0b11000000) != 0b10000000) {
-                    stats.chars += 1;
-                }
-            }
-            stats.chars += 1; // +1 for newline
-        } else {
+    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
+    reader.appendRemaining(std.heap.page_allocator, &content_list, limit) catch {
+        // If appendRemaining fails, assume no data
+        if (!options.chars) {
             stats.chars = stats.bytes;
         }
+        return stats;
+    };
 
-        // Track max line length
-        if (line.len > stats.max_line_length) {
-            stats.max_line_length = line.len;
+    const content = content_list.items;
+
+    // Now process byte by byte
+    var in_word = false;
+    var current_line_length: u64 = 0;
+
+    for (content) |byte| {
+        // Count all bytes exactly
+        stats.bytes += 1;
+
+        // Count newlines (POSIX: this is what defines a "line")
+        if (byte == '\n') {
+            stats.lines += 1;
+            // Track max line length
+            if (current_line_length > stats.max_line_length) {
+                stats.max_line_length = current_line_length;
+            }
+            current_line_length = 0;
+            in_word = false; // newline breaks words
+        } else {
+            current_line_length += 1;
         }
 
-        // Count words in the line
-        var i: usize = 0;
-        in_word = false;
-        while (i < line.len) : (i += 1) {
-            const is_space = std.ascii.isWhitespace(line[i]);
-            if (!is_space and !in_word) {
-                stats.words += 1;
-                in_word = true;
-            } else if (is_space) {
-                in_word = false;
+        // Count UTF-8 characters (only if -m flag specified)
+        if (options.chars) {
+            // UTF-8 continuation bytes have pattern 10xxxxxx
+            if ((byte & 0b11000000) != 0b10000000) {
+                stats.chars += 1;
             }
         }
-    } else |err| switch (err) {
-        error.EndOfStream => {
-            // End of stream reached - the Reader API handles lines without final newline correctly
-            // Any data without a final delimiter has already been returned by takeDelimiterExclusive
-        },
-        else => return err,
+
+        // Word counting logic
+        const is_space = std.ascii.isWhitespace(byte);
+        if (!is_space and !in_word) {
+            stats.words += 1;
+            in_word = true;
+        } else if (is_space) {
+            in_word = false;
+        }
+    }
+
+    // Handle final line length (for files not ending with newline)
+    if (current_line_length > stats.max_line_length) {
+        stats.max_line_length = current_line_length;
+    }
+
+    // Set character count to byte count if not explicitly counting UTF-8 chars
+    if (!options.chars) {
+        stats.chars = stats.bytes;
     }
 
     return stats;
@@ -223,6 +294,7 @@ fn addStats(total: *FileStats, stats: FileStats) void {
 /// Print statistics for a file
 fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options: WcOptions) !void {
     // Print counts in the order: lines words bytes/chars max_line_length filename
+    // Mutual exclusion between -c and -m is handled during argument processing
     if (options.lines) {
         try writer.print("{d: >8}", .{stats.lines});
     }
@@ -232,7 +304,7 @@ fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options:
     if (options.bytes) {
         try writer.print("{d: >8}", .{stats.bytes});
     }
-    if (options.chars and !options.bytes) {
+    if (options.chars) {
         try writer.print("{d: >8}", .{stats.chars});
     }
     if (options.max_line_length) {
@@ -388,7 +460,7 @@ test "wc handles input without final newline" {
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .lines = true });
-    try testing.expectEqual(@as(u64, 2), stats.lines); // takeDelimiterExclusive counts both lines
+    try testing.expectEqual(@as(u64, 1), stats.lines); // POSIX: 1 newline = 1 line
 }
 
 test "wc counts multiple whitespace correctly" {
@@ -405,7 +477,7 @@ test "wc counts multiple whitespace correctly" {
     var file_reader = file.reader(&file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .words = true, .lines = true });
     try testing.expectEqual(@as(u64, 4), stats.words);
-    try testing.expectEqual(@as(u64, 3), stats.lines); // Actually has 3 lines (two \n chars plus final line)
+    try testing.expectEqual(@as(u64, 2), stats.lines); // POSIX: 2 newlines = 2 lines
 }
 
 test "wc handles all counts together" {
