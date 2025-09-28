@@ -5,8 +5,7 @@ dev.zig
 
 # Editor files (user-specific)
 .idea/
-.vscode/launch.json
-.vscode/tasks.json
+.vscode/
 *.swp
 *.swo
 *~
