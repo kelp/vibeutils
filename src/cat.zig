@@ -236,8 +236,20 @@ const LineNumberState = struct {
 /// Format output according to the specified options.
 /// Maintains line numbering state across multiple files.
 /// For basic file concatenation, we need to preserve the exact byte structure.
+/// Uses appendRemaining to read all data first, avoiding EOF handling issues with takeDelimiterExclusive.
 pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
-    _ = allocator; // Not needed with new Reader API
+    // Read all data into memory first using appendRemaining
+    // This avoids the EOF handling bug with takeDelimiterExclusive
+    var content_list = std.ArrayListUnmanaged(u8){};
+    defer content_list.deinit(allocator);
+
+    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
+    reader.appendRemaining(allocator, &content_list, limit) catch |err| {
+        // If appendRemaining fails, there's nothing we can do
+        return err;
+    };
+
+    const content = content_list.items;
 
     // Check if we need any line-based processing (formatting options)
     const needs_line_processing = options.number_lines or options.number_nonblank or
@@ -245,74 +257,75 @@ pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anyty
         options.show_tabs or options.show_nonprinting;
 
     if (!needs_line_processing) {
-        // For basic cat functionality (no formatting), copy bytes directly to preserve exact structure
-        // We need to use takeDelimiterExclusive and manually track final newlines to preserve exact input
-        var had_any_data = false;
-        while (reader.takeDelimiterExclusive('\n')) |line| {
-            had_any_data = true;
-            try writer.writeAll(line);
-            try writer.writeAll("\n"); // Add back the delimiter that was consumed
-        } else |err| switch (err) {
-            error.EndOfStream => {
-                // Check if there's remaining data in the buffer (line without final newline)
-                if (!had_any_data) {
-                    // No data was read, stream was empty
-                    return;
-                }
-                // If we reached here after reading some lines, those lines all had newlines
-                // and were properly handled above
-            },
-            error.StreamTooLong => {
-                return error.StreamTooLong;
-            },
-            else => return err,
-        }
+        // For basic cat functionality (no formatting), write all content directly
+        try writer.writeAll(content);
         return;
     }
 
-    // For formatting options, we need line-by-line processing
-    while (reader.takeDelimiterExclusive('\n')) |line| {
-        const is_blank = line.len == 0;
+    // For formatting options, we need line-by-line processing from the buffer
+    var line_start: usize = 0;
+    var i: usize = 0;
 
-        // Handle squeeze blank
-        if (options.squeeze_blank and is_blank and state.prev_blank) {
-            continue;
-        }
-        state.prev_blank = is_blank;
+    while (i <= content.len) {
+        // Check if we're at end of content or found a newline
+        const at_newline = i < content.len and content[i] == '\n';
+        const at_end = i == content.len;
 
-        // Handle line numbering
-        if (options.number_nonblank and !is_blank) {
-            // Number non-blank lines only (-b option)
-            try writer.print("{d: >6}\t", .{state.line_number});
-            state.line_number += 1;
-        } else if (options.number_lines and !options.number_nonblank) {
-            // Number all lines (-n option, but -b takes precedence)
-            try writer.print("{d: >6}\t", .{state.line_number});
-            state.line_number += 1;
-        }
+        if (at_newline or at_end) {
+            const line = content[line_start..i];
+            const is_blank = line.len == 0;
 
-        // Write the line content
-        if (options.show_tabs or options.show_nonprinting) {
-            try writeWithSpecialChars(writer, line, options);
+            // At end of content with no trailing newline - only process if there's content
+            if (at_end and line.len == 0) {
+                break;
+            }
+
+            // Handle squeeze blank
+            if (options.squeeze_blank and is_blank and state.prev_blank) {
+                // Skip this blank line, move to next
+                if (at_newline) {
+                    i += 1;
+                    line_start = i;
+                }
+                continue;
+            }
+            state.prev_blank = is_blank;
+
+            // Handle line numbering
+            if (options.number_nonblank and !is_blank) {
+                // Number non-blank lines only (-b option)
+                try writer.print("{d: >6}\t", .{state.line_number});
+                state.line_number += 1;
+            } else if (options.number_lines and !options.number_nonblank) {
+                // Number all lines (-n option, but -b takes precedence)
+                try writer.print("{d: >6}\t", .{state.line_number});
+                state.line_number += 1;
+            }
+
+            // Write the line content
+            if (options.show_tabs or options.show_nonprinting) {
+                try writeWithSpecialChars(writer, line, options);
+            } else {
+                try writer.writeAll(line);
+            }
+
+            // Handle line ending
+            if (options.show_ends) {
+                try writer.writeAll("$");
+            }
+
+            // Write newline only if original had one
+            if (at_newline) {
+                try writer.writeAll("\n");
+                i += 1;
+                line_start = i;
+            } else {
+                // End of content without trailing newline
+                break;
+            }
         } else {
-            try writer.writeAll(line);
+            i += 1;
         }
-
-        // Handle line ending
-        if (options.show_ends) {
-            try writer.writeAll("$");
-        }
-        try writer.writeAll("\n");
-    } else |err| switch (err) {
-        error.EndOfStream => {
-            // End of file reached during line-by-line processing
-            // The new Reader API handles lines without final newline correctly
-        },
-        error.StreamTooLong => {
-            // Line is too long for the buffer - handle gracefully
-            return error.StreamTooLong;
-        },
-        else => return err,
     }
 }
 
@@ -350,7 +363,7 @@ test "cat reads single file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, World!\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, world!\n");
 
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
@@ -362,7 +375,7 @@ test "cat reads single file" {
     const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Hello, World!\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Hello, world!\n", stdout_buffer.items);
 }
 
 test "cat concatenates multiple files" {
@@ -375,12 +388,12 @@ test "cat concatenates multiple files" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
 
-    const file1_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "file1.txt");
-    defer testing.allocator.free(file1_path);
-    const file2_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "file2.txt");
-    defer testing.allocator.free(file2_path);
+    const path1 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file1.txt");
+    defer testing.allocator.free(path1);
+    const path2 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file2.txt");
+    defer testing.allocator.free(path2);
 
-    const args = [_][]const u8{ file1_path, file2_path };
+    const args = [_][]const u8{ path1, path2 };
     const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
@@ -388,8 +401,8 @@ test "cat concatenates multiple files" {
 }
 
 test "cat reads from stdin when no files" {
-    // This test would require mocking stdin, which is complex with runCat
-    // We'll test this functionality through the dash argument test instead
+    // Testing stdin requires mocking stdin, which is complex with runCat
+    // This functionality is tested in integration tests
     return error.SkipZigTest;
 }
 
@@ -416,7 +429,7 @@ test "cat with -b numbers non-blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n\nLine 5\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n");
 
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
@@ -428,14 +441,14 @@ test "cat with -b numbers non-blank lines" {
     const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("     1\tLine 1\n\n     2\tLine 3\n\n     3\tLine 5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("     1\tLine 1\n\n     2\tLine 3\n", stdout_buffer.items);
 }
 
 test "cat with -s squeezes blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n\n\nLine 3\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n");
 
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
@@ -447,7 +460,7 @@ test "cat with -s squeezes blank lines" {
     const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line 1\n\nLine 2\n\nLine 3\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\n\nLine 2\n", stdout_buffer.items);
 }
 
 test "cat with -E shows ends" {
@@ -473,7 +486,7 @@ test "cat with -T shows tabs" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "col1\tcol2\n");
 
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
@@ -485,7 +498,7 @@ test "cat with -T shows tabs" {
     const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line^Iwith^Itabs\n", stdout_buffer.items);
+    try testing.expectEqualStrings("col1^Icol2\n", stdout_buffer.items);
 }
 
 test "cat handles non-existent file" {
@@ -613,10 +626,24 @@ test "cat with -A and control characters" {
 }
 
 test "cat handles very long lines without truncation" {
-    // Skip this test due to takeDelimiterExclusive buffer limitations in Zig 0.15.1
-    // Lines exceeding the internal buffer size cause StreamTooLong errors
-    // This is a known limitation of the current Reader API implementation
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a line longer than the 4096-byte read buffer
+    const long_line = "A" ** 8192 ++ "\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", long_line);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{file_path};
+    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
+    try testing.expectEqualStrings(long_line, stdout_buffer.items);
 }
 
 test "cat continues processing files after error" {

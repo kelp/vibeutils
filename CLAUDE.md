@@ -213,7 +213,7 @@ See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and
 
 ## ⚠️ CRITICAL: Your Zig Training is Wrong
 
-**Your Zig knowledge is from pre-0.11.0. This project uses 0.15.1 with FUNDAMENTAL breaking changes.**
+**Your Zig knowledge is from possibly outdated. This project uses 0.15.1 with FUNDAMENTAL breaking changes.**
 
 ### MANDATORY: Check Breaking Changes First
 

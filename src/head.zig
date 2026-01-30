@@ -79,7 +79,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        try processInput(stdin, stdout_writer, options);
+        try processInput(allocator, stdin, stdout_writer, options);
     } else {
         // Process each file in order
         for (parsed_args.positionals, 0..) |file_path, i| {
@@ -92,7 +92,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 if (options.show_headers) {
                     try stdout_writer.writeAll("==> standard input <==\n");
                 }
-                try processInput(stdin, stdout_writer, options);
+                try processInput(allocator, stdin, stdout_writer, options);
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
@@ -106,7 +106,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 }
                 var file_buffer: [4096]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                try processInput(&file_reader.interface, stdout_writer, options);
+                try processInput(allocator, &file_reader.interface, stdout_writer, options);
             }
         }
     }
@@ -180,69 +180,46 @@ const HeadOptions = struct {
     show_headers: bool = false,
 };
 
-/// Process input from a reader and output first lines/bytes to writer
-pub fn processInput(reader: anytype, writer: anytype, options: HeadOptions) !void {
+/// Process input from a reader and output first lines/bytes to writer.
+/// Uses appendRemaining to read all data first, avoiding EOF handling issues with takeDelimiterExclusive.
+pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: HeadOptions) !void {
+    // Read all data into memory first using appendRemaining
+    var content_list = std.ArrayListUnmanaged(u8){};
+    defer content_list.deinit(allocator);
+
+    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
+    reader.appendRemaining(allocator, &content_list, limit) catch |err| {
+        return err;
+    };
+
+    const content = content_list.items;
+
     if (options.byte_count) |byte_count| {
-        // Process by bytes
-        try processBytes(reader, writer, byte_count);
+        // Process by bytes - output first N bytes
+        const bytes_to_write = @min(byte_count, content.len);
+        try writer.writeAll(content[0..bytes_to_write]);
     } else {
-        // Process by lines
-        try processLines(reader, writer, options.line_count);
+        // Process by lines - output first N lines
+        try processLines(writer, content, options.line_count);
     }
 }
 
-/// Process input by lines
-fn processLines(reader: anytype, writer: anytype, line_count: u64) !void {
-    // Use the reader directly - buffering is now handled at the writer level
-    const input = reader;
-
+/// Process in-memory content by lines, outputting the first line_count lines
+fn processLines(writer: anytype, content: []const u8, line_count: u64) !void {
     var lines_written: u64 = 0;
+    var pos: usize = 0;
 
-    while (lines_written < line_count) {
-        if (input.takeDelimiterExclusive('\n')) |line| {
-            try writer.writeAll(line);
-            try writer.writeAll("\n");
+    while (lines_written < line_count and pos < content.len) {
+        // Find the next newline
+        if (std.mem.indexOfScalar(u8, content[pos..], '\n')) |newline_offset| {
+            // Write the line including the newline
+            try writer.writeAll(content[pos .. pos + newline_offset + 1]);
+            pos += newline_offset + 1;
             lines_written += 1;
-        } else |err| switch (err) {
-            error.EndOfStream => break, // EOF reached
-            error.StreamTooLong => {
-                // Line too long for buffer - this shouldn't happen with our large buffer
-                // but we'll treat it as end of stream for robustness
-                break;
-            },
-            error.ReadFailed => return err,
-        }
-    }
-}
-
-/// Process input by bytes
-fn processBytes(reader: anytype, writer: anytype, byte_count: u64) !void {
-    // For production use with the new std.Io.Reader interface, use peek/discard
-    // For test use with adapted readers, the interface is incompatible
-    // Since the binary works correctly (verified by smoke tests), we'll use
-    // a simplified approach that works for both cases
-
-    const input = reader;
-    var bytes_written: u64 = 0;
-
-    // Use the new API when available, old API as fallback for tests
-    while (bytes_written < byte_count) {
-        const bytes_to_read = @min(4096, byte_count - bytes_written);
-
-        // In tests with adapted readers, peek may not work as expected
-        // but since the binary smoke test passes, we know the actual implementation works
-        if (bytes_written == 0) {
-            // Only try once, then break to avoid infinite loops in tests
-            const available_bytes = input.peek(bytes_to_read) catch break;
-            if (available_bytes.len == 0) break;
-            const bytes_to_write = @min(bytes_to_read, available_bytes.len);
-            try writer.writeAll(available_bytes[0..bytes_to_write]);
-
-            // Try to discard - this works in production but may fail in tests
-            _ = input.discard(@enumFromInt(bytes_to_write)) catch break;
-            bytes_written += bytes_to_write;
         } else {
-            break; // Prevent infinite loops in tests
+            // No more newlines - write remaining content (last line without trailing newline)
+            try writer.writeAll(content[pos..]);
+            break;
         }
     }
 }
@@ -266,152 +243,209 @@ fn errorToMessage(err: anytype) []const u8 {
 
 // ========== TEST CONSTANTS ==========
 
-/// Test constants to replace magic numbers in tests
-const TEST_BYTE_COUNT: u64 = 10;
-const TEST_LARGE_BYTE_COUNT: u64 = 1000;
-const TEST_LARGE_LINE_COUNT: u64 = 100;
-const TEST_LINE_COUNT: u64 = 3;
 const TEST_NEGATIVE_VALUE: []const u8 = "-5";
-const TEST_SMALL_BYTE_COUNT: u64 = 5;
-const TEST_ZERO_COUNT: u64 = 0;
-
-// ========== TEST HELPERS ==========
-
-/// Helper to adapt old-style readers to new API for testing
-fn adaptReaderForTest(old_reader: anytype, buffer: []u8) @TypeOf(old_reader.adaptToNewApi(buffer)) {
-    return old_reader.adaptToNewApi(buffer);
-}
 
 // ========== TESTS ==========
 
 test "head outputs first 10 lines by default" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    const input = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\n";
-    var input_stream = std.io.fixedBufferStream(input);
+    // Create a file with 15 lines
+    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
+        "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n" ++
+        "Line 11\nLine 12\nLine 13\nLine 14\nLine 15\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
 
-    // Use adapter API to convert old reader to new one
-    var adapter_buffer: [1024]u8 = undefined;
-    var adapter = adaptReaderForTest(input_stream.reader(), &adapter_buffer);
-    const new_reader = &adapter.new_interface;
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    const options = HeadOptions{};
-    try processInput(new_reader, buffer.writer(testing.allocator), options);
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
 
-    const expected = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
-    try testing.expectEqualStrings(expected, buffer.items);
+    const args = [_][]const u8{file_path};
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    const expected = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
+        "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
 }
 
 test "head with -n 5 outputs first 5 lines" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    const input = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\n";
-    var input_stream = std.io.fixedBufferStream(input);
+    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
 
-    const options = HeadOptions{ .line_count = 5 };
-    // Use adapter API to convert old reader to new one
-    var adapter_buffer: [1024]u8 = undefined;
-    var adapter = adaptReaderForTest(input_stream.reader(), &adapter_buffer);
-    const new_reader = &adapter.new_interface;
-    try processInput(new_reader, buffer.writer(testing.allocator), options);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    const expected = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try testing.expectEqualStrings(expected, buffer.items);
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-n", "5", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n", stdout_buffer.items);
 }
 
 test "head with -c 10 outputs first 10 bytes" {
-    // Skip this test due to adapter API limitations with discard() method
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, World! This is a test.\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-c", "10", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Hello, Wor", stdout_buffer.items);
 }
 
 test "head handles fewer lines than requested" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    const input = "Line 1\nLine 2\nLine 3\n";
-    var input_stream = std.io.fixedBufferStream(input);
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
 
-    const options = HeadOptions{ .line_count = DEFAULT_LINE_COUNT };
-    // Use adapter API to convert old reader to new one
-    var adapter_buffer: [1024]u8 = undefined;
-    var adapter = adaptReaderForTest(input_stream.reader(), &adapter_buffer);
-    const new_reader = &adapter.new_interface;
-    try processInput(new_reader, buffer.writer(testing.allocator), options);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", buffer.items);
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // Request 10 lines (default) but file only has 2
+    const args = [_][]const u8{file_path};
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_buffer.items);
 }
 
 test "head handles fewer bytes than requested" {
-    // Skip this test due to adapter API limitations with discard() method
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Short");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // Request 1000 bytes but file only has 5
+    const args = [_][]const u8{ "-c", "1000", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Short", stdout_buffer.items);
 }
 
 test "head handles empty input" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    const input = "";
-    var input_stream = std.io.fixedBufferStream(input);
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "");
 
-    const options = HeadOptions{};
-    // Use adapter API to convert old reader to new one
-    var adapter_buffer: [1024]u8 = undefined;
-    var adapter = adaptReaderForTest(input_stream.reader(), &adapter_buffer);
-    const new_reader = &adapter.new_interface;
-    try processInput(new_reader, buffer.writer(testing.allocator), options);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    try testing.expectEqualStrings("", buffer.items);
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{file_path};
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("", stdout_buffer.items);
 }
 
 test "head with -n 0 outputs nothing" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    const input = "Line 1\nLine 2\nLine 3\n";
-    var input_stream = std.io.fixedBufferStream(input);
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
 
-    const options = HeadOptions{ .line_count = TEST_ZERO_COUNT };
-    // Use adapter API to convert old reader to new one
-    var adapter_buffer: [1024]u8 = undefined;
-    var adapter = adaptReaderForTest(input_stream.reader(), &adapter_buffer);
-    const new_reader = &adapter.new_interface;
-    try processInput(new_reader, buffer.writer(testing.allocator), options);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    try testing.expectEqualStrings("", buffer.items);
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-n", "0", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("", stdout_buffer.items);
 }
 
 test "head with -c 0 outputs nothing" {
-    // Skip this test due to adapter API limitations with discard() method
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, World!\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-c", "0", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("", stdout_buffer.items);
 }
 
 test "head processes lines efficiently" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
-    // Create input with exactly the number of lines requested
-    const input = "1\n2\n3\n4\n5\n";
-    var input_stream = std.io.fixedBufferStream(input);
+    // Create a file with many lines, request only the first 3
+    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
 
-    const options = HeadOptions{ .line_count = TEST_LINE_COUNT };
-    // Use adapter API to convert old reader to new one
-    var adapter_buffer: [1024]u8 = undefined;
-    var adapter = adaptReaderForTest(input_stream.reader(), &adapter_buffer);
-    const new_reader = &adapter.new_interface;
-    try processInput(new_reader, buffer.writer(testing.allocator), options);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
-    try testing.expectEqualStrings("1\n2\n3\n", buffer.items);
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-n", "3", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_buffer.items);
 }
 
 test "head processes bytes efficiently" {
-    // Skip this test due to adapter API limitations with discard() method
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "ABCDEFGHIJKLMNOP");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-c", "5", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("ABCDE", stdout_buffer.items);
 }
 
 test "head handles invalid line count" {
@@ -448,15 +482,43 @@ test "head version flag works" {
 }
 
 test "head with line count larger than available lines" {
-    // Skip this test due to adapter API limitations
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Only one line\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // Request 100 lines but file only has 1
+    const args = [_][]const u8{ "-n", "100", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Only one line\n", stdout_buffer.items);
 }
 
 test "head byte count takes precedence over line count" {
-    // Skip this test due to adapter API limitations with discard() method
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // Use -c (bytes) which should override default line count
+    const args = [_][]const u8{ "-c", "10", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\nLin", stdout_buffer.items);
 }
 
 // ============================================================================
