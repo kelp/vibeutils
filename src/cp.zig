@@ -65,11 +65,6 @@ const FileType = enum {
     symlink,
 };
 
-/// Copy operation statistics
-const CopyStats = struct {
-    errors_encountered: usize = 0,
-};
-
 /// Main entry point for the cp command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -138,14 +133,13 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     }
 
     // Execute copy operations
-    var stats = CopyStats{};
-    const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime(), &stats);
+    const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime());
 
     return if (success) common.ExitCode.success else common.ExitCode.general_error;
 }
 
 /// Execute all copy operations
-fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, stats: *CopyStats) !bool {
+fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions) !bool {
     const dest = args[args.len - 1];
 
     // If multiple sources, destination must be a directory
@@ -165,7 +159,7 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 
     // Process each source
     for (args[0 .. args.len - 1]) |source| {
-        const result = copySingleFile(allocator, stderr_writer, source, dest, options, stats) catch false;
+        const result = copySingleFile(allocator, stderr_writer, source, dest, options) catch false;
         if (!result) success = false;
     }
 
@@ -173,26 +167,26 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 }
 
 /// Copy a single file or directory
-fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, stats: *CopyStats) !bool {
+fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions) !bool {
     // Get source file type
     const source_type = getFileTypeAtomic(source, options.no_dereference) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return false;
     };
 
     // Resolve final destination path
     const final_dest_path = resolveFinalDestination(allocator, source, dest) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "error resolving destination: {s}", .{getStandardErrorName(err)});
-        stats.errors_encountered += 1;
+
         return false;
     };
     defer allocator.free(final_dest_path);
 
     // Check for same file
-    if (isSameFile(source, final_dest_path) catch false) {
+    if (isSameFile(source, final_dest_path)) {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' and '{s}' are the same file", .{ source, final_dest_path });
-        stats.errors_encountered += 1;
+
         return false;
     }
 
@@ -202,14 +196,14 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
     // Validate operation
     if (source_type == .directory and !options.recursive) {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{source});
-        stats.errors_encountered += 1;
+
         return false;
     }
 
     // Handle destination exists
     if (dest_exists and !options.force and !options.interactive) {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' already exists", .{final_dest_path});
-        stats.errors_encountered += 1;
+
         return false;
     }
 
@@ -223,26 +217,26 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
 
     // Execute the copy based on source type
     return switch (source_type) {
-        .regular_file => copyRegularFile(allocator, stderr_writer, source, final_dest_path, options, stats),
+        .regular_file => copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
         .symlink => if (options.no_dereference)
-            copySymlink(allocator, stderr_writer, source, final_dest_path, options, stats)
+            copySymlink(allocator, stderr_writer, source, final_dest_path, options)
         else
-            copyRegularFile(allocator, stderr_writer, source, final_dest_path, options, stats),
-        .directory => copyDirectory(allocator, stderr_writer, source, final_dest_path, options, stats),
+            copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
+        .directory => copyDirectory(allocator, stderr_writer, source, final_dest_path, options),
         .special => blk: {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}': unsupported file type", .{source});
-            stats.errors_encountered += 1;
+
             break :blk false;
         },
     };
 }
 
 /// Copy a regular file
-fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, stats: *CopyStats) bool {
+fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
     // Get source file stats
     const source_stat = std.fs.cwd().statFile(source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return false;
     };
 
@@ -252,13 +246,13 @@ fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []
     }
 
     if (options.preserve) {
-        copyFileWithAttributes(allocator, stderr_writer, source_path, dest_path, source_stat, stats) catch {
+        copyFileWithAttributes(allocator, stderr_writer, source_path, dest_path, source_stat) catch {
             return false;
         };
     } else {
         std.fs.cwd().copyFile(source_path, std.fs.cwd(), dest_path, .{}) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot copy '{s}' to '{s}': {s}", .{ source_path, dest_path, getStandardErrorName(err) });
-            stats.errors_encountered += 1;
+
             return false;
         };
     }
@@ -267,11 +261,11 @@ fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []
 }
 
 /// Copy a symbolic link
-fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, stats: *CopyStats) bool {
+fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
     // Read the symlink target
     const target = getSymlinkTarget(allocator, source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot read link '{s}': {s}", .{ source_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return false;
     };
     defer allocator.free(target);
@@ -284,7 +278,7 @@ fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []cons
     // Create the symlink
     std.fs.cwd().symLink(target, dest_path, .{}) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create symlink '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return false;
     };
 
@@ -292,7 +286,7 @@ fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []cons
 }
 
 /// Copy a directory recursively
-fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, stats: *CopyStats) bool {
+fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
     // Create destination directory
     std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -300,7 +294,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
         },
         else => {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
-            stats.errors_encountered += 1;
+
             return false;
         },
     };
@@ -325,7 +319,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
     // Open source directory for iteration
     var source_dir = std.fs.cwd().openDir(source_path, .{ .iterate = true }) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open directory '{s}': {s}", .{ source_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return false;
     };
     defer source_dir.close();
@@ -336,7 +330,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
     var iterator = source_dir.iterate();
     while (iterator.next() catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "error reading directory '{s}': {s}", .{ source_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return false;
     }) |entry| {
         // Skip . and .. entries
@@ -347,7 +341,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
         // Construct full paths
         const source_child_path = std.fs.path.join(allocator, &.{ source_path, entry.name }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot allocate memory for path: {s}", .{getStandardErrorName(err)});
-            stats.errors_encountered += 1;
+
             success = false;
             continue;
         };
@@ -355,14 +349,14 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
 
         const dest_child_path = std.fs.path.join(allocator, &.{ dest_path, entry.name }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot allocate memory for path: {s}", .{getStandardErrorName(err)});
-            stats.errors_encountered += 1;
+
             success = false;
             continue;
         };
         defer allocator.free(dest_child_path);
 
         // Recursively copy child
-        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options, stats) catch false;
+        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options) catch false;
         if (!result) success = false;
     }
 
@@ -370,11 +364,11 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
 }
 
 /// Copy file with preserved attributes
-fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, stats: *CopyStats) !void {
+fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat) !void {
     // Open source file
     const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return error.SourceNotReadable;
     };
     defer source_file.close();
@@ -382,7 +376,7 @@ fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_p
     // Create destination file with source mode
     const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = source_stat.mode }) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
-        stats.errors_encountered += 1;
+
         return error.DestinationNotWritable;
     };
     defer dest_file.close();
@@ -393,7 +387,7 @@ fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_p
     while (true) {
         const bytes_read = source_file.read(buffer[0..]) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "error reading '{s}': {s}", .{ source_path, getStandardErrorName(err) });
-            stats.errors_encountered += 1;
+
             return error.SourceNotReadable;
         };
 
@@ -401,7 +395,7 @@ fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_p
 
         dest_file.writeAll(buffer[0..bytes_read]) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "error writing '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
-            stats.errors_encountered += 1;
+
             return error.DestinationNotWritable;
         };
     }
@@ -475,11 +469,15 @@ fn getSymlinkTarget(allocator: Allocator, path: []const u8) ![]u8 {
     return try allocator.dupe(u8, target);
 }
 
-/// Check if source and destination refer to the same file
-fn isSameFile(source: []const u8, dest: []const u8) !bool {
-    const source_stat = std.fs.cwd().statFile(source) catch return false;
-    const dest_stat = std.fs.cwd().statFile(dest) catch return false;
-    return source_stat.inode == dest_stat.inode;
+/// Check if source and destination refer to the same file (compares both inode and device)
+fn isSameFile(source: []const u8, dest: []const u8) bool {
+    const source_file = std.fs.cwd().openFile(source, .{}) catch return false;
+    defer source_file.close();
+    const dest_file = std.fs.cwd().openFile(dest, .{}) catch return false;
+    defer dest_file.close();
+    const source_stat = std.posix.fstat(source_file.handle) catch return false;
+    const dest_stat = std.posix.fstat(dest_file.handle) catch return false;
+    return source_stat.ino == dest_stat.ino and source_stat.dev == dest_stat.dev;
 }
 
 /// Convert system error to user-friendly error message
@@ -818,6 +816,39 @@ test "privileged: permission preservation with mode bits" {
 
     // With privilege, full mode bits should be preserved
     try testing.expectEqual(source_stat.mode & 0o777, dest_stat.mode & 0o777);
+}
+
+test "cp: same file detection across devices via hardlink" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    try test_dir.createFile("original.txt", "test content", null);
+
+    // Create hardlink (same inode+device)
+    std.posix.link("original.txt", "hardlink.txt") catch {
+        return error.SkipZigTest;
+    };
+
+    // Hardlinks share inode+device, so isSameFile must return true
+    try testing.expect(isSameFile("original.txt", "hardlink.txt"));
+
+    // Different files must return false
+    try test_dir.createFile("different.txt", "other content", null);
+    try testing.expect(!isSameFile("original.txt", "different.txt"));
+
+    // Nonexistent file must return false (not crash)
+    try testing.expect(!isSameFile("original.txt", "nonexistent.txt"));
+
+    // cp should refuse to copy same file (via hardlink) to itself
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "original.txt", "hardlink.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(common.ExitCode.general_error, exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "same file") != null);
 }
 
 // Fuzzing

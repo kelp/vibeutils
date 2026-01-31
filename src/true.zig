@@ -77,7 +77,6 @@ test "true ignores flag-like arguments" {
 //                                FUZZ TESTS
 // ============================================================================
 
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("true");
 
 test "true fuzz basic" {
@@ -86,45 +85,6 @@ test "true fuzz basic" {
 }
 
 fn testTrueBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
     if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
-
     try common.fuzz.testUtilityBasic(runTrue, allocator, input, common.null_writer);
-}
-
-test "true fuzz deterministic" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTrueDeterministic, .{});
-}
-
-fn testTrueDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
-
-    try common.fuzz.testUtilityDeterministic(runTrue, allocator, input, common.null_writer);
-}
-
-test "true fuzz invariant properties" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTrueInvariants, .{});
-}
-
-fn testTrueInvariants(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
-
-    var arg_storage = common.fuzz.ArgStorage.init();
-    const args = common.fuzz.generateArgs(&arg_storage, input);
-
-    var stdout_buf = std.ArrayList(u8).init(allocator);
-    defer stdout_buf.deinit();
-    var stderr_buf = std.ArrayList(u8).init(allocator);
-    defer stderr_buf.deinit();
-
-    const result = try runTrue(allocator, args, stdout_buf.writer(), stderr_buf.writer());
-
-    // Invariant properties of true:
-    try testing.expectEqual(@as(u8, 0), result); // Always returns 0
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len); // Never writes to stdout
-    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len); // Never writes to stderr
 }

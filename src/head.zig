@@ -81,6 +81,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         // No files specified, read from stdin
         try processInput(allocator, stdin, stdout_writer, options);
     } else {
+        var had_error = false;
         // Process each file in order
         for (parsed_args.positionals, 0..) |file_path, i| {
             if (i > 0 and options.show_headers) {
@@ -97,7 +98,8 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, errorToMessage(err) });
-                    return @intFromEnum(common.ExitCode.general_error);
+                    had_error = true;
+                    continue;
                 };
                 defer file.close();
 
@@ -108,6 +110,9 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 var file_reader = file.reader(&file_buffer);
                 try processInput(allocator, &file_reader.interface, stdout_writer, options);
             }
+        }
+        if (had_error) {
+            return @intFromEnum(common.ExitCode.general_error);
         }
     }
     return @intFromEnum(common.ExitCode.success);
@@ -519,6 +524,66 @@ test "head byte count takes precedence over line count" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLin", stdout_buffer.items);
+}
+
+test "head continues after file error and outputs remaining files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "Line 1\nLine 2\nLine 3\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "valid.txt", content);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const valid_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "valid.txt");
+    defer testing.allocator.free(valid_path);
+
+    // First file is nonexistent, second is valid
+    const args = [_][]const u8{ "/nonexistent/file.txt", valid_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should return error exit code
+    try testing.expectEqual(@as(u8, 1), exit_code);
+
+    // But valid file output should still appear
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Line 1") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Line 2") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Line 3") != null);
+
+    // And stderr should report the error
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+}
+
+test "head with multiple files shows headers" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "file1.txt", "Content A\n");
+    try common.test_utils.createTestFile(tmp_dir.dir, "file2.txt", "Content B\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const path1 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file1.txt");
+    defer testing.allocator.free(path1);
+    const path2 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file2.txt");
+    defer testing.allocator.free(path2);
+
+    const args = [_][]const u8{ path1, path2 };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should contain file headers
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "==>") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "<==") != null);
+
+    // Should contain both files' content
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content A") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content B") != null);
 }
 
 // ============================================================================

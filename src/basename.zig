@@ -207,45 +207,6 @@ fn computeBasename(path: []const u8, maybeSuffix: ?[]const u8) []const u8 {
 // TESTS (TDD - Written First)
 // ============================================================================
 
-/// Test helper for managing stdout/stderr buffers
-const TestBuffers = struct {
-    stdout: std.ArrayList(u8),
-    stderr: std.ArrayList(u8),
-
-    fn init() TestBuffers {
-        return TestBuffers{
-            .stdout = std.ArrayList(u8).initCapacity(testing.allocator, 0) catch unreachable,
-            .stderr = std.ArrayList(u8).initCapacity(testing.allocator, 0) catch unreachable,
-        };
-    }
-
-    fn deinit(self: *TestBuffers) void {
-        self.stdout.deinit(testing.allocator);
-        self.stderr.deinit(testing.allocator);
-    }
-
-    fn clear(self: *TestBuffers) void {
-        self.stdout.clearRetainingCapacity();
-        self.stderr.clearRetainingCapacity();
-    }
-
-    fn stdoutWriter(self: *TestBuffers) @TypeOf(self.stdout.writer(testing.allocator)) {
-        return self.stdout.writer(testing.allocator);
-    }
-
-    fn stderrWriter(self: *TestBuffers) @TypeOf(self.stderr.writer(testing.allocator)) {
-        return self.stderr.writer(testing.allocator);
-    }
-
-    fn expectStdout(self: *TestBuffers, expected: []const u8) !void {
-        try testing.expectEqualStrings(expected, self.stdout.items);
-    }
-
-    fn expectStderr(self: *TestBuffers, expected: []const u8) !void {
-        try testing.expectEqualStrings(expected, self.stderr.items);
-    }
-};
-
 test "basename basic functionality" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);

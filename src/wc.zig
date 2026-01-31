@@ -1,7 +1,6 @@
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
-const print = std.debug.print;
 
 const Allocator = std.mem.Allocator;
 
@@ -564,6 +563,85 @@ test "wc runWc with default options" {
     // Default shows lines, words, bytes
     const expected_prefix = "       3       3      18 ";
     try testing.expect(std.mem.startsWith(u8, stdout_buffer.items, expected_prefix));
+}
+
+test "wc with multiple files shows total" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file1 = try tmp_dir.dir.createFile("a.txt", .{});
+    try file1.writeAll("one two\n");
+    file1.close();
+
+    const file2 = try tmp_dir.dir.createFile("b.txt", .{});
+    try file2.writeAll("three four five\n");
+    file2.close();
+
+    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
+    const path1 = try tmp_dir.dir.realpath("a.txt", &path_buf1);
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const path2 = try tmp_dir.dir.realpath("b.txt", &path_buf2);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ path1, path2 };
+    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should contain "total" line for multiple files
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "total") != null);
+
+    // Total should be 2 lines, 5 words, 24 bytes
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "       2       5      24 total") != null);
+}
+
+test "wc --help shows usage" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--help"};
+    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: wc") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--bytes") != null);
+}
+
+test "wc --version shows version" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--version"};
+    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "wc") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
+}
+
+test "wc reports error for directory" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("subdir");
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath("subdir", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{dir_path};
+    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
 }
 
 // ============================================================================

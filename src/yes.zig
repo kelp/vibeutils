@@ -18,33 +18,6 @@ const YesArgs = struct {
     positionals: []const []const u8 = &.{},
 };
 
-/// Limited writer that simulates BrokenPipe after writing a certain amount.
-/// Used for testing to avoid infinite output loops.
-const LimitedWriter = struct {
-    buffer: *std.ArrayList(u8),
-    limit: usize,
-    written: usize = 0,
-    allocator: std.mem.Allocator,
-
-    pub fn write(self: *@This(), bytes: []const u8) !usize {
-        if (self.written >= self.limit) {
-            return error.BrokenPipe; // Simulate SIGPIPE
-        }
-        const to_write = @min(bytes.len, self.limit - self.written);
-        try self.buffer.appendSlice(self.allocator, bytes[0..to_write]);
-        self.written += to_write;
-        if (self.written >= self.limit) {
-            return error.BrokenPipe;
-        }
-        return to_write;
-    }
-
-    // Writer method disabled due to Zig 0.15.1 API changes
-    // pub fn writer(self: *@This()) std.Io.Writer(*@This(), error{ BrokenPipe, OutOfMemory }, write) {
-    //     return .{ .context = self };
-    // }
-};
-
 /// Main function for the yes utility.
 /// Repeatedly outputs a line with all specified strings, or 'y' if no arguments provided.
 /// Uses arena allocator for memory management as per CLI tool best practices.
@@ -168,44 +141,7 @@ pub fn main() !void {
     std.process.exit(exit_code);
 }
 
-/// Helper function to create test buffers and run yes with limited output.
-fn testYesWithLimit(args: []const []const u8, limit: usize) !struct {
-    stdout: std.ArrayList(u8),
-    stderr: std.ArrayList(u8),
-    result: u8,
-} {
-    const stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    const stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-
-    // Disabled due to custom Writer API limitations in Zig 0.15.1
-    _ = stdout_buffer;
-    _ = stderr_buffer;
-    _ = limit;
-    _ = args;
-    return error.SkipZigTest;
-}
-
 // Tests
-
-test "yes outputs 'y' repeatedly with no arguments" {
-    // Skip this test due to custom Writer API limitations in Zig 0.15.1
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
-}
-
-test "yes outputs custom string with single argument" {
-    // Test disabled due to custom Writer API limitations in Zig 0.15.1
-    return error.SkipZigTest;
-}
-
-test "yes outputs multiple arguments joined with space" {
-    // Test disabled due to custom Writer API limitations in Zig 0.15.1
-    return error.SkipZigTest;
-    // Original test would check:
-    // var test_result = try testYesWithLimit(&.{ "hello", "world" }, 40);
-    // Buffer should contain at least 3 repetitions
-    // try testing.expect(std.mem.startsWith(u8, test_result.stdout.items, "hello world\nhello world\nhello world\n"));
-}
 
 test "yes handles --help flag" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
@@ -235,35 +171,102 @@ test "yes handles --version flag" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "vibeutils") != null);
 }
 
-test "yes handles BrokenPipe gracefully" {
-    const BrokenWriter = struct {
-        pub fn write(_: *const @This(), _: []const u8) !usize {
-            return error.BrokenPipe;
-        }
+/// Writer that captures output up to a limit, then returns an error
+/// to break the infinite loop in yes. Simulates a broken pipe.
+const LimitedCapture = struct {
+    allocator: std.mem.Allocator,
+    captured: []u8,
+    pos: usize,
+    limit: usize,
 
-        // Writer method disabled due to Zig 0.15.1 API changes
-        // pub fn writer(self: *const @This()) std.Io.Writer(*const @This(), error{BrokenPipe}, write) {
-        //     return .{ .context = self };
-        // }
-    };
+    fn init(allocator: std.mem.Allocator, limit: usize) !LimitedCapture {
+        return .{
+            .allocator = allocator,
+            .captured = try allocator.alloc(u8, limit),
+            .pos = 0,
+            .limit = limit,
+        };
+    }
 
-    const broken = BrokenWriter{};
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    fn deinit(self: *LimitedCapture) void {
+        self.allocator.free(self.captured);
+    }
 
-    // Disabled due to custom Writer API limitations in Zig 0.15.1
-    _ = broken;
-    const result: u8 = 0; // Skip test
+    fn items(self: *const LimitedCapture) []const u8 {
+        return self.captured[0..self.pos];
+    }
+
+    fn writeAll(self: *LimitedCapture, data: []const u8) error{BrokenPipe}!void {
+        if (self.pos >= self.limit) return error.BrokenPipe;
+        const remaining = self.limit - self.pos;
+        const to_write = @min(data.len, remaining);
+        @memcpy(self.captured[self.pos..][0..to_write], data[0..to_write]);
+        self.pos += to_write;
+        if (self.pos >= self.limit) return error.BrokenPipe;
+    }
+
+    fn print(self: *LimitedCapture, comptime fmt: []const u8, args: anytype) error{BrokenPipe}!void {
+        _ = fmt;
+        _ = args;
+        _ = self;
+        return error.BrokenPipe;
+    }
+
+    fn flush(self: *LimitedCapture) error{BrokenPipe}!void {
+        _ = self;
+    }
+};
+
+test "yes outputs y by default" {
+    var capture = try LimitedCapture.init(testing.allocator, 256);
+    defer capture.deinit();
+
+    const result = try runYes(testing.allocator, &.{}, &capture, common.null_writer);
+
+    // yes exits successfully on write error (broken pipe)
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Output should be "y\n" repeated
+    const output = capture.items();
+    try testing.expect(output.len > 0);
+    try testing.expect(std.mem.startsWith(u8, output, "y\n"));
+
+    // Verify the pattern repeats
+    var i: usize = 0;
+    while (i + 2 <= output.len) : (i += 2) {
+        try testing.expectEqualStrings("y\n", output[i..][0..2]);
+    }
+}
+
+test "yes outputs custom string" {
+    var capture = try LimitedCapture.init(testing.allocator, 256);
+    defer capture.deinit();
+
+    const result = try runYes(testing.allocator, &.{"hello"}, &capture, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", stderr_buffer.items); // No error messages for SIGPIPE
+    const output = capture.items();
+    try testing.expect(output.len > 0);
+    try testing.expect(std.mem.startsWith(u8, output, "hello\n"));
+}
+
+test "yes joins multiple arguments with spaces" {
+    var capture = try LimitedCapture.init(testing.allocator, 256);
+    defer capture.deinit();
+
+    const args = [_][]const u8{ "hello", "world" };
+    const result = try runYes(testing.allocator, &args, &capture, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const output = capture.items();
+    try testing.expect(output.len > 0);
+    try testing.expect(std.mem.startsWith(u8, output, "hello world\n"));
 }
 
 // ============================================================================
 //                                FUZZ TESTS
 // ============================================================================
 
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("yes");
 
 test "yes fuzz intelligent" {
@@ -272,100 +275,7 @@ test "yes fuzz intelligent" {
 }
 
 fn testYesIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
     if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
-
-    const YesIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(YesArgs, runYes);
-    try YesIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}
-
-test "yes fuzz basic limited" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testYesBasicLimited, .{});
-}
-
-fn testYesBasicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
-
-    var arg_storage = common.fuzz.ArgStorage.init();
-    const args = common.fuzz.generateArgs(&arg_storage, input);
-
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf.deinit(allocator);
-
-    var limited_writer = LimitedWriter{ .buffer = &stdout_buf, .limit = 1000, .allocator = allocator };
-
-    _ = runYes(allocator, args, limited_writer.writer(), common.null_writer) catch {
-        // BrokenPipe and other errors are expected
-        return;
-    };
-}
-
-test "yes fuzz deterministic limited" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testYesDeterministicLimited, .{});
-}
-
-fn testYesDeterministicLimited(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
-
-    var arg_storage = common.fuzz.ArgStorage.init();
-    const args = common.fuzz.generateArgs(&arg_storage, input);
-
-    var stdout_buf1 = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf1.deinit(allocator);
-    var stdout_buf2 = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf2.deinit(allocator);
-
-    var limited_writer1 = LimitedWriter{ .buffer = &stdout_buf1, .limit = 200, .allocator = allocator };
-    var limited_writer2 = LimitedWriter{ .buffer = &stdout_buf2, .limit = 200, .allocator = allocator };
-
-    const result1 = runYes(allocator, args, limited_writer1.writer(), common.null_writer) catch |err| switch (err) {
-        error.BrokenPipe => @as(u8, 0), // Expected result
-        else => return err,
-    };
-
-    const result2 = runYes(allocator, args, limited_writer2.writer(), common.null_writer) catch |err| switch (err) {
-        error.BrokenPipe => @as(u8, 0), // Expected result
-        else => return err,
-    };
-
-    // Results should be identical for same input
-    try testing.expectEqual(result1, result2);
-    try testing.expectEqualStrings(stdout_buf1.items, stdout_buf2.items);
-}
-
-test "yes fuzz output patterns" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testYesOutputPatterns, .{});
-}
-
-fn testYesOutputPatterns(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
-
-    if (input.len == 0) return;
-
-    // Test various output patterns
-    const patterns = [_][]const []const u8{
-        &.{}, // Default 'y'
-        &.{"hello"},
-        &.{ "a", "b", "c" },
-        &.{""},
-        &.{ "hello", "world" },
-    };
-
-    const args = patterns[input[0] % patterns.len];
-
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf.deinit(allocator);
-
-    var limited_writer = LimitedWriter{ .buffer = &stdout_buf, .limit = 500, .allocator = allocator };
-
-    _ = runYes(allocator, args, limited_writer.writer(), common.null_writer) catch {
-        // BrokenPipe is expected
-        return;
-    };
+    const YesFuzzer = common.fuzz.createIntelligentFuzzer(YesArgs, runYes);
+    try YesFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

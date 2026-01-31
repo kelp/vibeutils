@@ -166,11 +166,9 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
 /// Print help message
 fn printHelp(writer: anytype) !void {
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-
-    try writer.print(
-        \\Usage: {s} [OPTION]... [OWNER][:[GROUP]] FILE...
-        \\  or:  {s} [OPTION]... --reference=RFILE FILE...
+    try writer.writeAll(
+        \\Usage: chown [OPTION]... [OWNER][:[GROUP]] FILE...
+        \\  or:  chown [OPTION]... --reference=RFILE FILE...
         \\Change the owner and/or group of each FILE to OWNER and/or GROUP.
         \\With --reference, change the owner and group of each FILE to those of RFILE.
         \\
@@ -198,14 +196,14 @@ fn printHelp(writer: anytype) !void {
         \\OWNER and GROUP may be numeric as well as symbolic.
         \\
         \\Examples:
-        \\  {s} root /u        Change the owner of /u to "root".
-        \\  {s} root:staff /u  Change the owner of /u to "root" and the group to "staff".
-        \\  {s} -hR root /u    Change the owner of /u and subfiles to "root".
+        \\  chown root /u        Change the owner of /u to "root".
+        \\  chown root:staff /u  Change the owner of /u to "root" and the group to "staff".
+        \\  chown -hR root /u    Change the owner of /u and subfiles to "root".
         \\
         \\      --help     display this help and exit
         \\  -V, --version  output version information and exit
         \\
-    , .{ prog_name, prog_name, prog_name, prog_name, prog_name });
+    );
 }
 
 /// Print version information
@@ -293,7 +291,7 @@ fn chownSingle(allocator: std.mem.Allocator, path: []const u8, ownership: common
 }
 
 /// Recursively change ownership of directory and contents
-/// Errors during traversal are ignored to continue processing
+/// Respects -H/-L/-P symlink traversal options
 fn chownRecursive(
     path: []const u8,
     ownership: common.user_group.OwnershipSpec,
@@ -324,6 +322,14 @@ fn chownRecursive(
             // Build full path
             const full_path = try fs.path.join(allocator, &.{ path, entry.name });
             defer allocator.free(full_path);
+
+            // Respect symlink traversal options (-P default, -H, -L)
+            if (entry.kind == .sym_link and !options.traverse_all_symlinks) {
+                // -P (default) or -H: don't follow symlinks during recursion
+                // Just change ownership of the symlink itself
+                try chownSingle(allocator, full_path, ownership, options, stdout_writer, stderr_writer);
+                continue;
+            }
 
             // Recurse into subdirectory or change file
             try chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer);
@@ -966,6 +972,45 @@ test "reportChange function" {
 
     // Verify output was written
     try testing.expect(stdout_buffer.items.len > 0);
+}
+
+test "chown printHelp does not crash" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    try printHelp(stdout_buffer.writer(testing.allocator));
+
+    // Verify help output contains key content
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: chown") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "OWNER") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--recursive") != null);
+}
+
+test "chown --help flag works via runChown" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: chown") != null);
+}
+
+test "chown --version flag works" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--version"};
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "chown") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
 }
 
 // ============================================================================

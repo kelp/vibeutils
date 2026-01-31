@@ -83,10 +83,9 @@ fn parseTimeString(time_str: []const u8) !u64 {
     }
 
     // Parse the number part (support decimal values)
-    // First check for invalid formats like "5." or ".5"
+    // Check for invalid formats like "5." but allow ".5" (GNU compatible)
     if (number_part.len == 0 or
-        std.mem.endsWith(u8, number_part, ".") or
-        std.mem.startsWith(u8, number_part, "."))
+        std.mem.endsWith(u8, number_part, "."))
     {
         return error.InvalidTimeFormat;
     }
@@ -305,7 +304,8 @@ test "parseTimeString - invalid formats" {
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("abc"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5x"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5."));
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString(".5"));
+    // .5 is valid (GNU compatible, means 0.5 seconds)
+    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString(".5"));
 }
 
 test "parseTimeString - negative values" {

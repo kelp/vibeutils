@@ -315,7 +315,6 @@ test "mkdir with verbose flag prints creation messages" {
 
 test "mkdir with mode flag sets permissions" {
     if (builtin.os.tag == .windows) {
-        // Skip on Windows - mode setting not supported
         return;
     }
 
@@ -328,11 +327,10 @@ test "mkdir with mode flag sets permissions" {
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify directory exists (permissions testing would require platform-specific code)
-    var test_dir = std.fs.cwd().openDir("test_mode", .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    // Verify directory exists and has correct permissions
+    const stat = try std.fs.cwd().statFile("test_mode");
+    const mode = stat.mode & 0o777;
+    try testing.expectEqual(@as(u32, 0o755), mode);
 }
 
 test "mkdir fails for existing directory without parents flag" {

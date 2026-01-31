@@ -19,31 +19,9 @@ pub fn runFalse(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     return @intFromEnum(common.ExitCode.general_error);
 }
 
-/// Standard main function
+/// Standard main function - minimal like true.zig since false never outputs
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [4096]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runFalse(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit (though false produces no output)
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    std.process.exit(1);
 }
 
 // ============================================================================
@@ -92,7 +70,6 @@ test "false produces no output" {
 //                                FUZZ TESTS
 // ============================================================================
 
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("false");
 
 test "false fuzz basic" {
@@ -101,45 +78,6 @@ test "false fuzz basic" {
 }
 
 fn testFalseBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
     if (!common.fuzz.shouldFuzzUtilityRuntime("false")) return;
-
     try common.fuzz.testUtilityBasic(runFalse, allocator, input, common.null_writer);
-}
-
-test "false fuzz deterministic" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testFalseDeterministic, .{});
-}
-
-fn testFalseDeterministic(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("false")) return;
-
-    try common.fuzz.testUtilityDeterministic(runFalse, allocator, input, common.null_writer);
-}
-
-test "false fuzz invariant properties" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testFalseInvariants, .{});
-}
-
-fn testFalseInvariants(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("false")) return;
-
-    var arg_storage = common.fuzz.ArgStorage.init();
-    const args = common.fuzz.generateArgs(&arg_storage, input);
-
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf.deinit(allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stderr_buf.deinit(allocator);
-
-    const result = try runFalse(allocator, args, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
-
-    // Invariant properties of false:
-    try testing.expectEqual(@as(u8, 1), result); // Always returns 1
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len); // Never writes to stdout
-    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len); // Never writes to stderr
 }

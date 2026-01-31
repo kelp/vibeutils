@@ -71,9 +71,7 @@ pub const Entry = struct {
 
         // Add file type indicator if enabled
         if (file_type_indicators) {
-            // Use cached file type indicator calculation
-            var mutable_self = @constCast(self);
-            const indicator = mutable_self.getFileTypeIndicator();
+            const indicator = computeFileTypeIndicator(self);
             if (indicator != 0) {
                 width += 1;
             }
@@ -101,8 +99,16 @@ pub const Entry = struct {
             return cached_indicator;
         }
 
-        // Calculate file type indicator based on file kind and permissions
-        const indicator: u8 = switch (self.kind) {
+        const indicator = computeFileTypeIndicator(self);
+
+        // Cache the calculated indicator
+        self.file_type_indicator = indicator;
+        return indicator;
+    }
+
+    /// Compute file type indicator without mutation (safe for const access)
+    fn computeFileTypeIndicator(self: *const Entry) u8 {
+        return switch (self.kind) {
             .directory => '/',
             .sym_link => '@',
             .named_pipe => '|',
@@ -113,22 +119,12 @@ pub const Entry = struct {
                 0,
             else => 0,
         };
-
-        // Cache the calculated indicator
-        self.file_type_indicator = indicator;
-        return indicator;
     }
 
     /// Reset cached values (call when entry properties change)
     pub fn resetCache(self: *Entry) void {
         self.display_width = null;
         self.file_type_indicator = null;
-    }
-
-    /// Reset cached display width (call when entry properties change)
-    /// @deprecated Use resetCache() instead
-    pub fn resetDisplayWidth(self: *Entry) void {
-        self.display_width = null;
     }
 };
 

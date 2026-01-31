@@ -376,8 +376,96 @@ test "tee with unknown flag should return error" {
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
 }
 
-// NOTE: Core tee functionality tests are handled by binary smoke tests
-// due to the complexity of mocking stdin/file I/O in unit tests.
+test "tee copies input to stdout and files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create an input file to simulate stdin
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("hello tee\n");
+    try input_file.seekTo(0);
+
+    // Get real path for output file
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
+    defer testing.allocator.free(output_path);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed_args = TeeArgs{
+        .positionals = &.{output_path},
+    };
+
+    const result = try runTeeWithInput(
+        testing.allocator,
+        parsed_args,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Verify stdout received the data
+    try testing.expectEqualStrings("hello tee\n", stdout_buffer.items);
+
+    // Verify the output file received the data
+    const file_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    defer testing.allocator.free(file_content);
+    try testing.expectEqualStrings("hello tee\n", file_content);
+}
+
+test "tee -a appends to existing files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create output file with existing content
+    {
+        const existing = try tmp_dir.dir.createFile("output.txt", .{});
+        try existing.writeAll("existing\n");
+        existing.close();
+    }
+
+    // Create input file
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("appended\n");
+    try input_file.seekTo(0);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
+    defer testing.allocator.free(output_path);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed_args = TeeArgs{
+        .append = true,
+        .positionals = &.{output_path},
+    };
+
+    const result = try runTeeWithInput(
+        testing.allocator,
+        parsed_args,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Verify stdout received the new data
+    try testing.expectEqualStrings("appended\n", stdout_buffer.items);
+
+    // Verify output file has both existing and appended content
+    const file_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    defer testing.allocator.free(file_content);
+    try testing.expectEqualStrings("existing\nappended\n", file_content);
+}
 
 // ============================================================================
 //                                FUZZ TESTS
@@ -391,41 +479,7 @@ test "tee fuzz intelligent" {
 }
 
 fn testTeeIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    // Check runtime condition for selective fuzzing
     if (!common.fuzz.shouldFuzzUtilityRuntime("tee")) return;
-
-    // Skip intelligent fuzzing as tee requires stdin input which would block
-    // The functionality is tested via smoke tests
-}
-
-test "tee fuzz binary data" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTeeBinaryData, .{});
-}
-
-fn testTeeBinaryData(allocator: std.mem.Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("tee")) return;
-
-    // Skip actual tee execution in fuzz tests as it would block on stdin
-    // The binary data handling is tested via smoke tests
-}
-
-test "tee fuzz file operations" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTeeFileOperations, .{});
-}
-
-fn testTeeFileOperations(allocator: std.mem.Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("tee")) return;
-
-    // Skip actual tee execution in fuzz tests as it would block on stdin
-    // The file operations are tested via smoke tests
+    const TeeFuzzer = common.fuzz.createIntelligentFuzzer(TeeArgs, runTee);
+    try TeeFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

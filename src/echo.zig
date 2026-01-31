@@ -258,20 +258,28 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
                     i += j;
                 },
                 'x' => {
-                    // Hex sequence: \xHH (exactly 2 hex digits)
-                    if (i + 4 <= s.len) {
-                        // Try to parse the next 2 characters as hex
-                        const hex_value = std.fmt.parseInt(u8, s[i + 2 .. i + 4], 16) catch {
-                            // Invalid hex sequence, output literally
-                            try writer.writeByte('\\');
-                            try writer.writeByte('x');
-                            i += 2;
-                            continue;
+                    // Hex sequence: \xH or \xHH (1-2 hex digits, GNU compatible)
+                    var hex_value: u8 = 0;
+                    var j: usize = 2; // skip \x
+                    var hex_digits: usize = 0;
+                    while (hex_digits < 2 and i + j < s.len) : ({
+                        j += 1;
+                        hex_digits += 1;
+                    }) {
+                        const c = s[i + j];
+                        const digit = switch (c) {
+                            '0'...'9' => c - '0',
+                            'a'...'f' => c - 'a' + 10,
+                            'A'...'F' => c - 'A' + 10,
+                            else => break,
                         };
+                        hex_value = hex_value * 16 + digit;
+                    }
+                    if (hex_digits > 0) {
                         try writer.writeByte(hex_value);
-                        i += 4;
+                        i += j;
                     } else {
-                        // Not enough characters for hex value, output literally
+                        // No hex digits, output literally
                         try writer.writeByte('\\');
                         try writer.writeByte('x');
                         i += 2;
@@ -405,11 +413,11 @@ test "echo -e with incomplete hex sequences" {
     var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buffer.deinit(testing.allocator);
 
-    // Test incomplete hex sequences that should be output literally
-    const args = [_][]const u8{ "-e", "\\x4\\x\\xZ" }; // incomplete and invalid hex
+    // \x4 = 0x04 (1 hex digit), \x = literal, \xZ = literal
+    const args = [_][]const u8{ "-e", "\\x4\\x\\xZ" };
     const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\\x4\\x\\xZ\n", buffer.items);
+    try testing.expectEqualStrings("\x04\\x\\xZ\n", buffer.items);
 }
 
 test "echo -e with valid hex at end of string" {

@@ -34,14 +34,10 @@ const MvArgs = struct {
 
 // Test helpers
 
-/// Test helper for managing temporary directories
 const TestDir = struct {
-    /// Temporary directory
     tmp_dir: testing.TmpDir,
-    /// Memory allocator
     allocator: std.mem.Allocator,
 
-    /// Initialize test directory
     pub fn init(allocator: std.mem.Allocator) TestDir {
         return .{
             .tmp_dir = testing.tmpDir(.{}),
@@ -49,35 +45,29 @@ const TestDir = struct {
         };
     }
 
-    /// Clean up test directory
     pub fn deinit(self: *TestDir) void {
         self.tmp_dir.cleanup();
     }
 
-    /// Create file with given name and content
     pub fn createFile(self: *TestDir, name: []const u8, content: []const u8) !void {
         const file = try self.tmp_dir.dir.createFile(name, .{});
         defer file.close();
         try file.writeAll(content);
     }
 
-    /// Create file with unique name based on base name
     pub fn createUniqueFile(self: *TestDir, base_name: []const u8, content: []const u8) ![]u8 {
         return try test_utils.createUniqueTestFile(self.tmp_dir.dir, self.allocator, base_name, content);
     }
 
-    /// Check if file exists in test directory
     pub fn fileExists(self: *TestDir, name: []const u8) bool {
         self.tmp_dir.dir.access(name, .{}) catch return false;
         return true;
     }
 
-    /// Read entire file contents
     pub fn readFile(self: *TestDir, name: []const u8) ![]u8 {
         return try self.tmp_dir.dir.readFileAlloc(self.allocator, name, 1024 * 1024);
     }
 
-    /// Get absolute path for file in test directory
     pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
         return try self.tmp_dir.dir.realpathAlloc(self.allocator, name);
     }
@@ -480,7 +470,7 @@ fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []
     var buffer: [buffer_size]u8 = undefined;
 
     while (true) {
-        const bytes_read = source_file.readAll(&buffer) catch |err| {
+        const bytes_read = source_file.read(&buffer) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading from '{s}': {}", .{ source_path, err });
             return err;
         };
@@ -607,6 +597,17 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
     }
 }
 
+/// Check if source and destination refer to the same file (compares both inode and device)
+fn isSameFile(source: []const u8, dest: []const u8) bool {
+    const source_file = std.fs.cwd().openFile(source, .{}) catch return false;
+    defer source_file.close();
+    const dest_file = std.fs.cwd().openFile(dest, .{}) catch return false;
+    defer dest_file.close();
+    const source_stat = std.posix.fstat(source_file.handle) catch return false;
+    const dest_stat = std.posix.fstat(dest_file.handle) catch return false;
+    return source_stat.ino == dest_stat.ino and source_stat.dev == dest_stat.dev;
+}
+
 /// Prompt user for overwrite confirmation
 fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
     var stdin_buffer: [4096]u8 = undefined;
@@ -626,23 +627,10 @@ fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
 
 /// Move file or directory with atomic rename or cross-filesystem copy
 fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
-    // Check for same file using stat() to compare inodes
-    const source_stat = std.fs.cwd().statFile(source) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat '{s}': {}", .{ source, err });
-        return err;
-    };
-
-    if (std.fs.cwd().statFile(dest)) |dest_stat| {
-        if (source_stat.inode == dest_stat.inode) {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
-            return error.SameFile;
-        }
-    } else |err| switch (err) {
-        error.FileNotFound => {}, // Destination doesn't exist, that's fine
-        else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat '{s}': {}", .{ dest, err });
-            return err;
-        },
+    // Check for same file using fstat to compare both inode and device
+    if (isSameFile(source, dest)) {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
+        return error.SameFile;
     }
 
     // For no-clobber mode, check if destination exists first
@@ -685,10 +673,15 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 return error.PathAlreadyExists;
             }
 
-            // If we get here, we need to overwrite (either force mode or interactive approved)
-            // Let rename() handle the atomic overwrite - don't manually remove destination
-            // On most systems, rename() atomically replaces the destination
-            return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
+            // Remove destination and retry rename (same-filesystem overwrite)
+            std.fs.cwd().deleteFile(dest) catch {
+                // If delete fails, fall back to cross-filesystem move
+                return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
+            };
+            std.posix.rename(source, dest) catch |retry_err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, retry_err });
+                return retry_err;
+            };
         },
         else => {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, err });
@@ -892,6 +885,84 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         }
         return @intFromEnum(common.ExitCode.success);
     }
+}
+
+test "mv: force overwrite existing file on same filesystem" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "New content");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dest", "Old content");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // Force overwrite via moveFile (exercises PathAlreadyExists handler)
+    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    // Source should be gone, dest should have new content
+    try testing.expect(!test_dir.fileExists(source_name));
+    const content = try test_dir.readFile(dest_name);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("New content", content);
+}
+
+test "mv: large file copy preserves content integrity" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create a file larger than the 64KB copy buffer to exercise
+    // the incremental read loop in crossFilesystemMove/copyFile
+    const large_size = 128 * 1024;
+    const content = try testing.allocator.alloc(u8, large_size);
+    defer testing.allocator.free(content);
+
+    for (content, 0..) |*byte, i| {
+        byte.* = @as(u8, @intCast(i % 256));
+    }
+
+    const source_name = try test_utils.uniqueTestName(testing.allocator, "large_src");
+    defer testing.allocator.free(source_name);
+    {
+        const file = try test_dir.tmp_dir.dir.createFile(source_name, .{});
+        defer file.close();
+        try file.writeAll(content);
+    }
+
+    const dest_name = try test_utils.uniqueTestName(testing.allocator, "large_dst");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getPath(".");
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    // Source should be gone
+    try testing.expect(!test_dir.fileExists(source_name));
+
+    // Verify content integrity of destination
+    const moved_content = try test_dir.tmp_dir.dir.readFileAlloc(testing.allocator, dest_name, large_size + 1);
+    defer testing.allocator.free(moved_content);
+    try testing.expectEqual(large_size, moved_content.len);
+    try testing.expectEqualSlices(u8, content, moved_content);
 }
 
 // ============================================================================

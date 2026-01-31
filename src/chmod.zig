@@ -413,8 +413,8 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
 /// Parse a mode string (octal or symbolic) into a Mode struct
 /// First attempts octal parsing, then falls back to symbolic mode parsing
 fn parseMode(mode_str: []const u8) !Mode {
-    // Try octal mode first (Phase 1)
-    if (mode_str.len == 3 or mode_str.len == 4) {
+    // Try octal mode first (Phase 1) - accept 1-4 octal digits
+    if (mode_str.len >= 1 and mode_str.len <= 4) {
         var is_octal = true;
 
         // Check if all characters are octal digits
@@ -825,8 +825,14 @@ test "parseMode rejects empty mode" {
     try testing.expectError(ChmodError.InvalidOctalMode, parseMode(""));
 }
 
-test "parseMode rejects wrong length modes" {
-    try testing.expectError(ChmodError.InvalidOctalMode, parseMode("75"));
+test "parseMode accepts 1-4 digit octal modes" {
+    // 1-digit: sets other bits only
+    const m1 = try parseMode("7");
+    try testing.expectEqual(@as(u32, 0o7), m1.toOctal());
+    // 2-digit: sets group and other bits
+    const m2 = try parseMode("75");
+    try testing.expectEqual(@as(u32, 0o75), m2.toOctal());
+    // 5+ digits are invalid
     try testing.expectError(ChmodError.InvalidOctalMode, parseMode("75555"));
 }
 

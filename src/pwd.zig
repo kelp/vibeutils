@@ -116,9 +116,9 @@ fn printHelp(writer: anytype) !void {
 }
 
 /// Get current working directory according to command line arguments
-/// When both -L and -P are given, the last one wins (POSIX behavior)
+/// When both -L and -P are given, -P takes priority (physical is the default)
 pub fn getWorkingDirectory(allocator: std.mem.Allocator, args: PwdArgs) ![]const u8 {
-    // Determine mode - when both -L and -P are given, the last one wins
+    // -P takes priority when both are set (physical is the safer default)
     const use_logical = args.logical and !args.physical;
 
     if (use_logical) {

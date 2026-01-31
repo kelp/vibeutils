@@ -535,58 +535,6 @@ pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: an
     return if (result) @intFromEnum(ExitCode.true) else @intFromEnum(ExitCode.false);
 }
 
-/// Comprehensive help text for test command
-const help_text =
-    \\Usage: test EXPRESSION
-    \\   or: [ EXPRESSION ]
-    \\
-    \\Evaluate conditional expression.
-    \\
-    \\File tests:
-    \\  -b FILE        FILE exists and is block special
-    \\  -c FILE        FILE exists and is character special
-    \\  -d FILE        FILE exists and is a directory
-    \\  -e FILE        FILE exists
-    \\  -f FILE        FILE exists and is a regular file
-    \\  -g FILE        FILE exists and is set-group-ID
-    \\  -h FILE        FILE exists and is a symbolic link (same as -L)
-    \\  -L FILE        FILE exists and is a symbolic link (same as -h)
-    \\  -p FILE        FILE exists and is a named pipe
-    \\  -r FILE        FILE exists and is readable
-    \\  -s FILE        FILE exists and has size greater than zero
-    \\  -S FILE        FILE exists and is a socket
-    \\  -t FD          file descriptor FD is opened on a terminal
-    \\  -w FILE        FILE exists and is writable
-    \\  -x FILE        FILE exists and is executable
-    \\
-    \\String tests:
-    \\  -n STRING      length of STRING is non-zero
-    \\  -z STRING      length of STRING is zero
-    \\  STRING         equivalent to -n STRING
-    \\  STRING1 = STRING2    strings are equal
-    \\  STRING1 != STRING2   strings are not equal
-    \\
-    \\Numeric tests:
-    \\  INTEGER1 -eq INTEGER2   INTEGER1 is equal to INTEGER2
-    \\  INTEGER1 -ge INTEGER2   INTEGER1 is greater than or equal to INTEGER2
-    \\  INTEGER1 -gt INTEGER2   INTEGER1 is greater than INTEGER2
-    \\  INTEGER1 -le INTEGER2   INTEGER1 is less than or equal to INTEGER2
-    \\  INTEGER1 -lt INTEGER2   INTEGER1 is less than INTEGER2
-    \\  INTEGER1 -ne INTEGER2   INTEGER1 is not equal to INTEGER2
-    \\
-    \\Logical operators:
-    \\  ! EXPRESSION         negates EXPRESSION
-    \\  EXPRESSION1 -a EXPRESSION2   both EXPRESSION1 and EXPRESSION2 are true
-    \\  EXPRESSION1 -o EXPRESSION2   either EXPRESSION1 or EXPRESSION2 is true
-    \\  ( EXPRESSION )       force precedence
-    \\
-    \\Exit status:
-    \\  0 if EXPRESSION is true
-    \\  1 if EXPRESSION is false
-    \\  2 if an error occurred
-    \\
-;
-
 /// Entry point for command-line usage
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

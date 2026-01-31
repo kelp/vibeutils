@@ -963,16 +963,6 @@ fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options:
     }
 }
 
-/// Test helper for processing stdin-like input
-fn testTailStdin(reader: anytype, writer: anytype, options: TailOptions) !void {
-    if (options.byte_count) |byte_count| {
-        try processInputByBytes(testing.allocator, reader, writer, byte_count, null);
-    } else {
-        const line_count = options.line_count orelse 10;
-        try processInputByLines(testing.allocator, reader, writer, line_count, options.zero_terminated);
-    }
-}
-
 // ============================================================================
 //                                FUZZ TESTS
 // ============================================================================
