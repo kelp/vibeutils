@@ -306,7 +306,7 @@ fn runUtilWithInput(allocator: Allocator, args: []const []const u8, input_file: 
 
 // Test using the input variant
 test "filter utility with mock input" {
-    // Create mock input (this is still challenging in Zig 0.15.1)
+    // Create mock input (this is still challenging in Zig 0.15.x)
     // May still need to skip or use binary smoke tests
 }
 ```

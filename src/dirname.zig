@@ -31,15 +31,15 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "dirname", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "dirname", "option missing required argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "dirname", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -61,7 +61,7 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
     // Check for missing operands
     if (parsed_args.positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "dirname", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Process each path
@@ -69,6 +69,7 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
 
     for (parsed_args.positionals) |path| {
         const dirname = try extractDirname(path, allocator);
+        defer allocator.free(dirname);
         try stdout_writer.print("{s}{c}", .{ dirname, separator });
     }
 
@@ -305,7 +306,7 @@ test "dirname: missing operand error" {
 
     const result = try runDirname(allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 }
 

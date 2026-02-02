@@ -89,11 +89,11 @@ pub fn main() !void {
     stdout.flush() catch {};
     stderr.flush() catch {};
 
-    std.process.exit(@intFromEnum(exit_code));
+    std.process.exit(exit_code);
 }
 
 /// Run cp with provided writers for output
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
+pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "cp";
 
     // Parse command line arguments
@@ -101,11 +101,11 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.misuse;
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return common.ExitCode.misuse;
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -114,28 +114,28 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
     if (config.help) {
         try printHelp(stdout_writer);
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
     if (config.version) {
         try stdout_writer.print("cp ({s}) {s}\n", .{ common.name, common.version });
-        return common.ExitCode.success;
+        return @intFromEnum(common.ExitCode.success);
     }
 
     // Validate argument count
     if (config.positionals.len < 2) {
         if (config.positionals.len == 0) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
-            return common.ExitCode.misuse;
+            return @intFromEnum(common.ExitCode.misuse);
         } else {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{config.positionals[0]});
-            return common.ExitCode.misuse;
+            return @intFromEnum(common.ExitCode.misuse);
         }
     }
 
     // Execute copy operations
     const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime());
 
-    return if (success) common.ExitCode.success else common.ExitCode.general_error;
+    return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
 }
 
 /// Execute all copy operations
@@ -196,13 +196,6 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
     // Validate operation
     if (source_type == .directory and !options.recursive) {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{source});
-
-        return false;
-    }
-
-    // Handle destination exists
-    if (dest_exists and !options.force and !options.interactive) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' already exists", .{final_dest_path});
 
         return false;
     }
@@ -410,7 +403,7 @@ fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_p
 fn getFileTypeAtomic(path: []const u8, no_dereference: bool) !FileType {
     if (no_dereference) {
         // Check for symlinks first using readLink
-        var link_buf: [1]u8 = undefined;
+        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
         if (std.fs.cwd().readLink(path, &link_buf)) |_| {
             return .symlink;
         } else |err| switch (err) {
@@ -612,7 +605,7 @@ test "cp: single file copy" {
     const args = [_][]const u8{ "source.txt", "dest.txt" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest.txt", "Hello, World!");
 }
 
@@ -630,7 +623,7 @@ test "cp: copy to existing directory" {
     const args = [_][]const u8{ "source.txt", "dest_dir" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/source.txt", "Test content");
 }
 
@@ -647,7 +640,7 @@ test "cp: error on directory without recursive flag" {
     const args = [_][]const u8{ "source_dir", "dest_dir" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.general_error, exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "cp: recursive directory copy" {
@@ -667,7 +660,7 @@ test "cp: recursive directory copy" {
     const args = [_][]const u8{ "-r", "source_dir", "dest_dir" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "File 1 content");
     try test_dir.expectFileContent("dest_dir/subdir/file2.txt", "File 2 content");
 }
@@ -685,7 +678,7 @@ test "cp: preserve attributes" {
     const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -710,7 +703,7 @@ test "cp: symbolic link handling - follow by default" {
     const args = [_][]const u8{ "link.txt", "copied.txt" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("copied.txt", "Original content");
     try testing.expect(!(try test_dir.isSymlink("copied.txt")));
 }
@@ -729,7 +722,7 @@ test "cp: symbolic link handling - no dereference (-d)" {
     const args = [_][]const u8{ "-d", "link.txt", "copied_link.txt" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(try test_dir.isSymlink("copied_link.txt"));
     const target = try test_dir.getSymlinkTarget("copied_link.txt");
     defer testing.allocator.free(target);
@@ -751,7 +744,7 @@ test "cp: multiple sources to directory" {
     const args = [_][]const u8{ "file1.txt", "file2.txt", "dest_dir" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest_dir/file1.txt", "Content 1");
     try test_dir.expectFileContent("dest_dir/file2.txt", "Content 2");
 }
@@ -779,7 +772,7 @@ test "cp: large file copy" {
     const args = [_][]const u8{ "large_source.bin", "large_dest.bin" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the copied file has identical content
     const copied_content = try test_dir.readFileAlloc("large_dest.bin");
@@ -809,7 +802,7 @@ test "privileged: permission preservation with mode bits" {
     const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
     const exit_code = try runUtility(allocator, &args, common.null_writer, stderr_buffer.writer(allocator));
 
-    try testing.expectEqual(common.ExitCode.success, exit_code);
+    try testing.expectEqual(@as(u8, 0), exit_code);
 
     const source_stat = try test_dir.getFileStat("source.txt");
     const dest_stat = try test_dir.getFileStat("dest.txt");
@@ -847,7 +840,7 @@ test "cp: same file detection across devices via hardlink" {
     const args = [_][]const u8{ "original.txt", "hardlink.txt" };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(common.ExitCode.general_error, exit_code);
+    try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "same file") != null);
 }
 

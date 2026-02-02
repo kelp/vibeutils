@@ -10,98 +10,70 @@ const builtin = @import("builtin");
 const common = @import("common");
 const testing = std.testing;
 
-/// Command-line arguments for the echo utility
-const EchoArgs = struct {
-    /// Display help and exit
-    help: bool = false,
-    /// Output version information and exit
-    version: bool = false,
-    /// Do not output the trailing newline
-    n: bool = false,
-    /// Enable interpretation of backslash escapes
-    e: bool = false,
-    /// Disable interpretation of backslash escapes (default)
-    E: bool = false,
-    /// Text arguments to display
-    positionals: []const []const u8 = &.{},
+/// Main entry point for the echo utility.
+///
+/// GNU echo treats unknown flags as positional arguments. Only -n, -e, -E
+/// (and combinations like -neE) are recognized as flags. Everything else,
+/// including -z, -foo, --unknown, is printed as a positional argument.
+/// Once a non-flag argument is encountered, all remaining arguments
+/// (including ones that look like flags) are treated as positional.
+pub fn runEcho(_: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, _: anytype) !u8 {
+    var suppress_newline = false;
+    var interpret_escapes = false;
+    var positional_start: usize = 0;
 
-    pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
-        .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .n = .{ .short = 'n', .desc = "Do not output the trailing newline" },
-        .e = .{ .short = 'e', .desc = "Enable interpretation of backslash escapes" },
-        .E = .{ .short = 'E', .desc = "Disable interpretation of backslash escapes (default)" },
-    };
-};
-
-/// Main entry point for the echo utility
-pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse arguments using new parser
-    const parsed_args = common.argparse.ArgParser.parse(EchoArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "echo", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-            else => return err,
+    // Scan args for flags. Stop at the first non-flag argument.
+    for (args, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--help")) {
+            try printHelp(stdout_writer);
+            return @intFromEnum(common.ExitCode.success);
         }
-    };
-    defer allocator.free(parsed_args.positionals);
+        if (std.mem.eql(u8, arg, "--version")) {
+            try printVersion(stdout_writer);
+            return @intFromEnum(common.ExitCode.success);
+        }
 
-    // Handle help
-    if (parsed_args.help) {
-        try printHelp(stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
+        // Must start with '-' and have at least one character after it
+        if (arg.len < 2 or arg[0] != '-') {
+            break;
+        }
 
-    // Handle version
-    if (parsed_args.version) {
-        try printVersion(stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Create options with correct flag precedence
-    // When both -e and -E are specified, the last one should win (GNU behavior)
-    const interpret_escapes = blk: {
-        if (!parsed_args.e and !parsed_args.E) {
-            // Neither flag specified, default to false
-            break :blk false;
-        } else if (parsed_args.e and !parsed_args.E) {
-            // Only -e specified
-            break :blk true;
-        } else if (!parsed_args.e and parsed_args.E) {
-            // Only -E specified
-            break :blk false;
-        } else {
-            // Both flags specified, need to determine which came last
-            // Check the raw arguments to find the last occurrence
-            var last_e_pos: ?usize = null;
-            var last_E_pos: ?usize = null;
-            for (args, 0..) |arg, i| {
-                if (std.mem.eql(u8, arg, "-e")) {
-                    last_e_pos = i;
-                } else if (std.mem.eql(u8, arg, "-E")) {
-                    last_E_pos = i;
-                }
-            }
-
-            if (last_e_pos != null and last_E_pos != null) {
-                // Both found, use the one that appeared last
-                break :blk last_e_pos.? > last_E_pos.?;
-            } else if (last_e_pos != null) {
-                break :blk true;
-            } else {
-                break :blk false;
+        // Check that every character after '-' is one of n, e, E
+        const flag_chars = arg[1..];
+        var valid_flag = true;
+        for (flag_chars) |c| {
+            if (c != 'n' and c != 'e' and c != 'E') {
+                valid_flag = false;
+                break;
             }
         }
-    };
+
+        if (!valid_flag) {
+            // Not a recognized flag combination -- treat as positional
+            break;
+        }
+
+        // Apply flags left-to-right; last-wins for -e/-E
+        for (flag_chars) |c| {
+            switch (c) {
+                'n' => suppress_newline = true,
+                'e' => interpret_escapes = true,
+                'E' => interpret_escapes = false,
+                else => unreachable,
+            }
+        }
+
+        positional_start = i + 1;
+    }
+
+    const positionals = args[positional_start..];
 
     const options = EchoOptions{
-        .suppress_newline = parsed_args.n,
+        .suppress_newline = suppress_newline,
         .interpret_escapes = interpret_escapes,
     };
 
-    try echoStrings(parsed_args.positionals, stdout_writer, options);
+    try echoStrings(positionals, stdout_writer, options);
     return @intFromEnum(common.ExitCode.success);
 }
 
@@ -654,8 +626,16 @@ fn testEchoIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !
     // Check runtime condition for selective fuzzing
     if (!common.fuzz.shouldFuzzUtilityRuntime("echo")) return;
 
-    const EchoIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(EchoArgs, runEcho);
-    try EchoIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
+    // Generate arguments from fuzzer input
+    var arg_storage = common.fuzz.ArgStorage.init();
+    const args = common.fuzz.generateArgs(&arg_storage, input);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buf.deinit(allocator);
+
+    _ = runEcho(allocator, args, stdout_buf.writer(allocator), common.null_writer) catch {
+        return;
+    };
 }
 
 test "echo fuzz escape sequences" {

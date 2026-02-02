@@ -166,9 +166,10 @@ const ExpressionParser = struct {
                 return error.UnknownOperator;
             }
         }
-        // Handle special boolean literals from parentheses evaluation
-        if (std.mem.eql(u8, arg, "true")) return true;
-        if (std.mem.eql(u8, arg, "false")) return false;
+        // Handle sentinel values from parentheses evaluation (null-prefixed
+        // to avoid colliding with actual command-line strings)
+        if (std.mem.eql(u8, arg, "\x00true")) return true;
+        if (std.mem.eql(u8, arg, "\x00false")) return false;
         return arg.len > 0;
     }
 
@@ -305,7 +306,7 @@ const ExpressionParser = struct {
                 const sub_result = try self.evaluateWithoutNegation(sub_expr);
 
                 // Replace parenthesized expression with its boolean result
-                const result_str = if (sub_result) "true" else "false";
+                const result_str = if (sub_result) "\x00true" else "\x00false";
                 try processed_args.append(self.allocator, result_str);
             } else {
                 try processed_args.append(self.allocator, args[i]);
@@ -319,23 +320,31 @@ const ExpressionParser = struct {
 
     /// Evaluate logical expressions with proper operator precedence
     fn evaluateLogicalExpression(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
-        // Find -o operators first (lowest precedence)
-        for (args, 0..) |arg, i| {
-            if (std.mem.eql(u8, arg, "-o")) {
-                if (i == 0 or i == args.len - 1) return error.InvalidExpression;
-                const left = try self.evaluateLogicalExpression(args[0..i]);
-                const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
-                return left or right;
+        // Find rightmost -o (lowest precedence, left-associative)
+        {
+            var i: usize = args.len;
+            while (i > 0) {
+                i -= 1;
+                if (std.mem.eql(u8, args[i], "-o")) {
+                    if (i == 0 or i == args.len - 1) return error.InvalidExpression;
+                    const left = try self.evaluateLogicalExpression(args[0..i]);
+                    const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
+                    return left or right;
+                }
             }
         }
 
-        // Find -a operators next (higher precedence)
-        for (args, 0..) |arg, i| {
-            if (std.mem.eql(u8, arg, "-a")) {
-                if (i == 0 or i == args.len - 1) return error.InvalidExpression;
-                const left = try self.evaluateLogicalExpression(args[0..i]);
-                const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
-                return left and right;
+        // Find rightmost -a (higher precedence, left-associative)
+        {
+            var i: usize = args.len;
+            while (i > 0) {
+                i -= 1;
+                if (std.mem.eql(u8, args[i], "-a")) {
+                    if (i == 0 or i == args.len - 1) return error.InvalidExpression;
+                    const left = try self.evaluateLogicalExpression(args[0..i]);
+                    const right = try self.evaluateLogicalExpression(args[i + 1 ..]);
+                    return left and right;
+                }
             }
         }
 
@@ -1016,6 +1025,41 @@ test "Bug 4: bracket form should handle errors identically to test command" {
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), bracket_result);
     try testing.expectEqual(@intFromEnum(ExitCode.@"error"), test_result);
     try testing.expectEqual(bracket_result, test_result);
+}
+
+test "POSIX: string 'false' is non-empty, should be true" {
+    // POSIX: test "false" should return true because "false" is a non-empty string
+    const result = try runTest(testing.allocator, &[_][]const u8{"false"}, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+}
+
+test "POSIX: string 'true' is non-empty, should be true" {
+    // POSIX: test "true" should return true because "true" is a non-empty string
+    const result = try runTest(testing.allocator, &[_][]const u8{"true"}, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+}
+
+test "POSIX: -o is left-associative" {
+    // "a" -o "b" -o "" should be evaluated as ("a" -o "b") -o "" = true -o false = true
+    // With right-associative (wrong): "a" -o ("b" -o "") = "a" -o true = true
+    // Both happen to be true for this case, so use a more distinguishing test.
+    //
+    // For -a left-associativity: "" -a "" -a "hello"
+    // Left-assoc (correct): ("" -a "") -a "hello" = false -a "hello" = false
+    // Right-assoc (wrong):  "" -a ("" -a "hello") = "" -a false = false
+    // Both give false here too, but let's test the combined case.
+    //
+    // Key test: "a" -o "b" -o "c" should not error (exercises the split logic)
+    var result = try runTest(testing.allocator, &[_][]const u8{ "a", "-o", "b", "-o", "c" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // "a" -a "b" -a "c" should be true (all non-empty)
+    result = try runTest(testing.allocator, &[_][]const u8{ "a", "-a", "b", "-a", "c" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // "" -a "b" -a "c" should be false (left-assoc: ("" -a "b") -a "c" = false -a "c" = false)
+    result = try runTest(testing.allocator, &[_][]const u8{ "", "-a", "b", "-a", "c" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
 test "symlink detection with -L and -h operators" {

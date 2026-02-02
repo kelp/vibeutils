@@ -411,6 +411,14 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         return err;
     };
 
+    errdefer {
+        if (source_stat.kind == .directory) {
+            std.fs.cwd().deleteTree(dest) catch {};
+        } else {
+            std.fs.cwd().deleteFile(dest) catch {};
+        }
+    }
+
     if (source_stat.kind == .directory) {
         // Handle directory recursively
         try copyDirectoryRecursive(allocator, source, dest, options, stdout_writer, stderr_writer);
@@ -525,10 +533,8 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 
     // Set directory permissions
     var dest_dir = std.fs.cwd().openDir(dest_path, .{}) catch |err| {
-        if (options.verbose) {
-            try stderr_writer.print("mv: warning: could not open directory for permission setting '{s}': {}\n", .{ dest_path, err });
-        }
-        return;
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open directory '{s}': {}", .{ dest_path, err });
+        return err;
     };
     defer dest_dir.close();
 
@@ -718,10 +724,6 @@ fn printHelp(writer: anytype) !void {
         \\  -h, --help                 display this help and exit
         \\  -V, --version              output version information and exit
         \\
-        \\The backup suffix is '~', unless set with --suffix or SIMPLE_BACKUP_SUFFIX.
-        \\The version control method may be selected via the --backup option or through
-        \\the VERSION_CONTROL environment variable.
-        \\
     , .{});
 }
 
@@ -762,11 +764,11 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -786,9 +788,13 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     }
 
     const files = parsed_args.positionals;
-    if (files.len < 2) {
+    if (files.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
-        return @intFromEnum(common.ExitCode.general_error);
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+    if (files.len == 1) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'\nTry '{s} --help' for more information.", .{ files[0], prog_name });
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     const options = MoveOptions{

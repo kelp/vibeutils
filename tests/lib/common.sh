@@ -62,18 +62,12 @@ get_file_permissions() {
         return 0
     fi
 
-    case "$PLATFORM" in
-        macos)
-            perms=$(stat -f %A "$file" 2>/dev/null)
-            ;;
-        linux)
-            perms=$(stat -c %a "$file" 2>/dev/null)
-            ;;
-        *)
-            echo "000"
-            return 0
-            ;;
-    esac
+    # Try GNU stat first (works on Linux and macOS with GNU coreutils)
+    perms=$(stat -c %a "$file" 2>/dev/null)
+    # Fall back to BSD stat (macOS default)
+    if [[ -z "$perms" ]]; then
+        perms=$(stat -f %A "$file" 2>/dev/null)
+    fi
 
     # If stat failed or returned empty, try fallback methods
     if [[ -z "$perms" ]]; then
@@ -116,11 +110,13 @@ get_file_size() {
         detect_platform
     fi
 
-    case "$PLATFORM" in
-        macos)  stat -f %z "$file" 2>/dev/null ;;
-        linux)  stat -c %s "$file" 2>/dev/null ;;
-        *)      echo "0" ;;
-    esac
+    # Try GNU stat first, fall back to BSD stat
+    local size
+    size=$(stat -c %s "$file" 2>/dev/null)
+    if [[ -z "$size" ]]; then
+        size=$(stat -f %z "$file" 2>/dev/null)
+    fi
+    echo "${size:-0}"
 }
 
 # Export the platform functions for use in subshells

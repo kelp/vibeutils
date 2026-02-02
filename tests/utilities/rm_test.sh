@@ -354,10 +354,10 @@ test_rm() {
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Invalid arguments
-    test_command_exit_code "rm invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "rm invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
 
-    # Missing operands
-    test_command_exit_code "rm no arguments" 1 "$binary" 2>/dev/null
+    # Missing operands (exit 2 = misuse for argument errors)
+    test_command_exit_code "rm no arguments" 2 "$binary" 2>/dev/null
 
     # Permission denied scenarios
     local perm_dir=$(create_temp_dir)

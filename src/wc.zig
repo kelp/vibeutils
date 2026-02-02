@@ -97,37 +97,28 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     var opts = options;
     if (opts.bytes and opts.chars) {
         // Both -c and -m specified, need to determine which was last
-        // Parse raw args to find the last occurrence
-        var last_c_pos: ?usize = null;
-        var last_m_pos: ?usize = null;
+        // Use a sequence counter to handle combined flags like -cm/-mc correctly
+        var last_byte_char: enum { none, bytes, chars } = .none;
 
-        // Look through the args to find positions of -c/-m flags
-        for (args, 0..) |arg, i| {
+        for (args) |arg| {
             if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--bytes")) {
-                last_c_pos = i;
+                last_byte_char = .bytes;
             } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--chars")) {
-                last_m_pos = i;
+                last_byte_char = .chars;
             } else if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
                 // Handle combined flags like -cm or -mc
                 for (arg[1..]) |flag_char| {
-                    if (flag_char == 'c') last_c_pos = i;
-                    if (flag_char == 'm') last_m_pos = i;
+                    if (flag_char == 'c') last_byte_char = .bytes;
+                    if (flag_char == 'm') last_byte_char = .chars;
                 }
             }
         }
 
         // Last flag wins
-        if (last_c_pos != null and last_m_pos != null) {
-            if (last_c_pos.? > last_m_pos.?) {
-                // -c came after -m, so prefer bytes
-                opts.chars = false;
-            } else {
-                // -m came after -c, so prefer chars
-                opts.bytes = false;
-            }
-        } else {
-            // Fallback: prefer -m (this shouldn't happen if both flags are present)
-            opts.bytes = false;
+        switch (last_byte_char) {
+            .bytes => opts.chars = false,
+            .chars => opts.bytes = false,
+            .none => opts.bytes = false, // fallback
         }
     }
 
@@ -146,7 +137,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         // Read from stdin
         var stdin_buffer: [4096]u8 = undefined;
         var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-        const stats = try countReader(&stdin_reader.interface, opts);
+        const stats = try countReader(allocator, &stdin_reader.interface, opts);
         try printStats(stdout_writer, stats, null, opts);
         total_stats = stats;
         file_count = 1;
@@ -157,7 +148,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 // Stdin
                 var stdin_buffer: [4096]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-                const stats = try countReader(&stdin_reader.interface, opts);
+                const stats = try countReader(allocator, &stdin_reader.interface, opts);
                 try printStats(stdout_writer, stats, file_path, opts);
                 addStats(&total_stats, stats);
                 file_count += 1;
@@ -185,7 +176,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
                 var file_buffer: [4096]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                const stats = countReader(&file_reader.interface, opts) catch |err| {
+                const stats = countReader(allocator, &file_reader.interface, opts) catch |err| {
                     try stderr_writer.print("wc: {s}: {s}\n", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
@@ -209,15 +200,15 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 /// Uses appendRemaining to get all data at once, then process byte by byte
 /// POSIX: lines are counted as the number of newline characters (\n)
 /// A file without a final newline has 0 lines (even if it has content)
-fn countReader(reader: anytype, options: WcOptions) !FileStats {
+fn countReader(allocator: std.mem.Allocator, reader: anytype, options: WcOptions) !FileStats {
     var stats = FileStats{};
 
     // Read all data into memory first using appendRemaining
     var content_list = std.ArrayListUnmanaged(u8){};
-    defer content_list.deinit(std.heap.page_allocator);
+    defer content_list.deinit(allocator);
 
     const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
-    reader.appendRemaining(std.heap.page_allocator, &content_list, limit) catch {
+    reader.appendRemaining(allocator, &content_list, limit) catch {
         // If appendRemaining fails, assume no data
         if (!options.chars) {
             stats.chars = stats.bytes;
@@ -359,7 +350,7 @@ test "wc counts lines correctly" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .lines = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .lines = true });
     try testing.expectEqual(@as(u64, 3), stats.lines);
 }
 
@@ -375,7 +366,7 @@ test "wc counts words correctly" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .words = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .words = true });
     try testing.expectEqual(@as(u64, 6), stats.words);
 }
 
@@ -391,7 +382,7 @@ test "wc counts bytes correctly" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .bytes = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .bytes = true });
     try testing.expectEqual(@as(u64, 12), stats.bytes);
 }
 
@@ -407,7 +398,7 @@ test "wc counts UTF-8 characters correctly" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .chars = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .chars = true });
     try testing.expectEqual(@as(u64, 9), stats.chars);
     try testing.expectEqual(@as(u64, 13), stats.bytes);
 }
@@ -424,7 +415,7 @@ test "wc finds maximum line length" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .max_line_length = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .max_line_length = true });
     try testing.expectEqual(@as(u64, 21), stats.max_line_length); // "this is a longer line" = 21 chars
 }
 
@@ -440,7 +431,7 @@ test "wc handles empty input" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{});
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{});
     try testing.expectEqual(@as(u64, 0), stats.lines);
     try testing.expectEqual(@as(u64, 0), stats.words);
     try testing.expectEqual(@as(u64, 0), stats.bytes);
@@ -458,7 +449,7 @@ test "wc handles input without final newline" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .lines = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .lines = true });
     try testing.expectEqual(@as(u64, 1), stats.lines); // POSIX: 1 newline = 1 line
 }
 
@@ -474,7 +465,7 @@ test "wc counts multiple whitespace correctly" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{ .words = true, .lines = true });
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .words = true, .lines = true });
     try testing.expectEqual(@as(u64, 4), stats.words);
     try testing.expectEqual(@as(u64, 2), stats.lines); // POSIX: 2 newlines = 2 lines
 }
@@ -491,7 +482,7 @@ test "wc handles all counts together" {
     defer file.close();
     var file_buffer: [4096]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(&file_reader.interface, .{
+    const stats = try countReader(testing.allocator, &file_reader.interface, .{
         .lines = true,
         .words = true,
         .bytes = true,

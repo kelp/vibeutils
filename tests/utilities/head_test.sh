@@ -61,9 +61,7 @@ test_head() {
     test_command_output "head -c 5" "12345" "$binary" -c 5 "$byte_file"
     test_command_output "head -c 10" "1234567890" "$binary" -c 10 "$byte_file"
     test_command_output "head -c 0" "" "$binary" -c 0 "$byte_file"
-    # Test byte count larger than file - TODO: This may be a bug in head implementation
-    # GNU head returns full file content, but vibeutils head returns empty
-    test_command_output "head -c 50 (more than file)" "" "$binary" -c 50 "$byte_file"
+    test_command_output "head -c 50 (more than file)" "1234567890ABCDEFGHIJ" "$binary" -c 50 "$byte_file"
     
     # --bytes long option
     test_command_output "head --bytes=7" "1234567" "$binary" --bytes=7 "$byte_file"
@@ -95,12 +93,14 @@ test_head() {
     local test_file_b=$(create_temp_file $'File B Line 1\nFile B Line 2\nFile B Line 3')
     
     # Default multi-file behavior (should show headers with full paths)
-    local expected_multifile=$'==> '"$test_file_a"$' <==\nFile A Line 1\nFile A Line 2\nFile A Line 3\n\n==> '"$test_file_b"$' <==\nFile B Line 1\nFile B Line 2\nFile B Line 3'
+    # No blank line between files because test files have no trailing newline
+    local expected_multifile=$'==> '"$test_file_a"$' <==\nFile A Line 1\nFile A Line 2\nFile A Line 3\n==> '"$test_file_b"$' <==\nFile B Line 1\nFile B Line 2\nFile B Line 3'
     test_command_output "head multiple files default headers" "$expected_multifile" "$binary" "$test_file_a" "$test_file_b"
     
     # -q flag (quiet - no headers)
-    test_command_output "head -q multiple files" $'File A Line 1\nFile A Line 2\nFile A Line 3\nFile B Line 1\nFile B Line 2\nFile B Line 3' "$binary" -q "$test_file_a" "$test_file_b"
-    test_command_output "head --quiet multiple files" $'File A Line 1\nFile A Line 2\nFile A Line 3\nFile B Line 1\nFile B Line 2\nFile B Line 3' "$binary" --quiet "$test_file_a" "$test_file_b"
+    # In quiet mode, no separator between files - content concatenates directly
+    test_command_output "head -q multiple files" $'File A Line 1\nFile A Line 2\nFile A Line 3File B Line 1\nFile B Line 2\nFile B Line 3' "$binary" -q "$test_file_a" "$test_file_b"
+    test_command_output "head --quiet multiple files" $'File A Line 1\nFile A Line 2\nFile A Line 3File B Line 1\nFile B Line 2\nFile B Line 3' "$binary" --quiet "$test_file_a" "$test_file_b"
     # Test --silent (may have parsing issues in current implementation)
     # TODO: --silent flag appears to have argument parsing issues
     # test_command_output "head --silent multiple files" $'File A Line 1\nFile A Line 2\nFile A Line 3\nFile B Line 1\nFile B Line 2\nFile B Line 3' "$binary" --silent "$test_file_a" "$test_file_b"
@@ -128,7 +128,7 @@ test_head() {
     test_command_output "head -c from stdin" "12345" bash -c "printf '1234567890' | '$binary' -c 5"
     
     # Mix files and stdin (multiple sources show headers)
-    local expected_file_stdin=$'==> '"$test_file_a"$' <==\nFile A Line 1\nFile A Line 2\nFile A Line 3\n\n==> standard input <==\nstdin_content'
+    local expected_file_stdin=$'==> '"$test_file_a"$' <==\nFile A Line 1\nFile A Line 2\nFile A Line 3\n==> standard input <==\nstdin_content'
     test_command_output "head file then stdin" "$expected_file_stdin" bash -c "echo 'stdin_content' | '$binary' -n 5 '$test_file_a' -"
     
     echo -e "${CYAN}Testing flag combinations...${NC}"
@@ -180,7 +180,7 @@ test_head() {
     test_command_exit_code "head failure exit code" 1 "$binary" "/nonexistent/file" 2>/dev/null || true
     
     # POSIX multiple file handling (with full paths)
-    local expected_posix_multi=$'==> '"$test_file1"$' <==\nSingle line file\n\n==> '"$test_file4"$' <==\nA\nB\nC\nD\nE'
+    local expected_posix_multi=$'==> '"$test_file1"$' <==\nSingle line file\n==> '"$test_file4"$' <==\nA\nB\nC\nD\nE'
     test_command_output "POSIX: multiple files with headers" "$expected_posix_multi" "$binary" "$test_file1" "$test_file4"
     
     echo -e "${CYAN}Testing performance and edge cases...${NC}"
@@ -207,8 +207,7 @@ test_head() {
     local no_nl_file=$(create_temp_file "$no_newline_file")
     test_command_output "head file without final newline" $'line1\nline2' "$binary" -n 2 "$no_nl_file"
     
-    # Very large byte counts - TODO: This may be a bug, returns empty instead of full file
-    test_command_output "head -c 1000000 small file" "" "$binary" -c 1000000 "$byte_file"
+    test_command_output "head -c 1000000 small file" "1234567890ABCDEFGHIJ" "$binary" -c 1000000 "$byte_file"
     
     # Multiple stdin references (head shows headers for multiple files, including stdin)
     test_command_output "head multiple stdin refs" $'==> standard input <==\ntest\n\n==> standard input <==' bash -c "echo 'test' | '$binary' -n 1 - -"
@@ -220,7 +219,7 @@ test_head() {
     test_command_succeeds "head /dev/null" "$binary" /dev/null
     
     # Mixed file types (multiple files show headers)
-    local expected_mixed=$'==> '"$test_file1"$' <==\nSingle line file\n\n==> /dev/null <=='
+    local expected_mixed=$'==> '"$test_file1"$' <==\nSingle line file\n==> /dev/null <=='
     test_command_output "head mixed normal and special" "$expected_mixed" "$binary" -n 1 "$test_file1" /dev/null
     
     echo -e "${CYAN}Testing suffix parsing (GNU compatibility)...${NC}"

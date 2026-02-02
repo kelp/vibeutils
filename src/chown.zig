@@ -82,8 +82,8 @@ pub fn main() !void {
     const exit_code = try runChown(allocator, args[1..], stdout, stderr);
 
     // Flush buffers before exit
-    try stdout.flush();
-    try stderr.flush();
+    stdout.flush() catch {};
+    stderr.flush() catch {};
 
     std.process.exit(exit_code);
 }
@@ -95,7 +95,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -134,14 +134,14 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
             common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing file operand", .{});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         }
         break :blk "";
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
             common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing operand", .{});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         }
         break :blk positionals[0];
     };
@@ -300,9 +300,6 @@ fn chownRecursive(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !void {
-    // First change the directory/file itself
-    try chownSingle(allocator, path, ownership, options, stdout_writer, stderr_writer);
-
     // Check if it's a directory to recurse into
     const stat_info = common.file.FileInfo.stat(path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, @errorName(err) });
@@ -310,7 +307,7 @@ fn chownRecursive(
     };
 
     if (stat_info.kind == .directory) {
-        // Open directory and iterate
+        // Open directory and iterate — process children first
         var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, @errorName(err) });
             return;
@@ -335,6 +332,9 @@ fn chownRecursive(
             try chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer);
         }
     }
+
+    // Change the directory/file itself after processing children
+    try chownSingle(allocator, path, ownership, options, stdout_writer, stderr_writer);
 }
 
 /// Perform ownership change via system call

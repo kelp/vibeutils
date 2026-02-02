@@ -213,7 +213,7 @@ See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and
 
 ## ⚠️ CRITICAL: Your Zig Training is Wrong
 
-**Your Zig knowledge is from possibly outdated. This project uses 0.15.1 with FUNDAMENTAL breaking changes.**
+**Your Zig knowledge is possibly outdated. This project uses Zig 0.15.x with FUNDAMENTAL breaking changes.**
 
 ### MANDATORY: Check Breaking Changes First
 
@@ -264,12 +264,10 @@ Only validate for **correctness**:
 **📖 Core Documentation:**
 - **`docs/ZIG_BREAKING_CHANGES.md`** - ⚠️ READ FIRST - fixes your outdated training
 - `docs/ZIG_PATTERNS.md` - Zig idioms and patterns
-- `docs/ZIG_STYLE_GUIDE.md` - Code style conventions
-- `docs/STD_LIBRARY_SUMMARY.md` - Zig std library reference
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
 - `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
-- `docs/zig-0.15.1-release-notes.md` - Full release notes
-- `docs/zig-0.15.1-docs.md` - Full Zig 0.15.1 documentation
+- `docs/zig-0.15.1-release-notes.md` - Full 0.15.x release notes (0.15.2 is bugfix-only)
+- `docs/zig-0.15.1-docs.md` - Full Zig 0.15.x documentation (0.15.2 has no API changes)
 
 **📖 Fuzzing Documentation:**
 - `docs/FUZZING.md` - Comprehensive fuzzing guide (quick start, architecture, usage patterns)
@@ -279,7 +277,7 @@ Only validate for **correctness**:
 
 ## Code Style and Conventions
 
-### I/O Patterns with Zig 0.15.1
+### I/O Patterns with Zig 0.15.x
 
 Due to "Writergate", all I/O uses explicit buffers. Utilities follow this pattern:
 

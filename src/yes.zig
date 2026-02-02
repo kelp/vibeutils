@@ -37,7 +37,7 @@ pub fn runYes(
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(arena_allocator, stderr_writer, "yes", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -110,9 +110,7 @@ fn printHelp(writer: anytype) !void {
 
 /// Prints version information for the yes utility.
 fn printVersion(writer: anytype) !void {
-    try writer.writeAll("yes (vibeutils) 0.1.0\n");
-    try writer.writeAll("Copyright (C) 2024 vibeutils authors\n");
-    try writer.writeAll("License: MIT\n");
+    try writer.print("yes ({s}) {s}\n", .{ common.name, common.version });
 }
 
 pub fn main() !void {

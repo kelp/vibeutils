@@ -101,13 +101,12 @@ test_chmod() {
             continue
         fi
 
-        # Use the same platform-specific approach as get_file_permissions but inline to avoid any subshell issues
+        # Try GNU stat first, then fall back to BSD stat
         local perms=""
-        case "$(uname)" in
-            Darwin) perms=$(stat -f %A "$file" 2>/dev/null) ;;
-            Linux) perms=$(stat -c %a "$file" 2>/dev/null) ;;
-            *) perms="000" ;;
-        esac
+        perms=$(stat -c %a "$file" 2>/dev/null)
+        if [[ -z "$perms" ]]; then
+            perms=$(stat -f %A "$file" 2>/dev/null)
+        fi
 
         if [[ "$perms" == "755" ]]; then
             print_test_result "chmod -R verification $(basename "$file")" "PASS"
@@ -129,20 +128,19 @@ test_chmod() {
 
     # Verify that the root directory now has 644 permissions (correct behavior)
     local dir_perms=""
-    case "$(uname)" in
-        Darwin) dir_perms=$(stat -f %A "$test_tree_644" 2>/dev/null) ;;
-        Linux) dir_perms=$(stat -c %a "$test_tree_644" 2>/dev/null) ;;
-        *) dir_perms="000" ;;
-    esac
+    dir_perms=$(stat -c %a "$test_tree_644" 2>/dev/null)
+    if [[ -z "$dir_perms" ]]; then
+        dir_perms=$(stat -f %A "$test_tree_644" 2>/dev/null)
+    fi
 
     if [[ "$dir_perms" == "644" ]]; then
         print_test_result "chmod -R 644 on directory" "PASS"
 
-        # Verify that the directory is indeed inaccessible (expected behavior)
-        if ! ls "$test_tree_644" >/dev/null 2>&1; then
+        # Verify that the directory lost execute permission (expected behavior)
+        if [[ ! -x "$test_tree_644" ]]; then
             print_test_result "chmod -R 644 makes directory inaccessible" "PASS"
         else
-            print_test_result "chmod -R 644 makes directory inaccessible" "FAIL" "Directory should be inaccessible"
+            print_test_result "chmod -R 644 makes directory inaccessible" "FAIL" "Directory should not have execute permission"
         fi
     else
         print_test_result "chmod -R 644 on directory" "FAIL" "Got: $dir_perms"
@@ -312,13 +310,12 @@ test_chmod() {
             continue
         fi
 
-        # Use inline permissions check to avoid any subshell issues
+        # Try GNU stat first, then fall back to BSD stat
         local perms=""
-        case "$(uname)" in
-            Darwin) perms=$(stat -f %A "$file" 2>/dev/null) ;;
-            Linux) perms=$(stat -c %a "$file" 2>/dev/null) ;;
-            *) perms="000" ;;
-        esac
+        perms=$(stat -c %a "$file" 2>/dev/null)
+        if [[ -z "$perms" ]]; then
+            perms=$(stat -f %A "$file" 2>/dev/null)
+        fi
 
         if [[ "$perms" == "644" ]]; then
             print_test_result "chmod multiple files verification $(basename "$file")" "PASS"
@@ -380,13 +377,12 @@ test_chmod() {
     if [[ ! -e "$sample_file" ]]; then
         print_test_result "chmod -R large tree verification" "FAIL" "Sample file does not exist: $sample_file"
     else
-        # Use inline permissions check to avoid any subshell issues
+        # Try GNU stat first, then fall back to BSD stat
         local perms=""
-        case "$(uname)" in
-            Darwin) perms=$(stat -f %A "$sample_file" 2>/dev/null) ;;
-            Linux) perms=$(stat -c %a "$sample_file" 2>/dev/null) ;;
-            *) perms="000" ;;
-        esac
+        perms=$(stat -c %a "$sample_file" 2>/dev/null)
+        if [[ -z "$perms" ]]; then
+            perms=$(stat -f %A "$sample_file" 2>/dev/null)
+        fi
 
         if [[ "$perms" == "755" ]]; then
             print_test_result "chmod -R large tree verification" "PASS"
@@ -414,20 +410,17 @@ test_chmod() {
 
     local file_perms=""
     local dir_perms=""
-    case "$(uname)" in
-        Darwin)
-            file_perms=$(stat -f %A "$sample_file_644" 2>/dev/null)
-            dir_perms=$(stat -f %A "$sample_dir" 2>/dev/null)
-            ;;
-        Linux)
-            file_perms=$(stat -c %a "$sample_file_644" 2>/dev/null)
-            dir_perms=$(stat -c %a "$sample_dir" 2>/dev/null)
-            ;;
-        *)
-            file_perms="000"
-            dir_perms="000"
-            ;;
-    esac
+
+    # Try GNU stat first, then fall back to BSD stat
+    file_perms=$(stat -c %a "$sample_file_644" 2>/dev/null)
+    if [[ -z "$file_perms" ]]; then
+        file_perms=$(stat -f %A "$sample_file_644" 2>/dev/null)
+    fi
+
+    dir_perms=$(stat -c %a "$sample_dir" 2>/dev/null)
+    if [[ -z "$dir_perms" ]]; then
+        dir_perms=$(stat -f %A "$sample_dir" 2>/dev/null)
+    fi
 
     if [[ "$file_perms" == "644" && "$dir_perms" == "755" ]]; then
         print_test_result "files 644, directories 755 (proper pattern)" "PASS"

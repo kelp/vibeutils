@@ -36,7 +36,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid argument\nTry 'chmod --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -60,12 +60,12 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     if (using_reference) {
         if (positionals.len < 1) {
             common.printErrorWithProgram(allocator, stderr_writer, "chmod", "missing file operand\nTry 'chmod --help' for more information.", .{});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         }
     } else {
         if (positionals.len < 2) {
             common.printErrorWithProgram(allocator, stderr_writer, "chmod", "missing operand\nTry 'chmod --help' for more information.", .{});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         }
     }
 
@@ -354,7 +354,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
         if (!options.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, errorToMessage(err) });
         }
-        return;
+        return err;
     };
     defer dir.close();
 
@@ -475,7 +475,7 @@ fn parseSymbolicModeString(mode_str: []const u8) !Mode {
     // Split by commas for multiple operations
     var iter = std.mem.splitScalar(u8, mode_str, ',');
     while (iter.next()) |clause| {
-        try applySymbolicMode(&base_mode, std.mem.trim(u8, clause, " "));
+        try applySymbolicMode(&base_mode, std.mem.trim(u8, clause, " "), false, null);
     }
 
     return base_mode;
@@ -483,7 +483,9 @@ fn parseSymbolicModeString(mode_str: []const u8) !Mode {
 
 /// Apply a single symbolic mode clause
 /// Modifies the mode in-place
-fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
+/// is_directory: whether the target is a directory (affects X permission)
+/// current_mode: the file's current mode bits (affects X permission); null if unknown
+fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, current_mode: ?u32) !void {
     if (clause.len < 2) return ChmodError.InvalidMode;
 
     var i: usize = 0;
@@ -529,7 +531,13 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8) !void {
             'x' => perms |= 1,
             's' => perms |= 8, // Special bit (setuid/setgid)
             't' => perms |= 16, // Sticky bit
-            'X' => perms |= 1, // Execute if directory or already has execute
+            'X' => {
+                // POSIX: X sets execute only if target is a directory
+                // or already has at least one execute bit set
+                if (is_directory or (current_mode != null and (current_mode.? & 0o111) != 0)) {
+                    perms |= 1;
+                }
+            },
             // Support permission copying cases
             'u', 'g', 'o' => {
                 if (op == '=' and clause.len == i + 1) {
@@ -709,9 +717,10 @@ fn applySymbolicModeToFile(allocator: std.mem.Allocator, file_path: []const u8, 
     // Start with current mode
     var new_mode_struct = Mode.fromOctal(old_mode);
 
+    const is_directory = stat.kind == .directory;
     var iter = std.mem.splitScalar(u8, mode_str, ',');
     while (iter.next()) |clause| {
-        try applySymbolicMode(&new_mode_struct, std.mem.trim(u8, clause, " "));
+        try applySymbolicMode(&new_mode_struct, std.mem.trim(u8, clause, " "), is_directory, old_mode);
     }
 
     const new_mode = new_mode_struct.toOctal();
@@ -1086,128 +1095,128 @@ test "modeToString includes special permission bits" {
 test "parseSymbolicMode basic additions" {
     // u+r: add read for user
     var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "u+r");
+    try applySymbolicMode(&mode, "u+r", false, null);
     try testing.expectEqual(@as(u32, 0o400), mode.toOctal());
 
     // g+w: add write for group
     mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "g+w");
+    try applySymbolicMode(&mode, "g+w", false, null);
     try testing.expectEqual(@as(u32, 0o020), mode.toOctal());
 
     // o+x: add execute for other
     mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "o+x");
+    try applySymbolicMode(&mode, "o+x", false, null);
     try testing.expectEqual(@as(u32, 0o001), mode.toOctal());
 }
 
 test "parseSymbolicMode basic subtractions" {
     // u-r: remove read for user
     var mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "u-r");
+    try applySymbolicMode(&mode, "u-r", false, null);
     try testing.expectEqual(@as(u32, 0o377), mode.toOctal());
 
     // g-w: remove write for group
     mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "g-w");
+    try applySymbolicMode(&mode, "g-w", false, null);
     try testing.expectEqual(@as(u32, 0o757), mode.toOctal());
 
     // o-x: remove execute for other
     mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "o-x");
+    try applySymbolicMode(&mode, "o-x", false, null);
     try testing.expectEqual(@as(u32, 0o776), mode.toOctal());
 }
 
 test "parseSymbolicMode basic assignments" {
     // u=r: set user to read only
     var mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "u=r");
+    try applySymbolicMode(&mode, "u=r", false, null);
     try testing.expectEqual(@as(u32, 0o477), mode.toOctal());
 
     // g=wx: set group to write+execute
     mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "g=wx");
+    try applySymbolicMode(&mode, "g=wx", false, null);
     try testing.expectEqual(@as(u32, 0o737), mode.toOctal());
 
     // o=: remove all permissions for other
     mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "o=");
+    try applySymbolicMode(&mode, "o=", false, null);
     try testing.expectEqual(@as(u32, 0o770), mode.toOctal());
 }
 
 test "parseSymbolicMode multiple targets" {
     // ug+r: add read for user and group
     var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "ug+r");
+    try applySymbolicMode(&mode, "ug+r", false, null);
     try testing.expectEqual(@as(u32, 0o440), mode.toOctal());
 
     // go-w: remove write for group and other
     mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "go-w");
+    try applySymbolicMode(&mode, "go-w", false, null);
     try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
 
     // a+x: add execute for all
     mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "a+x");
+    try applySymbolicMode(&mode, "a+x", false, null);
     try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
 }
 
 test "parseSymbolicMode complex combinations" {
     // Multiple permissions in one operation
     var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "u+rwx");
+    try applySymbolicMode(&mode, "u+rwx", false, null);
     try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
 
     // Mixed operations
     mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "u-x");
+    try applySymbolicMode(&mode, "u-x", false, null);
     try testing.expectEqual(@as(u32, 0o655), mode.toOctal());
 
     mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "g+w");
+    try applySymbolicMode(&mode, "g+w", false, null);
     try testing.expectEqual(@as(u32, 0o775), mode.toOctal());
 }
 
 test "parseSymbolicMode special permission bits" {
     // Test setuid with u+s
     var mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "u+s");
+    try applySymbolicMode(&mode, "u+s", false, null);
     try testing.expectEqual(@as(u32, 0o4755), mode.toOctal());
     try testing.expect(mode.setuid);
 
     // Test setgid with g+s
     mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "g+s");
+    try applySymbolicMode(&mode, "g+s", false, null);
     try testing.expectEqual(@as(u32, 0o2755), mode.toOctal());
     try testing.expect(mode.setgid);
 
     // Test sticky bit with o+t
     mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "o+t");
+    try applySymbolicMode(&mode, "o+t", false, null);
     try testing.expectEqual(@as(u32, 0o1755), mode.toOctal());
     try testing.expect(mode.sticky);
 
     // Test removing setuid with u-s
     mode = Mode.fromOctal(0o4755);
-    try applySymbolicMode(&mode, "u-s");
+    try applySymbolicMode(&mode, "u-s", false, null);
     try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
     try testing.expect(!mode.setuid);
 
     // Test removing setgid with g-s
     mode = Mode.fromOctal(0o2755);
-    try applySymbolicMode(&mode, "g-s");
+    try applySymbolicMode(&mode, "g-s", false, null);
     try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
     try testing.expect(!mode.setgid);
 
     // Test removing sticky bit with o-t
     mode = Mode.fromOctal(0o1755);
-    try applySymbolicMode(&mode, "o-t");
+    try applySymbolicMode(&mode, "o-t", false, null);
     try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
     try testing.expect(!mode.sticky);
 
     // Test combined special bits
     mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "u+s");
-    try applySymbolicMode(&mode, "g+s");
+    try applySymbolicMode(&mode, "u+s", false, null);
+    try applySymbolicMode(&mode, "g+s", false, null);
     try testing.expectEqual(@as(u32, 0o6755), mode.toOctal());
     try testing.expect(mode.setuid);
     try testing.expect(mode.setgid);
@@ -1231,14 +1240,14 @@ test "parseSymbolicMode permission copying" {
     var mode = Mode.fromOctal(0o754);
 
     // Test g=u: copy user permissions to group (should make it rwx rwx r--)
-    try applySymbolicMode(&mode, "g=u");
+    try applySymbolicMode(&mode, "g=u", false, null);
     try testing.expectEqual(@as(u32, 0o774), mode.toOctal());
     try testing.expectEqual(@as(u3, 7), mode.user);
     try testing.expectEqual(@as(u3, 7), mode.group); // copied from user
     try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
 
     // Test o=g: copy group permissions to other (should make it rwx rwx rwx)
-    try applySymbolicMode(&mode, "o=g");
+    try applySymbolicMode(&mode, "o=g", false, null);
     try testing.expectEqual(@as(u32, 0o777), mode.toOctal());
     try testing.expectEqual(@as(u3, 7), mode.user);
     try testing.expectEqual(@as(u3, 7), mode.group);
@@ -1248,7 +1257,7 @@ test "parseSymbolicMode permission copying" {
     mode = Mode.fromOctal(0o600);
 
     // Test u=o: copy other permissions to user (should make it --- --- ---)
-    try applySymbolicMode(&mode, "u=o");
+    try applySymbolicMode(&mode, "u=o", false, null);
     try testing.expectEqual(@as(u32, 0o000), mode.toOctal());
     try testing.expectEqual(@as(u3, 0), mode.user); // copied from other
     try testing.expectEqual(@as(u3, 0), mode.group);
@@ -1256,11 +1265,76 @@ test "parseSymbolicMode permission copying" {
 
     // Test multiple targets: ug=o
     mode = Mode.fromOctal(0o754); // rwx r-x r--
-    try applySymbolicMode(&mode, "ug=o");
+    try applySymbolicMode(&mode, "ug=o", false, null);
     try testing.expectEqual(@as(u32, 0o444), mode.toOctal());
     try testing.expectEqual(@as(u3, 4), mode.user); // copied from other
     try testing.expectEqual(@as(u3, 4), mode.group); // copied from other
     try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
+}
+
+// Tests: X (conditional execute) permission
+
+test "X permission skipped on regular file without existing execute" {
+    // Regular file (not directory), no existing execute bits => X should NOT add execute
+    var mode = Mode.fromOctal(0o644); // rw-r--r-- (no execute bits)
+    try applySymbolicMode(&mode, "a+X", false, 0o644);
+    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+}
+
+test "X permission applied on directory" {
+    // Directory => X should always add execute
+    var mode = Mode.fromOctal(0o644); // rw-r--r--
+    try applySymbolicMode(&mode, "a+X", true, 0o644);
+    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+}
+
+test "X permission applied when file already has user execute" {
+    // Regular file with user execute set => X should add execute
+    var mode = Mode.fromOctal(0o744); // rwxr--r--
+    try applySymbolicMode(&mode, "a+X", false, 0o744);
+    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+}
+
+test "X permission applied when file already has group execute" {
+    // Regular file with group execute set => X should add execute
+    var mode = Mode.fromOctal(0o654); // rw-r-xr--
+    try applySymbolicMode(&mode, "a+X", false, 0o654);
+    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+}
+
+test "X permission applied when file already has other execute" {
+    // Regular file with other execute set => X should add execute
+    var mode = Mode.fromOctal(0o645); // rw-r--r-x
+    try applySymbolicMode(&mode, "a+X", false, 0o645);
+    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+}
+
+test "X permission skipped with null current_mode (no file context)" {
+    // When current_mode is null (e.g., parsing without file context), X should not add execute
+    var mode = Mode.fromOctal(0o644);
+    try applySymbolicMode(&mode, "a+X", false, null);
+    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+}
+
+test "X permission for specific user class on directory" {
+    // u+X on a directory should add user execute
+    var mode = Mode.fromOctal(0o600); // rw-------
+    try applySymbolicMode(&mode, "u+X", true, 0o600);
+    try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
+}
+
+test "X permission combined with other perms on file without execute" {
+    // a+rX on a regular file without execute => should add read but not execute
+    var mode = Mode.fromOctal(0o000);
+    try applySymbolicMode(&mode, "a+rX", false, 0o000);
+    try testing.expectEqual(@as(u32, 0o444), mode.toOctal());
+}
+
+test "X permission combined with other perms on directory" {
+    // a+rX on a directory => should add both read and execute
+    var mode = Mode.fromOctal(0o000);
+    try applySymbolicMode(&mode, "a+rX", true, 0o000);
+    try testing.expectEqual(@as(u32, 0o555), mode.toOctal());
 }
 
 // Tests: Recursive operations

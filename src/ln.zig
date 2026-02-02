@@ -278,15 +278,17 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             return common.ExitCode.general_error;
         }
 
+        var had_error = false;
         for (files) |target| {
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ target_dir, link_name });
             defer allocator.free(full_link_path);
             createSingleLink(allocator, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
                 // Error already printed by createSingleLink
-                return common.ExitCode.general_error;
+                had_error = true;
             };
         }
+        if (had_error) return common.ExitCode.general_error;
     } else if (files.len == 1) {
         // Form 2: ln TARGET
         const target = files[0];

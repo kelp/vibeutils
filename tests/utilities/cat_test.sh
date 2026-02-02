@@ -26,10 +26,11 @@ test_cat() {
     test_command_output "cat multiline file" $'Line 1\nLine 2\nLine 3' "$binary" "$test_file2"
     test_command_output "cat empty file" "" "$binary" "$test_file3"
     
-    # Test multiple file concatenation (common bug source)
-    test_command_output "cat two files" $'Hello World\nLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file2"
-    test_command_output "cat three files" $'Hello World\nLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file2" "$test_file3"
-    test_command_output "cat with empty in middle" $'Hello World\nLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file3" "$test_file2"
+    # Test multiple file concatenation (cat outputs bytes exactly as they are)
+    # Files created with echo -n have no trailing newline, so content concatenates directly
+    test_command_output "cat two files" $'Hello WorldLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file2"
+    test_command_output "cat three files" $'Hello WorldLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file2" "$test_file3"
+    test_command_output "cat with empty in middle" $'Hello WorldLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file3" "$test_file2"
     
     # Test stdin handling
     echo -e "${CYAN}Testing stdin functionality...${NC}"
@@ -39,7 +40,9 @@ test_cat() {
     test_command_output "cat dash arg (stdin)" "dash test" bash -c "echo 'dash test' | '$binary' -"
     
     # Test mixing files and stdin
-    test_command_output "cat file then stdin" $'Hello World\nstdin content' bash -c "echo 'stdin content' | '$binary' '$test_file1' -"
+    # File1 has no trailing newline, so stdin content starts on same line
+    test_command_output "cat file then stdin" $'Hello Worldstdin content' bash -c "echo 'stdin content' | '$binary' '$test_file1' -"
+    # stdin "echo" adds trailing newline, so File1 starts on new line
     test_command_output "cat stdin then file" $'stdin content\nHello World' bash -c "echo 'stdin content' | '$binary' - '$test_file1'"
     
     echo -e "${CYAN}Testing line numbering flags...${NC}"
@@ -60,9 +63,9 @@ test_cat() {
     
     echo -e "${CYAN}Testing visual display flags...${NC}"
     
-    # Test -E flag (show line ends)
-    test_command_output "cat -E basic" $'Line 1$\nLine 2$\nLine 3$' "$binary" -E "$test_file2"
-    test_command_output "cat -E with tabs" $'Tabs\tand\tspaces  here$' "$binary" -E "$test_file4"
+    # Test -E flag (show line ends) - $ appears before \n only, not at end of file
+    test_command_output "cat -E basic" $'Line 1$\nLine 2$\nLine 3' "$binary" -E "$test_file2"
+    test_command_output "cat -E with tabs" 'Tabs	and	spaces  here' "$binary" -E "$test_file4"
     
     # Test -T flag (show tabs)
     test_command_output "cat -T basic" $'Tabs^Iand^Ispaces  here' "$binary" -T "$test_file4"
@@ -96,7 +99,7 @@ test_cat() {
     # Test common flag combinations
     test_command_output "cat -ns combination" $'     1\tLine 1\n     2\t\n     3\tLine 2\n     4\t\n     5\tLine 3' "$binary" -n -s "$many_blanks"
     test_command_output "cat -bs combination" $'     1\tLine 1\n\n     2\tLine 2\n\n     3\tLine 3' "$binary" -b -s "$many_blanks"
-    test_command_output "cat -ET combination" $'Tabs^Iand^Ispaces  here$' "$binary" -E -T "$test_file4"
+    test_command_output "cat -ET combination" 'Tabs^Iand^Ispaces  here' "$binary" -E -T "$test_file4"
     
     echo -e "${CYAN}Testing edge cases and bug scenarios...${NC}"
     
@@ -131,11 +134,12 @@ test_cat() {
     local file_a=$(create_temp_file "A")
     local file_b=$(create_temp_file "B") 
     local file_c=$(create_temp_file "C")
-    test_command_output "cat order preservation" $'A\nB\nC' "$binary" "$file_a" "$file_b" "$file_c"
-    test_command_output "cat reverse order" $'C\nB\nA' "$binary" "$file_c" "$file_b" "$file_a"
-    
-    # Test that flags work with multiple files
-    test_command_output "cat -n multiple files" $'     1\tA\n     2\tB\n     3\tC' "$binary" -n "$file_a" "$file_b" "$file_c"
+    # Files "A", "B", "C" have no trailing newlines, so they concatenate directly
+    test_command_output "cat order preservation" "ABC" "$binary" "$file_a" "$file_b" "$file_c"
+    test_command_output "cat reverse order" "CBA" "$binary" "$file_c" "$file_b" "$file_a"
+
+    # Test that flags work with multiple files (cat renumbers at each file boundary)
+    test_command_output "cat -n multiple files" $'     1\tA     2\tB     3\tC' "$binary" -n "$file_a" "$file_b" "$file_c"
     
     # Test file with final newline vs without
     local file_with_nl=$(create_temp_file $'line1\nline2\n')
@@ -148,7 +152,8 @@ test_cat() {
     test_command_output "cat multiple stdin refs" "test" bash -c "echo 'test' | '$binary' - - -"
     
     # Test mixed files and stdin multiple times
-    test_command_output "cat complex mixing" $'A\nstdin\nB\nC' bash -c "echo 'stdin' | '$binary' '$file_a' - '$file_b' - '$file_c'"
+    # A has no trailing newline, stdin "echo" adds \n, B has no \n, second - is empty (stdin drained)
+    test_command_output "cat complex mixing" $'Astdin\nBC' bash -c "echo 'stdin' | '$binary' '$file_a' - '$file_b' - '$file_c'"
     
     echo -e "${CYAN}Testing GNU compatibility...${NC}"
     
@@ -158,10 +163,10 @@ test_cat() {
     # Test long option equivalents
     test_command_output "cat --number" $'     1\tLine 1\n     2\tLine 2\n     3\tLine 3' "$binary" --number "$test_file2"
     test_command_output "cat --number-nonblank" $'     1\tLine 1\n\n     2\tLine 3\n\n     3\tLine 5' "$binary" --number-nonblank "$blank_file"
-    test_command_output "cat --show-ends" $'Line 1$\nLine 2$\nLine 3$' "$binary" --show-ends "$test_file2"
+    test_command_output "cat --show-ends" $'Line 1$\nLine 2$\nLine 3' "$binary" --show-ends "$test_file2"
     test_command_output "cat --show-tabs" $'Tabs^Iand^Ispaces  here' "$binary" --show-tabs "$test_file4"
     test_command_output "cat --squeeze-blank" $'Line 1\n\nLine 2\n\nLine 3' "$binary" --squeeze-blank "$many_blanks"
-    test_command_output "cat --show-all" $'Tabs^Iand^Ispaces  here$' "$binary" --show-all "$test_file4"
+    test_command_output "cat --show-all" 'Tabs^Iand^Ispaces  here' "$binary" --show-all "$test_file4"
     
     echo -e "${CYAN}Testing error conditions...${NC}"
     
@@ -179,7 +184,7 @@ test_cat() {
     
     # POSIX-required behaviors
     test_command_output "POSIX: cat single file" "Hello World" "$binary" "$test_file1"
-    test_command_output "POSIX: cat multiple files" $'Hello World\nLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file2"
+    test_command_output "POSIX: cat multiple files" $'Hello WorldLine 1\nLine 2\nLine 3' "$binary" "$test_file1" "$test_file2"
     test_command_output "POSIX: cat stdin with -" "stdin test" bash -c "echo 'stdin test' | '$binary' -"
     
     # Test exit codes

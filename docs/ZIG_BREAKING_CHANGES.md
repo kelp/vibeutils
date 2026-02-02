@@ -1,17 +1,17 @@
-# Zig 0.15.1 Breaking Changes - Training Override Sheet
+# Zig 0.15.x Breaking Changes - Training Override Sheet
 
-This document corrects Claude's outdated training data (pre-0.11.0) with current Zig 0.15.1 reality.
+This document corrects Claude's outdated training data (pre-0.11.0) with current Zig 0.15.x reality.
 
 ## ⚡ Quick Reference Table - "If You Think X, It's Actually Y"
 
-| What Claude Thinks | Reality in 0.15.1 | Quick Fix |
+| What Claude Thinks | Reality in 0.15.x | Quick Fix |
 |-------------------|-------------------|-----------|
 | `std.io.getStdOut().writer()` | REMOVED - Writergate happened | Use buffered writer pattern (see below) |
 | `std.io.getStdErr().writer()` | REMOVED - Writergate happened | Use buffered writer pattern (see below) |
 | `usingnamespace` keyword exists | REMOVED completely from language | Use zero-bit fields + `@fieldParentPtr` for mixins |
 | `async`/`await` keywords exist | REMOVED from language | Will be library features in future |
 | `std.ArrayList(T).init(allocator)` | Now unmanaged by default | Use `std.ArrayListUnmanaged(T){}`, pass allocator to methods |
-| `std.ArrayList(T)` | Moved to `std.array_list.Managed(T)` | Prefer unmanaged version |
+| `std.ArrayList(T)` | Still works but unmanaged preferred | Use `std.ArrayListUnmanaged(T){}`, pass allocator to methods |
 | `std.BoundedArray` exists | REMOVED completely | Use `ArrayListUnmanaged.initBuffer(&buffer)` |
 | `/` works on runtime signed ints | Must be comptime-known and positive | Use `@divTrunc`, `@divFloor`, or `@divExact` |
 | `%` works on runtime signed floats | Must be comptime-known and positive | Use `@rem` or `@mod` |
@@ -29,7 +29,7 @@ This document corrects Claude's outdated training data (pre-0.11.0) with current
 | `std.DoublyLinkedList(T)` generic | De-genericified | Use intrusive nodes with `@fieldParentPtr` |
 | LLVM is default backend | x86 backend default for Debug | 5x faster compilation |
 | `std.mem.tokenize(u8, str, delim)` | `std.mem.tokenizeAny(u8, str, delim)` | Also `tokenizeScalar`, `tokenizeSequence` |
-| `std.testing.expectEqualStrings` | `std.testing.expectEqualSlices(u8, ...)` | Type parameter needed |
+| `std.testing.expectEqualStrings` | Still exists and works | `expectEqualSlices(u8, ...)` also available |
 | `std.testing.expectEqualSlices` old signature | Swapped parameters | Expected first, actual second |
 | `std.process.args()` returns iterator | `std.process.argsAlloc(allocator)` | Returns owned slice, must free |
 | `std.json.Parser` | Complete redesign | Use `std.json.parseFromSlice` |
@@ -127,7 +127,7 @@ This document corrects Claude's outdated training data (pre-0.11.0) with current
 const stdout = std.io.getStdOut().writer();
 try stdout.print("Hello, {}\n", .{world});
 
-// ✅ ZIG 0.15.1 (RIGHT)  
+// ✅ ZIG 0.15.x (RIGHT)  
 var stdout_buffer: [4096]u8 = undefined;
 var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
 const stdout = &stdout_writer.interface;
@@ -142,7 +142,7 @@ var list = std.ArrayList(u32).init(allocator);
 defer list.deinit();
 try list.append(42);
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 var list = std.ArrayListUnmanaged(u32){};
 defer list.deinit(allocator);  // allocator needed for deinit
 try list.append(allocator, 42);  // allocator needed for append
@@ -153,7 +153,7 @@ try list.append(allocator, 42);  // allocator needed for append
 // ❌ YOUR TRAINING (WRONG)
 const result = a / b;  // runtime signed integers
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 const result = @divTrunc(a, b);  // or @divFloor, @divExact
 ```
 
@@ -164,7 +164,7 @@ pub fn format(value: T, comptime fmt: []const u8, options: std.fmt.FormatOptions
     try writer.print("{}", .{value.field});
 }
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 pub fn format(value: T, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     try writer.print("{d}", .{value.field});  // explicit format specifier
 }
@@ -178,7 +178,7 @@ const Foo = struct {
     pub usingnamespace Mixin(Foo);
 };
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 const Foo = struct {
     data: u32,
     mixin: Mixin(Foo) = .{},  // zero-bit field
@@ -200,7 +200,7 @@ pub fn Mixin(comptime T: type) type {
 // ❌ YOUR TRAINING (WRONG)  
 var stack = try std.BoundedArray(i32, 8).fromSlice(initial_stack);
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 var buffer: [8]i32 = undefined;
 var stack = std.ArrayListUnmanaged(i32).initBuffer(&buffer);
 try stack.appendSliceBounded(initial_stack);
@@ -216,7 +216,7 @@ const exe = b.addExecutable(.{
     .optimize = optimize,
 });
 
-// ✅ ZIG 0.15.1 (RIGHT)  
+// ✅ ZIG 0.15.x (RIGHT)  
 const exe = b.addExecutable(.{
     .name = "app",
     .root_module = b.createModule(.{
@@ -229,12 +229,9 @@ const exe = b.addExecutable(.{
 
 ### Testing Pattern
 ```zig
-// ❌ YOUR TRAINING (WRONG)
-try std.testing.expectEqualStrings("hello", actual);
-try std.testing.expectEqual(expected, actual);  // wrong order
-
-// ✅ ZIG 0.15.1 (RIGHT)
-try std.testing.expectEqualSlices(u8, "hello", actual);
+// Both of these work in 0.15.x:
+try std.testing.expectEqualStrings("hello", actual);  // still exists
+try std.testing.expectEqualSlices(u8, "hello", actual);  // also available
 try std.testing.expectEqual(expected, actual);  // expected first
 ```
 
@@ -246,7 +243,7 @@ defer parser.deinit();
 var tree = try parser.parse(json_text);
 defer tree.deinit();
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 const parsed = try std.json.parseFromSlice(T, allocator, json_text, .{});
 defer parsed.deinit();
 const value = parsed.value;
@@ -258,7 +255,7 @@ const value = parsed.value;
 var it = std.mem.tokenize(u8, text, " ");
 while (it.next()) |token| {}
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 var it = std.mem.tokenizeAny(u8, text, " ");  // or tokenizeScalar
 while (it.next()) |token| {}
 ```
@@ -269,7 +266,7 @@ while (it.next()) |token| {}
 var args = std.process.args();
 while (args.next()) |arg| {}
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 const args = try std.process.argsAlloc(allocator);
 defer std.process.argsFree(allocator, args);
 for (args[1..]) |arg| {}  // skip program name
@@ -280,7 +277,7 @@ for (args[1..]) |arg| {}  // skip program name
 // ❌ YOUR TRAINING (WRONG)
 for (items) |item, i| {}  // index as second capture
 
-// ✅ ZIG 0.15.1 (RIGHT)
+// ✅ ZIG 0.15.x (RIGHT)
 for (items, 0..) |item, i| {}  // explicit index range
 for (a, b, c) |x, y, z| {}  // multiple arrays
 ```
@@ -293,7 +290,7 @@ const x = tuple[0];
 const y = tuple[1];
 const z = tuple[2];
 
-// ✅ ZIG 0.15.1 (NEW!)
+// ✅ ZIG 0.15.x (NEW!)
 const tuple = .{ 1, 2, 3 };
 const x, const y, const z = tuple;  // or
 var x: u32, var y: u32, var z: u32 = undefined;
@@ -308,7 +305,7 @@ for (names) |name, i| {
     const id = ids[i];
 }
 
-// ✅ ZIG 0.15.1 (NEW!)
+// ✅ ZIG 0.15.x (NEW!)
 for (names, ages, ids) |name, age, id| {
     // All three arrays iterated in parallel
 }
@@ -328,7 +325,7 @@ if (result) |value| {
     }
 }
 
-// ✅ ZIG 0.15.1 (NEW!)
+// ✅ ZIG 0.15.x (NEW!)
 switch (result) {
     error.NotFound => return null,
     error.PermissionDenied => return error.AccessDenied,
@@ -342,7 +339,7 @@ switch (result) {
 extern fn puts(s: [*]const u8) c_int;
 const c_str = try allocator.dupeZ(u8, zig_string);
 
-// ✅ ZIG 0.15.1 (Current patterns)
+// ✅ ZIG 0.15.x (Current patterns)
 extern fn puts(s: [*:0]const u8) c_int;  // :0 sentinel for null termination
 const c_str = try allocator.dupeZ(u8, zig_string);  // Still works
 
@@ -415,7 +412,7 @@ comptime {
     while (x < 1000000) : (x += 1) {}  // May hit branch quota
 }
 
-// ✅ ZIG 0.15.1 (Increase quota if needed)
+// ✅ ZIG 0.15.x (Increase quota if needed)
 comptime {
     @setEvalBranchQuota(10000);  // Increase for complex comptime
     var x = 0;
@@ -511,11 +508,11 @@ Things that didn't exist in your training:
 |--------------|--------------|-------|
 | `std.io.getStdOut()` | `std.fs.File.stdout()` | Returns File, not writer |
 | `std.mem.tokenize` | `std.mem.tokenizeAny` | Multiple variants now |
-| `std.ArrayList(T)` | `std.ArrayListUnmanaged(T)` preferred | Managed still exists as `std.array_list.Managed(T)` |
+| `std.ArrayList(T)` | Still works; `std.ArrayListUnmanaged(T)` preferred | Unmanaged passes allocator to each method |
 | `std.BoundedArray` | Use `ArrayListUnmanaged.initBuffer` | Completely removed |
 | `std.json.Parser` | `std.json.parseFromSlice` | Complete API change |
 | `std.fifo.LinearFifo` | Use `std.Io.Reader/Writer` | Removed |
-| `std.testing.expectEqualStrings` | `std.testing.expectEqualSlices(u8, ...)` | Type param required |
+| `std.testing.expectEqualStrings` | Still exists; `expectEqualSlices(u8, ...)` also works | Both are valid |
 | `std.hash_map.HashMap` | `std.hash_map.AutoHashMap` | Or `std.hash.Map` |
 | `std.fmt.format` | `std.Io.Writer.print` | Different API |
 | `std.io.BufferedWriter` | Built into writers | No separate type |
@@ -589,7 +586,7 @@ Things that didn't exist in your training:
 
 1. **First**: Check error message against the table above
 2. **Second**: Grep working code in `src/` for similar patterns
-3. **Third**: Check `docs/zig-0.15.1-docs.md` for current syntax
-4. **Fourth**: Look at `docs/zig-0.15.1-release-notes.md` for migration guides
+3. **Third**: Check `docs/zig-0.15.1-docs.md` for current syntax (covers 0.15.x)
+4. **Fourth**: Look at `docs/zig-0.15.1-release-notes.md` for migration guides (covers 0.15.x)
 
 Remember: The language changed FUNDAMENTALLY. Your instincts are wrong. Always verify.

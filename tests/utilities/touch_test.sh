@@ -12,6 +12,27 @@ test_touch() {
     local util="touch"
     local binary="$BIN_DIR/$util"
 
+    # Cross-platform stat helpers (try GNU first, fall back to BSD)
+    get_mtime() {
+        local file="$1"
+        local mtime
+        mtime=$(stat -c %Y "$file" 2>/dev/null)
+        if [[ -z "$mtime" ]]; then
+            mtime=$(stat -f %m "$file" 2>/dev/null)
+        fi
+        echo "${mtime:-0}"
+    }
+
+    get_atime() {
+        local file="$1"
+        local atime
+        atime=$(stat -c %X "$file" 2>/dev/null)
+        if [[ -z "$atime" ]]; then
+            atime=$(stat -f %a "$file" 2>/dev/null)
+        fi
+        echo "${atime:-0}"
+    }
+
     # Verify binary exists
     test_binary_exists "$util" || return 1
 
@@ -56,11 +77,7 @@ test_touch() {
 
     # Verify timestamp was updated (should be newer than now_before)
     local new_mtime
-    case "$PLATFORM" in
-        macos) new_mtime=$(stat -f %m "$existing_file" 2>/dev/null) ;;
-        linux) new_mtime=$(stat -c %Y "$existing_file" 2>/dev/null) ;;
-        *) new_mtime="$now_before" ;;
-    esac
+    new_mtime=$(get_mtime "$existing_file")
 
     if [[ "$new_mtime" -gt "$now_before" ]]; then
         print_test_result "touch updates file timestamp" "PASS"
@@ -96,20 +113,8 @@ test_touch() {
 
     # Get initial timestamps
     local initial_atime initial_mtime
-    case "$PLATFORM" in
-        macos)
-            initial_atime=$(stat -f %a "$timestamp_test" 2>/dev/null)
-            initial_mtime=$(stat -f %m "$timestamp_test" 2>/dev/null)
-            ;;
-        linux)
-            initial_atime=$(stat -c %X "$timestamp_test" 2>/dev/null)
-            initial_mtime=$(stat -c %Y "$timestamp_test" 2>/dev/null)
-            ;;
-        *)
-            initial_atime="0"
-            initial_mtime="0"
-            ;;
-    esac
+    initial_atime=$(get_atime "$timestamp_test")
+    initial_mtime=$(get_mtime "$timestamp_test")
 
     sleep 2  # Ensure timestamp difference
 
@@ -117,20 +122,8 @@ test_touch() {
     test_command_succeeds "touch -a access time only" "$binary" -a "$timestamp_test"
 
     local new_atime new_mtime
-    case "$PLATFORM" in
-        macos)
-            new_atime=$(stat -f %a "$timestamp_test" 2>/dev/null)
-            new_mtime=$(stat -f %m "$timestamp_test" 2>/dev/null)
-            ;;
-        linux)
-            new_atime=$(stat -c %X "$timestamp_test" 2>/dev/null)
-            new_mtime=$(stat -c %Y "$timestamp_test" 2>/dev/null)
-            ;;
-        *)
-            new_atime="$initial_atime"
-            new_mtime="$initial_mtime"
-            ;;
-    esac
+    new_atime=$(get_atime "$timestamp_test")
+    new_mtime=$(get_mtime "$timestamp_test")
 
     # Verify access time changed but modification time preserved
     if [[ "$new_atime" -gt "$initial_atime" ]]; then
@@ -147,38 +140,14 @@ test_touch() {
 
     # Reset file and test -m flag (modification time only)
     echo "timestamp test 2" > "$timestamp_test"
-    case "$PLATFORM" in
-        macos)
-            initial_atime=$(stat -f %a "$timestamp_test" 2>/dev/null)
-            initial_mtime=$(stat -f %m "$timestamp_test" 2>/dev/null)
-            ;;
-        linux)
-            initial_atime=$(stat -c %X "$timestamp_test" 2>/dev/null)
-            initial_mtime=$(stat -c %Y "$timestamp_test" 2>/dev/null)
-            ;;
-        *)
-            initial_atime="0"
-            initial_mtime="0"
-            ;;
-    esac
+    initial_atime=$(get_atime "$timestamp_test")
+    initial_mtime=$(get_mtime "$timestamp_test")
 
     sleep 2
     test_command_succeeds "touch -m modification time only" "$binary" -m "$timestamp_test"
 
-    case "$PLATFORM" in
-        macos)
-            new_atime=$(stat -f %a "$timestamp_test" 2>/dev/null)
-            new_mtime=$(stat -f %m "$timestamp_test" 2>/dev/null)
-            ;;
-        linux)
-            new_atime=$(stat -c %X "$timestamp_test" 2>/dev/null)
-            new_mtime=$(stat -c %Y "$timestamp_test" 2>/dev/null)
-            ;;
-        *)
-            new_atime="$initial_atime"
-            new_mtime="$initial_mtime"
-            ;;
-    esac
+    new_atime=$(get_atime "$timestamp_test")
+    new_mtime=$(get_mtime "$timestamp_test")
 
     if [[ "$new_mtime" -gt "$initial_mtime" ]]; then
         print_test_result "touch -m updates modification time" "PASS"
@@ -197,38 +166,14 @@ test_touch() {
     # Test combining -a and -m (should update both)
     local combo_file="$TEMP_DIR/combo_test.txt"
     echo "combo test" > "$combo_file"
-    case "$PLATFORM" in
-        macos)
-            initial_atime=$(stat -f %a "$combo_file" 2>/dev/null)
-            initial_mtime=$(stat -f %m "$combo_file" 2>/dev/null)
-            ;;
-        linux)
-            initial_atime=$(stat -c %X "$combo_file" 2>/dev/null)
-            initial_mtime=$(stat -c %Y "$combo_file" 2>/dev/null)
-            ;;
-        *)
-            initial_atime="0"
-            initial_mtime="0"
-            ;;
-    esac
+    initial_atime=$(get_atime "$combo_file")
+    initial_mtime=$(get_mtime "$combo_file")
 
     sleep 2
     test_command_succeeds "touch -a -m combination" "$binary" -a -m "$combo_file"
 
-    case "$PLATFORM" in
-        macos)
-            new_atime=$(stat -f %a "$combo_file" 2>/dev/null)
-            new_mtime=$(stat -f %m "$combo_file" 2>/dev/null)
-            ;;
-        linux)
-            new_atime=$(stat -c %X "$combo_file" 2>/dev/null)
-            new_mtime=$(stat -c %Y "$combo_file" 2>/dev/null)
-            ;;
-        *)
-            new_atime="$initial_atime"
-            new_mtime="$initial_mtime"
-            ;;
-    esac
+    new_atime=$(get_atime "$combo_file")
+    new_mtime=$(get_mtime "$combo_file")
 
     # Allow for some timing tolerance - either both times updated or at least one significantly changed
     local atime_changed=false
@@ -274,20 +219,8 @@ test_touch() {
 
     # Verify timestamps match (within reasonable tolerance)
     local ref_mtime target_mtime
-    case "$PLATFORM" in
-        macos)
-            ref_mtime=$(stat -f %m "$ref_file" 2>/dev/null)
-            target_mtime=$(stat -f %m "$target_file" 2>/dev/null)
-            ;;
-        linux)
-            ref_mtime=$(stat -c %Y "$ref_file" 2>/dev/null)
-            target_mtime=$(stat -c %Y "$target_file" 2>/dev/null)
-            ;;
-        *)
-            ref_mtime="0"
-            target_mtime="0"
-            ;;
-    esac
+    ref_mtime=$(get_mtime "$ref_file")
+    target_mtime=$(get_mtime "$target_file")
 
     # Allow 1 second tolerance for filesystem precision
     local time_diff=$((ref_mtime - target_mtime))

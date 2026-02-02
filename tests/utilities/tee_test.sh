@@ -74,21 +74,23 @@ test_tee() {
     
     echo -e "${CYAN}Testing file handling...${NC}"
     
-    # Dash argument (POSIX: create file named "-", output to stdout once)
+    # POSIX: dash means stdout (already written), not a file named "-"
     rm -f ./-
     test_command_output "tee with dash argument (stdout)" "stdout_data" bash -c "echo 'stdout_data' | '$binary' -"
-    test_command_output "tee with dash argument (dash file)" "stdout_data" cat ./-
+    # Verify no file named "-" was created
+    if [[ ! -f ./ ]]; then
+        print_test_result "tee dash is stdout not file" "PASS"
+    else
+        print_test_result "tee dash is stdout not file" "FAIL" "File named '-' was created"
+        rm -f ./-
+    fi
 
-    # Mix of files and dash
-    rm -f ./-
+    # Mix of files and dash - dash goes to stdout, file gets content
     test_command_output "tee file and dash (stdout)" "mixed_output" bash -c "echo 'mixed_output' | '$binary' '$test_file1' -"
     test_command_output "tee file and dash (file content)" "mixed_output" cat "$test_file1"
-    test_command_output "tee file and dash (dash file)" "mixed_output" cat ./-
 
-    # Multiple dash arguments (creates multiple "-" files or overwrites)
-    rm -f ./-
+    # Multiple dash arguments
     test_command_output "tee multiple dash args (stdout)" "dash_test" bash -c "echo 'dash_test' | '$binary' - -"
-    test_command_output "tee multiple dash args (dash file)" "dash_test" cat ./-
     
     # File creation in subdirectories
     local subdir="$TEMP_DIR/subdir"

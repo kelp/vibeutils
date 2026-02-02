@@ -148,7 +148,7 @@ fn printHelp(writer: anytype) !void {
 
 /// Print version information to provided writer
 fn printVersion(writer: anytype) !void {
-    try writer.print("mkdir (vibeutils) 0.1.0\n", .{});
+    try writer.print("mkdir ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Set directory permissions (POSIX only)

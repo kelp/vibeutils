@@ -52,6 +52,7 @@ const TailOptions = struct {
     verbose: bool = false,
     zero_terminated: bool = false,
     follow: bool = false,
+    from_beginning: bool = false,
 
     /// Returns true if we should show headers for multiple files
     pub fn shouldShowHeaders(self: TailOptions, file_count: usize) bool {
@@ -108,7 +109,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -137,9 +138,12 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     // Parse line count (-n flag)
     if (parsed_args.lines) |lines_str| {
+        if (lines_str.len > 0 and lines_str[0] == '+') {
+            options.from_beginning = true;
+        }
         options.line_count = parseNumericArg(lines_str) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of lines: '{s}'", .{lines_str});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         };
     } else {
         options.line_count = 10; // default
@@ -147,9 +151,12 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     // Parse byte count (-c flag) - overrides line count
     if (parsed_args.bytes) |bytes_str| {
+        if (bytes_str.len > 0 and bytes_str[0] == '+') {
+            options.from_beginning = true;
+        }
         options.byte_count = parseNumericArg(bytes_str) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of bytes: '{s}'", .{bytes_str});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         };
         options.line_count = null; // byte mode overrides line mode
     }
@@ -164,10 +171,11 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null);
         } else {
             const line_count = options.line_count orelse 10;
-            try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated);
+            try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
         }
     } else {
         // Process each file
+        var had_error = false;
         const should_show_headers = options.shouldShowHeaders(parsed_args.positionals.len);
         for (parsed_args.positionals, 0..) |file_path, i| {
             if (std.mem.eql(u8, file_path, "-")) {
@@ -183,13 +191,14 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null);
                 } else {
                     const line_count = options.line_count orelse 10;
-                    try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated);
+                    try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
                 }
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ file_path, errorToMessage(err) });
-                    return @intFromEnum(common.ExitCode.general_error);
+                    had_error = true;
+                    continue;
                 };
                 defer file.close();
 
@@ -204,10 +213,11 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file);
                 } else {
                     const line_count = options.line_count orelse 10;
-                    try processInputByLinesFromFile(allocator, file, stdout_writer, line_count, options.zero_terminated);
+                    try processInputByLinesFromFile(allocator, file, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
                 }
             }
         }
+        if (had_error) return @intFromEnum(common.ExitCode.general_error);
     }
 
     return @intFromEnum(common.ExitCode.success);
@@ -449,177 +459,155 @@ const LineBuffer = struct {
     }
 };
 
-/// Circular buffer to store last N lines
-const CircularLineBuffer = struct {
-    allocator: std.mem.Allocator,
-    lines: [][]u8,
-    capacity: usize,
-    count: usize,
-    write_index: usize,
-
-    pub fn init(allocator: std.mem.Allocator, capacity: usize) !CircularLineBuffer {
-        const lines = try allocator.alloc([]u8, capacity);
-        for (lines) |*line| {
-            line.* = &[_]u8{};
-        }
-        return .{
-            .allocator = allocator,
-            .lines = lines,
-            .capacity = capacity,
-            .count = 0,
-            .write_index = 0,
-        };
-    }
-
-    pub fn deinit(self: *CircularLineBuffer) void {
-        for (self.lines) |line| {
-            if (line.len > 0) {
-                self.allocator.free(line);
-            }
-        }
-        self.allocator.free(self.lines);
-    }
-
-    pub fn addLine(self: *CircularLineBuffer, line: []const u8) !void {
-        // Free old line if exists
-        if (self.lines[self.write_index].len > 0) {
-            self.allocator.free(self.lines[self.write_index]);
-        }
-
-        // Allocate and copy new line
-        const new_line = try self.allocator.alloc(u8, line.len);
-        @memcpy(new_line, line);
-        self.lines[self.write_index] = new_line;
-
-        self.write_index = (self.write_index + 1) % self.capacity;
-        if (self.count < self.capacity) {
-            self.count += 1;
-        }
-    }
-
-    /// Returns lines in correct order (oldest to newest) without allocating.
-    /// The returned slice is valid until the next addLine() call.
-    pub fn getLinesInOrder(self: *const CircularLineBuffer, output_buffer: [][]u8) [][]u8 {
-        if (self.count == 0) return output_buffer[0..0];
-
-        if (self.count < self.capacity) {
-            // Buffer not full - lines are already in order from 0..count
-            const actual_count = @min(self.count, output_buffer.len);
-            for (0..actual_count) |i| {
-                output_buffer[i] = self.lines[i];
-            }
-            return output_buffer[0..actual_count];
-        } else {
-            // Buffer is full - start from write_index (oldest) and wrap around
-            const actual_count = @min(self.capacity, output_buffer.len);
-            var read_index = self.write_index;
-            for (0..actual_count) |i| {
-                output_buffer[i] = self.lines[read_index];
-                read_index = (read_index + 1) % self.capacity;
-            }
-            return output_buffer[0..actual_count];
-        }
-    }
-};
-
-/// Process input by line count using file handle when available
-fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, writer: anytype, line_count: u64, zero_terminated: bool) !void {
-    if (line_count == 0) return; // Output nothing for 0 lines
+/// Process input by line count using file handle when available.
+/// Streams the file in chunks instead of reading it all into memory.
+fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, writer: anytype, line_count: u64, zero_terminated: bool, from_beginning: bool) !void {
+    if (line_count == 0 and !from_beginning) return;
 
     const delimiter: u8 = if (zero_terminated) 0 else '\n';
     const max_lines = @as(usize, @intCast(line_count));
 
-    // Read entire file content
-    const file_size = try file.getEndPos();
-    const content = try file.readToEndAlloc(allocator, @as(usize, @intCast(@min(file_size, 1024 * 1024 * 10)))); // 10MB limit
-    defer allocator.free(content);
+    if (from_beginning) {
+        // Skip the first (line_count - 1) lines and stream the rest
+        const skip_count = if (line_count > 0) max_lines - 1 else 0;
+        var read_buf: [8192]u8 = undefined;
 
+        if (skip_count == 0) {
+            // +1 means output everything from the start
+            while (true) {
+                const n = file.read(&read_buf) catch |err| return err;
+                if (n == 0) return;
+                try writer.writeAll(read_buf[0..n]);
+            }
+        }
+
+        var lines_seen: usize = 0;
+        while (true) {
+            const bytes_read = file.read(&read_buf) catch |err| return err;
+            if (bytes_read == 0) return; // EOF before we finished skipping
+
+            for (read_buf[0..bytes_read], 0..) |byte, pos| {
+                if (byte == delimiter) {
+                    lines_seen += 1;
+                    if (lines_seen >= skip_count) {
+                        // Output the rest of this chunk after the delimiter
+                        try writer.writeAll(read_buf[pos + 1 .. bytes_read]);
+                        // Then stream remaining file content directly
+                        while (true) {
+                            const n = file.read(&read_buf) catch |err| return err;
+                            if (n == 0) return;
+                            try writer.writeAll(read_buf[0..n]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Use LineBuffer to keep the last N lines
     var line_buffer = try LineBuffer.init(allocator, max_lines);
     defer line_buffer.deinit();
 
-    // Split content into lines
-    var start: usize = 0;
-    var i: usize = 0;
+    // Stream file in chunks and extract lines
+    var read_buf: [8192]u8 = undefined;
+    var partial = std.ArrayListUnmanaged(u8){};
+    defer partial.deinit(allocator);
 
-    while (i <= content.len) {
-        if (i == content.len or content[i] == delimiter) {
-            // Found line boundary or end of content
-            if (start < i) {
-                // Add the line content
-                if (i < content.len) {
-                    // Line has delimiter - include it
-                    try line_buffer.addLine(content[start .. i + 1]);
-                    start = i + 1;
+    while (true) {
+        const bytes_read = file.read(&read_buf) catch |err| return err;
+        if (bytes_read == 0) break; // EOF
+
+        var chunk_start: usize = 0;
+        for (read_buf[0..bytes_read], 0..) |byte, pos| {
+            if (byte == delimiter) {
+                const chunk_end = pos + 1; // Include delimiter
+                if (partial.items.len > 0) {
+                    // Combine partial data with this chunk
+                    try partial.appendSlice(allocator, read_buf[chunk_start..chunk_end]);
+                    try line_buffer.addLine(partial.items);
+                    partial.clearRetainingCapacity();
                 } else {
-                    // Final line without delimiter - don't add delimiter
-                    try line_buffer.addLine(content[start..i]);
-                    start = i;
+                    // Complete line within this chunk
+                    try line_buffer.addLine(read_buf[chunk_start..chunk_end]);
                 }
-            } else if (i < content.len and content[i] == delimiter) {
-                // Empty line with delimiter
-                try line_buffer.addLine(content[start .. i + 1]);
-                start = i + 1;
+                chunk_start = chunk_end;
             }
         }
-        i += 1;
+
+        // Save any remaining partial line data
+        if (chunk_start < bytes_read) {
+            try partial.appendSlice(allocator, read_buf[chunk_start..bytes_read]);
+        }
     }
 
-    // Output all stored lines
+    // Handle final partial line (no trailing delimiter)
+    if (partial.items.len > 0) {
+        try line_buffer.addLine(partial.items);
+    }
+
     try line_buffer.writeAllLines(writer);
 }
 
 /// Process input by line count (fallback for non-file inputs like stdin)
-fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: anytype, line_count: u64, zero_terminated: bool) !void {
-    if (line_count == 0) return; // Output nothing for 0 lines
+fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: anytype, line_count: u64, zero_terminated: bool, from_beginning: bool) !void {
+    if (line_count == 0 and !from_beginning) return; // Output nothing for 0 lines
 
     const delimiter: u8 = if (zero_terminated) 0 else '\n';
     const max_lines = @as(usize, @intCast(line_count));
 
-    // Create circular buffer for last N lines
-    var line_buffer = try CircularLineBuffer.init(allocator, max_lines);
+    if (from_beginning) {
+        // Skip the first (line_count - 1) lines and output the rest
+        const skip_count = if (line_count > 0) max_lines - 1 else 0;
+        var lines_skipped: usize = 0;
+
+        // Skip lines by reading and discarding them
+        while (lines_skipped < skip_count) {
+            if (reader.takeDelimiterInclusive(delimiter)) |_| {
+                lines_skipped += 1;
+            } else |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            }
+        }
+
+        // Output remaining lines
+        while (reader.takeDelimiterInclusive(delimiter)) |line| {
+            try writer.writeAll(line);
+        } else |err| switch (err) {
+            error.EndOfStream => {
+                // Handle final partial line (no trailing delimiter)
+                const remaining = reader.buffered();
+                if (remaining.len > 0) {
+                    try writer.writeAll(remaining);
+                    reader.toss(remaining.len);
+                }
+            },
+            else => return err,
+        }
+        return;
+    }
+
+    // Use LineBuffer ring buffer for last N lines
+    var line_buffer = try LineBuffer.init(allocator, max_lines);
     defer line_buffer.deinit();
 
-    if (delimiter == '\n') {
-        // Use takeDelimiterExclusive for newline-terminated lines
-        while (reader.takeDelimiterExclusive('\n')) |line| {
-            // Create a copy with delimiter appended
-            var line_with_delim = try allocator.alloc(u8, line.len + 1);
-            @memcpy(line_with_delim[0..line.len], line);
-            line_with_delim[line.len] = '\n';
-            try line_buffer.addLine(line_with_delim);
-        } else |err| switch (err) {
-            error.EndOfStream => {
-                // End of stream - the Reader API handles lines without final delimiter correctly
-                // Any data without a final delimiter has already been returned by takeDelimiterExclusive
-            },
-            else => return err,
-        }
-    } else {
-        // For zero-terminated lines, use takeDelimiterExclusive(0)
-        while (reader.takeDelimiterExclusive(0)) |line| {
-            // Create a copy with delimiter appended
-            var line_with_delim = try allocator.alloc(u8, line.len + 1);
-            @memcpy(line_with_delim[0..line.len], line);
-            line_with_delim[line.len] = 0;
-            try line_buffer.addLine(line_with_delim);
-        } else |err| switch (err) {
-            error.EndOfStream => {
-                // End of stream - the Reader API handles lines without final delimiter correctly
-                // Any data without a final delimiter has already been returned by takeDelimiterExclusive
-            },
-            else => return err,
-        }
+    // Read lines and add to ring buffer
+    while (reader.takeDelimiterInclusive(delimiter)) |line| {
+        try line_buffer.addLine(line);
+    } else |err| switch (err) {
+        error.EndOfStream => {
+            // Handle final partial line (no trailing delimiter)
+            const remaining = reader.buffered();
+            if (remaining.len > 0) {
+                try line_buffer.addLine(remaining);
+                reader.toss(remaining.len);
+            }
+        },
+        else => return err,
     }
 
-    // Output the lines
-    // Allocate temporary buffer to hold line references in order
-    const output_buffer = try allocator.alloc([]u8, max_lines);
-    defer allocator.free(output_buffer);
-
-    const lines_in_order = line_buffer.getLinesInOrder(output_buffer);
-    for (lines_in_order) |line| {
-        try writer.writeAll(line);
-    }
+    // Output all stored lines
+    try line_buffer.writeAllLines(writer);
 }
 
 // ========== TESTS ==========
@@ -884,6 +872,77 @@ test "parseNumericArg with plus prefix" {
     try testing.expectEqual(@as(u64, 1), try parseNumericArg("+1"));
 }
 
+test "tail -n +1 outputs entire file (from-beginning)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "line1\nline2\nline3\nline4\nline5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const options = TailOptions{ .line_count = 1, .from_beginning = true };
+    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+
+    // +1 means skip 0 lines, output everything
+    try testing.expectEqualStrings("line1\nline2\nline3\nline4\nline5\n", buffer.items);
+}
+
+test "tail -n +3 skips first 2 lines (from-beginning)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "line1\nline2\nline3\nline4\nline5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const options = TailOptions{ .line_count = 3, .from_beginning = true };
+    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+
+    // +3 means skip first 2 lines, output from line 3 onward
+    try testing.expectEqualStrings("line3\nline4\nline5\n", buffer.items);
+}
+
+test "tail -n +NUM larger than file outputs nothing" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "line1\nline2\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const options = TailOptions{ .line_count = 100, .from_beginning = true };
+    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+
+    // +100 on a 2-line file: skip 99 lines, nothing left
+    try testing.expectEqualStrings("", buffer.items);
+}
+
+test "tail -n +NUM detected via runTail arg parsing" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "line1\nline2\nline3\nline4\nline5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // Get the real path for the file
+    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(path);
+
+    const args = [_][]const u8{ "-n", "+3", path };
+    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("line3\nline4\nline5\n", buffer.items);
+}
+
 test "parseNumericArg with invalid input" {
     try testing.expectError(error.InvalidArgument, parseNumericArg(""));
     try testing.expectError(error.InvalidArgument, parseNumericArg("abc"));
@@ -934,7 +993,7 @@ test "tail with invalid line count" {
 
     const args = [_][]const u8{ "-n", "invalid" };
     const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid number of lines") != null);
 }
 
@@ -944,7 +1003,7 @@ test "tail with invalid byte count" {
 
     const args = [_][]const u8{ "-c", "xyz" };
     const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid number of bytes") != null);
 }
 
@@ -959,7 +1018,7 @@ fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options:
         try processInputByBytes(testing.allocator, file_interface, writer, byte_count, file);
     } else {
         const line_count = options.line_count orelse 10;
-        try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated);
+        try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated, options.from_beginning);
     }
 }
 

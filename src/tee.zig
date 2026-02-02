@@ -94,9 +94,19 @@ fn runTeeWithInput(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !u8 {
+    // Filter out "-" from file list — POSIX says "-" means stdout,
+    // which tee already writes to.
+    var filtered_files = std.ArrayListUnmanaged([]const u8){};
+    defer filtered_files.deinit(allocator);
+    for (args.positionals) |name| {
+        if (!std.mem.eql(u8, name, "-")) {
+            try filtered_files.append(allocator, name);
+        }
+    }
+
     // Create multi-writer system using the generic type
     const MultiWriter = MultiWriterGeneric(@TypeOf(stdout_writer));
-    var multi_writer = MultiWriter.init(allocator, stdout_writer, args.positionals, args.append, args.diagnose_errors) catch |err| {
+    var multi_writer = MultiWriter.init(allocator, stdout_writer, filtered_files.items, args.append, args.diagnose_errors) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "tee", "failed to open files: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };

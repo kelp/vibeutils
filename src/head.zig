@@ -39,7 +39,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -62,7 +62,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const line_count = if (parsed_args.lines) |n| blk: {
         if (n < 0) {
             common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines", .{});
-            return @intFromEnum(common.ExitCode.general_error);
+            return @intFromEnum(common.ExitCode.misuse);
         }
         break :blk @as(u64, @intCast(n));
     } else DEFAULT_LINE_COUNT;
@@ -186,45 +186,42 @@ const HeadOptions = struct {
 };
 
 /// Process input from a reader and output first lines/bytes to writer.
-/// Uses appendRemaining to read all data first, avoiding EOF handling issues with takeDelimiterExclusive.
+/// Streams data without reading the entire input into memory.
 pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: HeadOptions) !void {
-    // Read all data into memory first using appendRemaining
-    var content_list = std.ArrayListUnmanaged(u8){};
-    defer content_list.deinit(allocator);
-
-    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
-    reader.appendRemaining(allocator, &content_list, limit) catch |err| {
-        return err;
-    };
-
-    const content = content_list.items;
+    _ = allocator;
 
     if (options.byte_count) |byte_count| {
-        // Process by bytes - output first N bytes
-        const bytes_to_write = @min(byte_count, content.len);
-        try writer.writeAll(content[0..bytes_to_write]);
+        // Byte mode: read chunks and write until byte_count reached
+        var remaining: u64 = byte_count;
+        while (remaining > 0) {
+            // peekGreedy(1) fills the buffer and returns all available bytes
+            const available = reader.peekGreedy(1) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => |e| return e,
+            };
+            const to_write = @min(@as(usize, @intCast(@min(remaining, std.math.maxInt(usize)))), available.len);
+            try writer.writeAll(available[0..to_write]);
+            reader.toss(to_write);
+            remaining -= to_write;
+        }
     } else {
-        // Process by lines - output first N lines
-        try processLines(writer, content, options.line_count);
-    }
-}
-
-/// Process in-memory content by lines, outputting the first line_count lines
-fn processLines(writer: anytype, content: []const u8, line_count: u64) !void {
-    var lines_written: u64 = 0;
-    var pos: usize = 0;
-
-    while (lines_written < line_count and pos < content.len) {
-        // Find the next newline
-        if (std.mem.indexOfScalar(u8, content[pos..], '\n')) |newline_offset| {
-            // Write the line including the newline
-            try writer.writeAll(content[pos .. pos + newline_offset + 1]);
-            pos += newline_offset + 1;
+        // Line mode: output first N lines
+        var lines_written: u64 = 0;
+        while (lines_written < options.line_count) {
+            const line = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+                error.EndOfStream => {
+                    // Output any remaining partial line (no trailing newline)
+                    const remaining = reader.buffered();
+                    if (remaining.len > 0) {
+                        try writer.writeAll(remaining);
+                        reader.toss(remaining.len);
+                    }
+                    break;
+                },
+                else => |e| return e,
+            };
+            try writer.writeAll(line);
             lines_written += 1;
-        } else {
-            // No more newlines - write remaining content (last line without trailing newline)
-            try writer.writeAll(content[pos..]);
-            break;
         }
     }
 }
@@ -460,7 +457,7 @@ test "head handles invalid line count" {
     const args = [_][]const u8{ "-n", TEST_NEGATIVE_VALUE };
     const result = try runHead(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
 
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
 }
 
 test "head help flag works" {

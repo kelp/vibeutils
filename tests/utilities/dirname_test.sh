@@ -144,9 +144,9 @@ test_dirname() {
     test_command_output "dirname mixed dot components" "a/./b" "$binary" "a/./b/c"
 
     # Error conditions
-    test_command_exit_code "dirname no arguments" 1 "$binary" 2>/dev/null
-    test_command_exit_code "dirname invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
-    test_command_exit_code "dirname unknown short flag" 1 "$binary" -x 2>/dev/null
+    test_command_exit_code "dirname no arguments" 2 "$binary" 2>/dev/null
+    test_command_exit_code "dirname invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "dirname unknown short flag" 2 "$binary" -x 2>/dev/null
 
     # Error messages verification
     local no_args_stderr
@@ -276,7 +276,7 @@ test_dirname() {
     echo -e "${CYAN}Testing comprehensive error conditions...${NC}"
 
     # Mixed valid and invalid flags
-    test_command_exit_code "dirname mixed flags" 1 "$binary" -z --invalid 2>/dev/null
+    test_command_exit_code "dirname mixed flags" 2 "$binary" -z --invalid 2>/dev/null
 
     # Help and version flag priority
     test_command_exit_code "dirname help flag success" 0 "$binary" --help

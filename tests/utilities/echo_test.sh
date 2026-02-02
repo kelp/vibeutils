@@ -82,11 +82,12 @@ test_echo() {
     
     echo -e "${CYAN}Testing error conditions...${NC}"
     
-    # Test invalid flag
-    if "$binary" --invalid-flag >/dev/null 2>&1; then
-        print_test_result "echo invalid flag handling" "FAIL" "Should have failed"
+    # GNU echo treats unknown flags as positional arguments
+    output=$("$binary" --invalid-flag)
+    if [[ "$output" == "--invalid-flag" ]]; then
+        print_test_result "echo unknown flag as positional" "PASS"
     else
-        print_test_result "echo invalid flag handling" "PASS"
+        print_test_result "echo unknown flag as positional" "FAIL" "Expected '--invalid-flag', got '$output'"
     fi
     
     echo -e "${CYAN}Testing POSIX compliance...${NC}"

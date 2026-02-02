@@ -168,7 +168,7 @@ fn printHelp(writer: anytype) !void {
 
 /// Print version information
 fn printVersion(writer: anytype) !void {
-    try writer.print("sleep (vibeutils) 1.0.0\n", .{});
+    try writer.print("sleep ({s}) {s}\n", .{ common.name, common.version });
 }
 
 pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
@@ -177,7 +177,7 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -202,19 +202,19 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
             error.MissingTimeArgument => {
                 common.printErrorWithProgram(allocator, stderr_writer, "sleep", "missing operand", .{});
                 common.printErrorWithProgram(allocator, stderr_writer, "sleep", "Try 'sleep --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidTimeFormat => {
                 common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.NegativeTime => {
                 common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.TimeOverflow => {
                 common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval: value too large", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
         }
     };
@@ -371,7 +371,7 @@ test "runSleep - missing arguments" {
 
     const result = try runSleep(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 }
 
@@ -381,7 +381,7 @@ test "runSleep - invalid time format" {
 
     const result = try runSleep(testing.allocator, &.{"invalid"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
 }
 
@@ -391,7 +391,7 @@ test "runSleep - negative time (with separator)" {
 
     const result = try runSleep(testing.allocator, &.{ "--", "-1" }, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
 }
 
@@ -401,7 +401,7 @@ test "runSleep - negative flag treated as unknown argument" {
 
     const result = try runSleep(testing.allocator, &.{"-1"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
 }
 

@@ -57,7 +57,7 @@ VIBEUTILS_FUZZ_TARGET=all zig build test --fuzz
 ## Selective Fuzzing System
 
 ### Problem Solved
-Previously, `zig build test --fuzz` would run ALL fuzz tests and get stuck on the first one forever since Zig 0.15.1 fuzzing runs indefinitely. Our selective fuzzing system allows:
+Previously, `zig build test --fuzz` would run ALL fuzz tests and get stuck on the first one forever since Zig 0.15.x fuzzing runs indefinitely. Our selective fuzzing system allows:
 - Testing individual utilities selectively
 - Rotating through multiple utilities with time limits
 - Running focused fuzzing sessions on specific utilities
@@ -312,7 +312,7 @@ These are legitimate security tests, not malicious code.
 ## Technical Notes
 
 ### LibFuzzer Integration
-vibeutils uses Zig 0.15.1's built-in fuzzing support based on LibFuzzer:
+vibeutils uses Zig 0.15.x's built-in fuzzing support based on LibFuzzer:
 - Automatic test case minimization
 - Coverage-guided fuzzing
 - Crash reproduction capabilities

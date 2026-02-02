@@ -1,11 +1,11 @@
 ---
-description: Audit Zig code for 0.15.1 correctness
+description: Audit Zig code for 0.15.x correctness
 disable-model-invocation: true
 ---
 
 # /zig-check [file]
 
-Audit Zig source files for common Zig 0.15.1 mistakes. If a file
+Audit Zig source files for common Zig 0.15.x mistakes. If a file
 path is given, check that file. Otherwise check all `src/*.zig`
 files that were modified in the current git diff (staged and
 unstaged).
@@ -117,7 +117,7 @@ If no issues found in any file:
 ```
 ## /zig-check Results
 
-All files pass. No Zig 0.15.1 issues found.
+All files pass. No Zig 0.15.x issues found.
 ```
 
 ### 5. Suggest fixes

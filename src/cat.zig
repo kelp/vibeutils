@@ -77,15 +77,15 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "cat", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "cat", "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "cat", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -235,21 +235,13 @@ const LineNumberState = struct {
 
 /// Format output according to the specified options.
 /// Maintains line numbering state across multiple files.
-/// For basic file concatenation, we need to preserve the exact byte structure.
-/// Uses appendRemaining to read all data first, avoiding EOF handling issues with takeDelimiterExclusive.
+/// Streams data directly from the reader without buffering entire
+/// files into memory. The no-formatting path uses peekGreedy/toss
+/// for zero-copy throughput; the formatting path reads line by line
+/// with takeDelimiterExclusive and handles partial trailing lines
+/// via reader.buffered().
 pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
-    // Read all data into memory first using appendRemaining
-    // This avoids the EOF handling bug with takeDelimiterExclusive
-    var content_list = std.ArrayListUnmanaged(u8){};
-    defer content_list.deinit(allocator);
-
-    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
-    reader.appendRemaining(allocator, &content_list, limit) catch |err| {
-        // If appendRemaining fails, there's nothing we can do
-        return err;
-    };
-
-    const content = content_list.items;
+    _ = allocator;
 
     // Check if we need any line-based processing (formatting options)
     const needs_line_processing = options.number_lines or options.number_nonblank or
@@ -257,75 +249,76 @@ pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anyty
         options.show_tabs or options.show_nonprinting;
 
     if (!needs_line_processing) {
-        // For basic cat functionality (no formatting), write all content directly
-        try writer.writeAll(content);
+        // Stream chunks directly from reader to writer with no heap allocation.
+        // peekGreedy(1) fills the internal buffer and returns all available bytes.
+        while (true) {
+            const chunk = reader.peekGreedy(1) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => |e| return e,
+            };
+            try writer.writeAll(chunk);
+            reader.toss(chunk.len);
+        }
         return;
     }
 
-    // For formatting options, we need line-by-line processing from the buffer
-    var line_start: usize = 0;
-    var i: usize = 0;
-
-    while (i <= content.len) {
-        // Check if we're at end of content or found a newline
-        const at_newline = i < content.len and content[i] == '\n';
-        const at_end = i == content.len;
-
-        if (at_newline or at_end) {
-            const line = content[line_start..i];
-            const is_blank = line.len == 0;
-
-            // At end of content with no trailing newline - only process if there's content
-            if (at_end and line.len == 0) {
-                break;
-            }
-
-            // Handle squeeze blank
-            if (options.squeeze_blank and is_blank and state.prev_blank) {
-                // Skip this blank line, move to next
-                if (at_newline) {
-                    i += 1;
-                    line_start = i;
+    // Formatting path: process one line at a time using the reader's
+    // internal buffer. takeDelimiterInclusive returns line content
+    // including the newline, advancing past it. On EndOfStream we
+    // check buffered() for a partial trailing line without a newline.
+    while (true) {
+        const line_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => {
+                // Handle any remaining partial line (no trailing newline)
+                const remaining = reader.buffered();
+                if (remaining.len > 0) {
+                    try processFormattedLine(writer, remaining, false, options, state);
+                    reader.toss(remaining.len);
                 }
-                continue;
-            }
-            state.prev_blank = is_blank;
-
-            // Handle line numbering
-            if (options.number_nonblank and !is_blank) {
-                // Number non-blank lines only (-b option)
-                try writer.print("{d: >6}\t", .{state.line_number});
-                state.line_number += 1;
-            } else if (options.number_lines and !options.number_nonblank) {
-                // Number all lines (-n option, but -b takes precedence)
-                try writer.print("{d: >6}\t", .{state.line_number});
-                state.line_number += 1;
-            }
-
-            // Write the line content
-            if (options.show_tabs or options.show_nonprinting) {
-                try writeWithSpecialChars(writer, line, options);
-            } else {
-                try writer.writeAll(line);
-            }
-
-            // Handle line ending
-            if (options.show_ends) {
-                try writer.writeAll("$");
-            }
-
-            // Write newline only if original had one
-            if (at_newline) {
-                try writer.writeAll("\n");
-                i += 1;
-                line_start = i;
-            } else {
-                // End of content without trailing newline
                 break;
-            }
-        } else {
-            i += 1;
+            },
+            else => |e| return e,
+        };
+        // Strip the trailing newline for processFormattedLine (it adds it back)
+        const line = line_with_nl[0 .. line_with_nl.len - 1];
+        try processFormattedLine(writer, line, true, options, state);
+    }
+}
+
+/// Apply formatting to a single line and write it to the writer.
+/// `has_newline` indicates whether the original input had a trailing
+/// newline for this line (false only for the last partial line at EOF).
+fn processFormattedLine(writer: anytype, line: []const u8, has_newline: bool, options: CatOptions, state: *LineNumberState) !void {
+    const is_blank = line.len == 0;
+
+    // Handle squeeze blank: skip consecutive blank lines
+    if (options.squeeze_blank and is_blank and state.prev_blank) {
+        return;
+    }
+    state.prev_blank = is_blank;
+
+    // Handle line numbering
+    if (options.number_nonblank and !is_blank) {
+        try writer.print("{d: >6}\t", .{state.line_number});
+        state.line_number += 1;
+    } else if (options.number_lines and !options.number_nonblank) {
+        try writer.print("{d: >6}\t", .{state.line_number});
+        state.line_number += 1;
+    }
+
+    // Write the line content with optional special character handling
+    if (options.show_tabs or options.show_nonprinting) {
+        try writeWithSpecialChars(writer, line, options);
+    } else {
+        try writer.writeAll(line);
+    }
+
+    // Write newline only if the original input had one
+    if (has_newline) {
+        if (options.show_ends) {
+            try writer.writeAll("$");
         }
+        try writer.writeAll("\n");
     }
 }
 

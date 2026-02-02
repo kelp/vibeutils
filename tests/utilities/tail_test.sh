@@ -37,13 +37,13 @@ test_tail() {
     test_command_output "tail -n 20 (more than file)" $'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15' "$binary" -n 20 "$test_file2"
     
     # +NUM syntax (key variations only)
-    test_command_output "tail -n +1" "Line 15" "$binary" -n +1 "$test_file2"
-    test_command_output "tail -n +10" $'Line 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15' "$binary" -n +10 "$test_file2"
-    test_command_output "tail -n +20 (more than file)" $'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15' "$binary" -n +20 "$test_file2"
+    test_command_output "tail -n +1" $'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15' "$binary" -n +1 "$test_file2"
+    test_command_output "tail -n +10" $'Line 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15' "$binary" -n +10 "$test_file2"
+    test_command_output "tail -n +20 (more than file)" "" "$binary" -n +20 "$test_file2"
     
     # --lines long option (essential tests only)
     test_command_output "tail --lines=3" $'Line 13\nLine 14\nLine 15' "$binary" --lines=3 "$test_file2"
-    test_command_output "tail --lines=+3" $'Line 13\nLine 14\nLine 15' "$binary" --lines=+3 "$test_file2"
+    test_command_output "tail --lines=+3" $'Line 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\nLine 11\nLine 12\nLine 13\nLine 14\nLine 15' "$binary" --lines=+3 "$test_file2"
     
     # Empty file edge case
     test_command_output "tail -n 10 empty file" "" "$binary" -n 10 "$test_file3"

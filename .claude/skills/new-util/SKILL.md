@@ -11,7 +11,7 @@ is the utility name (e.g., `/new-util sort`).
 ## Before You Start
 
 1. Read `docs/ZIG_BREAKING_CHANGES.md` -- your Zig training is
-   outdated
+   outdated (covers 0.15.x)
 2. Read `docs/TESTING_STRATEGY.md` -- especially the filter
    utility section
 3. Read the template at

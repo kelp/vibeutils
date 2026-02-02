@@ -45,7 +45,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "rm", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -66,8 +66,9 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
     const files = parsed_args.positionals;
     if (files.len == 0) {
+        if (parsed_args.force) return @intFromEnum(common.ExitCode.success);
         common.printErrorWithProgram(allocator, stderr_writer, "rm", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Create options structure - merge -i/-I and -r/-R flags

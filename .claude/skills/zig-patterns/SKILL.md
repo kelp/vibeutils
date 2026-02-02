@@ -1,9 +1,9 @@
 ---
-description: Zig 0.15.1 correct patterns for vibeutils
+description: Zig 0.15.x correct patterns for vibeutils
 model-invocation: true
 ---
 
-# Zig 0.15.1 Patterns -- Quick Reference
+# Zig 0.15.x Patterns -- Quick Reference
 
 Your Zig training is outdated. These are the CORRECT patterns.
 

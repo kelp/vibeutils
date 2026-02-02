@@ -1,9 +1,9 @@
 # Zig Patterns for vibeutils
 
-This document contains Zig 0.15.1 patterns and idioms commonly used in this
+This document contains Zig 0.15.x patterns and idioms commonly used in this
 codebase. It serves as a quick reference for implementing GNU coreutils in Zig.
 
-**⚠️ IMPORTANT: See `ZIG_BREAKING_CHANGES.md` for critical I/O changes in Zig 0.15.1**
+**⚠️ IMPORTANT: See `ZIG_BREAKING_CHANGES.md` for critical I/O changes in Zig 0.15.x**
 
 ## Memory Management
 
@@ -43,7 +43,7 @@ while (args_iter.next()) |arg| {
 
 ## I/O Operations
 
-### Standard Streams (Zig 0.15.1)
+### Standard Streams (Zig 0.15.x)
 ```zig
 // NEW: Explicit buffers required
 var stdout_buffer: [4096]u8 = undefined;
@@ -81,7 +81,7 @@ const content = try file.readToEndAlloc(allocator, max_size);
 try std.fs.cwd().writeFile("output.txt", "content");
 ```
 
-### File I/O with Buffers (Zig 0.15.1)
+### File I/O with Buffers (Zig 0.15.x)
 ```zig
 // Reading with buffer
 var read_buffer: [8192]u8 = undefined;
@@ -166,7 +166,7 @@ test "with allocation" {
 }
 ```
 
-### Testing Output (Zig 0.15.1)
+### Testing Output (Zig 0.15.x)
 ```zig
 test "test output" {
     // ArrayList now requires allocator for all operations
@@ -192,7 +192,7 @@ std.mem.indexOf(u8, haystack, needle) // Returns ?usize
 ### String Manipulation
 ```zig
 // Tokenize
-var iter = std.mem.tokenize(u8, input, " \t\n");
+var iter = std.mem.tokenizeAny(u8, input, " \t\n");
 while (iter.next()) |token| {
     // Process token
 }
@@ -242,7 +242,7 @@ const ext = std.fs.path.extension("file.txt"); // ".txt"
 std.process.exit(1); // Non-zero for error
 ```
 
-### Print Error and Exit (Zig 0.15.1)
+### Print Error and Exit (Zig 0.15.x)
 ```zig
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     // Note: For simple error printing, can still use unbuffered
@@ -255,7 +255,7 @@ fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 }
 ```
 
-### Argument Parsing Pattern (Zig 0.15.1)
+### Argument Parsing Pattern (Zig 0.15.x)
 ```zig
 var positional_args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
 defer positional_args.deinit(allocator);
@@ -477,7 +477,7 @@ test parseMode {
 
 ## Summary
 
-These patterns have been battle-tested in this codebase and follow Zig 0.15.1
+These patterns have been battle-tested in this codebase and follow Zig 0.15.x
 best practices. When in doubt, look at existing implementations in `src/` for
 examples of these patterns in action.
 

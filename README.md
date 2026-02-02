@@ -50,7 +50,7 @@ Text processing utilities (sort, uniq) and file information tools (stat, du, df)
 
 ### Build from source
 
-Requirements: Zig 0.15.1 or later
+Requirements: Zig 0.15.2 or later
 
 ```bash
 git clone https://github.com/kelp/vibeutils.git
