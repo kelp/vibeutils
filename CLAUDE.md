@@ -4,13 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 🔴 MANDATORY: Always Use Agent Workflow for Coding
 
-**The multi-agent workflow is required for ANY code changes beyond trivial fixes:**
+**The agent workflow is required for ANY code changes beyond
+trivial fixes:**
 
-1. **architect agent** → Design the solution
-2. **programmer agent** → Implement the code  
+1. **plan mode** → Design the solution (for architectural
+   decisions, new features, or non-trivial changes)
+2. **programmer agent** → Implement the code
 3. **reviewer agent** → Review for quality
 4. **optimizer agent** → Optimize if needed
-5. **CRITICAL**: Run FULL test suite (`zig build test`) before declaring success!
+5. **CRITICAL**: Run FULL test suite (`zig build test`) before
+   declaring success!
 
 ### Agent Usage Required For:
 - Implementing new utilities or features
@@ -18,10 +21,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Fixing bugs requiring more than 5 lines of change
 - Adding new functions or modifying APIs
 - Performance improvements
-- Any architectural decisions
 - Searching for code patterns across the codebase
 - Understanding existing implementations
 - Researching how something works
+
+### Plan Mode Required For:
+- Architectural decisions
+- API design or redesign
+- New utility implementation (use `/new-util`)
+- Any change touching multiple modules
 
 ### Direct Coding Acceptable For (RARE):
 - Fixing typos in comments or docs
@@ -29,7 +37,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Adding a single test case
 - Trivial one-line fixes
 
-**Default: Use agents. When uncertain, use agents. Start with architect agent for any real coding task.**
+**Default: Use agents. When uncertain, use agents. Start with
+plan mode for any non-trivial coding task.**
 
 ## Pre-1.0 Development Philosophy
 

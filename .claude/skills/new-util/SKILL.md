@@ -19,7 +19,7 @@ is the utility name (e.g., `/new-util sort`).
 
 ## Phase 1: Research & Design
 
-Use the **architect agent** for this phase.
+Use **plan mode** for this phase.
 
 1. **Classify the utility:**
    - Filter (reads stdin): cat, sort, uniq, tr, cut, nl, tac,
