@@ -17,7 +17,9 @@ const testing = std.testing;
 /// including -z, -foo, --unknown, is printed as a positional argument.
 /// Once a non-flag argument is encountered, all remaining arguments
 /// (including ones that look like flags) are treated as positional.
-pub fn runEcho(_: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, _: anytype) !u8 {
+pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    _ = allocator;
+    _ = stderr_writer;
     var suppress_newline = false;
     var interpret_escapes = false;
     var positional_start: usize = 0;
@@ -77,7 +79,7 @@ pub fn runEcho(_: std.mem.Allocator, args: []const []const u8, stdout_writer: an
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Main entry point for the echo utility
+/// CLI entry point — parses process arguments and sets up I/O buffers.
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -149,7 +151,7 @@ pub fn echoStrings(strings: []const []const u8, writer: anytype, options: EchoOp
 
         if (options.interpret_escapes) {
             const terminated = try writeWithEscapes(str, writer);
-            // If \c was encountered, stop processing all remaining arguments
+            // If \c was encountered, stop processing remaining arguments
             if (terminated) return;
         } else {
             try writer.writeAll(str);
@@ -186,7 +188,6 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
                 },
                 'c' => {
                     // \c suppresses all further output, including the trailing newline
-                    // This matches GNU echo behavior
                     return true;
                 },
                 'e' => {
@@ -473,6 +474,26 @@ test "echo -e with \\c at start of argument stops all" {
     const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("start ", buffer.items);
+}
+
+test "echo treats lone dash as positional argument" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-"};
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-\n", buffer.items);
+}
+
+test "echo -n with lone dash and text" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", "-", "hello" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("- hello", buffer.items);
 }
 
 // Fuzzing tests - these test properties that should hold for all inputs
