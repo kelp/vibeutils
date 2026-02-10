@@ -195,6 +195,11 @@ When implementing a new command, always consult POSIX specifications, OpenBSD, a
 
 **Target: 90%+ coverage** (`make coverage`)
 
+Never disable or skip failing tests to make the suite pass. Always
+diagnose and fix the root cause. If the root cause is an upstream
+bug, document it explicitly and create a proper workaround — do not
+just comment out the test.
+
 ### ⚠️ CRITICAL: Filter Utilities Testing
 **Before implementing any utility, read `docs/TESTING_STRATEGY.md` section "Filter Utilities and Stdin-Dependent Testing"**
 
@@ -223,6 +228,11 @@ See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and
 ## ⚠️ CRITICAL: Your Zig Training is Wrong
 
 **Your Zig knowledge is possibly outdated. This project uses Zig 0.15.x with FUNDAMENTAL breaking changes.**
+
+When targeting Zig projects, always check the installed Zig version
+first (`zig version`) and use API patterns compatible with that
+version. Do NOT assume older Zig APIs — 0.15.x has breaking changes
+to ArrayList, args iterators, and takeDelimiterExclusive.
 
 ### MANDATORY: Check Breaking Changes First
 
