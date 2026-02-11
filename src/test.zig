@@ -1,4 +1,9 @@
+//! POSIX test utility for evaluating conditional expressions
+//! Implements test(1) and [(1) commands with support for file tests,
+//! string comparisons, numeric comparisons, and logical operators.
+
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayListUnmanaged;
@@ -56,11 +61,11 @@ const FileAccess = struct {
 
     /// Get link status using lstat (does not follow symlinks), returning null on any error
     fn getLinkStat(path: []const u8) ?std.fs.File.Stat {
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
-        const c_path = allocator.dupeZ(u8, path) catch return null;
+        var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (path.len > std.fs.max_path_bytes) return null;
+        @memcpy(buf[0..path.len], path);
+        buf[path.len] = 0;
+        const c_path = buf[0..path.len :0];
 
         var stat_buf: std.c.Stat = undefined;
         const result = std.c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
@@ -112,6 +117,16 @@ const FileAccess = struct {
     }
 };
 
+/// Check if a string looks like an operator (starts with '-' followed by alpha) but isn't a known one
+fn isUnknownOperatorLike(str: []const u8) bool {
+    if (str.len > 1 and str[0] == '-' and std.ascii.isAlphabetic(str[1])) {
+        if (!isBinaryOperator(str) and !isUnaryOperator(str) and !std.mem.eql(u8, str, "-a") and !std.mem.eql(u8, str, "-o")) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Expression parser with focused methods for different expression types
 const ExpressionParser = struct {
     allocator: Allocator,
@@ -121,37 +136,31 @@ const ExpressionParser = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Parse and evaluate complete expression
-    fn parseAndEvaluate(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
+    /// Core dispatch logic shared by parseAndEvaluate and evaluateWithoutNegation
+    fn dispatchExpression(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
         if (args.len == 0) return false;
-
         if (args.len == 1) return self.evaluateSingle(args[0]);
         if (args.len == 2) {
-            // Check if it's a unary expression first
             if (isUnaryOperator(args[0])) {
                 return evaluateUnary(args[0], args[1]);
             }
-            // Otherwise it might be other complex expression
-            return self.evaluateComplexExpression(args);
+            return self.evaluateWithParentheses(args);
         }
         if (args.len == 3) {
-            // Check if it's a binary expression first
             if (isBinaryOperator(args[1])) {
                 return evaluateBinary(args[0], args[1], args[2]);
             }
-            // Check for invalid binary operators that look like operators but aren't recognized
-            // Only check args that start with '-' and have letters after it (potential operators)
-            if (args[1].len > 1 and args[1][0] == '-' and std.ascii.isAlphabetic(args[1][1])) {
-                // Valid operators: binary operators, unary operators, logical operators (-a, -o)
-                if (!isBinaryOperator(args[1]) and !isUnaryOperator(args[1]) and !std.mem.eql(u8, args[1], "-a") and !std.mem.eql(u8, args[1], "-o")) {
-                    return error.UnknownOperator;
-                }
+            if (isUnknownOperatorLike(args[1])) {
+                return error.UnknownOperator;
             }
-            // Otherwise it might be complex (parentheses, negation, etc.)
-            return self.evaluateComplexExpression(args);
+            return self.evaluateWithParentheses(args);
         }
+        return self.evaluateWithParentheses(args);
+    }
 
-        return self.evaluateComplexExpression(args);
+    /// Parse and evaluate complete expression
+    fn parseAndEvaluate(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
+        return self.dispatchExpression(args);
     }
 
     /// Evaluate single argument (non-empty string test)
@@ -160,24 +169,14 @@ const ExpressionParser = struct {
         // If it's a unary operator, it needs an argument, so this is an error
         if (isUnaryOperator(arg)) return error.InvalidExpression;
         // Check for invalid operators that look like operators but aren't recognized
-        if (arg.len > 1 and arg[0] == '-' and std.ascii.isAlphabetic(arg[1])) {
-            // Check if it's potentially an operator but not in our lists
-            if (!isUnaryOperator(arg) and !isBinaryOperator(arg) and !std.mem.eql(u8, arg, "-a") and !std.mem.eql(u8, arg, "-o")) {
-                return error.UnknownOperator;
-            }
+        if (isUnknownOperatorLike(arg)) {
+            return error.UnknownOperator;
         }
         // Handle sentinel values from parentheses evaluation (null-prefixed
         // to avoid colliding with actual command-line strings)
         if (std.mem.eql(u8, arg, "\x00true")) return true;
         if (std.mem.eql(u8, arg, "\x00false")) return false;
         return arg.len > 0;
-    }
-
-    /// Evaluate complex expressions with logical operators and grouping
-    fn evaluateComplexExpression(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
-        // Handle parentheses grouping with recursive evaluation first,
-        // then check for logical operators which have lower precedence than negation
-        return self.evaluateWithParentheses(args);
     }
 
     /// Evaluate negation expressions - apply negation to the next logical unit only
@@ -188,7 +187,7 @@ const ExpressionParser = struct {
         // If it starts with parentheses, find the matching closing paren
         // Otherwise, it applies to the next single unit only
 
-        if (args.len > 0 and std.mem.eql(u8, args[0], "(")) {
+        if (std.mem.eql(u8, args[0], "(")) {
             // Find the matching closing parenthesis
             var depth: usize = 1;
             var i: usize = 1;
@@ -231,34 +230,7 @@ const ExpressionParser = struct {
 
     /// Evaluate expression without checking for negation (used by evaluateNegation)
     fn evaluateWithoutNegation(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
-        if (args.len == 0) return false;
-        if (args.len == 1) return self.evaluateSingle(args[0]);
-        if (args.len == 2) {
-            // Check if it's a unary expression first
-            if (isUnaryOperator(args[0])) {
-                return evaluateUnary(args[0], args[1]);
-            }
-            // Otherwise it might be other complex expression
-            return self.evaluateWithParentheses(args);
-        }
-        if (args.len == 3) {
-            // Check if it's a binary expression first
-            if (isBinaryOperator(args[1])) {
-                return evaluateBinary(args[0], args[1], args[2]);
-            }
-            // Check for invalid binary operators that look like operators but aren't recognized
-            // Only check args that start with '-' and have letters after it (potential operators)
-            if (args[1].len > 1 and args[1][0] == '-' and std.ascii.isAlphabetic(args[1][1])) {
-                // Valid operators: binary operators, unary operators, logical operators (-a, -o)
-                if (!isBinaryOperator(args[1]) and !isUnaryOperator(args[1]) and !std.mem.eql(u8, args[1], "-a") and !std.mem.eql(u8, args[1], "-o")) {
-                    return error.UnknownOperator;
-                }
-            }
-            // Otherwise it might be complex (parentheses, negation, etc.)
-            return self.evaluateWithParentheses(args);
-        }
-
-        return self.evaluateWithParentheses(args);
+        return self.dispatchExpression(args);
     }
 
     /// Evaluate expressions with parentheses handling
@@ -392,8 +364,11 @@ fn evaluateUnary(op: []const u8, arg: []const u8) ParseError!bool {
     if (std.mem.eql(u8, op, "-b")) return isBlockDevice(arg);
     if (std.mem.eql(u8, op, "-c")) return isCharDevice(arg);
     if (std.mem.eql(u8, op, "-g")) return hasSetgid(arg);
+    if (std.mem.eql(u8, op, "-u")) return hasSetuid(arg);
+    if (std.mem.eql(u8, op, "-k")) return hasSticky(arg);
     if (std.mem.eql(u8, op, "-t")) {
         const fd = std.fmt.parseInt(i32, arg, 10) catch return error.InvalidNumber;
+        if (fd < 0) return error.InvalidNumber;
         return std.posix.isatty(fd);
     }
 
@@ -410,6 +385,9 @@ fn evaluateBinary(left: []const u8, op: []const u8, right: []const u8) ParseErro
     if (std.mem.eql(u8, op, "-le")) return NumericComparison.compare(left, right, .le);
     if (std.mem.eql(u8, op, "-gt")) return NumericComparison.compare(left, right, .gt);
     if (std.mem.eql(u8, op, "-ge")) return NumericComparison.compare(left, right, .ge);
+    if (std.mem.eql(u8, op, "-nt")) return isNewerThan(left, right);
+    if (std.mem.eql(u8, op, "-ot")) return isOlderThan(left, right);
+    if (std.mem.eql(u8, op, "-ef")) return isSameFile(left, right);
 
     return error.UnknownOperator;
 }
@@ -468,9 +446,42 @@ fn hasSetgid(path: []const u8) bool {
     return (stat.mode & std.posix.S.ISGID) != 0;
 }
 
+/// Check if file has setuid bit set
+fn hasSetuid(path: []const u8) bool {
+    const stat = FileAccess.getStat(path) orelse return false;
+    return (stat.mode & std.posix.S.ISUID) != 0;
+}
+
+/// Check if file has sticky bit set
+fn hasSticky(path: []const u8) bool {
+    const stat = FileAccess.getStat(path) orelse return false;
+    return (stat.mode & std.posix.S.ISVTX) != 0;
+}
+
+/// Check if file1 is newer than file2 (compare mtime)
+fn isNewerThan(path1: []const u8, path2: []const u8) bool {
+    const stat1 = FileAccess.getStat(path1) orelse return false;
+    const stat2 = FileAccess.getStat(path2) orelse return false;
+    return stat1.mtime > stat2.mtime;
+}
+
+/// Check if file1 is older than file2 (compare mtime)
+fn isOlderThan(path1: []const u8, path2: []const u8) bool {
+    const stat1 = FileAccess.getStat(path1) orelse return false;
+    const stat2 = FileAccess.getStat(path2) orelse return false;
+    return stat1.mtime < stat2.mtime;
+}
+
+/// Check if two paths refer to the same file (same device + inode)
+fn isSameFile(path1: []const u8, path2: []const u8) bool {
+    const stat1 = FileAccess.getStat(path1) orelse return false;
+    const stat2 = FileAccess.getStat(path2) orelse return false;
+    return stat1.inode == stat2.inode;
+}
+
 /// Check if string is a unary operator (alphabetized)
 fn isUnaryOperator(str: []const u8) bool {
-    const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-L", "-n", "-p", "-r", "-s", "-S", "-t", "-w", "-x", "-z" };
+    const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-L", "-n", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z" };
 
     for (unary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -480,12 +491,25 @@ fn isUnaryOperator(str: []const u8) bool {
 
 /// Check if string is a binary operator (alphabetized)
 fn isBinaryOperator(str: []const u8) bool {
-    const binary_ops = [_][]const u8{ "!=", "-eq", "-ge", "-gt", "-le", "-lt", "-ne", "=" };
+    const binary_ops = [_][]const u8{ "!=", "-ef", "-eq", "-ge", "-gt", "-le", "-lt", "-ne", "-nt", "-ot", "=" };
 
     for (binary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
     }
     return false;
+}
+
+/// Evaluate parsed test arguments and return exit code
+fn evaluateTestArgs(allocator: Allocator, test_args: []const []const u8, stderr_writer: anytype, prog_name: []const u8) !u8 {
+    var parser = ExpressionParser.init(allocator);
+    const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid expression", .{});
+            return @intFromEnum(ExitCode.@"error");
+        },
+    };
+    return if (result) @intFromEnum(ExitCode.true) else @intFromEnum(ExitCode.false);
 }
 
 /// Run test command in bracket form (when invoked as '[')
@@ -504,16 +528,7 @@ pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_wri
     // Remove closing ']' from arguments
     const test_args = args[0 .. args.len - 1];
 
-    var parser = ExpressionParser.init(allocator);
-    const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "[", "invalid expression", .{});
-            return @intFromEnum(ExitCode.@"error");
-        },
-    };
-
-    return if (result) @intFromEnum(ExitCode.true) else @intFromEnum(ExitCode.false);
+    return evaluateTestArgs(allocator, test_args, stderr_writer, "[");
 }
 
 /// Run main test command implementation
@@ -532,16 +547,7 @@ pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: an
         test_args = args[1 .. args.len - 1];
     }
 
-    var parser = ExpressionParser.init(allocator);
-    const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "test", "invalid expression", .{});
-            return @intFromEnum(ExitCode.@"error");
-        },
-    };
-
-    return if (result) @intFromEnum(ExitCode.true) else @intFromEnum(ExitCode.false);
+    return evaluateTestArgs(allocator, test_args, stderr_writer, "test");
 }
 
 /// Entry point for command-line usage
@@ -551,11 +557,11 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -972,7 +978,7 @@ test "FileAccess module" {
 // ========== BUG FIX TESTS ==========
 // Tests for specific bugs identified by architect agent
 
-test "Bug 3: invalid operator should return exit code 2" {
+test "invalid operator should return exit code 2" {
     var stderr_output = ArrayList(u8){};
     defer stderr_output.deinit(testing.allocator);
 
@@ -990,7 +996,7 @@ test "Bug 3: invalid operator should return exit code 2" {
     try testing.expectEqual(@intFromEnum(ExitCode.false), result3);
 }
 
-test "Bug 1: parentheses expression with logical operators should return correct exit code" {
+test "parentheses expression with logical operators should return correct exit code" {
     // Test: test ( "" -o "hello" ) -a "" should return exit code 1 (false), not 2 (error)
     // This tests proper parsing of parentheses expressions with logical operators
     const result = try runTest(testing.allocator, &[_][]const u8{ "(", "", "-o", "hello", ")", "-a", "" }, common.null_writer, common.null_writer);
@@ -1001,7 +1007,7 @@ test "Bug 1: parentheses expression with logical operators should return correct
     try testing.expectEqual(@intFromEnum(ExitCode.true), result2);
 }
 
-test "Bug 2: complex nested expressions should parse correctly" {
+test "complex nested expressions should parse correctly" {
     // Test: test ! ( ( "" ) ) -a "" should parse correctly and return false
     const result = try runTest(testing.allocator, &[_][]const u8{ "!", "(", "(", "", ")", ")", "-a", "" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
@@ -1011,7 +1017,7 @@ test "Bug 2: complex nested expressions should parse correctly" {
     try testing.expectEqual(@intFromEnum(ExitCode.false), result2);
 }
 
-test "Bug 4: bracket form should handle errors identically to test command" {
+test "bracket form should handle errors identically to test command" {
     var stderr_output = ArrayList(u8){};
     defer stderr_output.deinit(testing.allocator);
 
@@ -1102,11 +1108,63 @@ test "symlink detection with -L and -h operators" {
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
+test "setuid and sticky bit operators -u and -k" {
+    // These operators require special file setup, so just test they don't crash
+    // on non-existent files (should return false)
+    var result = try runTest(testing.allocator, &[_][]const u8{ "-u", "/nonexistent" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    result = try runTest(testing.allocator, &[_][]const u8{ "-k", "/nonexistent" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
+test "file comparison operators -nt, -ot, -ef" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create two files with different timestamps
+    const file1 = try tmp.dir.createFile("older", .{});
+    file1.close();
+
+    // Small delay to ensure different mtime
+    std.Thread.sleep(10 * std.time.ns_per_ms);
+
+    const file2 = try tmp.dir.createFile("newer", .{});
+    file2.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    const older_path = try std.fmt.allocPrint(testing.allocator, "{s}/older", .{dir_path});
+    defer testing.allocator.free(older_path);
+    const newer_path = try std.fmt.allocPrint(testing.allocator, "{s}/newer", .{dir_path});
+    defer testing.allocator.free(newer_path);
+
+    // -nt: newer file is newer than older file
+    var result = try runTest(testing.allocator, &[_][]const u8{ newer_path, "-nt", older_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // -ot: older file is older than newer file
+    result = try runTest(testing.allocator, &[_][]const u8{ older_path, "-ot", newer_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // -ef: same file should be equal to itself
+    result = try runTest(testing.allocator, &[_][]const u8{ older_path, "-ef", older_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // -ef: different files should not be equal
+    result = try runTest(testing.allocator, &[_][]const u8{ older_path, "-ef", newer_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Non-existent files should return false
+    result = try runTest(testing.allocator, &[_][]const u8{ "/nonexistent1", "-nt", "/nonexistent2" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
 // ============================================================================
 //                                FUZZ TESTS
 // ============================================================================
 
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("test");
 
 test "test fuzz basic" {

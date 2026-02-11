@@ -8,7 +8,6 @@
 //! - Quiet mode with -q (--quiet) to suppress headers
 //! - Verbose mode with -v (--verbose) to always show headers
 //! - Zero-terminated lines with -z (--zero-terminated) flag
-//! - Follow mode with -f (--follow) for watching file changes
 //! - Reads from standard input when no files specified
 //!
 //! Maintains compatibility with GNU coreutils tail.
@@ -18,7 +17,7 @@ const common = @import("common");
 const testing = std.testing;
 
 /// Buffer size for I/O operations - matches typical file system block size for optimal performance
-const BUFFER_SIZE = 4096;
+const BUFFER_SIZE = 8192;
 
 /// Command-line arguments for tail
 const TailArgs = struct {
@@ -29,7 +28,6 @@ const TailArgs = struct {
     quiet: bool = false,
     verbose: bool = false,
     zero_terminated: bool = false,
-    follow: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -40,7 +38,6 @@ const TailArgs = struct {
         .quiet = .{ .short = 'q', .desc = "Never output headers when multiple files are being examined" },
         .verbose = .{ .short = 'v', .desc = "Always output headers when examining files" },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
-        .follow = .{ .short = 'f', .desc = "Output appended data as the file grows" },
     };
 };
 
@@ -51,7 +48,6 @@ const TailOptions = struct {
     quiet: bool = false,
     verbose: bool = false,
     zero_terminated: bool = false,
-    follow: bool = false,
     from_beginning: bool = false,
 
     /// Returns true if we should show headers for multiple files
@@ -76,12 +72,7 @@ fn printHelp(writer: anytype) !void {
         \\
         \\With no FILE, or when FILE is -, read standard input.
         \\
-        \\  -c, --bytes=[+]NUM       Output the last NUM bytes; or use -c +NUM to
-        \\                           output starting with byte NUM of each file
-        \\  -f, --follow[={name|descriptor}]
-        \\                           Output appended data as the file grows;
-        \\                           an absent option argument means 'descriptor'
-        \\  -F                       Same as --follow=name --retry
+        \\  -c, --bytes=NUM          Output the last NUM bytes
         \\  -n, --lines=[+]NUM       Output the last NUM lines, instead of the last 10;
         \\                           or use -n +NUM to output starting with line NUM
         \\  -q, --quiet, --silent    Never output headers giving file names
@@ -104,7 +95,6 @@ fn printHelp(writer: anytype) !void {
 
 /// Main entry point for tail utility with stdout and stderr writer parameters
 pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parse(TailArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
@@ -133,7 +123,6 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         .quiet = parsed_args.quiet,
         .verbose = parsed_args.verbose,
         .zero_terminated = parsed_args.zero_terminated,
-        .follow = parsed_args.follow,
     };
 
     // Parse line count (-n flag)
@@ -152,7 +141,9 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     // Parse byte count (-c flag) - overrides line count
     if (parsed_args.bytes) |bytes_str| {
         if (bytes_str.len > 0 and bytes_str[0] == '+') {
-            options.from_beginning = true;
+            // -c +NUM is not supported - reject with error
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", "-c +NUM (from-beginning byte mode) is not supported", .{});
+            return @intFromEnum(common.ExitCode.misuse);
         }
         options.byte_count = parseNumericArg(bytes_str) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of bytes: '{s}'", .{bytes_str});
@@ -164,15 +155,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     // Process files
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        var stdin_buffer: [8192]u8 = undefined;
-        var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-        const stdin = &stdin_reader.interface;
-        if (options.byte_count) |byte_count| {
-            try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null);
-        } else {
-            const line_count = options.line_count orelse 10;
-            try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
-        }
+        try processStdin(allocator, stdout_writer, options);
     } else {
         // Process each file
         var had_error = false;
@@ -180,19 +163,11 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         for (parsed_args.positionals, 0..) |file_path, i| {
             if (std.mem.eql(u8, file_path, "-")) {
                 // "-" means read from stdin
-                var stdin_buffer: [8192]u8 = undefined;
-                var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-                const stdin = &stdin_reader.interface;
                 if (should_show_headers) {
                     if (i > 0) try stdout_writer.writeAll("\n");
                     try stdout_writer.writeAll("==> standard input <==\n");
                 }
-                if (options.byte_count) |byte_count| {
-                    try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null);
-                } else {
-                    const line_count = options.line_count orelse 10;
-                    try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
-                }
+                try processStdin(allocator, stdout_writer, options);
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
@@ -206,15 +181,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     if (i > 0) try stdout_writer.writeAll("\n");
                     try stdout_writer.print("==> {s} <==\n", .{file_path});
                 }
-                if (options.byte_count) |byte_count| {
-                    var file_buffer: [8192]u8 = undefined;
-                    var file_reader = file.reader(&file_buffer);
-                    const file_interface = &file_reader.interface;
-                    try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file);
-                } else {
-                    const line_count = options.line_count orelse 10;
-                    try processInputByLinesFromFile(allocator, file, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
-                }
+                try processFile(allocator, file, stdout_writer, options);
             }
         }
         if (had_error) return @intFromEnum(common.ExitCode.general_error);
@@ -234,11 +201,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout_writer_interface = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr_writer_interface = &stderr_writer.interface;
 
@@ -334,6 +301,33 @@ fn errorToMessage(err: anyerror) []const u8 {
     };
 }
 
+/// Process stdin with given options
+fn processStdin(allocator: std.mem.Allocator, stdout_writer: anytype, options: TailOptions) !void {
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    const stdin = &stdin_reader.interface;
+
+    if (options.byte_count) |byte_count| {
+        try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null);
+    } else {
+        const line_count = options.line_count.?;
+        try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
+    }
+}
+
+/// Process a file with given options
+fn processFile(allocator: std.mem.Allocator, file: std.fs.File, stdout_writer: anytype, options: TailOptions) !void {
+    if (options.byte_count) |byte_count| {
+        var file_buffer: [8192]u8 = undefined;
+        var file_reader = file.reader(&file_buffer);
+        const file_interface = &file_reader.interface;
+        try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file);
+    } else {
+        const line_count = options.line_count.?;
+        try processInputByLinesFromFile(allocator, file, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
+    }
+}
+
 /// Process input by byte count
 fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64, file: ?std.fs.File) !void {
     if (byte_count == 0) return; // Output nothing for 0 bytes
@@ -379,25 +373,40 @@ fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: an
     }
 }
 
-/// Process input by bytes without seeking (for stdin/pipes)
+/// Process input by bytes without seeking (for stdin/pipes) using circular buffer
 fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64) !void {
-    // Read all input by accumulating bytes
-    var content_list = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer content_list.deinit(allocator);
+    const buffer_size = @as(usize, @intCast(byte_count));
 
-    // Read all data using appendRemaining to preserve exact byte content
-    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024);
-    try reader.appendRemaining(allocator, &content_list, limit);
+    // Allocate circular buffer to hold only the last byte_count bytes
+    const circular_buffer = try allocator.alloc(u8, buffer_size);
+    defer allocator.free(circular_buffer);
 
-    const content = content_list.items;
+    var total_bytes_read: usize = 0;
+    var write_index: usize = 0;
 
-    if (byte_count >= content.len) {
-        // Output entire content
-        try writer.writeAll(content);
+    // Read input and maintain only last byte_count bytes in circular buffer
+    while (true) {
+        const available = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+
+        for (available) |byte| {
+            circular_buffer[write_index] = byte;
+            write_index = (write_index + 1) % buffer_size;
+            total_bytes_read += 1;
+        }
+        reader.toss(available.len);
+    }
+
+    // Output the circular buffer in the correct order
+    if (total_bytes_read >= buffer_size) {
+        // Buffer wrapped around - output from write_index to end, then from start to write_index
+        try writer.writeAll(circular_buffer[write_index..]);
+        try writer.writeAll(circular_buffer[0..write_index]);
     } else {
-        // Output last byte_count bytes
-        const start_pos = content.len - @as(usize, @intCast(byte_count));
-        try writer.writeAll(content[start_pos..]);
+        // Buffer didn't wrap - output from start to total_bytes_read
+        try writer.writeAll(circular_buffer[0..total_bytes_read]);
     }
 }
 
@@ -475,7 +484,7 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
         if (skip_count == 0) {
             // +1 means output everything from the start
             while (true) {
-                const n = file.read(&read_buf) catch |err| return err;
+                const n = try file.read(&read_buf);
                 if (n == 0) return;
                 try writer.writeAll(read_buf[0..n]);
             }
@@ -483,7 +492,7 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
 
         var lines_seen: usize = 0;
         while (true) {
-            const bytes_read = file.read(&read_buf) catch |err| return err;
+            const bytes_read = try file.read(&read_buf);
             if (bytes_read == 0) return; // EOF before we finished skipping
 
             for (read_buf[0..bytes_read], 0..) |byte, pos| {
@@ -494,7 +503,7 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
                         try writer.writeAll(read_buf[pos + 1 .. bytes_read]);
                         // Then stream remaining file content directly
                         while (true) {
-                            const n = file.read(&read_buf) catch |err| return err;
+                            const n = try file.read(&read_buf);
                             if (n == 0) return;
                             try writer.writeAll(read_buf[0..n]);
                         }
@@ -514,7 +523,7 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
     defer partial.deinit(allocator);
 
     while (true) {
-        const bytes_read = file.read(&read_buf) catch |err| return err;
+        const bytes_read = try file.read(&read_buf);
         if (bytes_read == 0) break; // EOF
 
         var chunk_start: usize = 0;

@@ -28,43 +28,45 @@ const PwdArgs = struct {
 
 /// Main entry point for pwd utility
 pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse command-line arguments using the common argument parser
     const parsed_args = common.argparse.ArgParser.parse(PwdArgs, allocator, args) catch |err| {
         switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+            error.UnknownFlag => {
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "unrecognized option", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.MissingValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "option requires an argument", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.InvalidValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "invalid option value", .{});
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
     };
     defer allocator.free(parsed_args.positionals);
 
-    // Handle help flag - display usage information and exit
     if (parsed_args.help) {
         try printHelp(stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Handle version flag - display version and exit
     if (parsed_args.version) {
         try stdout_writer.print("pwd ({s}) {s}\n", .{ common.name, common.version });
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Retrieve the current working directory based on command line flags
     const cwd = getWorkingDirectory(allocator, parsed_args) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(cwd);
 
-    // Print the directory path followed by a newline
     try stdout_writer.print("{s}\n", .{cwd});
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Main entry point for pwd utility
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -85,7 +87,6 @@ pub fn main() !void {
 
     const exit_code = try runPwd(allocator, args[1..], stdout, stderr);
 
-    // Flush buffers before exit
     stdout.flush() catch {};
     stderr.flush() catch {};
 
@@ -164,14 +165,18 @@ fn isValidPwd(pwd_env: []const u8, physical_cwd: []const u8) bool {
         return false;
     }
 
-    // Get file statistics for both paths
-    // Fail closed: any error in stat operations invalidates PWD
     const pwd_stat = std.fs.cwd().statFile(pwd_env) catch return false;
     const cwd_stat = std.fs.cwd().statFile(physical_cwd) catch return false;
 
-    // Validate by comparing inode numbers - if they match, both paths
-    // refer to the same directory
-    return pwd_stat.inode == cwd_stat.inode;
+    if (pwd_stat.inode != cwd_stat.inode) {
+        return false;
+    }
+
+    if (pwd_stat.kind != .directory) {
+        return false;
+    }
+
+    return true;
 }
 
 // ============================================================================
@@ -405,17 +410,15 @@ test "runPwd with invalid flag" {
     const args = [_][]const u8{"--invalid"};
     const result = try runPwd(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
-    // Should return error exit code
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 2), result);
 
     // Should not print anything to stdout
     try testing.expectEqualStrings("", stdout_buffer.items);
 
     // Should print error to stderr
     try testing.expect(stderr_buffer.items.len > 0);
-    // Should print error message with program name
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd:") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
 }
 
 // ============================================================================

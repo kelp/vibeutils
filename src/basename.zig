@@ -10,11 +10,12 @@
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
 
 /// Write output with appropriate delimiter (newline or null)
-fn writeOutput(writer: anytype, content: []const u8, useZero: bool) !void {
+fn writeOutput(writer: anytype, content: []const u8, zero: bool) !void {
     try writer.writeAll(content);
-    if (useZero) {
+    if (zero) {
         try writer.writeByte(0);
     } else {
         try writer.writeByte('\n');
@@ -46,66 +47,73 @@ const BasenameArgs = struct {
 };
 
 /// Main entry point for the basename utility
-pub fn runBasename(allocator: std.mem.Allocator, args: []const []const u8, stdoutWriter: anytype, stderrWriter: anytype) !u8 {
-    // Parse arguments using new parser
-    const parsedArgs = common.argparse.ArgParser.parse(BasenameArgs, allocator, args) catch |err| {
+pub fn runBasename(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    // Parse command-line arguments
+    const parsed_args = common.argparse.ArgParser.parse(BasenameArgs, allocator, args) catch |err| {
         switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderrWriter, "basename", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+            error.UnknownFlag => {
+                common.printErrorWithProgram(allocator, stderr_writer, "basename", "unrecognized option", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.MissingValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "basename", "option missing required argument", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.InvalidValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "basename", "invalid option value", .{});
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
     };
-    defer allocator.free(parsedArgs.positionals);
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help
-    if (parsedArgs.help) {
-        try printHelp(stdoutWriter);
+    if (parsed_args.help) {
+        try printHelp(stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
     // Handle version
-    if (parsedArgs.version) {
-        try printVersion(stdoutWriter);
+    if (parsed_args.version) {
+        try printVersion(stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
     // Validate arguments
-    if (parsedArgs.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderrWriter, "basename", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+    if (parsed_args.positionals.len == 0) {
+        common.printErrorWithProgram(allocator, stderr_writer, "basename", "missing operand", .{});
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Process files - -s flag implies -a (multiple) according to GNU basename behavior
-    if (parsedArgs.multiple or parsedArgs.suffix != null) {
+    if (parsed_args.multiple or parsed_args.suffix != null) {
         // Multiple file mode (GNU extension)
-        for (parsedArgs.positionals) |path| {
-            const result = computeBasename(path, parsedArgs.suffix);
-            try writeOutput(stdoutWriter, result, parsedArgs.zero);
+        for (parsed_args.positionals) |path| {
+            const result = computeBasename(path, parsed_args.suffix);
+            try writeOutput(stdout_writer, result, parsed_args.zero);
         }
     } else {
         // Standard POSIX mode (single file with optional suffix)
-        if (parsedArgs.positionals.len > 2) {
-            common.printErrorWithProgram(allocator, stderrWriter, "basename", "extra operand '{s}'", .{parsedArgs.positionals[2]});
-            return @intFromEnum(common.ExitCode.general_error);
+        if (parsed_args.positionals.len > 2) {
+            common.printErrorWithProgram(allocator, stderr_writer, "basename", "extra operand '{s}'", .{parsed_args.positionals[2]});
+            return @intFromEnum(common.ExitCode.misuse);
         }
 
-        const path = parsedArgs.positionals[0];
-        const suffix = if (parsedArgs.positionals.len > 1) parsedArgs.positionals[1] else null;
+        const path = parsed_args.positionals[0];
+        const maybe_suffix = if (parsed_args.positionals.len > 1) parsed_args.positionals[1] else null;
 
-        const result = computeBasename(path, suffix);
-        try writeOutput(stdoutWriter, result, parsedArgs.zero);
+        const result = computeBasename(path, maybe_suffix);
+        try writeOutput(stdout_writer, result, parsed_args.zero);
     }
 
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Main entry point for the basename utility
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
@@ -140,8 +148,8 @@ fn printHelp(writer: anytype) !void {
         \\  -a, --multiple     support multiple arguments and treat each as a NAME
         \\  -s, --suffix=SUFFIX  remove a trailing SUFFIX; implies -a
         \\  -z, --zero         end each output line with NUL, not newline
-        \\      --help         display this help and exit
-        \\      --version      output version information and exit
+        \\  -h, --help         display this help and exit
+        \\  -V, --version      output version information and exit
         \\
         \\Examples:
         \\  basename /usr/bin/sort          Output "sort".
@@ -159,16 +167,13 @@ fn printVersion(writer: anytype) !void {
 
 /// Computes the basename of a path, optionally removing a suffix
 /// Handles edge cases like / and // according to POSIX specifications
-fn computeBasename(path: []const u8, maybeSuffix: ?[]const u8) []const u8 {
+fn computeBasename(path: []const u8, maybe_suffix: ?[]const u8) []const u8 {
     if (path.len == 0) {
         return ".";
     }
 
-    // Handle special cases for root directories
+    // Handle special case for root directory
     if (std.mem.eql(u8, path, "/")) {
-        return "/";
-    }
-    if (std.mem.eql(u8, path, "//")) {
         return "/";
     }
 
@@ -183,18 +188,18 @@ fn computeBasename(path: []const u8, maybeSuffix: ?[]const u8) []const u8 {
         return "/";
     }
 
-    const trimmedPath = path[0..end];
+    const trimmed_path = path[0..end];
 
     // Find the last slash to get the basename
-    const basenameStart = if (std.mem.lastIndexOfScalar(u8, trimmedPath, '/')) |lastSlash|
-        lastSlash + 1
+    const basename_start = if (std.mem.lastIndexOfScalar(u8, trimmed_path, '/')) |last_slash|
+        last_slash + 1
     else
         0;
 
-    var result = trimmedPath[basenameStart..];
+    var result = trimmed_path[basename_start..];
 
     // Remove suffix if present and valid
-    if (maybeSuffix) |suffix| {
+    if (maybe_suffix) |suffix| {
         if (suffix.len > 0 and std.mem.endsWith(u8, result, suffix) and !std.mem.eql(u8, result, suffix)) {
             result = result[0 .. result.len - suffix.len];
         }
@@ -365,7 +370,7 @@ test "basename error handling" {
     // No arguments provided
     const args1 = [_][]const u8{};
     const result1 = try runBasename(testing.allocator, &args1, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 1), result1);
+    try testing.expectEqual(@as(u8, 2), result1);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 
     stderr_buffer.clearRetainingCapacity();
@@ -374,7 +379,7 @@ test "basename error handling" {
     // Too many arguments in standard mode
     const args2 = [_][]const u8{ "path1", "suffix", "extra" };
     const result2 = try runBasename(testing.allocator, &args2, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 1), result2);
+    try testing.expectEqual(@as(u8, 2), result2);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
 }
 
@@ -471,7 +476,7 @@ test "basename fuzz intelligent" {
     try std.testing.fuzz(testing.allocator, testBasenameIntelligentWrapper, .{});
 }
 
-fn testBasenameIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
+fn testBasenameIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
     // Check runtime condition for selective fuzzing
     if (!common.fuzz.shouldFuzzUtilityRuntime("basename")) return;
 

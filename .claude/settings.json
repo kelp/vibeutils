@@ -2,8 +2,47 @@
   "permissions": {
     "allow": [
       "Bash(make:*)",
-      "Bash(zig:*)"
+      "Bash(zig:*)",
+      "Bash(zig-out/bin/*:*)",
+      "Bash(./zig-out/bin/*:*)",
+      "Bash(timeout:*)",
+      "Bash(mandoc:*)",
+      "Bash(chmod:*)",
+      "Bash(bash:*)",
+      "Bash(/opt/homebrew/bin/bash:*)",
+      "Bash(git branch:*)",
+      "Bash(xxd:*)",
+      "Bash(ls:*)",
+      "WebSearch",
+      "WebFetch(domain:ziggit.dev)",
+      "WebFetch(domain:pubs.opengroup.org)",
+      "WebFetch(domain:man.openbsd.org)",
+      "WebFetch(domain:www.gnu.org)"
     ],
     "deny": []
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$TOOL_INPUT_file_path\" in *.zig) zig fmt \"$TOOL_INPUT_file_path\" 2>/dev/null || true ;; esac"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$TOOL_INPUT_file_path\" | grep -qE '(zig-out|zig-cache|\\.zig-cache)/' && echo 'BLOCK: Do not edit build artifacts' && exit 1; exit 0"
+          }
+        ]
+      }
+    ]
   }
 }

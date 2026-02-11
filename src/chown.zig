@@ -30,8 +30,6 @@ const ChownArgs = struct {
     verbose: bool = false,
     /// Affect symbolic links instead of referenced files
     no_dereference: bool = false,
-    /// If a command line argument is a symbolic link to a directory, traverse it
-    H: bool = false,
     /// Traverse every symbolic link to a directory encountered
     L: bool = false,
     /// Do not traverse any symbolic links (default behavior)
@@ -52,7 +50,6 @@ const ChownArgs = struct {
         .quiet = .{ .desc = "Suppress most error messages" },
         .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
         .no_dereference = .{ .short = 'h', .desc = "Affect symbolic links instead of any referenced file" },
-        .H = .{ .short = 'H', .desc = "If a command line argument is a symbolic link to a directory, traverse it" },
         .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .recursive = .{ .short = 'R', .desc = "Operate on files and directories recursively" },
@@ -71,11 +68,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -94,7 +91,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(ChownArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid argument\nTry 'chown --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -122,7 +119,6 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         .silent = parsed_args.silent or parsed_args.quiet,
         .verbose = parsed_args.verbose,
         .no_dereference = parsed_args.no_dereference,
-        .traverse_command_line_symlinks = parsed_args.H,
         .traverse_all_symlinks = parsed_args.L,
         .no_traverse_symlinks = parsed_args.P,
         .recursive = parsed_args.recursive,
@@ -152,13 +148,34 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     else
         positionals[1..];
 
-    // Process each file, accumulating error status
+    // Parse ownership specification once before the file loop
+    var ownership: common.user_group.OwnershipSpec = undefined;
+
+    if (options.reference_file) |ref_path| {
+        ownership = getOwnershipFromReference(ref_path) catch |err| {
+            handleError(allocator, ref_path, err, options, stderr_writer);
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    } else {
+        ownership = common.user_group.OwnershipSpec.parse(owner_spec, allocator) catch |err| {
+            handleError(allocator, owner_spec, err, options, stderr_writer);
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+
+    // Process each file with pre-parsed ownership
     var exit_code: u8 = 0;
     for (files) |file_path| {
-        chownFile(allocator, file_path, owner_spec, options, stdout_writer, stderr_writer) catch |err| {
-            handleError(allocator, file_path, err, options, stderr_writer);
-            exit_code = @intFromEnum(common.ExitCode.general_error);
-        };
+        if (options.recursive) {
+            chownRecursive(file_path, ownership, options, allocator, stdout_writer, stderr_writer) catch {
+                exit_code = @intFromEnum(common.ExitCode.general_error);
+            };
+        } else {
+            chownSingle(allocator, file_path, ownership, options, stdout_writer, stderr_writer) catch |err| {
+                handleError(allocator, file_path, err, options, stderr_writer);
+                exit_code = @intFromEnum(common.ExitCode.general_error);
+            };
+        }
     }
 
     return exit_code;
@@ -185,8 +202,6 @@ fn printHelp(writer: anytype) !void {
         \\option is also specified.  If more than one is specified, only the final
         \\one takes effect.
         \\
-        \\  -H                     if a command line argument is a symbolic link
-        \\                         to a directory, traverse it
         \\  -L                     traverse every symbolic link to a directory
         \\                         encountered
         \\  -P                     do not traverse any symbolic links (default)
@@ -221,8 +236,6 @@ const ChownOptions = struct {
     verbose: bool = false,
     /// Don't follow symlinks
     no_dereference: bool = false,
-    /// Follow command line symlinks
-    traverse_command_line_symlinks: bool = false,
     /// Follow all symlinks
     traverse_all_symlinks: bool = false,
     /// Never follow symlinks
@@ -265,7 +278,10 @@ fn chownFile(
 fn chownSingle(allocator: std.mem.Allocator, path: []const u8, ownership: common.user_group.OwnershipSpec, options: ChownOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     _ = stderr_writer; // Parameter for API consistency, errors bubble up to caller
     // Get current ownership for comparison
-    const stat_info = try common.file.FileInfo.stat(path);
+    const stat_info = if (options.no_dereference)
+        try common.file.FileInfo.lstat(path)
+    else
+        try common.file.FileInfo.stat(path);
     const current_uid = @as(common.user_group.uid_t, @intCast(stat_info.uid));
     const current_gid = @as(common.user_group.gid_t, @intCast(stat_info.gid));
 
@@ -306,6 +322,8 @@ fn chownRecursive(
         return;
     };
 
+    var had_errors = false;
+
     if (stat_info.kind == .directory) {
         // Open directory and iterate — process children first
         var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
@@ -324,17 +342,29 @@ fn chownRecursive(
             if (entry.kind == .sym_link and !options.traverse_all_symlinks) {
                 // -P (default) or -H: don't follow symlinks during recursion
                 // Just change ownership of the symlink itself
-                try chownSingle(allocator, full_path, ownership, options, stdout_writer, stderr_writer);
+                chownSingle(allocator, full_path, ownership, options, stdout_writer, stderr_writer) catch |err| {
+                    handleError(allocator, full_path, err, options, stderr_writer);
+                    had_errors = true;
+                };
                 continue;
             }
 
             // Recurse into subdirectory or change file
-            try chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer);
+            chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer) catch {
+                had_errors = true;
+            };
         }
     }
 
     // Change the directory/file itself after processing children
-    try chownSingle(allocator, path, ownership, options, stdout_writer, stderr_writer);
+    chownSingle(allocator, path, ownership, options, stdout_writer, stderr_writer) catch |err| {
+        handleError(allocator, path, err, options, stderr_writer);
+        had_errors = true;
+    };
+
+    if (had_errors) {
+        return error.FileOperationFailed;
+    }
 }
 
 /// Perform ownership change via system call
@@ -736,7 +766,8 @@ test "privileged: chown recursive option" {
 
             // Create a directory structure
             try tmp_dir.dir.makeDir("testdir");
-            const subdir = try tmp_dir.dir.openDir("testdir", .{});
+            var subdir = try tmp_dir.dir.openDir("testdir", .{});
+            defer subdir.close();
             const file = try subdir.createFile("file.txt", .{});
             file.close();
 
@@ -924,10 +955,6 @@ test "privileged: chown traverse options" {
             var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
             defer stderr_buffer.deinit(inner_allocator);
 
-            // Test traverse command line symlinks
-            const options_h = ChownOptions{ .traverse_command_line_symlinks = true };
-            try chownFile(inner_allocator, test_file, owner_spec, options_h, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
-
             // Test traverse all symlinks
             const options_l = ChownOptions{ .traverse_all_symlinks = true };
             try chownFile(inner_allocator, test_file, owner_spec, options_l, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
@@ -1017,7 +1044,6 @@ test "chown --version flag works" {
 //                                FUZZ TESTS
 // ============================================================================
 
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("chown");
 
 test "chown fuzz intelligent" {

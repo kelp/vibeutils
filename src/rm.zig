@@ -94,11 +94,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -143,7 +143,14 @@ fn printVersion(writer: anytype) !void {
 fn promptUser(prompt: []const u8, stderr_writer: anytype) !bool {
     try stderr_writer.print("{s}", .{prompt});
 
-    var stdin_buffer: [4096]u8 = undefined;
+    // Flush stderr to ensure prompt is visible before reading stdin
+    // Only flush if the writer type has a flush method (file-based buffered writers do)
+    const WriterType = @TypeOf(stderr_writer);
+    if (comptime @hasDecl(WriterType, "flush")) {
+        stderr_writer.flush() catch {};
+    }
+
+    var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
     const stdin = &stdin_reader.interface;
 
@@ -162,7 +169,7 @@ fn promptUser(prompt: []const u8, stderr_writer: anytype) !bool {
 /// Main file removal function that processes a list of files/directories.
 fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !bool {
     // Handle interactive once mode (-I flag) - but force overrides
-    if (!options.force and options.interactive_once and files.len > 3) {
+    if (!options.force and options.interactive_once and (files.len > 3 or options.recursive)) {
         const prompt = try std.fmt.allocPrint(allocator, "rm: remove {d} arguments? ", .{files.len});
         defer allocator.free(prompt);
 
@@ -235,7 +242,6 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
 
 /// Remove a single file or symlink.
 fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
-
     // Get file info to check if we need to prompt
     const stat_result = std.fs.cwd().statFile(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
@@ -286,13 +292,111 @@ fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytyp
     }
 }
 
-/// Remove a directory recursively.
+/// Entry type for collected directory entries
+const Entry = struct {
+    name: []const u8,
+    kind: std.fs.Dir.Entry.Kind,
+};
+
+/// Remove a directory recursively with per-entry verbose/interactive support.
 fn removeDirectory(allocator: Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
-    // POSIX compliance: Force flag suppresses ALL prompts
-    if (options.force) {
-        // Force mode: no prompts, proceed with removal
-    } else if (options.interactive) {
-        // Interactive mode: always prompt for directories
+    // For non-verbose, non-interactive mode with force, use deleteTree as fast path
+    if (!options.verbose and !options.interactive and options.force) {
+        std.fs.cwd().deleteTree(dir_path) catch |err| switch (err) {
+            error.AccessDenied => return error.AccessDenied,
+            else => return err,
+        };
+        return;
+    }
+
+    // Manual depth-first recursive traversal
+    try removeDirectoryRecursive(allocator, dir_path, stdout_writer, stderr_writer, options);
+}
+
+/// Depth-first recursive directory removal with per-entry verbose/interactive support.
+fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) anyerror!void {
+    // Open directory for iteration
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
+        error.AccessDenied => return error.AccessDenied,
+        error.FileNotFound => return error.FileNotFound,
+        else => return err,
+    };
+
+    var had_errors = false;
+
+    // Collect entries first to avoid iterator invalidation during deletion
+    var entries = std.ArrayListUnmanaged(Entry){};
+    defer {
+        for (entries.items) |entry| {
+            allocator.free(entry.name);
+        }
+        entries.deinit(allocator);
+    }
+
+    {
+        var iterator = dir.iterate();
+        while (iterator.next() catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot read directory '{s}': {s}", .{ dir_path, @errorName(err) });
+            dir.close();
+            return err;
+        }) |entry| {
+            const name_copy = try allocator.dupe(u8, entry.name);
+            try entries.append(allocator, .{ .name = name_copy, .kind = entry.kind });
+        }
+    }
+
+    // Close directory handle before modifying contents
+    dir.close();
+
+    // Process entries depth-first
+    for (entries.items) |entry| {
+        const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot construct path: {s}", .{@errorName(err)});
+            had_errors = true;
+            continue;
+        };
+        defer allocator.free(full_path);
+
+        if (entry.kind == .directory) {
+            // Recurse into subdirectory first (depth-first)
+            if (removeDirectoryRecursive(allocator, full_path, stdout_writer, stderr_writer, options)) {
+                // Success - continue
+            } else |err| switch (err) {
+                error.InteractiveUserCancelled => {},
+                else => had_errors = true,
+            }
+        } else {
+            // Remove file entry with interactive/verbose support
+            removeItem(allocator, full_path, stdout_writer, stderr_writer, options) catch |err| switch (err) {
+                error.InteractiveUserCancelled => continue,
+                error.UserCancelled => {
+                    had_errors = true;
+                    continue;
+                },
+                error.FileNotFound => {
+                    if (!options.force) {
+                        common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{full_path});
+                        had_errors = true;
+                    }
+                    continue;
+                },
+                error.AccessDenied => {
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{full_path});
+                    had_errors = true;
+                    continue;
+                },
+                else => {
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ full_path, @errorName(err) });
+                    had_errors = true;
+                    continue;
+                },
+            };
+        }
+    }
+
+    // Now remove the (should-be-empty) directory itself
+    // Prompt if interactive
+    if (!options.force and options.interactive) {
         const prompt = try std.fmt.allocPrint(allocator, "rm: remove directory '{s}'? ", .{dir_path});
         defer allocator.free(prompt);
 
@@ -301,15 +405,30 @@ fn removeDirectory(allocator: Allocator, dir_path: []const u8, stdout_writer: an
         }
     }
 
-    // Simply use std.fs.cwd().deleteTree() - it handles everything
-    std.fs.cwd().deleteTree(dir_path) catch |err| switch (err) {
-        error.AccessDenied => return error.AccessDenied,
-        else => return err,
+    std.fs.cwd().deleteDir(dir_path) catch |err| switch (err) {
+        error.DirNotEmpty => {
+            // Some entries may have been skipped (interactive cancel, errors)
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{dir_path});
+            had_errors = true;
+        },
+        error.AccessDenied => {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{dir_path});
+            had_errors = true;
+        },
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
+            had_errors = true;
+        },
     };
 
-    // Print verbose output
-    if (options.verbose) {
-        try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
+    if (!had_errors) {
+        if (options.verbose) {
+            try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
+        }
+    }
+
+    if (had_errors) {
+        return error.AccessDenied; // Generic error to signal failure
     }
 }
 
@@ -511,11 +630,83 @@ test "isPathSafeToRemove: comprehensive validation" {
     try testing.expect(isPathSafeToRemove("/usr/local/bin"));
 }
 
+test "rm: verbose recursive removal" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a directory tree
+    try tmp.dir.makeDir("testdir");
+    var subdir = try tmp.dir.openDir("testdir", .{});
+    const file1 = try subdir.createFile("file1.txt", .{});
+    file1.close();
+    const file2 = try subdir.createFile("file2.txt", .{});
+    file2.close();
+    subdir.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "testdir");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const options = RmOptions{
+        .force = false,
+        .interactive = false,
+        .interactive_once = false,
+        .recursive = true,
+        .verbose = true,
+    };
+
+    const success = try removeFiles(testing.allocator, &[_][]const u8{dir_path}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options);
+
+    try testing.expect(success);
+    // Verbose output should mention individual files
+    const output = stdout_buffer.items;
+    try testing.expect(std.mem.indexOf(u8, output, "removed '") != null or std.mem.indexOf(u8, output, "removed directory '") != null);
+}
+
+test "rm: recursive removal with nested directories" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create nested directory tree
+    try tmp.dir.makePath("deep/nested/dir");
+    var deep_dir = try tmp.dir.openDir("deep/nested/dir", .{});
+    const file = try deep_dir.createFile("leaf.txt", .{});
+    file.close();
+    deep_dir.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "deep");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const options = RmOptions{
+        .force = false,
+        .interactive = false,
+        .interactive_once = false,
+        .recursive = true,
+        .verbose = true,
+    };
+
+    const success = try removeFiles(testing.allocator, &[_][]const u8{dir_path}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options);
+
+    try testing.expect(success);
+
+    // Verify directory is gone
+    const stat = std.fs.cwd().statFile(dir_path);
+    try testing.expect(stat == error.FileNotFound);
+}
+
 // ============================================================================
 //                                FUZZ TESTS
 // ============================================================================
 
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("rm");
 
 test "rm fuzz intelligent" {

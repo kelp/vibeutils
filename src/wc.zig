@@ -30,7 +30,7 @@ const WcOptions = struct {
         .words = .{ .short = 'w', .desc = "Print the word counts" },
         .bytes = .{ .short = 'c', .desc = "Print the byte counts" },
         .chars = .{ .short = 'm', .desc = "Print the character counts" },
-        .max_line_length = .{ .short = 'L', .desc = "Print the maximum display width" },
+        .max_line_length = .{ .short = 'L', .desc = "Print the maximum line length" },
     };
 };
 
@@ -52,11 +52,11 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -75,8 +75,16 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const options = common.argparse.ArgParser.parse(WcOptions, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                try stderr_writer.print("wc: invalid option\nTry 'wc --help' for more information.\n", .{});
-                return 1;
+                common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid option\nTry 'wc --help' for more information.", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.MissingValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "wc", "option requires an argument\nTry 'wc --help' for more information.", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.InvalidValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid argument value\nTry 'wc --help' for more information.", .{});
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -130,60 +138,55 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     }
 
     var total_stats = FileStats{};
-    var file_count: usize = 0;
     var has_error = false;
 
     if (options.positionals.len == 0) {
         // Read from stdin
-        var stdin_buffer: [4096]u8 = undefined;
+        var stdin_buffer: [8192]u8 = undefined;
         var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-        const stats = try countReader(allocator, &stdin_reader.interface, opts);
+        const stats = try countReader(&stdin_reader.interface, opts);
         try printStats(stdout_writer, stats, null, opts);
-        total_stats = stats;
-        file_count = 1;
     } else {
         // Process each file
         for (options.positionals) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 // Stdin
-                var stdin_buffer: [4096]u8 = undefined;
+                var stdin_buffer: [8192]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-                const stats = try countReader(allocator, &stdin_reader.interface, opts);
+                const stats = try countReader(&stdin_reader.interface, opts);
                 try printStats(stdout_writer, stats, file_path, opts);
                 addStats(&total_stats, stats);
-                file_count += 1;
             } else {
                 // Check if it's a directory first
                 const stat = std.fs.cwd().statFile(file_path) catch |err| {
-                    try stderr_writer.print("wc: {s}: {s}\n", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };
 
                 if (stat.kind == .directory) {
-                    try stderr_writer.print("wc: {s}: Is a directory\n", .{file_path});
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: Is a directory", .{file_path});
                     has_error = true;
                     continue;
                 }
 
                 // Regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    try stderr_writer.print("wc: {s}: {s}\n", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };
                 defer file.close();
 
-                var file_buffer: [4096]u8 = undefined;
+                var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                const stats = countReader(allocator, &file_reader.interface, opts) catch |err| {
-                    try stderr_writer.print("wc: {s}: {s}\n", .{ file_path, @errorName(err) });
+                const stats = countReader(&file_reader.interface, opts) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };
                 try printStats(stdout_writer, stats, file_path, opts);
                 addStats(&total_stats, stats);
-                file_count += 1;
             }
         }
 
@@ -197,64 +200,58 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 }
 
 /// Count statistics from a reader - POSIX compliant implementation
-/// Uses appendRemaining to get all data at once, then process byte by byte
+/// Streams data in 8192-byte chunks to avoid loading entire file into memory
 /// POSIX: lines are counted as the number of newline characters (\n)
 /// A file without a final newline has 0 lines (even if it has content)
-fn countReader(allocator: std.mem.Allocator, reader: anytype, options: WcOptions) !FileStats {
+fn countReader(reader: anytype, options: WcOptions) !FileStats {
     var stats = FileStats{};
-
-    // Read all data into memory first using appendRemaining
-    var content_list = std.ArrayListUnmanaged(u8){};
-    defer content_list.deinit(allocator);
-
-    const limit: std.Io.Limit = @enumFromInt(1024 * 1024 * 1024); // 1GB limit
-    reader.appendRemaining(allocator, &content_list, limit) catch {
-        // If appendRemaining fails, assume no data
-        if (!options.chars) {
-            stats.chars = stats.bytes;
-        }
-        return stats;
-    };
-
-    const content = content_list.items;
-
-    // Now process byte by byte
     var in_word = false;
     var current_line_length: u64 = 0;
 
-    for (content) |byte| {
-        // Count all bytes exactly
-        stats.bytes += 1;
+    while (true) {
+        const chunk = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
 
-        // Count newlines (POSIX: this is what defines a "line")
-        if (byte == '\n') {
-            stats.lines += 1;
-            // Track max line length
-            if (current_line_length > stats.max_line_length) {
-                stats.max_line_length = current_line_length;
+        // Process each byte in the chunk
+        for (chunk) |byte| {
+            // Count all bytes exactly
+            stats.bytes += 1;
+
+            // Count newlines (POSIX: this is what defines a "line")
+            if (byte == '\n') {
+                stats.lines += 1;
+                // Track max line length
+                if (current_line_length > stats.max_line_length) {
+                    stats.max_line_length = current_line_length;
+                }
+                current_line_length = 0;
+                in_word = false; // newline breaks words
+            } else {
+                current_line_length += 1;
             }
-            current_line_length = 0;
-            in_word = false; // newline breaks words
-        } else {
-            current_line_length += 1;
-        }
 
-        // Count UTF-8 characters (only if -m flag specified)
-        if (options.chars) {
-            // UTF-8 continuation bytes have pattern 10xxxxxx
-            if ((byte & 0b11000000) != 0b10000000) {
-                stats.chars += 1;
+            // Count UTF-8 characters (only if -m flag specified)
+            if (options.chars) {
+                // UTF-8 continuation bytes have pattern 10xxxxxx
+                if ((byte & 0b11000000) != 0b10000000) {
+                    stats.chars += 1;
+                }
+            }
+
+            // Word counting logic
+            const is_space = std.ascii.isWhitespace(byte);
+            if (!is_space and !in_word) {
+                stats.words += 1;
+                in_word = true;
+            } else if (is_space) {
+                in_word = false;
             }
         }
 
-        // Word counting logic
-        const is_space = std.ascii.isWhitespace(byte);
-        if (!is_space and !in_word) {
-            stats.words += 1;
-            in_word = true;
-        } else if (is_space) {
-            in_word = false;
-        }
+        // Mark chunk as consumed
+        reader.toss(chunk.len);
     }
 
     // Handle final line length (for files not ending with newline)
@@ -319,7 +316,7 @@ fn printHelp(writer: anytype) !void {
         \\  -c, --bytes            print the byte counts
         \\  -m, --chars            print the character counts
         \\  -l, --lines            print the newline counts
-        \\  -L, --max-line-length  print the maximum display width
+        \\  -L, --max-line-length  print the maximum line length
         \\  -w, --words            print the word counts
         \\      --help             display this help and exit
         \\      --version          output version information and exit
@@ -348,9 +345,9 @@ test "wc counts lines correctly" {
     // Open and count
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .lines = true });
+    const stats = try countReader(&file_reader.interface, .{ .lines = true });
     try testing.expectEqual(@as(u64, 3), stats.lines);
 }
 
@@ -364,9 +361,9 @@ test "wc counts words correctly" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .words = true });
+    const stats = try countReader(&file_reader.interface, .{ .words = true });
     try testing.expectEqual(@as(u64, 6), stats.words);
 }
 
@@ -380,9 +377,9 @@ test "wc counts bytes correctly" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .bytes = true });
+    const stats = try countReader(&file_reader.interface, .{ .bytes = true });
     try testing.expectEqual(@as(u64, 12), stats.bytes);
 }
 
@@ -396,9 +393,9 @@ test "wc counts UTF-8 characters correctly" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .chars = true });
+    const stats = try countReader(&file_reader.interface, .{ .chars = true });
     try testing.expectEqual(@as(u64, 9), stats.chars);
     try testing.expectEqual(@as(u64, 13), stats.bytes);
 }
@@ -413,9 +410,9 @@ test "wc finds maximum line length" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .max_line_length = true });
+    const stats = try countReader(&file_reader.interface, .{ .max_line_length = true });
     try testing.expectEqual(@as(u64, 21), stats.max_line_length); // "this is a longer line" = 21 chars
 }
 
@@ -429,9 +426,9 @@ test "wc handles empty input" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{});
+    const stats = try countReader(&file_reader.interface, .{});
     try testing.expectEqual(@as(u64, 0), stats.lines);
     try testing.expectEqual(@as(u64, 0), stats.words);
     try testing.expectEqual(@as(u64, 0), stats.bytes);
@@ -447,9 +444,9 @@ test "wc handles input without final newline" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .lines = true });
+    const stats = try countReader(&file_reader.interface, .{ .lines = true });
     try testing.expectEqual(@as(u64, 1), stats.lines); // POSIX: 1 newline = 1 line
 }
 
@@ -463,9 +460,9 @@ test "wc counts multiple whitespace correctly" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{ .words = true, .lines = true });
+    const stats = try countReader(&file_reader.interface, .{ .words = true, .lines = true });
     try testing.expectEqual(@as(u64, 4), stats.words);
     try testing.expectEqual(@as(u64, 2), stats.lines); // POSIX: 2 newlines = 2 lines
 }
@@ -480,9 +477,9 @@ test "wc handles all counts together" {
 
     const file = try tmp_dir.dir.openFile("test.txt", .{});
     defer file.close();
-    var file_buffer: [4096]u8 = undefined;
+    var file_buffer: [8192]u8 = undefined;
     var file_reader = file.reader(&file_buffer);
-    const stats = try countReader(testing.allocator, &file_reader.interface, .{
+    const stats = try countReader(&file_reader.interface, .{
         .lines = true,
         .words = true,
         .bytes = true,
@@ -638,7 +635,6 @@ test "wc reports error for directory" {
 // ============================================================================
 //                                FUZZ TESTS
 // ============================================================================
-const builtin = @import("builtin");
 const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("wc");
 
 test "wc fuzz intelligent" {
@@ -647,13 +643,7 @@ test "wc fuzz intelligent" {
 }
 
 fn testWcIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtility("wc")) return;
-
-    // Create intelligent fuzzer
-    const fuzzer = try common.fuzz.createIntelligentFuzzer(WcOptions, runWc).init(allocator);
-    defer fuzzer.deinit();
-
-    // Fuzz with the input
-    try fuzzer.fuzz(input);
+    if (!common.fuzz.shouldFuzzUtilityRuntime("wc")) return;
+    const WcFuzzer = common.fuzz.createIntelligentFuzzer(WcOptions, runWc);
+    try WcFuzzer.testComprehensive(allocator, input, common.null_writer);
 }

@@ -69,6 +69,32 @@ pub const FileInfo = struct {
         return try statFile(file);
     }
 
+    /// Get file info without following symlinks (like lstat)
+    pub fn lstat(path: []const u8) !FileInfo {
+        var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+        @memcpy(buf[0..path.len], path);
+        buf[path.len] = 0;
+        const c_path = buf[0..path.len :0];
+
+        var stat_buf: std.c.Stat = undefined;
+        const result = std.c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
+        if (result != 0) {
+            const errno = std.posix.errno(result);
+            return switch (errno) {
+                .SUCCESS => unreachable,
+                .ACCES => error.AccessDenied,
+                .BADF => error.FileNotFound,
+                .NOTDIR => error.NotDir,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOENT => error.FileNotFound,
+                else => error.SystemResources,
+            };
+        }
+
+        return statToFileInfo(stat_buf);
+    }
+
     pub fn statFile(file: std.fs.File) !FileInfo {
         // Use fstat directly to get all information
         const fd = file.handle;

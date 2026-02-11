@@ -1,11 +1,4 @@
-//! yes utility - Repeatedly output a line with all specified strings, or 'y'.
-//!
-//! This is a clean, efficient implementation of the yes command with modern
-//! enhancements including arena-based memory management and comprehensive testing.
-//!
-//! The utility outputs specified strings (or 'y' by default) repeatedly until
-//! the output pipe is broken (SIGPIPE), which it handles gracefully by exiting
-//! with success status.
+//! yes - repeatedly output a line with all specified strings, or 'y'.
 
 const std = @import("std");
 const common = @import("common");
@@ -27,21 +20,25 @@ pub fn runYes(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !u8 {
-    // Use arena allocator for CLI tool memory management
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const arena_allocator = arena.allocator();
-
     // Parse arguments using common argparse
-    const parsed_args = common.argparse.ArgParser.parse(YesArgs, arena_allocator, args) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err| {
         switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(arena_allocator, stderr_writer, "yes", "invalid argument", .{});
+            error.UnknownFlag => {
+                common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.MissingValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "yes", "option requires an argument", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.InvalidValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "yes", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
     };
+    defer allocator.free(parsed_args.positionals);
 
     // Handle help flag
     if (parsed_args.help) {
@@ -61,19 +58,21 @@ pub fn runYes(
             break :blk "y\n";
         } else {
             // Join all arguments with space and add newline
-            const joined = try std.mem.join(arena_allocator, " ", parsed_args.positionals);
-            const with_newline = try std.fmt.allocPrint(arena_allocator, "{s}\n", .{joined});
+            const joined = try std.mem.join(allocator, " ", parsed_args.positionals);
+            defer allocator.free(joined);
+            const with_newline = try std.fmt.allocPrint(allocator, "{s}\n", .{joined});
             break :blk with_newline;
         }
     };
+    defer if (parsed_args.positionals.len > 0) allocator.free(output_str);
 
     // Create a larger buffer for efficient output
     const buffer_size = 8192;
-    var buffer = try arena_allocator.alloc(u8, buffer_size);
+    var buffer: [buffer_size]u8 = undefined;
 
     // Fill buffer with repeated string
     var pos: usize = 0;
-    while (pos + output_str.len <= buffer_size) {
+    while (pos + output_str.len <= buffer.len) {
         @memcpy(buffer[pos..][0..output_str.len], output_str);
         pos += output_str.len;
     }
@@ -114,9 +113,9 @@ fn printVersion(writer: anytype) !void {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);

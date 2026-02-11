@@ -2,7 +2,6 @@
 //! Implements POSIX ln command
 
 const std = @import("std");
-const builtin = @import("builtin");
 const common = @import("common");
 const testing = std.testing;
 
@@ -11,9 +10,7 @@ const LnArgs = struct {
     version: bool = false,
     force: bool = false,
     interactive: bool = false,
-    logical: bool = false,
     no_dereference: bool = false,
-    physical: bool = false,
     relative: bool = false,
     symbolic: bool = false,
     target_directory: ?[]const u8 = null,
@@ -26,9 +23,7 @@ const LnArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .force = .{ .short = 'f', .desc = "Remove existing destination files" },
         .interactive = .{ .short = 'i', .desc = "Prompt whether to remove destinations" },
-        .logical = .{ .short = 'L', .desc = "Dereference TARGETs that are symbolic links" },
         .no_dereference = .{ .short = 'n', .desc = "Treat LINK_NAME as a normal file if it is a symbolic link to a directory" },
-        .physical = .{ .short = 'P', .desc = "Make hard links directly to symbolic links" },
         .relative = .{ .short = 'r', .desc = "With -s, create links relative to link location" },
         .symbolic = .{ .short = 's', .desc = "Make symbolic links instead of hard links" },
         .target_directory = .{ .short = 't', .desc = "Specify the DIRECTORY in which to create the links", .value_name = "DIRECTORY" },
@@ -140,9 +135,17 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     // Parse arguments
     const parsed_args = common.argparse.ArgParser.parse(LnArgs, allocator, args) catch |err| {
         switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+            error.UnknownFlag => {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.MissingValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.InvalidValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -165,9 +168,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     const options = LinkOptions{
         .force = parsed_args.force,
         .interactive = parsed_args.interactive,
-        .logical = parsed_args.logical,
         .no_dereference = parsed_args.no_dereference,
-        .physical = parsed_args.physical,
         .relative = parsed_args.relative,
         .symbolic = parsed_args.symbolic,
         .target_directory = parsed_args.target_directory,
@@ -179,7 +180,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
 
     if (files.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     const exit_code = try createLinks(allocator, files, options, stdout_writer, stderr_writer);
@@ -202,20 +203,12 @@ fn printHelp(writer: anytype) !void {
         \\can hold arbitrary text; if later resolved, a relative link is
         \\interpreted in relation to its parent directory.
         \\
-        \\      --backup[=CONTROL]       make a backup of each existing destination file
-        \\  -b                           like --backup but does not accept an argument
-        \\  -d, -F, --directory         allow the superuser to attempt to hard link
-        \\                                 directories (this will probably fail due to
-        \\                                 system restrictions, even for the superuser)
         \\  -f, --force                 remove existing destination files
         \\  -i, --interactive           prompt whether to remove destinations
-        \\  -L, --logical               dereference TARGETs that are symbolic links
         \\  -n, --no-dereference        treat LINK_NAME as a normal file if
         \\                                 it is a symbolic link to a directory
-        \\  -P, --physical              make hard links directly to symbolic links
         \\  -r, --relative              with -s, create links relative to link location
         \\  -s, --symbolic              make symbolic links instead of hard links
-        \\  -S, --suffix=SUFFIX         override the usual backup suffix
         \\  -t, --target-directory=DIRECTORY  specify the DIRECTORY in which to create
         \\                                 the links
         \\  -T, --no-target-directory   treat LINK_NAME as a normal file always
@@ -235,9 +228,7 @@ fn printVersion(writer: anytype) !void {
 const LinkOptions = struct {
     force: bool = false,
     interactive: bool = false,
-    logical: bool = false,
     no_dereference: bool = false,
-    physical: bool = false,
     relative: bool = false,
     symbolic: bool = false,
     target_directory: ?[]const u8 = null,
@@ -331,18 +322,20 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         }
 
         // Create links in the directory
+        var had_error = false;
         for (files[0 .. files.len - 1]) |target| {
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ directory, link_name });
             defer allocator.free(full_link_path);
             createSingleLink(allocator, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
                 // Error already printed by createSingleLink
-                return common.ExitCode.general_error;
+                had_error = true;
             };
         }
+        if (had_error) return common.ExitCode.general_error;
     } else {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{files[0]});
-        return common.ExitCode.general_error;
+        return common.ExitCode.misuse;
     }
 
     return common.ExitCode.success;
@@ -378,6 +371,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 const stdin = &stdin_reader.interface;
 
                 try stderr_writer.print("ln: replace '{s}'? ", .{link_name});
+                stderr_writer.flush() catch {};
 
                 const input = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
                     error.EndOfStream => return,

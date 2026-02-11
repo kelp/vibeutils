@@ -84,15 +84,18 @@ fn parseTimeString(time_str: []const u8) !u64 {
 
     // Parse the number part (support decimal values)
     // Check for invalid formats like "5." but allow ".5" (GNU compatible)
-    if (number_part.len == 0 or
-        std.mem.endsWith(u8, number_part, "."))
-    {
+    if (std.mem.endsWith(u8, number_part, ".")) {
         return error.InvalidTimeFormat;
     }
 
     const parsed_value = std.fmt.parseFloat(f64, number_part) catch {
         return error.InvalidTimeFormat;
     };
+
+    // Reject NaN and Inf values
+    if (std.math.isNan(parsed_value) or std.math.isInf(parsed_value)) {
+        return error.InvalidTimeFormat;
+    }
 
     if (parsed_value < 0) {
         return error.NegativeTime;
@@ -130,14 +133,6 @@ fn parseTotalTime(args: []const []const u8) !u64 {
     }
 
     return total_nanos;
-}
-
-/// Sleep for the specified duration in nanoseconds
-/// Uses high-precision nanosleep where available
-fn sleepNanos(nanos: u64) void {
-    if (nanos == 0) return;
-
-    std.Thread.sleep(nanos);
 }
 
 /// Print help message
@@ -220,7 +215,9 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     };
 
     // Sleep for the specified duration
-    sleepNanos(total_nanos);
+    if (total_nanos > 0) {
+        std.Thread.sleep(total_nanos);
+    }
 
     return @intFromEnum(common.ExitCode.success);
 }
@@ -235,11 +232,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -306,6 +303,16 @@ test "parseTimeString - invalid formats" {
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("5."));
     // .5 is valid (GNU compatible, means 0.5 seconds)
     try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString(".5"));
+}
+
+test "parseTimeString - reject NaN and Inf" {
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("nan"));
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("NaN"));
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("inf"));
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("Inf"));
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("infinity"));
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("nans"));
+    try testing.expectError(error.InvalidTimeFormat, parseTimeString("infm"));
 }
 
 test "parseTimeString - negative values" {
@@ -433,16 +440,6 @@ test "TimeUnit.toNanos - verify unit conversions" {
     try testing.expectEqual(std.time.ns_per_min, TimeUnit.minutes.toNanos());
     try testing.expectEqual(std.time.ns_per_hour, TimeUnit.hours.toNanos());
     try testing.expectEqual(std.time.ns_per_day, TimeUnit.days.toNanos());
-}
-
-test "sleepNanos - zero duration" {
-    // Should return immediately without sleeping
-    const start_time = std.time.milliTimestamp();
-    sleepNanos(0);
-    const end_time = std.time.milliTimestamp();
-
-    // Should complete almost immediately (allow for small measurement variance)
-    try testing.expect(end_time - start_time < 10);
 }
 
 // ============================================================================

@@ -11,7 +11,7 @@ const HeadArgs = struct {
     /// Output version information and exit
     version: bool = false,
     /// Number of lines to output (default: 10)
-    lines: ?i64 = null,
+    lines: ?u64 = null,
     /// Number of bytes to output (overrides -n)
     bytes: ?u64 = null,
     /// Quiet flag - never print headers
@@ -34,11 +34,18 @@ const HeadArgs = struct {
 /// Core head functionality accepting parsed arguments and writers.
 /// Processes files or stdin according to the provided options.
 pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parse(HeadArgs, allocator, args) catch |err| {
         switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid argument", .{});
+            error.UnknownFlag => {
+                common.printErrorWithProgram(allocator, stderr_writer, "head", "unrecognized option", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.MissingValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "head", "option requires an argument", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
+            error.InvalidValue => {
+                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -59,13 +66,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     }
 
     // Create options struct
-    const line_count = if (parsed_args.lines) |n| blk: {
-        if (n < 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-        break :blk @as(u64, @intCast(n));
-    } else DEFAULT_LINE_COUNT;
+    const line_count = parsed_args.lines orelse DEFAULT_LINE_COUNT;
 
     const options = HeadOptions{
         .line_count = line_count,
@@ -73,13 +74,13 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         .show_headers = if (parsed_args.quiet) false else if (parsed_args.verbose) true else parsed_args.positionals.len > 1,
     };
 
-    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
     const stdin = &stdin_reader.interface;
 
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        try processInput(allocator, stdin, stdout_writer, options);
+        try processInput(stdin, stdout_writer, options);
     } else {
         var had_error = false;
         // Process each file in order
@@ -93,7 +94,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 if (options.show_headers) {
                     try stdout_writer.writeAll("==> standard input <==\n");
                 }
-                try processInput(allocator, stdin, stdout_writer, options);
+                try processInput(stdin, stdout_writer, options);
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
@@ -106,9 +107,9 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 if (options.show_headers) {
                     try stdout_writer.print("==> {s} <==\n", .{file_path});
                 }
-                var file_buffer: [4096]u8 = undefined;
+                var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                try processInput(allocator, &file_reader.interface, stdout_writer, options);
+                try processInput(&file_reader.interface, stdout_writer, options);
             }
         }
         if (had_error) {
@@ -121,20 +122,20 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 /// Entry point for the head binary.
 /// Sets up allocator, parses system arguments, and calls runHead.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -163,10 +164,6 @@ fn printHelp(writer: anytype) !void {
         \\      --help               display this help and exit
         \\      --version            output version information and exit
         \\
-        \\NUM may have a multiplier suffix:
-        \\b 512, kB 1000, K 1024, MB 1000*1000, M 1024*1024,
-        \\GB 1000*1000*1000, G 1024*1024*1024, and so on for T, P, E, Z, Y.
-        \\
     );
 }
 
@@ -187,9 +184,7 @@ const HeadOptions = struct {
 
 /// Process input from a reader and output first lines/bytes to writer.
 /// Streams data without reading the entire input into memory.
-pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: HeadOptions) !void {
-    _ = allocator;
-
+pub fn processInput(reader: anytype, writer: anytype, options: HeadOptions) !void {
     if (options.byte_count) |byte_count| {
         // Byte mode: read chunks and write until byte_count reached
         var remaining: u64 = byte_count;

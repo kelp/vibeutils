@@ -1,7 +1,7 @@
 //! false - do nothing, unsuccessfully
 //!
-//! The false utility always exits with status 1, produces no output, and ignores all arguments.
-//! This is the simplest possible system utility - it literally does nothing except fail.
+//! The false utility always exits with status 1, produces no output,
+//! and ignores all arguments.
 //!
 //! POSIX-compliant implementation compatible with GNU coreutils.
 const std = @import("std");
@@ -10,16 +10,15 @@ const testing = std.testing;
 
 /// Main entry point for the false utility
 pub fn runFalse(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    _ = allocator; // unused
-    _ = args; // false ignores all arguments
-    _ = stdout_writer; // false produces no output
-    _ = stderr_writer; // false produces no output
+    _ = allocator;
+    _ = args;
+    _ = stdout_writer;
+    _ = stderr_writer;
 
-    // Always return 1 (failure)
     return @intFromEnum(common.ExitCode.general_error);
 }
 
-/// Standard main function - minimal like true.zig since false never outputs
+/// Standard main function - minimal since false never outputs
 pub fn main() !void {
     std.process.exit(1);
 }

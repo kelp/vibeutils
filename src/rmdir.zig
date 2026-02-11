@@ -1,4 +1,4 @@
-/// POSIX rmdir utility for removing empty directories.
+//! POSIX rmdir utility for removing empty directories.
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -85,11 +85,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout_writer_interface = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr_writer_interface = &stderr_writer.interface;
 
@@ -115,7 +115,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -135,7 +135,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const directories = parsed_args.positionals;
     if (directories.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     const options = RmdirOptions{
@@ -199,6 +199,7 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
 
 /// Remove a single directory.
 fn removeSingleDirectory(path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmdirOptions) !void {
+    // stderr_writer unused here, errors handled by caller
     _ = stderr_writer;
 
     std.fs.cwd().deleteDir(path) catch |err| {

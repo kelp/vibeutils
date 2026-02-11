@@ -1,15 +1,8 @@
-//! POSIX-compatible cat utility for concatenating and displaying files
+//! Concatenates and displays files with optional formatting.
 //!
-//! This module implements the cat command with full support for:
-//! - Reading from multiple files or standard input
-//! - Line numbering with -n (all lines) and -b (non-blank lines only)
-//! - Blank line squeezing with -s
-//! - Special character visualization with -T (tabs), -E (line ends), -v (non-printing)
-//! - Combined flag shortcuts: -A (-vET), -e (-vE), -t (-vT)
-//! - Proper handling of binary data and control characters
-//!
-//! The implementation maintains compatibility with GNU coreutils cat while
-//! providing robust error handling and efficient buffered I/O operations.
+//! Supports line numbering (-n, -b), blank line squeezing (-s),
+//! and special character visualization (-T, -E, -v, -A, -e, -t).
+//! Maintains compatibility with GNU coreutils cat.
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -117,7 +110,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        processInput(allocator, stdin, stdout_writer, options, &line_state) catch |err| {
+        processInput(stdin, stdout_writer, options, &line_state) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{@errorName(err)});
             has_error = true;
         };
@@ -126,7 +119,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
         for (parsed_args.positionals) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 // "-" means read from stdin
-                processInput(allocator, stdin, stdout_writer, options, &line_state) catch |err| {
+                processInput(stdin, stdout_writer, options, &line_state) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{@errorName(err)});
                     has_error = true;
                 };
@@ -141,7 +134,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
                 var file_buffer: [4096]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                processInput(allocator, &file_reader.interface, stdout_writer, options, &line_state) catch |err| {
+                processInput(&file_reader.interface, stdout_writer, options, &line_state) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                 };
@@ -154,9 +147,9 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
 /// Process files or stdin with the specified formatting options
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
@@ -238,10 +231,9 @@ const LineNumberState = struct {
 /// Streams data directly from the reader without buffering entire
 /// files into memory. The no-formatting path uses peekGreedy/toss
 /// for zero-copy throughput; the formatting path reads line by line
-/// with takeDelimiterExclusive and handles partial trailing lines
-/// via reader.buffered().
-pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
-    _ = allocator;
+/// with takeDelimiterInclusive and handles lines longer than buffer
+/// by processing them in chunks (StreamTooLong error).
+fn processInput(reader: anytype, writer: anytype, options: CatOptions, state: *LineNumberState) !void {
 
     // Check if we need any line-based processing (formatting options)
     const needs_line_processing = options.number_lines or options.number_nonblank or
@@ -264,56 +256,79 @@ pub fn processInput(allocator: std.mem.Allocator, reader: anytype, writer: anyty
 
     // Formatting path: process one line at a time using the reader's
     // internal buffer. takeDelimiterInclusive returns line content
-    // including the newline, advancing past it. On EndOfStream we
-    // check buffered() for a partial trailing line without a newline.
+    // including the newline, advancing past it. When lines exceed the
+    // buffer size, handle StreamTooLong by processing chunks until we
+    // find the newline or reach EOF.
+    var at_line_start = true; // Track if we're at the beginning of a line for numbering
     while (true) {
         const line_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            error.StreamTooLong => {
+                // Line exceeds buffer size - process what we have as a partial line
+                const partial = reader.buffered();
+                if (partial.len > 0) {
+                    try processFormattedLineChunk(writer, partial, false, options, state, &at_line_start);
+                    reader.toss(partial.len);
+                }
+                continue; // Keep reading more of the same line
+            },
             error.EndOfStream => {
                 // Handle any remaining partial line (no trailing newline)
                 const remaining = reader.buffered();
                 if (remaining.len > 0) {
-                    try processFormattedLine(writer, remaining, false, options, state);
+                    try processFormattedLineChunk(writer, remaining, false, options, state, &at_line_start);
                     reader.toss(remaining.len);
                 }
                 break;
             },
             else => |e| return e,
         };
-        // Strip the trailing newline for processFormattedLine (it adds it back)
+        // Strip the trailing newline for processFormattedLineChunk (it adds it back)
         const line = line_with_nl[0 .. line_with_nl.len - 1];
-        try processFormattedLine(writer, line, true, options, state);
+        try processFormattedLineChunk(writer, line, true, options, state, &at_line_start);
+        at_line_start = true; // After a complete line, we're at the start of the next
     }
 }
 
-/// Apply formatting to a single line and write it to the writer.
-/// `has_newline` indicates whether the original input had a trailing
-/// newline for this line (false only for the last partial line at EOF).
-fn processFormattedLine(writer: anytype, line: []const u8, has_newline: bool, options: CatOptions, state: *LineNumberState) !void {
-    const is_blank = line.len == 0;
+/// Apply formatting to a line chunk and write it to the writer.
+/// `has_newline` indicates whether this chunk ends with a newline.
+/// `at_line_start` tracks whether we're at the beginning of a line (for line numbering).
+/// When processing chunks of a long line, only the first chunk is at line start.
+fn processFormattedLineChunk(writer: anytype, chunk: []const u8, has_newline: bool, options: CatOptions, state: *LineNumberState, at_line_start: *bool) !void {
+    const is_blank = chunk.len == 0;
 
-    // Handle squeeze blank: skip consecutive blank lines
-    if (options.squeeze_blank and is_blank and state.prev_blank) {
-        return;
+    // Only handle squeeze_blank and line numbering at the start of a line
+    if (at_line_start.*) {
+        // Handle squeeze blank: skip consecutive blank lines
+        if (options.squeeze_blank and is_blank and state.prev_blank) {
+            // Only update at_line_start if we actually have a newline
+            if (has_newline) {
+                at_line_start.* = true;
+            }
+            return;
+        }
+        if (has_newline) {
+            state.prev_blank = is_blank;
+        }
+
+        // Handle line numbering (merged branches)
+        const should_number = (options.number_nonblank and !is_blank) or
+            (options.number_lines and !options.number_nonblank);
+        if (should_number) {
+            try writer.print("{d: >6}\t", .{state.line_number});
+            state.line_number += 1;
+        }
+
+        at_line_start.* = false; // We've processed the line start
     }
-    state.prev_blank = is_blank;
 
-    // Handle line numbering
-    if (options.number_nonblank and !is_blank) {
-        try writer.print("{d: >6}\t", .{state.line_number});
-        state.line_number += 1;
-    } else if (options.number_lines and !options.number_nonblank) {
-        try writer.print("{d: >6}\t", .{state.line_number});
-        state.line_number += 1;
-    }
-
-    // Write the line content with optional special character handling
+    // Write the chunk content with optional special character handling
     if (options.show_tabs or options.show_nonprinting) {
-        try writeWithSpecialChars(writer, line, options);
+        try writeWithSpecialChars(writer, chunk, options);
     } else {
-        try writer.writeAll(line);
+        try writer.writeAll(chunk);
     }
 
-    // Write newline only if the original input had one
+    // Write newline only if this chunk ends with one
     if (has_newline) {
         if (options.show_ends) {
             try writer.writeAll("$");
@@ -637,6 +652,30 @@ test "cat handles very long lines without truncation" {
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings(long_line, stdout_buffer.items);
+}
+
+test "cat with -n handles very long lines correctly" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a line longer than the 4096-byte read buffer
+    const long_line = "A" ** 8192 ++ "\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", long_line);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-n", file_path };
+    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
+
+    // Verify line number appears only once at the beginning
+    const expected = "     1\t" ++ "A" ** 8192 ++ "\n";
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
 }
 
 test "cat continues processing files after error" {

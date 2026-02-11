@@ -1,15 +1,7 @@
-//! tee - write to stdout and files simultaneously
+//! tee - read from stdin, write to stdout and files
 //!
-//! This module implements the tee command with full support for:
-//! - Writing input to standard output and one or more files simultaneously
-//! - Append mode with -a flag for adding to existing files
-//! - Signal handling with -i flag to ignore interrupts (SIGINT)
-//! - Error diagnosis with -p flag to diagnose write errors
-//! - Binary data handling for safe processing of all data types
-//! - POSIX compliance with GNU coreutils compatibility
-//!
-//! The implementation follows the multi-writer pattern for efficient data
-//! distribution and provides robust error handling for partial write failures.
+//! Supports append mode (-a), signal ignoring (-i), and
+//! error diagnosis (-p). POSIX-compliant with GNU extensions.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -106,17 +98,15 @@ fn runTeeWithInput(
 
     // Create multi-writer system using the generic type
     const MultiWriter = MultiWriterGeneric(@TypeOf(stdout_writer));
-    var multi_writer = MultiWriter.init(allocator, stdout_writer, filtered_files.items, args.append, args.diagnose_errors) catch |err| {
+    var multi_writer = MultiWriter.init(allocator, stdout_writer, filtered_files.items, args.append) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "tee", "failed to open files: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer multi_writer.deinit();
 
-    // Process input data, copying to all outputs
     var has_error = false;
     var buffer: [8192]u8 = undefined;
 
-    // Read data using file.read() like cp does
     while (true) {
         const bytes_read = input_file.read(&buffer) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error: {s}", .{@errorName(err)});
@@ -125,10 +115,9 @@ fn runTeeWithInput(
         };
 
         if (bytes_read == 0) {
-            break; // EOF
+            break;
         }
 
-        // Write to all outputs
         multi_writer.write(buffer[0..bytes_read]) catch |err| {
             if (args.diagnose_errors) {
                 common.printErrorWithProgram(allocator, stderr_writer, "tee", "write error: {s}", .{@errorName(err)});
@@ -188,8 +177,6 @@ fn printHelp(writer: anytype) !void {
         \\      --help        display this help and exit
         \\      --version     output version information and exit
         \\
-        \\If a FILE is -, copy again to standard output.
-        \\
     );
 }
 
@@ -228,11 +215,9 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
         allocator: std.mem.Allocator,
         stdout_writer: StdoutWriter,
         files: []std.fs.File,
-        file_names: []const []const u8,
-        diagnose_errors: bool,
 
         /// Initialize multi-writer with stdout and file outputs
-        pub fn init(allocator: std.mem.Allocator, stdout_writer: StdoutWriter, file_names: []const []const u8, append_mode: bool, diagnose_errors: bool) !Self {
+        pub fn init(allocator: std.mem.Allocator, stdout_writer: StdoutWriter, file_names: []const []const u8, append_mode: bool) !Self {
             var files = try allocator.alloc(std.fs.File, file_names.len);
             errdefer allocator.free(files);
 
@@ -245,7 +230,6 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
 
             // Open all files
             for (file_names, 0..) |file_name, i| {
-                // POSIX compliance: "-" should be treated as a literal filename "-", not stdout
                 if (append_mode) {
                     // For append mode: try to open existing file, create if not found
                     files[i] = std.fs.cwd().openFile(file_name, .{ .mode = .write_only }) catch |open_err| switch (open_err) {
@@ -274,8 +258,6 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
                 .allocator = allocator,
                 .stdout_writer = stdout_writer,
                 .files = files,
-                .file_names = file_names,
-                .diagnose_errors = diagnose_errors,
             };
         }
 
@@ -321,14 +303,6 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
             // Use comptime check to see if flush method exists
             if (comptime std.meta.hasMethod(@TypeOf(self.stdout_writer), "flush")) {
                 self.stdout_writer.flush() catch {
-                    // Ignore flush errors for stdout writer to maintain test compatibility
-                };
-            }
-
-            // Sync all files
-            for (self.files) |file| {
-                file.sync() catch {
-                    // Error will be handled by caller via any_error flag
                     any_error = true;
                 };
             }

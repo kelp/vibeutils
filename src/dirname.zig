@@ -1,4 +1,7 @@
-//! Extract directory portion of pathname
+//! dirname - strip last component from file name
+//!
+//! Strips the last component from each pathname, outputting
+//! the directory portion. Follows POSIX specifications.
 
 const std = @import("std");
 const common = @import("common");
@@ -24,9 +27,8 @@ const DirnameArgs = struct {
     };
 };
 
-/// Main entry point for dirname utility
+/// Execute dirname utility with given arguments and writers
 pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse command-line arguments using the common argument parser
     const parsed_args = common.argparse.ArgParser.parse(DirnameArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
@@ -46,30 +48,25 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
     };
     defer allocator.free(parsed_args.positionals);
 
-    // Handle help flag
     if (parsed_args.help) {
         try printHelp(stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Handle version flag
     if (parsed_args.version) {
         try stdout_writer.print("dirname ({s}) {s}\n", .{ common.name, common.version });
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Check for missing operands
     if (parsed_args.positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "dirname", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Process each path
     const separator: u8 = if (parsed_args.zero) '\x00' else '\n';
 
     for (parsed_args.positionals) |path| {
-        const dirname = try extractDirname(path, allocator);
-        defer allocator.free(dirname);
+        const dirname = extractDirname(path);
         try stdout_writer.print("{s}{c}", .{ dirname, separator });
     }
 
@@ -78,47 +75,41 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
 
 /// Extract directory portion from pathname according to POSIX dirname specification
 ///
+/// Returns a slice into the input string or a string literal ("." or "/").
+/// No allocation is performed - the caller must not attempt to free the result.
+///
 /// POSIX dirname behavior:
 /// - "/path/to/file" → "/path/to" (remove last component)
 /// - "file.txt" → "." (no slash means current directory)
 /// - "/" → "/" (root stays root)
 /// - "/usr/" → "/" (trailing slash stripped, then processed)
 /// - "" → "." (empty path means current directory)
-///
-/// The algorithm strips trailing slashes first (except when the entire path is root),
-/// then finds the last slash to determine the directory portion.
-fn extractDirname(path: []const u8, allocator: Allocator) ![]u8 {
-    // 1. Handle empty → "."
+fn extractDirname(path: []const u8) []const u8 {
     if (path.len == 0) {
-        return try allocator.dupe(u8, ".");
+        return ".";
     }
 
-    // 2. Strip trailing slashes (keep root)
     var end = path.len;
     while (end > 1 and path[end - 1] == '/') {
         end -= 1;
     }
 
-    // 3. Find last slash in stripped path
     const last_slash = std.mem.lastIndexOfScalar(u8, path[0..end], '/');
 
-    // 4. No slash → "."
     if (last_slash == null) {
-        return try allocator.dupe(u8, ".");
+        return ".";
     }
 
-    // 5. Slash at 0 → "/"
     if (last_slash.? == 0) {
-        return try allocator.dupe(u8, "/");
+        return "/";
     }
 
-    // 6. Strip trailing slashes from dirname and return
     var dirname_end = last_slash.?;
     while (dirname_end > 1 and path[dirname_end - 1] == '/') {
         dirname_end -= 1;
     }
 
-    return try allocator.dupe(u8, path[0..dirname_end]);
+    return path[0..dirname_end];
 }
 
 /// Print help message
@@ -140,17 +131,14 @@ fn printHelp(writer: anytype) !void {
     );
 }
 
-/// Main entry point
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    // Set up buffered writers for stdout and stderr
     var stdout_buffer: [4096]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
@@ -160,7 +148,6 @@ pub fn main() !void {
 
     const exit_code = try runDirname(allocator, args[1..], stdout, stderr);
 
-    // Flush buffers before exit
     stdout.flush() catch {};
     stderr.flush() catch {};
     std.process.exit(exit_code);
@@ -180,8 +167,7 @@ test "dirname: basic cases" {
     };
 
     for (cases) |case| {
-        const result = try extractDirname(case.input, testing.allocator);
-        defer testing.allocator.free(result);
+        const result = extractDirname(case.input);
         try testing.expectEqualStrings(case.expected, result);
     }
 }
@@ -196,8 +182,7 @@ test "dirname: root paths" {
     };
 
     for (cases) |case| {
-        const result = try extractDirname(case.input, testing.allocator);
-        defer testing.allocator.free(result);
+        const result = extractDirname(case.input);
         try testing.expectEqualStrings(case.expected, result);
     }
 }
@@ -212,8 +197,7 @@ test "dirname: trailing slashes" {
     };
 
     for (cases) |case| {
-        const result = try extractDirname(case.input, testing.allocator);
-        defer testing.allocator.free(result);
+        const result = extractDirname(case.input);
         try testing.expectEqualStrings(case.expected, result);
     }
 }
@@ -229,8 +213,7 @@ test "dirname: special cases" {
     };
 
     for (cases) |case| {
-        const result = try extractDirname(case.input, testing.allocator);
-        defer testing.allocator.free(result);
+        const result = extractDirname(case.input);
         try testing.expectEqualStrings(case.expected, result);
     }
 }
@@ -245,8 +228,7 @@ test "dirname: edge cases" {
     };
 
     for (cases) |case| {
-        const result = try extractDirname(case.input, testing.allocator);
-        defer testing.allocator.free(result);
+        const result = extractDirname(case.input);
         try testing.expectEqualStrings(case.expected, result);
     }
 }

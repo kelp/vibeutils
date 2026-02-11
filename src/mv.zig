@@ -32,6 +32,18 @@ const MvArgs = struct {
     };
 };
 
+/// Options controlling move operation behavior
+const MoveOptions = struct {
+    /// Prompt before overwrite
+    interactive: bool = false,
+    /// Force overwrite without prompting
+    force: bool = false,
+    /// Print verbose output
+    verbose: bool = false,
+    /// Do not overwrite existing files
+    no_clobber: bool = false,
+};
+
 // Test helpers
 
 const TestDir = struct {
@@ -396,9 +408,6 @@ test "mv: empty file" {
     try testing.expectEqualStrings("", content);
 }
 
-// Constants for buffer sizes
-const PROMPT_BUFFER_SIZE = 256;
-
 /// Move across filesystems using copy-then-delete
 fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     if (options.verbose) {
@@ -424,7 +433,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         try copyDirectoryRecursive(allocator, source, dest, options, stdout_writer, stderr_writer);
     } else {
         // Handle regular file
-        try copyFile(allocator, source, dest, source_stat, options, stdout_writer, stderr_writer);
+        try copyFile(allocator, source, dest, source_stat, options, stderr_writer);
     }
 
     // If copy succeeded, remove the source
@@ -452,9 +461,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 }
 
 /// Copy a single file across filesystems with attribute preservation
-fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
-    _ = stdout_writer;
-
+fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, options: MoveOptions, stderr_writer: anytype) !void {
     if (options.verbose) {
         try stderr_writer.print("mv: copying file '{s}' to '{s}'\n", .{ source_path, dest_path });
     }
@@ -569,7 +576,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
                     common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat file '{s}': {}", .{ entry_source, err });
                     return err;
                 };
-                try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stdout_writer, stderr_writer);
+                try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stderr_writer);
             },
             .directory => {
                 try copyDirectoryRecursive(allocator, entry_source, entry_dest, options, stdout_writer, stderr_writer);
@@ -696,24 +703,11 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
     };
 }
 
-/// Options controlling move operation behavior
-const MoveOptions = struct {
-    /// Prompt before overwrite
-    interactive: bool = false,
-    /// Force overwrite without prompting
-    force: bool = false,
-    /// Print verbose output
-    verbose: bool = false,
-    /// Do not overwrite existing files
-    no_clobber: bool = false,
-};
-
 /// Print help message
 fn printHelp(writer: anytype) !void {
     try writer.print(
         \\Usage: mv [OPTION]... SOURCE DEST
         \\  or:  mv [OPTION]... SOURCE... DIRECTORY
-        \\  or:  mv [OPTION]... -t DIRECTORY SOURCE...
         \\Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
         \\
         \\Mandatory arguments to long options are mandatory for short options too.
@@ -729,9 +723,9 @@ fn printHelp(writer: anytype) !void {
 
 /// Main entry point for mv utility
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
@@ -831,8 +825,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, full_dest, err });
+            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch {
                 exit_code = common.ExitCode.general_error;
                 continue;
             };
@@ -851,8 +844,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
                 // Destination doesn't exist, proceed with normal rename
-                moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |move_err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, move_err });
+                moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch {
                     return @intFromEnum(common.ExitCode.general_error);
                 };
 
@@ -870,8 +862,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch |move_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, full_dest, move_err });
+            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch {
                 return @intFromEnum(common.ExitCode.general_error);
             };
 
@@ -880,8 +871,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             }
         } else {
             // Destination is a file, proceed with normal move/overwrite logic
-            moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch |move_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot move '{s}' to '{s}': {}", .{ source, dest, move_err });
+            moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch {
                 return @intFromEnum(common.ExitCode.general_error);
             };
 

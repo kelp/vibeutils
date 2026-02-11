@@ -109,11 +109,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -207,10 +207,18 @@ const ChmodError = error{
     InvalidOctalMode,
     /// Reference file not found
     ReferenceFileNotFound,
-    /// User cancelled operation
-    UserCancelled,
     /// One or more file operations failed
     FileOperationFailed,
+};
+
+/// Specifies how to compute the new mode for a file
+const ModeSpec = union(enum) {
+    /// Apply a fixed octal mode
+    octal: Mode,
+    /// Apply a symbolic mode string relative to current permissions
+    symbolic: []const u8,
+    /// Apply the mode from a reference file
+    reference: Mode,
 };
 
 /// Apply chmod operations to files
@@ -260,6 +268,14 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
         }
     }
 
+    // Construct ModeSpec once from the parsed mode information
+    const mode_spec: ModeSpec = if (use_reference)
+        .{ .reference = reference_mode.? }
+    else if (is_symbolic)
+        .{ .symbolic = mode_str }
+    else
+        .{ .octal = parsed_octal_mode.? };
+
     // Track if any file operations failed
     var had_errors = false;
 
@@ -275,28 +291,18 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             };
 
             if (stat_result.kind == .directory) {
-                chmodRecursive(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options) catch {
+                chmodRecursive(allocator, file_path, mode_spec, writer, stderr_writer, options) catch {
                     had_errors = true;
                 };
             } else {
                 // For recursive processing of files, we want to catch and track errors
-                if (use_reference) {
-                    applyModeToFile(allocator, file_path, reference_mode.?, writer, stderr_writer, options) catch {
-                        had_errors = true;
-                    };
-                } else if (is_symbolic) {
-                    applySymbolicModeToFile(allocator, file_path, mode_str, writer, stderr_writer, options) catch {
-                        had_errors = true;
-                    };
-                } else {
-                    applyModeToFile(allocator, file_path, parsed_octal_mode.?, writer, stderr_writer, options) catch {
-                        had_errors = true;
-                    };
-                }
+                applyModeSpecToFile(file_path, mode_spec, writer, options) catch {
+                    had_errors = true;
+                };
             }
         } else {
             // Non-recursive processing - track errors from helper function
-            const result = applyModeToPath(allocator, file_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options);
+            const result = applyModeToPath(allocator, file_path, mode_spec, writer, stderr_writer, options);
             if (!result) {
                 had_errors = true;
             }
@@ -310,44 +316,31 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
 }
 
 /// Apply mode to a single path with proper error handling
-/// Handles reference mode, symbolic mode, and octal mode cases
 /// Returns true on success, false on failure
-fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, parsed_octal_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) bool {
-    if (use_reference) {
-        applyModeToFile(allocator, file_path, reference_mode.?, writer, stderr_writer, options) catch |err| {
-            if (!options.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
-            }
-            return false;
-        };
-    } else if (is_symbolic) {
-        applySymbolicModeToFile(allocator, file_path, mode_str, writer, stderr_writer, options) catch |err| {
-            if (!options.quiet) {
-                switch (err) {
-                    ChmodError.InvalidMode => {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
-                    },
-                    else => {
+fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) bool {
+    applyModeSpecToFile(file_path, mode_spec, writer, options) catch |err| {
+        if (!options.quiet) {
+            switch (err) {
+                ChmodError.InvalidMode => {
+                    if (mode_spec == .symbolic) {
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_spec.symbolic});
+                    } else {
                         common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
-                    },
-                }
+                    }
+                },
+                else => {
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                },
             }
-            return false;
-        };
-    } else {
-        applyModeToFile(allocator, file_path, parsed_octal_mode.?, writer, stderr_writer, options) catch |err| {
-            if (!options.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
-            }
-            return false;
-        };
-    }
+        }
+        return false;
+    };
     return true;
 }
 
 /// Recursively apply chmod to a directory and all its contents
 /// Processes directory contents first, then the directory itself to avoid permission conflicts
-fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: []const u8, is_symbolic: bool, use_reference: bool, reference_mode: ?Mode, parsed_octal_mode: ?Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
+fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     // Open directory for iteration FIRST, before changing its permissions
     // This ensures we can access the directory contents even if the new permissions would block access
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
@@ -364,23 +357,19 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
     // Process all directory contents FIRST
     var iterator = dir.iterate();
     while (try iterator.next()) |entry| {
-        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
-            continue;
-        }
-
         const full_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
         defer allocator.free(full_path);
 
         switch (entry.kind) {
             .directory => {
                 // Recursively process subdirectory
-                chmodRecursive(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options) catch {
+                chmodRecursive(allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
                     had_errors = true;
                 };
             },
             else => {
                 // Handle all file types uniformly (files, symlinks, devices, etc.)
-                const result = applyModeToPath(allocator, full_path, mode_str, is_symbolic, use_reference, reference_mode, parsed_octal_mode, writer, stderr_writer, options);
+                const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
                 if (!result) {
                     had_errors = true;
                 }
@@ -390,19 +379,9 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_str: 
 
     // Apply mode to the directory itself LAST, after processing all contents
     // This prevents the scenario where changing directory permissions blocks access to its contents
-    if (use_reference) {
-        applyModeToFile(allocator, dir_path, reference_mode.?, writer, stderr_writer, options) catch {
-            had_errors = true;
-        };
-    } else if (is_symbolic) {
-        applySymbolicModeToFile(allocator, dir_path, mode_str, writer, stderr_writer, options) catch {
-            had_errors = true;
-        };
-    } else {
-        applyModeToFile(allocator, dir_path, parsed_octal_mode.?, writer, stderr_writer, options) catch {
-            had_errors = true;
-        };
-    }
+    applyModeSpecToFile(dir_path, mode_spec, writer, options) catch {
+        had_errors = true;
+    };
 
     // If any operations failed, return an error
     if (had_errors) {
@@ -457,14 +436,7 @@ fn parseMode(mode_str: []const u8) !Mode {
     return parseSymbolicModeString(mode_str);
 }
 
-// Symbolic mode parsing structures and functions
-
-/// Single symbolic mode operation
-const SymbolicMode = struct {
-    who: u8, // 1=user, 2=group, 4=other, 8=all
-    op: u8, // +, -, =
-    perms: u8, // r=4, w=2, x=1
-};
+// Symbolic mode parsing functions
 
 /// Parse a complete symbolic mode string
 /// Returns a base mode - actual application uses current file mode
@@ -509,16 +481,13 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, curren
     if (i >= clause.len) return ChmodError.InvalidMode;
 
     const op = clause[i];
-    if (op != '+' and op != '-' and op != '=') {
-        return ChmodError.InvalidMode;
-    }
     i += 1;
 
-    // Check if this is permission copying (g=u, o=g, u=o)
-    if (op == '=' and i < clause.len and clause.len == i + 1) {
+    // Check if this is permission copying (g=u, o=g, u=o, o+u, g-u, etc.)
+    if (i < clause.len and clause.len == i + 1) {
         const copy_from = clause[i];
         if (copy_from == 'u' or copy_from == 'g' or copy_from == 'o') {
-            applyCopyingMode(mode, who, copy_from);
+            applyCopyingMode(mode, who, copy_from, op);
             return;
         }
     }
@@ -540,8 +509,8 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, curren
             },
             // Support permission copying cases
             'u', 'g', 'o' => {
-                if (op == '=' and clause.len == i + 1) {
-                    applyCopyingMode(mode, who, clause[i]);
+                if (clause.len == i + 1) {
+                    applyCopyingMode(mode, who, clause[i], op);
                     return;
                 } else {
                     return ChmodError.InvalidMode;
@@ -555,29 +524,39 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, curren
     applyPermissionChange(mode, who, op, perms);
 }
 
-/// Apply permission copying (g=u, o=g, u=o) between user classes
-fn applyCopyingMode(mode: *Mode, who: u8, copy_from: u8) void {
-    // Get source permissions
+/// Apply permission copying between user classes with operator support
+fn applyCopyingMode(mode: *Mode, who: u8, copy_from: u8, op: u8) void {
     const source_perms = switch (copy_from) {
         'u' => mode.user,
         'g' => mode.group,
         'o' => mode.other,
-        else => return, // Should never happen due to validation
+        else => return,
     };
 
-    // Apply to target(s)
     if (who & 1 != 0) { // user
-        mode.user = source_perms;
+        switch (op) {
+            '+' => mode.user |= source_perms,
+            '-' => mode.user &= ~source_perms,
+            '=' => mode.user = source_perms,
+            else => {},
+        }
     }
     if (who & 2 != 0) { // group
-        mode.group = source_perms;
+        switch (op) {
+            '+' => mode.group |= source_perms,
+            '-' => mode.group &= ~source_perms,
+            '=' => mode.group = source_perms,
+            else => {},
+        }
     }
     if (who & 4 != 0) { // other
-        mode.other = source_perms;
+        switch (op) {
+            '+' => mode.other |= source_perms,
+            '-' => mode.other &= ~source_perms,
+            '=' => mode.other = source_perms,
+            else => {},
+        }
     }
-
-    // Note: Special bits (setuid/setgid/sticky) are not copied in standard chmod behavior
-    // Only the basic rwx permissions are copied between user classes
 }
 
 /// Apply permission changes based on parsed symbolic mode components
@@ -655,83 +634,37 @@ fn errorToMessage(err: anytype) []const u8 {
     };
 }
 
-/// Apply a specific mode to a single file
+/// Apply a mode specification to a single file
 /// Reports changes if verbose or changes_only flags are set
-fn applyModeToFile(allocator: std.mem.Allocator, file_path: []const u8, mode: Mode, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
-    _ = allocator; // For potential future use
-    _ = stderr_writer; // For potential future use
-    // Get file stats without opening the file - this works even on files with restrictive permissions
+fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anytype, options: ChmodOptions) !void {
+    // Get file stats
     const stat = std.fs.cwd().statFile(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
-        // Don't fail on access denied for stat - we might still be able to chmod
-        error.AccessDenied => std.fs.File.Stat{ .size = 0, .mode = 0, .mtime = 0, .atime = 0, .ctime = 0, .kind = .file, .inode = 0 },
-        else => return err,
-    };
-
-    const old_mode = @as(u32, @intCast(stat.mode & 0o7777));
-    const new_mode = mode.toOctal();
-
-    // Use path-based chmod system call which works even on files with restrictive permissions
-    // This works because chmod system call operates on the path, not requiring file access
-    // Ensure the file path is null-terminated for C function
-    const path_z = try std.posix.toPosixPath(file_path);
-    const result = std.c.chmod(&path_z, @as(std.c.mode_t, @intCast(new_mode)));
-    if (result != 0) {
-        // On Unix, chmod returns -1 on error, and errno contains the error code
-        const errno = std.c._errno().*;
-        return switch (errno) {
-            @intFromEnum(std.c.E.NOENT) => error.FileNotFound,
-            @intFromEnum(std.c.E.ACCES) => error.PermissionDenied,
-            @intFromEnum(std.c.E.PERM) => error.PermissionDenied,
-            else => error.Unexpected,
-        };
-    }
-
-    // Report changes if requested
-    if (options.verbose or (options.changes_only and old_mode != new_mode)) {
-        try writer.print("mode of '{s}' changed from {o:0>3} ({s}) to {o:0>3} ({s})\n", .{
-            file_path,
-            old_mode,
-            modeToString(old_mode),
-            new_mode,
-            modeToString(new_mode),
-        });
-    }
-}
-
-/// Apply a symbolic mode string to a file
-/// Preserves existing permissions and applies changes relative to them
-fn applySymbolicModeToFile(allocator: std.mem.Allocator, file_path: []const u8, mode_str: []const u8, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
-    _ = allocator; // For potential future use
-    _ = stderr_writer; // For potential future use
-    // Get file stats without opening the file - this works even on files with restrictive permissions
-    const stat = std.fs.cwd().statFile(file_path) catch |err| switch (err) {
-        error.FileNotFound => return error.FileNotFound,
-        // Don't fail on access denied for stat - we might still be able to chmod
         error.AccessDenied => std.fs.File.Stat{ .size = 0, .mode = 0, .mtime = 0, .atime = 0, .ctime = 0, .kind = .file, .inode = 0 },
         else => return err,
     };
 
     const old_mode = @as(u32, @intCast(stat.mode & 0o7777));
 
-    // Start with current mode
-    var new_mode_struct = Mode.fromOctal(old_mode);
+    // Compute new mode based on spec type
+    const new_mode = switch (mode_spec) {
+        .octal => |m| m.toOctal(),
+        .reference => |m| m.toOctal(),
+        .symbolic => |mode_str| blk: {
+            var new_mode_struct = Mode.fromOctal(old_mode);
+            const is_directory = stat.kind == .directory;
+            var iter = std.mem.splitScalar(u8, mode_str, ',');
+            while (iter.next()) |clause| {
+                try applySymbolicMode(&new_mode_struct, std.mem.trim(u8, clause, " "), is_directory, old_mode);
+            }
+            break :blk new_mode_struct.toOctal();
+        },
+    };
 
-    const is_directory = stat.kind == .directory;
-    var iter = std.mem.splitScalar(u8, mode_str, ',');
-    while (iter.next()) |clause| {
-        try applySymbolicMode(&new_mode_struct, std.mem.trim(u8, clause, " "), is_directory, old_mode);
-    }
-
-    const new_mode = new_mode_struct.toOctal();
-
-    // Use path-based chmod system call which works even on files with restrictive permissions
-    // This works because chmod system call operates on the path, not requiring file access
-    // Ensure the file path is null-terminated for C function
+    // Use path-based chmod system call
     const path_z = try std.posix.toPosixPath(file_path);
     const result = std.c.chmod(&path_z, @as(std.c.mode_t, @intCast(new_mode)));
     if (result != 0) {
-        // On Unix, chmod returns -1 on error, and errno contains the error code
         const errno = std.c._errno().*;
         return switch (errno) {
             @intFromEnum(std.c.E.NOENT) => error.FileNotFound,
@@ -868,7 +801,7 @@ test "modeToString converts correctly" {
 // Run with: ./scripts/run-privileged-tests.sh or zig build test-privileged
 
 // File operation tests
-test "privileged: applyModeToFile basic functionality" {
+test "privileged: applyModeSpecToFile basic functionality" {
     var arena = privilege_test.TestArena.init();
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -892,11 +825,12 @@ test "privileged: applyModeToFile basic functionality" {
             defer stderr_buffer.deinit(inner_allocator);
 
             const mode = Mode.fromOctal(0o644);
+            const mode_spec = ModeSpec{ .octal = mode };
             const options = ChmodOptions{ .verbose = true };
 
             const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, test_file_path);
 
-            try applyModeToFile(inner_allocator, abs_path, mode, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            try applyModeSpecToFile(abs_path, mode_spec, stdout_buffer.writer(inner_allocator), options);
 
             // Verify the file mode changed
             const stat = try std.fs.cwd().statFile(abs_path);
@@ -1270,6 +1204,30 @@ test "parseSymbolicMode permission copying" {
     try testing.expectEqual(@as(u3, 4), mode.user); // copied from other
     try testing.expectEqual(@as(u3, 4), mode.group); // copied from other
     try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
+}
+
+test "parseSymbolicMode permission copying with + operator" {
+    // o+u: add user permissions to other
+    var mode = Mode.fromOctal(0o750);
+    try applySymbolicMode(&mode, "o+u", false, null);
+    try testing.expectEqual(@as(u32, 0o757), mode.toOctal());
+
+    // g+o: add other permissions to group
+    mode = Mode.fromOctal(0o705);
+    try applySymbolicMode(&mode, "g+o", false, null);
+    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+}
+
+test "parseSymbolicMode permission copying with - operator" {
+    // g-u: remove user permissions from group
+    var mode = Mode.fromOctal(0o770);
+    try applySymbolicMode(&mode, "g-u", false, null);
+    try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
+
+    // o-g: remove group permissions from other
+    mode = Mode.fromOctal(0o755);
+    try applySymbolicMode(&mode, "o-g", false, null);
+    try testing.expectEqual(@as(u32, 0o750), mode.toOctal());
 }
 
 // Tests: X (conditional execute) permission

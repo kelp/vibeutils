@@ -81,20 +81,20 @@ pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
 /// CLI entry point — parses process arguments and sets up I/O buffers.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -219,13 +219,13 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
                     i += 2;
                 },
                 '0'...'7' => {
-                    // Octal sequence: \0NNN (1-3 digits)
+                    // Octal sequence: \0NNN or \NNN (up to 3 octal digits)
                     var octal_value: u8 = 0;
                     var j: usize = 1;
                     while (j <= 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : (j += 1) {
                         // Convert octal digit to value and accumulate
-                        // Note: We don't check for overflow as echo traditionally wraps values
-                        octal_value = octal_value * 8 + (s[i + j] - '0');
+                        // Use wrapping arithmetic to match GNU behavior for overflow
+                        octal_value = octal_value *% 8 +% (s[i + j] - '0');
                     }
                     try writer.writeByte(octal_value);
                     i += j;

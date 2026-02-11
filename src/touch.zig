@@ -1,4 +1,4 @@
-/// GNU-compatible touch utility implementation for Zig.
+/// touch - update file access and modification times
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
@@ -12,7 +12,6 @@ const TouchArgs = struct {
     a: bool = false,
     c: bool = false,
     no_create: bool = false,
-    date: ?[]const u8 = null,
     f: bool = false,
     h: bool = false,
     no_dereference: bool = false,
@@ -28,7 +27,6 @@ const TouchArgs = struct {
         .a = .{ .desc = "Change only the access time" },
         .c = .{ .desc = "Do not create any files" },
         .no_create = .{ .short = 0, .desc = "Do not create any files" },
-        .date = .{ .short = 'd', .desc = "Parse string and use it instead of current time", .value_name = "STRING" },
         .f = .{ .desc = "(ignored)" },
         .h = .{ .desc = "Affect symbolic link instead of any referenced file" },
         .no_dereference = .{ .short = 0, .desc = "Affect symbolic link instead of any referenced file" },
@@ -50,11 +48,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout_writer_interface = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr_writer_interface = &stderr_writer.interface;
 
@@ -71,16 +69,15 @@ pub fn main() !void {
 pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "touch";
 
-    // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parse(TouchArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
         }
@@ -113,7 +110,6 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         .no_dereference = no_dereference,
         .reference_file = parsed_args.reference,
         .timestamp_str = parsed_args.t,
-        .date_str = parsed_args.date,
         .time_arg = parsed_args.time,
     };
 
@@ -122,7 +118,7 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     if (files.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
-        return @intFromEnum(common.ExitCode.general_error);
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Process files - continue even if one fails (GNU touch behavior)
@@ -143,13 +139,6 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--time'", .{ta});
                     } else {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument for '--time'", .{});
-                    }
-                },
-                error.DateParsingNotImplemented => {
-                    if (options.date_str) |ds| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format '{s}'", .{ds});
-                    } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format", .{});
                     }
                 },
                 else => handleError(allocator, prog_name, file_path, err, stderr_writer),
@@ -175,7 +164,6 @@ fn printHelp(writer: anytype) !void {
         \\Options:
         \\  -a                   change only the access time
         \\  -c, --no-create      do not create any files
-        \\  -d, --date=STRING    parse STRING and use it instead of current time
         \\  -f                   (ignored)
         \\  -h, --no-dereference affect symbolic link instead of any referenced file
         \\  -m                   change only the modification time
@@ -186,8 +174,6 @@ fn printHelp(writer: anytype) !void {
         \\                         WORD is modify or mtime: equivalent to -m
         \\  --help               display this help and exit
         \\  -V, --version        output version information and exit
-        \\
-        \\Note: -d and -t options accept different time-date formats.
         \\
     , .{prog_name});
 }
@@ -200,7 +186,6 @@ const TouchOptions = struct {
     no_dereference: bool = false,
     reference_file: ?[]const u8 = null,
     timestamp_str: ?[]const u8 = null,
-    date_str: ?[]const u8 = null,
     time_arg: ?[]const u8 = null,
 };
 
@@ -219,9 +204,6 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
         const parsed_time = try parseTimestamp(timestamp);
         times[0] = parsed_time;
         times[1] = parsed_time;
-    } else if (options.date_str) |_| {
-        // TODO: Parse -d format (more complex, supports natural language)
-        return error.DateParsingNotImplemented;
     } else {
         // Use current time with nanosecond precision
         const now_ns = std.time.nanoTimestamp();
@@ -415,8 +397,8 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     if (year < 1970) return error.InvalidTimestamp;
 
     // More precise day validation based on month
-    const days_in_month = getDaysInMonth(year, month);
-    if (day > days_in_month) return error.InvalidTimestamp;
+    const max_days_in_month = getDaysInMonth(year, month);
+    if (day > max_days_in_month) return error.InvalidTimestamp;
 
     // Convert to timestamp using safer calculation
     const days_since_epoch = daysFromYMD(year, month, day) - daysFromYMD(1970, 1, 1);
@@ -444,17 +426,15 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
 
 /// Creates a file atomically to avoid race conditions.
 fn createFileAtomic(path: []const u8) !void {
-    const file = fs.cwd().createFile(path, .{
+    const file = try fs.cwd().createFile(path, .{
         .exclusive = true, // Fail if file already exists
         .truncate = false, // Don't truncate if it somehow exists
-    }) catch |err| {
-        return switch (err) {
-            error.PathAlreadyExists => err, // Let caller handle this
-            else => err,
-        };
-    };
+    });
     file.close();
 }
+
+/// Days in each month (non-leap year).
+const days_in_month = [_]u32{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
 /// Helper function to convert nanoseconds to timespec.
 fn nsToTimespec(ns: i128) c.timespec {
@@ -464,31 +444,15 @@ fn nsToTimespec(ns: i128) c.timespec {
     };
 }
 
-/// Calculates days since year 1 for a given date.
-fn daysFromYMD(year: u32, month: u32, day: u32) i64 {
-    // Days in each month (non-leap year)
-    const days_in_month = [_]u32{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-    var total_days: i64 = 0;
-
-    // Add days for complete years
-    var y: u32 = 1;
-    while (y < year) : (y += 1) {
-        total_days += if (isLeapYear(y)) 366 else 365;
-    }
-
-    // Add days for complete months in the current year
-    var m: u32 = 1;
-    while (m < month) : (m += 1) {
-        total_days += days_in_month[m - 1];
-        if (m == 2 and isLeapYear(year)) {
-            total_days += 1;
-        }
-    }
-
-    // Add remaining days
-    total_days += day;
-
-    return total_days;
+/// Calculates days since epoch (January 1, 1970) for a given date using civil-day formula.
+fn daysFromYMD(y: u32, m: u32, d: u32) i64 {
+    const adj_y: i64 = @as(i64, @intCast(y)) - @as(i64, if (m <= 2) 1 else 0);
+    const era: i64 = @divFloor(adj_y, 400);
+    const yoe: i64 = adj_y - era * 400;
+    const adj_m: i64 = @as(i64, @intCast(m)) + (if (m > 2) @as(i64, -3) else 9);
+    const doy: i64 = @divFloor(153 * adj_m + 2, 5) + @as(i64, @intCast(d)) - 1;
+    const doe: i64 = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
+    return era * 146097 + doe - 719468;
 }
 
 /// Determines if a year is a leap year.
@@ -498,8 +462,6 @@ fn isLeapYear(year: u32) bool {
 
 /// Returns the number of days in a given month.
 fn getDaysInMonth(year: u32, month: u32) u32 {
-    const days_in_month = [_]u32{ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-
     if (month < 1 or month > 12) return 0;
 
     var days = days_in_month[month - 1];
