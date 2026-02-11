@@ -43,22 +43,6 @@ Display help and exit.
 .It Fl Fl version
 Output version information and exit.
 .El
-.Sh SAFETY FEATURES
-The
-.Nm
-utility includes advanced safety features:
-.Bl -bullet
-.It
-Protection against removing critical system directories
-.It
-Detection of symlink cycles to prevent infinite loops
-.It
-Atomic operations using file descriptors to prevent race conditions
-.It
-Cross-filesystem boundary detection
-.It
-Same-file detection for hard links
-.El
 .Sh EXIT STATUS
 .Ex -std rm
 .Sh EXAMPLES

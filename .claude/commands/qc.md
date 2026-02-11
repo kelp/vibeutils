@@ -66,6 +66,15 @@ Verify all issues are fixed:
 - Identify any remaining improvements
 - Overall assessment
 
+## Model Selection:
+- **Reviewer agents** (Phase 1 & 3): Use `opus` for thorough
+  code analysis
+- **Programmer agent** (Phase 2): Use `opus` for correct Zig
+  0.15.x code generation
+
+Always pass the `model` parameter explicitly when spawning
+sub-agents. Do not rely on model inheritance.
+
 ## Workflow Requirements:
 1. Complete each phase fully before moving to the next
 2. Provide summary after each review phase
