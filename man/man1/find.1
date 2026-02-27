@@ -1,0 +1,240 @@
+.Dd February 27, 2026
+.Dt FIND 1
+.Os
+.Sh NAME
+.Nm find
+.Nd search for files in a directory hierarchy
+.Sh SYNOPSIS
+.Nm find
+.Op Fl H | Fl L
+.Op Ar path ...
+.Op Ar expression
+.Sh DESCRIPTION
+The
+.Nm
+utility recursively descends the directory tree for each
+.Ar path
+listed, evaluating an
+.Ar expression
+composed of primaries and operators for each file in the tree.
+.Pp
+If no
+.Ar path
+is specified,
+.Nm
+searches the current directory.
+If no
+.Ar expression
+is given, the
+.Fl print
+primary is implied.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl H
+Follow symbolic links on the command line only.
+Symbolic links encountered during traversal are not followed.
+.It Fl L , Fl follow
+Follow all symbolic links.
+.El
+.Ss Global Options
+Global options affect overall behavior and must appear before
+any path operands or primaries.
+.Bl -tag -width Ds
+.It Fl depth
+Process each directory's contents before the directory itself.
+The
+.Fl delete
+primary implies
+.Fl depth .
+.It Fl maxdepth Ar n
+Descend at most
+.Ar n
+levels below the starting points.
+.Fl maxdepth Ar 0
+means only apply tests to the starting points themselves.
+.It Fl mindepth Ar n
+Do not apply any tests or actions at levels less than
+.Ar n .
+.Fl mindepth Ar 1
+means process all files except the starting points.
+.El
+.Ss Primaries
+.Bl -tag -width Ds
+.It Fl name Ar pattern
+True if the last component of the pathname matches
+.Ar pattern
+using shell glob syntax
+.Pq Sq * , Sq \&? , Sq Op ...  .
+.It Fl iname Ar pattern
+Like
+.Fl name
+but the match is case insensitive.
+.It Fl path Ar pattern
+True if the full pathname matches
+.Ar pattern
+using shell glob syntax.
+Also available as
+.Fl wholename .
+.It Fl type Ar c
+True if the file type matches
+.Ar c ,
+where
+.Ar c
+is one of:
+.Bl -tag -width Ds -compact
+.It Cm b
+block device
+.It Cm c
+character device
+.It Cm d
+directory
+.It Cm f
+regular file
+.It Cm l
+symbolic link
+.It Cm p
+named pipe (FIFO)
+.It Cm s
+socket
+.El
+.It Fl size Ar n Ns Op Cm cwbkMG
+True if the file uses
+.Ar n
+units of space, rounded up.
+The default unit is 512-byte blocks.
+Suffixes:
+.Cm c
+(bytes),
+.Cm w
+(2-byte words),
+.Cm b
+(512-byte blocks),
+.Cm k
+(kilobytes),
+.Cm M
+(megabytes),
+.Cm G
+(gigabytes).
+Prefix
+.Ar n
+with
+.Sq +
+for greater than or
+.Sq -
+for less than.
+.It Fl empty
+True if the file is a regular empty file or an empty directory.
+.It Fl newer Ar file
+True if the current file was modified more recently than
+.Ar file .
+.It Fl mtime Ar n
+True if the file was modified
+.Ar n
+days ago (measured in 24-hour periods).
+Prefix
+.Ar n
+with
+.Sq +
+for more than
+.Ar n
+days ago, or
+.Sq -
+for less than
+.Ar n
+days ago.
+.It Fl perm Ar mode
+True if the file permission bits exactly match the octal
+.Ar mode .
+.It Fl user Ar name
+True if the file belongs to user
+.Ar name .
+A numeric UID is also accepted.
+.It Fl group Ar name
+True if the file belongs to group
+.Ar name .
+A numeric GID is also accepted.
+.El
+.Ss Actions
+.Bl -tag -width Ds
+.It Fl print
+Print the full pathname followed by a newline.
+This is the default action if no other action is specified.
+.It Fl print0
+Print the full pathname followed by a NUL character.
+Useful with
+.Xr xargs 1
+.Fl 0 .
+.It Fl delete
+Delete the matched file or empty directory.
+Implies
+.Fl depth .
+.It Fl exec Ar command Brq {} ;
+Execute
+.Ar command
+for each matched file.
+The string
+.Sq {}
+is replaced by the current pathname.
+The command must be terminated by an escaped semicolon
+.Pq Sq \e; .
+.El
+.Ss Operators
+Primaries may be combined with the following operators,
+listed in order of decreasing precedence:
+.Bl -tag -width Ds
+.It Pq Ar expression
+Parentheses for grouping.
+Must be escaped or quoted to prevent shell interpretation.
+.It Fl not Ar expression
+.It Sq "!" Ar expression
+Logical NOT.
+True if the expression is false.
+.It Ar expression Fl and Ar expression
+.It Ar expression Fl a Ar expression
+Logical AND (default between adjacent primaries).
+True if both expressions are true.
+.It Ar expression Fl or Ar expression
+.It Ar expression Fl o Ar expression
+Logical OR.
+True if either expression is true.
+.El
+.Sh EXIT STATUS
+.Ex -std find
+.Sh EXAMPLES
+Find all C source files under the current directory:
+.Bd -literal -offset indent
+$ find . -name "*.c"
+.Ed
+.Pp
+Find empty files and directories in /tmp:
+.Bd -literal -offset indent
+$ find /tmp -empty
+.Ed
+.Pp
+Find files larger than 1 megabyte, modified in the last 7 days:
+.Bd -literal -offset indent
+$ find . -type f -size +1M -mtime -7
+.Ed
+.Sh SEE ALSO
+.Xr ls 1 ,
+.Xr xargs 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Pp
+The primaries
+.Fl iname ,
+.Fl path ,
+.Fl empty ,
+.Fl print0 ,
+.Fl delete ,
+.Fl maxdepth ,
+and
+.Fl mindepth
+are extensions to that specification.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
