@@ -1,6 +1,6 @@
 .Dd August 24, 2025
 .Dt WC 1
-.Os vibeutils
+.Os
 .Sh NAME
 .Nm wc
 .Nd print newline, word, and byte counts for each file
@@ -18,10 +18,12 @@ utility displays the number of lines, words, and bytes contained in each input
 or standard input (if no file is specified) to the standard output.
 .Pp
 A line is defined as a string of characters delimited by a newline character.
-Characters beyond the final newline character will not be included in the line count.
+Characters beyond the final newline character will not be included
+in the line count.
 .Pp
 A word is defined as a string of characters delimited by white space
-characters. White space characters are the set of characters for which the
+characters.
+White space characters are the set of characters for which the
 .Xr isspace 3
 function returns true.
 .Pp
@@ -40,7 +42,8 @@ option.
 The number of lines in each input file is written to the standard output.
 .It Fl m , Fl -chars
 The number of characters in each input file is written to the standard output.
-If the current locale does not support multibyte characters, this is equivalent to the
+If the current locale does not support multibyte characters,
+this is equivalent to the
 .Fl c
 option.
 This will cancel out any prior usage of the
@@ -66,7 +69,8 @@ and
 .Fl w
 options.
 .Pp
-If no files are specified, the standard input is used and no file name is displayed.
+If no files are specified, the standard input is used and no
+file name is displayed.
 The prompt will accept input until receiving EOF, or
 .Dq ^D
 in most environments.
@@ -102,4 +106,4 @@ The
 .Fl L
 option is a GNU extension.
 .Sh AUTHORS
-vibeutils implementation by Travis Cole.
+.An Travis Cole
