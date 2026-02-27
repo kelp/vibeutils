@@ -1,0 +1,132 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt DD 1
+.Os
+.Sh NAME
+.Nm dd
+.Nd convert and copy a file
+.Sh SYNOPSIS
+.Nm dd
+.Op Ar operand ...
+.Sh DESCRIPTION
+The
+.Nm
+utility copies the standard input to the standard output,
+applying any specified conversions.
+Input data is read and written in 512-byte blocks.
+Input and output block sizes, conversion rules,
+and skip/seek offsets may be specified using operands.
+.Pp
+The following operands are available:
+.Bl -tag -width "status=LEVEL"
+.It Cm if Ns = Ns Ar file
+Read from
+.Ar file
+instead of the standard input.
+.It Cm of Ns = Ns Ar file
+Write to
+.Ar file
+instead of the standard output.
+By default the output file is truncated;
+use
+.Cm conv=notrunc
+to preserve existing data beyond the copied region.
+.It Cm bs Ns = Ns Ar n
+Set both input and output block size to
+.Ar n
+bytes, superseding
+.Cm ibs
+and
+.Cm obs .
+When
+.Cm bs
+is specified, each input block is copied to the output
+as a single block without aggregating short reads.
+.It Cm ibs Ns = Ns Ar n
+Set the input block size to
+.Ar n
+bytes (default 512).
+.It Cm obs Ns = Ns Ar n
+Set the output block size to
+.Ar n
+bytes (default 512).
+.It Cm count Ns = Ns Ar n
+Copy only
+.Ar n
+input blocks.
+.It Cm skip Ns = Ns Ar n
+Skip
+.Ar n
+input blocks before copying.
+.It Cm seek Ns = Ns Ar n
+Seek past
+.Ar n
+output blocks before copying.
+.It Cm conv Ns = Ns Ar value Ns Op , Ns Ar value ...
+Apply one or more conversions, separated by commas:
+.Bl -tag -width "noerror" -compact
+.It Cm lcase
+Map uppercase characters to lowercase.
+.It Cm ucase
+Map lowercase characters to uppercase.
+.It Cm notrunc
+Do not truncate the output file.
+.It Cm noerror
+Continue processing after read errors.
+.It Cm sync
+Pad each input block with NUL bytes to
+.Cm ibs
+size.
+.El
+.It Cm status Ns = Ns Ar level
+Control the information printed to standard error:
+.Bl -tag -width "progress" -compact
+.It Cm none
+Suppress all informational messages.
+.It Cm noxfer
+Suppress the transfer statistics line.
+.It Cm progress
+Print transfer statistics (default behavior).
+.El
+.El
+.Pp
+Where sizes are expected, the following suffixes may be used:
+.Cm c Ns =1,
+.Cm w Ns =2,
+.Cm b Ns =512,
+.Cm k Ns =1024,
+.Cm K Ns =1024,
+.Cm M Ns =1048576,
+.Cm G Ns =1073741824.
+Sizes may also use
+.Ql x
+for multiplication (e.g.,
+.Dq 1024x1024 ) .
+.Sh EXIT STATUS
+.Ex -std dd
+.Sh EXAMPLES
+Copy a file:
+.Bd -literal -offset indent
+$ dd if=input.bin of=output.bin
+.Ed
+.Pp
+Create a 1\ MB file filled with zeros:
+.Bd -literal -offset indent
+$ dd if=/dev/zero of=file.img bs=1024 count=1024
+.Ed
+.Pp
+Convert a file to uppercase:
+.Bd -literal -offset indent
+$ dd if=lower.txt of=upper.txt conv=ucase
+.Ed
+.Sh SEE ALSO
+.Xr cp 1 ,
+.Xr tr 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
