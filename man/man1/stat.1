@@ -1,0 +1,148 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt STAT 1
+.Os
+.Sh NAME
+.Nm stat
+.Nd display file or file system status
+.Sh SYNOPSIS
+.Nm stat
+.Op Fl LfthV
+.Op Fl c Ar FORMAT
+.Op Fl Fl format Ns = Ns Ar FORMAT
+.Op Fl Fl printf Ns = Ns Ar FORMAT
+.Ar
+.Sh DESCRIPTION
+The
+.Nm
+utility displays information about files or file systems.
+By default it shows file status; with
+.Fl f
+it shows file system status.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl L , Fl Fl dereference
+Follow symbolic links.
+By default
+.Nm
+reports on the link itself, not the file it refers to.
+.It Fl f , Fl Fl file-system
+Display file system status instead of file status.
+.It Fl c Ar FORMAT , Fl Fl format Ns = Ns Ar FORMAT
+Use the specified
+.Ar FORMAT
+instead of the default, outputting a newline after each
+use of FORMAT.
+.It Fl Fl printf Ns = Ns Ar FORMAT
+Like
+.Fl Fl format
+but interpret backslash escapes and do not output a
+mandatory trailing newline.
+.It Fl t , Fl Fl terse
+Print the information in terse form.
+.It Fl h , Fl Fl help
+Display a help message and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The valid format sequences for files (without
+.Fl f ) :
+.Bl -tag -width Ds -compact
+.It Li %a
+Access rights in octal.
+.It Li \&%A
+Access rights in human readable form.
+.It Li %b
+Number of blocks allocated.
+.It Li \&%B
+The size in bytes of each block reported by %b.
+.It Li %d
+Device number in decimal.
+.It Li \&%D
+Device number in hex.
+.It Li %f
+Raw mode in hex.
+.It Li %F
+File type.
+.It Li %g
+Group ID of owner.
+.It Li %G
+Group name of owner.
+.It Li %h
+Number of hard links.
+.It Li %i
+Inode number.
+.It Li %m
+Mount point.
+.It Li %n
+File name.
+.It Li \&%N
+Quoted file name with dereference if symbolic link.
+.It Li %o
+Optimal I/O transfer size hint.
+.It Li %s
+Total size, in bytes.
+.It Li %t
+Major device type in hex, for device special files.
+.It Li \&%T
+Minor device type in hex, for device special files.
+.It Li %u
+User ID of owner.
+.It Li \&%U
+User name of owner.
+.It Li %w
+Time of file birth, human-readable; - if unknown.
+.It Li %W
+Time of file birth, seconds since Epoch; 0 if unknown.
+.It Li %x
+Time of last access, human-readable.
+.It Li %X
+Time of last access, seconds since Epoch.
+.It Li %y
+Time of last data modification, human-readable.
+.It Li %Y
+Time of last data modification, seconds since Epoch.
+.It Li %z
+Time of last status change, human-readable.
+.It Li %Z
+Time of last status change, seconds since Epoch.
+.El
+.Sh EXIT STATUS
+.Ex -std stat
+.Sh EXAMPLES
+Display file information:
+.Bd -literal -offset indent
+$ stat /etc/passwd
+  File: /etc/passwd
+  Size: 6804      Blocks: 16         IO Block: 4096   regular file
+Device: 1000004h/16777220d  Inode: 3541246     Links: 1
+Access: (0644/-rw-r--r--)  Uid: (    0/    root)   Gid: (    0/   wheel)
+Access: 2024-01-15 10:30:45.000000000 -0500
+Modify: 2024-01-14 09:20:30.000000000 -0500
+Change: 2024-01-14 09:20:30.000000000 -0500
+ Birth: 2023-06-01 12:00:00.000000000 -0500
+.Ed
+.Pp
+Show only the file size:
+.Bd -literal -offset indent
+$ stat -c '%s' /etc/passwd
+6804
+.Ed
+.Pp
+Show file type and permissions:
+.Bd -literal -offset indent
+$ stat -c '%F %A' /etc/passwd
+regular file -rw-r--r--
+.Ed
+.Sh SEE ALSO
+.Xr ls 1 ,
+.Xr test 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX.
+The behavior is compatible with GNU coreutils.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
