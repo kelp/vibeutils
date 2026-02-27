@@ -1,0 +1,107 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt DF 1
+.Os
+.Sh NAME
+.Nm df
+.Nd report file system disk space usage
+.Sh SYNOPSIS
+.Nm df
+.Op Fl ahHiklPT
+.Op Fl t Ar type
+.Op Fl x Ar type
+.Op Fl Fl block-size Ns = Ns Ar SIZE
+.Op Fl Fl total
+.Op Fl Fl output Ns Op = Ns Ar FIELD_LIST
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the amount of disk space available on the file
+system containing each
+.Ar file
+argument.
+With no arguments, disk space is shown for all currently mounted
+file systems.
+.Pp
+Values are displayed in 1K-blocks by default.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl a , Fl Fl all
+Include pseudo, duplicate, and inaccessible file systems in the
+output.
+.It Fl h , Fl Fl human-readable
+Print sizes in powers of 1024 (e.g., 1023M).
+.It Fl H , Fl Fl si
+Print sizes in powers of 1000 (e.g., 1.1G).
+.It Fl i , Fl Fl inodes
+List inode information instead of block usage.
+.It Fl k
+Like
+.Fl Fl block-size Ns = Ns 1K .
+.It Fl l , Fl Fl local
+Limit listing to local file systems.
+.It Fl P , Fl Fl portability
+Use the POSIX output format (one line per filesystem).
+.It Fl T , Fl Fl print-type
+Print file system type.
+.It Fl t Ar type , Fl Fl type Ns = Ns Ar type
+Limit listing to file systems of the specified
+.Ar type .
+.It Fl x Ar type , Fl Fl exclude-type Ns = Ns Ar type
+Exclude file systems of the specified
+.Ar type .
+.It Fl Fl block-size Ns = Ns Ar SIZE
+Scale sizes by
+.Ar SIZE
+before printing them.
+Accepted suffixes: K, M, G, T (powers of 1024).
+.It Fl Fl total
+Produce a grand total line.
+.It Fl Fl output Ns Op = Ns Ar FIELD_LIST
+Use the output format defined by
+.Ar FIELD_LIST .
+Valid fields: source, fstype, size, used, avail, pcent, target.
+If no
+.Ar FIELD_LIST
+is specified, all fields are shown.
+.It Fl Fl help
+Display a help message and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std df
+.Sh EXAMPLES
+Show disk usage for all mounted file systems:
+.Bd -literal -offset indent
+$ df
+Filesystem     1K-blocks      Used Available Use% Mounted on
+/dev/disk1s1  488245288 234567890 253677398  48% /
+.Ed
+.Pp
+Show disk usage in human-readable format:
+.Bd -literal -offset indent
+$ df -h
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/disk1s1    466G  224G  242G  48% /
+.Ed
+.Pp
+Show file system types:
+.Bd -literal -offset indent
+$ df -T /
+Filesystem     Type  1K-blocks      Used Available Use% Mounted on
+/dev/disk1s1   apfs 488245288 234567890 253677398  48% /
+.Ed
+.Sh SEE ALSO
+.Xr du 1 ,
+.Xr stat 1
+.Sh STANDARDS
+The
+.Nm
+utility is specified by
+.St -p1003.1-2008 .
+The behavior is compatible with GNU coreutils.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
