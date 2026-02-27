@@ -53,6 +53,9 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "uniq", .path = "src/uniq.zig", .needs_libc = true, .description = "Report or omit repeated lines" },
     .{ .name = "readlink", .path = "src/readlink.zig", .needs_libc = true, .description = "Print value of a symbolic link" },
     .{ .name = "cut", .path = "src/cut.zig", .needs_libc = true, .description = "Remove sections from each line of files" },
+    .{ .name = "free", .path = "src/free.zig", .needs_libc = true, .description = "Display amount of free and used memory" },
+    .{ .name = "du", .path = "src/du.zig", .needs_libc = true, .description = "Estimate file space usage" },
+    .{ .name = "df", .path = "src/df.zig", .needs_libc = true, .description = "Report file system disk space usage" },
 };
 
 /// Parse version from ZON content string
