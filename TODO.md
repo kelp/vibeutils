@@ -1,7 +1,7 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 24/47 utilities (basename, cat, chmod, chown, cp, dirname, echo, false, head, ln, ls, mkdir, mv, pwd, rm, rmdir, sleep, tail, tee, test, touch, true, wc, yes)
+- **Completed**: 27/47 utilities (basename, cat, chmod, chown, cp, date, dirname, echo, false, head, ln, ls, mkdir, mv, pwd, rm, rmdir, seq, sleep, tail, tee, test, touch, true, wc, whoami, yes)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.1 migration complete**
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
@@ -431,18 +431,18 @@ For each utility:
 - [x] Implement: Both test and [ executable forms
 - [x] Man page: Write concise man page with examples
 
-#### 20. date
-- [ ] Test: Display current date/time
-- [ ] Test: Custom format string (+FORMAT)
-- [ ] Test: Set date/time (-s, --set)
-- [ ] Test: Display file's date (-r, --reference)
-- [ ] Test: UTC mode (-u, --utc)
-- [ ] Test: RFC formats (--rfc-3339, --rfc-email)
-- [ ] Test: Relative dates (-d "2 days ago")
-- [ ] Implement: Format string parser (strftime-like)
-- [ ] Implement: Date parsing for various formats
-- [ ] Implement: Relative date calculations
-- [ ] Man page: Write concise man page with examples
+#### 20. date ✓
+- [x] Test: Display current date/time
+- [x] Test: Custom format string (+FORMAT)
+- [x] Test: Set date/time (-s, --set)
+- [x] Test: Display file's date (-r, --reference)
+- [x] Test: UTC mode (-u, --utc)
+- [x] Test: RFC formats (--rfc-3339, --rfc-email)
+- [x] Test: Relative dates (-d "2 days ago")
+- [x] Implement: Format string parser (strftime-like)
+- [x] Implement: Date parsing for various formats
+- [x] Implement: Relative date calculations
+- [x] Man page: Write concise man page with examples
 
 #### 21. env
 - [ ] Test: Print current environment
@@ -456,18 +456,18 @@ For each utility:
 - [ ] Implement: Argument splitting parser
 - [ ] Man page: Write concise man page with examples
 
-#### 22. seq
-- [ ] Test: Generate sequence (seq 10)
-- [ ] Test: Start and end (seq 5 10)
-- [ ] Test: Start, increment, end (seq 1 2 10)
-- [ ] Test: Floating point sequences (seq 0.1 0.1 1.0)
-- [ ] Test: Format string (-f "%03g")
-- [ ] Test: Separator (-s ", ")
-- [ ] Test: Equal width (-w)
-- [ ] Implement: Number sequence generation
-- [ ] Implement: Format string support
-- [ ] Implement: Width calculation
-- [ ] Man page: Write concise man page with examples
+#### 22. seq ✓
+- [x] Test: Generate sequence (seq 10)
+- [x] Test: Start and end (seq 5 10)
+- [x] Test: Start, increment, end (seq 1 2 10)
+- [x] Test: Floating point sequences (seq 0.1 0.1 1.0)
+- [x] Test: Format string (-f "%03g")
+- [x] Test: Separator (-s ", ")
+- [x] Test: Equal width (-w)
+- [x] Implement: Number sequence generation
+- [x] Implement: Format string support
+- [x] Implement: Width calculation
+- [x] Man page: Write concise man page with examples
 
 #### 23. tee ✓
 - [x] Test: Write to stdout and file
@@ -492,13 +492,13 @@ For each utility:
 - [x] Implement: Signal handling
 - [x] Man page: Write concise man page with examples
 
-#### 25. whoami
-- [ ] Test: Print effective username
-- [ ] Test: No options accepted
-- [ ] Test: Error when can't determine user
-- [ ] Implement: Get effective user ID
-- [ ] Implement: User lookup
-- [ ] Man page: Write concise man page with examples
+#### 25. whoami ✓
+- [x] Test: Print effective username
+- [x] Test: No options accepted
+- [x] Test: Error when can't determine user
+- [x] Implement: Get effective user ID
+- [x] Implement: User lookup
+- [x] Man page: Write concise man page with examples
 
 #### 26. id
 - [ ] Test: Print all IDs (default)

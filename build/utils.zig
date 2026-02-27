@@ -38,6 +38,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "wc", .path = "src/wc.zig", .needs_libc = true, .description = "Print newline, word, and byte counts" },
     .{ .name = "date", .path = "src/date.zig", .needs_libc = true, .description = "Display or set date and time" },
     .{ .name = "seq", .path = "src/seq.zig", .needs_libc = true, .description = "Print a sequence of numbers" },
+    .{ .name = "whoami", .path = "src/whoami.zig", .needs_libc = true, .description = "Print effective user name" },
 };
 
 /// Parse version from ZON content string
