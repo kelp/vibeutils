@@ -1,0 +1,104 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt FREE 1
+.Os
+.Sh NAME
+.Nm free
+.Nd display amount of free and used memory
+.Sh SYNOPSIS
+.Nm free
+.Op Fl bkmgh
+.Op Fl t
+.Op Fl w
+.Op Fl s Ar N
+.Op Fl c Ar N
+.Op Fl -si
+.Op Fl V
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the total amount of free and used physical and swap
+memory on the system, as well as the buffers and cache consumed by
+the kernel.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl b , Fl -bytes
+Display the amount of memory in bytes.
+.It Fl k , Fl -kibi
+Display the amount of memory in kibibytes.
+This is the default.
+.It Fl m , Fl -mebi
+Display the amount of memory in mebibytes.
+.It Fl g , Fl -gibi
+Display the amount of memory in gibibytes.
+.It Fl h , Fl -human
+Show all output fields automatically scaled to the shortest
+three-digit unit and display the units of print out.
+Uses binary units (Ki, Mi, Gi, Ti).
+.It Fl -si
+Use powers of 1000 instead of 1024.
+Modifies the behavior of
+.Fl h .
+.It Fl t , Fl -total
+Display a line showing the column totals.
+.It Fl w , Fl -wide
+Switch to the wide mode.
+The wide mode produces lines longer than 80 characters, splitting
+.Cm buff/cache
+into separate
+.Cm buffers
+and
+.Cm cache
+columns.
+.It Fl s Ar N , Fl -seconds Ns = Ns Ar N
+Continuously display the result every
+.Ar N
+seconds.
+.It Fl c Ar N , Fl -count Ns = Ns Ar N
+Display the result
+.Ar N
+times.
+Requires
+.Fl s .
+.It Fl V , Fl -version
+Output version information and exit.
+.It Fl -help
+Display a help message and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std free
+.Sh EXAMPLES
+Display memory usage in the default kibibyte units:
+.Bd -literal -offset indent
+$ free
+               total        used        free      shared  buff/cache   available
+Mem:        16384000     8192000     4096000      512000     4096000    12288000
+Swap:        2048000      128000     1920000
+.Ed
+.Pp
+Display memory usage in human-readable format:
+.Bd -literal -offset indent
+$ free -h
+               total        used        free      shared  buff/cache   available
+Mem:            16Gi         8Gi         4Gi       512Mi         4Gi        12Gi
+Swap:            2Gi       128Mi         1Gi
+.Ed
+.Pp
+Display memory with totals in mebibytes:
+.Bd -literal -offset indent
+$ free -m -t
+.Ed
+.Sh SEE ALSO
+.Xr top 1 ,
+.Xr vm_stat 1 ,
+.Xr sysctl 8
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX.
+It originated in Linux procps and is widely used on Unix-like systems.
+The behavior is compatible with procps-ng
+.Nm .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
