@@ -43,6 +43,9 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "id", .path = "src/id.zig", .needs_libc = true, .description = "Print user and group information" },
     .{ .name = "mktemp", .path = "src/mktemp.zig", .needs_libc = true, .description = "Create temporary file or directory" },
     .{ .name = "printf", .path = "src/printf.zig", .needs_libc = true, .description = "Format and print data" },
+    .{ .name = "env", .path = "src/env.zig", .needs_libc = true, .description = "Run a command in a modified environment" },
+    .{ .name = "timeout", .path = "src/timeout.zig", .needs_libc = true, .description = "Run a command with a time limit" },
+    .{ .name = "stat", .path = "src/stat.zig", .needs_libc = true, .description = "Display file or file system status" },
 };
 
 /// Parse version from ZON content string
