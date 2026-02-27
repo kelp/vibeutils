@@ -1,0 +1,140 @@
+.\" tr(1) man page
+.\" Copyright (c) vibeutils implementation by Travis Cole
+.\"
+.Dd February 26, 2026
+.Dt TR 1
+.Os
+.Sh NAME
+.Nm tr
+.Nd translate, squeeze, or delete characters
+.Sh SYNOPSIS
+.Nm
+.Op Fl cCds
+.Op Fl t
+.Ar string1
+.Op Ar string2
+.Sh DESCRIPTION
+The
+.Nm
+utility copies standard input to standard output with
+substitution or deletion of selected characters.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl c , Fl C , Fl Fl complement
+Complement the set of characters in
+.Ar string1 .
+All characters not in
+.Ar string1
+are acted upon.
+.It Fl d , Fl Fl delete
+Delete all occurrences of input characters that are
+specified by
+.Ar string1 .
+.It Fl s , Fl Fl squeeze-repeats
+Replace each sequence of a repeated character that is
+listed in the last specified set with a single occurrence
+of that character.
+.It Fl t , Fl Fl truncate-set1
+First truncate
+.Ar string1
+to the length of
+.Ar string2 .
+.It Fl Fl help
+Display help information and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Pp
+In the first synopsis form, the characters in
+.Ar string1
+are translated into the characters in
+.Ar string2 ,
+where the first character in
+.Ar string1
+is translated into the first character in
+.Ar string2 ,
+and so on.
+If
+.Ar string2
+is shorter than
+.Ar string1 ,
+the last character of
+.Ar string2
+is duplicated to make them the same length.
+.Pp
+The following conventions can be used in
+.Ar string1
+and
+.Ar string2
+to specify character sets:
+.Bl -tag -width "[:class:]"
+.It Ar c Ns - Ns Ar c
+All characters inclusively between a pair of characters.
+.It Bq Ns :class:
+Character classes from the POSIX locale:
+.Cm alnum , alpha , blank , cntrl , digit , graph ,
+.Cm lower , print , punct , space , upper , xdigit .
+.It Bq Ns = Ns Ar c Ns =
+An equivalence class of
+.Ar c .
+.It Bq Ar c Ns *n
+.Ar n
+copies of character
+.Ar c .
+In
+.Ar string2 ,
+if
+.Ar n
+is omitted or zero, it is taken to be large enough to
+extend
+.Ar string2
+to the length of
+.Ar string1 .
+.It \eNNN
+The character with octal value
+.Ar NNN
+(one to three octal digits).
+.It \ea
+Audible BEL.
+.It \eb
+Backspace.
+.It \ef
+Form feed.
+.It \en
+Newline.
+.It \er
+Carriage return.
+.It \et
+Horizontal tab.
+.It \ev
+Vertical tab.
+.It \e\e
+Backslash.
+.El
+.Sh EXIT STATUS
+.Ex -std tr
+.Sh EXAMPLES
+Translate lowercase to uppercase:
+.Pp
+.Dl $ echo "hello" | tr '[:lower:]' '[:upper:]'
+.Dl HELLO
+.Pp
+Delete all digits from input:
+.Pp
+.Dl $ echo "h3ll0 w0rld" | tr -d '[:digit:]'
+.Dl hll wrld
+.Pp
+Squeeze repeated spaces into a single space:
+.Pp
+.Dl $ echo "hello \ \ \ world" | tr -s ' '
+.Dl hello world
+.Sh SEE ALSO
+.Xr sed 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

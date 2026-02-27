@@ -47,6 +47,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "env", .path = "src/env.zig", .needs_libc = true, .description = "Run a command in a modified environment" },
     .{ .name = "timeout", .path = "src/timeout.zig", .needs_libc = true, .description = "Run a command with a time limit" },
     .{ .name = "stat", .path = "src/stat.zig", .needs_libc = true, .description = "Display file or file system status" },
+    .{ .name = "sort", .path = "src/sort.zig", .needs_libc = true, .description = "Sort lines of text files" },
+    .{ .name = "tr", .path = "src/tr.zig", .needs_libc = true, .description = "Translate or delete characters" },
 };
 
 /// Parse version from ZON content string
