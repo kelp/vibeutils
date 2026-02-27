@@ -1,0 +1,136 @@
+.\" nl(1) man page
+.\" Copyright (c) vibeutils implementation by Travis Cole
+.\"
+.Dd February 26, 2026
+.Dt NL 1
+.Os
+.Sh NAME
+.Nm nl
+.Nd number lines of files
+.Sh SYNOPSIS
+.Nm
+.Op Fl b Ar style
+.Op Fl d Ar delim
+.Op Fl f Ar style
+.Op Fl h Ar style
+.Op Fl i Ar number
+.Op Fl l Ar number
+.Op Fl n Ar format
+.Op Fl p
+.Op Fl s Ar string
+.Op Fl v Ar number
+.Op Fl w Ar number
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility reads lines from the named
+.Ar file
+or standard input if no file is specified,
+and writes them to standard output with line numbers added.
+.Pp
+Logical pages may be indicated in the input by section delimiters.
+A header starts with
+.Ql \e:\e:\e: ,
+a body with
+.Ql \e:\e: ,
+and a footer with
+.Ql \e: .
+Delimiter lines are replaced by empty lines in the output.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl b Ar style , Fl Fl body-numbering Ns = Ns Ar style
+Set the numbering style for body lines.
+The default is
+.Cm t .
+.It Fl d Ar delim , Fl Fl section-delimiter Ns = Ns Ar delim
+Set the section delimiter characters.
+If only one character is given, the second defaults to
+.Ql \&: .
+The default is
+.Ql \e: .
+.It Fl f Ar style , Fl Fl footer-numbering Ns = Ns Ar style
+Set the numbering style for footer lines.
+The default is
+.Cm n .
+.It Fl h Ar style , Fl Fl header-numbering Ns = Ns Ar style
+Set the numbering style for header lines.
+The default is
+.Cm n .
+.It Fl i Ar number , Fl Fl line-increment Ns = Ns Ar number
+Set the increment between line numbers.
+The default is 1.
+.It Fl l Ar number , Fl Fl join-blank-lines Ns = Ns Ar number
+Consider
+.Ar number
+consecutive empty lines as one logical line for numbering.
+The default is 1.
+.It Fl n Ar format , Fl Fl number-format Ns = Ns Ar format
+Set the line number output format.
+The default is
+.Cm rn .
+.It Fl p , Fl Fl no-renumber
+Do not reset the line number at the start of each logical page.
+.It Fl s Ar string , Fl Fl number-separator Ns = Ns Ar string
+Set the separator inserted between the line number and the text.
+The default is a tab character.
+.It Fl v Ar number , Fl Fl starting-line-number Ns = Ns Ar number
+Set the initial line number on each logical page.
+The default is 1.
+.It Fl w Ar number , Fl Fl number-width Ns = Ns Ar number
+Set the number of columns used for line numbers.
+The default is 6.
+.It Fl Fl help
+Display help information and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The available numbering styles are:
+.Bl -tag -width Ds
+.It Cm a
+Number all lines.
+.It Cm t
+Number only non-empty lines.
+This is the default for body lines.
+.It Cm n
+Do not number lines.
+This is the default for header and footer lines.
+.El
+.Pp
+The available number formats are:
+.Bl -tag -width Ds
+.It Cm ln
+Left justified, no leading zeros.
+.It Cm rn
+Right justified, no leading zeros.
+This is the default.
+.It Cm rz
+Right justified, with leading zeros.
+.El
+.Sh EXIT STATUS
+.Ex -std nl
+.Sh EXAMPLES
+Number all non-empty lines of a file:
+.Pp
+.Dl $ nl file.txt
+.Pp
+Number all lines including blank lines:
+.Pp
+.Dl $ nl -b a file.txt
+.Pp
+Number lines with leading zeros and a custom separator:
+.Pp
+.Dl $ nl -n rz -s '. ' file.txt
+.Sh SEE ALSO
+.Xr cat 1 ,
+.Xr pr 1 ,
+.Xr wc 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
