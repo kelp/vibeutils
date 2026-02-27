@@ -7,8 +7,8 @@
 .Sh SYNOPSIS
 .Nm wc
 .Op Fl clmwL
-.Op Fl -help
-.Op Fl -version
+.Op Fl Fl help
+.Op Fl Fl version
 .Op Ar file ...
 .Sh DESCRIPTION
 The
@@ -33,14 +33,14 @@ the last file.
 .Pp
 The following options are available:
 .Bl -tag -width Ds
-.It Fl c , Fl -bytes
+.It Fl c , Fl Fl bytes
 The number of bytes in each input file is written to the standard output.
 This will cancel out any prior usage of the
 .Fl m
 option.
-.It Fl l , Fl -lines
+.It Fl l , Fl Fl lines
 The number of lines in each input file is written to the standard output.
-.It Fl m , Fl -chars
+.It Fl m , Fl Fl chars
 The number of characters in each input file is written to the standard output.
 If the current locale does not support multibyte characters,
 this is equivalent to the
@@ -49,13 +49,13 @@ option.
 This will cancel out any prior usage of the
 .Fl c
 option.
-.It Fl w , Fl -words
+.It Fl w , Fl Fl words
 The number of words in each input file is written to the standard output.
-.It Fl L , Fl -max-line-length
+.It Fl L , Fl Fl max-line-length
 Write the length of the longest line to the standard output.
-.It Fl -help
+.It Fl Fl help
 Display help and exit.
-.It Fl -version
+.It Fl Fl version
 Output version information and exit.
 .El
 .Pp

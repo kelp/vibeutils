@@ -7,7 +7,7 @@
 .Nd display the last part of a file
 .Sh SYNOPSIS
 .Nm tail
-.Op Fl fqvz
+.Op Fl qvz
 .Op Fl c Ar number
 .Op Fl n Ar number
 .Op Ar file ...
@@ -23,8 +23,6 @@ The options are as follows:
 Output the last
 .Ar number
 bytes instead of lines.
-.It Fl f , Fl Fl follow
-Output appended data as the file grows.
 .It Fl n Ar number
 Output the last
 .Ar number
@@ -78,11 +76,6 @@ $ tail -n 20 file.txt
 Display the last 100 bytes of a file:
 .Bd -literal -offset indent
 $ tail -c 100 file.txt
-.Ed
-.Pp
-Monitor a log file for new entries:
-.Bd -literal -offset indent
-$ tail -f /var/log/messages
 .Ed
 .Sh SEE ALSO
 .Xr cat 1 ,
