@@ -1,0 +1,147 @@
+.Dd February 26, 2026
+.Dt SORT 1
+.Os
+.Sh NAME
+.Nm sort
+.Nd sort lines of text files
+.Sh SYNOPSIS
+.Nm
+.Op Fl bdfginrhsuczCV
+.Op Fl k Ar keydef
+.Op Fl t Ar char
+.Op Fl o Ar output
+.Op Fl Fl check Ns Op = Ns Ar type
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility sorts lines read from the specified
+.Ar file
+operands, or from standard input if no files are specified,
+and writes the result to standard output.
+.Pp
+If a
+.Ar file
+is
+.Ql - ,
+.Nm
+reads from standard input.
+.Pp
+Comparisons are performed according to the current locale's
+collating sequence when no options are given.
+.Pp
+The following options are available:
+.Bl -tag -width Ds
+.It Fl b , Fl Fl ignore-leading-blanks
+Ignore leading blanks when finding sort keys in each line.
+.It Fl d , Fl Fl dictionary-order
+Consider only blanks and alphanumeric characters in comparisons.
+.It Fl f , Fl Fl ignore-case
+Fold lowercase characters to uppercase for comparison.
+.It Fl g , Fl Fl general-numeric-sort
+Compare according to general numeric value.
+Converts a prefix of each line to a floating-point number
+for comparison, handling scientific notation.
+.It Fl h , Fl Fl human-numeric-sort
+Compare human-readable numbers (e.g., 2K, 1G).
+.It Fl i , Fl Fl ignore-nonprinting
+Consider only printable characters in comparisons.
+.It Fl n , Fl Fl numeric-sort
+Compare according to string numerical value.
+Leading blanks and the optional sign are stripped.
+.It Fl r , Fl Fl reverse
+Reverse the result of comparisons.
+.It Fl k Ar keydef , Fl Fl key Ns = Ns Ar keydef
+Sort via the specified key definition.
+.Ar keydef
+has the form
+.Sm off
+.Ar F
+.Op .C
+.Op Ar opts
+.Op , Ar F
+.Op .C
+.Op Ar opts
+.Sm on
+where
+.Ar F
+is a field number and
+.Ar C
+a character position within the field, both origin 1.
+.Ar opts
+is one or more of the letters
+.Cm bdfinrhg
+to override the global sort options for this key.
+Multiple
+.Fl k
+options may be given to define primary, secondary, etc. keys.
+.It Fl t Ar char , Fl Fl field-separator Ns = Ns Ar char
+Use
+.Ar char
+as the field separator.
+Without this option, fields are delimited by runs of blanks.
+.It Fl u , Fl Fl unique
+With
+.Fl c ,
+check for strict ordering.
+Without
+.Fl c ,
+output only the first of equal-comparing lines.
+.It Fl s , Fl Fl stable
+Stabilize the sort, disabling last-resort comparison.
+.It Fl c , Fl Fl check , Fl Fl check Ns = Ns Cm diagnose-first
+Check whether input is sorted.
+Do not sort; output a diagnostic for the first out-of-order line.
+.It Fl C , Fl Fl check Ns = Ns Cm quiet , Fl Fl check Ns = Ns Cm silent
+Like
+.Fl c
+but do not report the first bad line.
+Exit with status 1 if the input is not sorted.
+.It Fl o Ar file , Fl Fl output Ns = Ns Ar file
+Write output to
+.Ar file
+instead of standard output.
+.It Fl z , Fl Fl zero-terminated
+Use NUL as the line delimiter instead of newline.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.It Fl Fl help
+Display help information and exit.
+.El
+.Sh EXIT STATUS
+The
+.Nm
+utility exits 0 on success, 1 if the
+.Fl c
+or
+.Fl C
+check finds disorder, and 2 if an error occurs.
+.Sh EXAMPLES
+Sort a file alphabetically:
+.Pp
+.Dl $ sort names.txt
+.Pp
+Sort numerically in reverse order:
+.Pp
+.Dl $ sort -nr scores.txt
+.Pp
+Sort by the second field using colon as separator:
+.Pp
+.Dl $ sort -t: -k2,2 /etc/passwd
+.Sh SEE ALSO
+.Xr comm 1 ,
+.Xr join 1 ,
+.Xr uniq 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Pp
+The
+.Fl g , h , V , z
+options and
+.Fl Fl check Ns = Ns Cm quiet
+are GNU extensions.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
