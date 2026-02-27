@@ -1,0 +1,134 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt DATE 1
+.Os
+.Sh NAME
+.Nm date
+.Nd display or set date and time
+.Sh SYNOPSIS
+.Nm date
+.Op Fl uR
+.Op Fl d Ar string
+.Op Fl r Ar file
+.Op Fl I Ns Op Ar fmt
+.Op Fl Fl rfc-3339 Ns = Ns Ar fmt
+.Op + Ns Ar format
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the current date and time.
+When given a format string preceded by
+.Sq + ,
+the output is controlled by the format specifiers within it.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl d Ar string , Fl Fl date Ns = Ns Ar string
+Display the date described by
+.Ar string
+instead of the current time.
+The string
+.Ar @seconds
+interprets
+.Ar seconds
+as seconds since the Unix epoch.
+ISO 8601 date strings
+.Pq e.g., 2024-01-15 or 2024-01-15T12:00:00
+are also accepted.
+.It Fl r Ar file , Fl Fl reference Ns = Ns Ar file
+Display the last modification time of
+.Ar file .
+.It Fl R , Fl Fl rfc-email
+Output date and time in RFC 5322 format.
+Example:
+.Dq Thu, 01 Jan 1970 00:00:00 +0000 .
+.It Fl Fl rfc-3339 Ns = Ns Ar fmt
+Output date and time in RFC 3339 format.
+.Ar fmt
+may be
+.Cm date ,
+.Cm seconds ,
+or
+.Cm ns .
+.It Fl I Ns Op Ar fmt , Fl Fl iso-8601 Ns Op = Ns Ar fmt
+Output date and time in ISO 8601 format.
+.Ar fmt
+may be
+.Cm date
+(default),
+.Cm hours ,
+.Cm minutes ,
+.Cm seconds ,
+or
+.Cm ns .
+.It Fl u , Fl Fl utc , Fl Fl universal
+Display or set the date in Coordinated Universal Time (UTC).
+.El
+.Pp
+Common format specifiers include:
+.Bl -tag -width Ds -compact
+.It %Y
+Year (e.g., 2024)
+.It %m
+Month (01..12)
+.It %d
+Day of month (01..31)
+.It %H
+Hour (00..23)
+.It %M
+Minute (00..59)
+.It %S
+Second (00..60)
+.It %s
+Seconds since 1970-01-01 00:00:00 UTC
+.It %N
+Nanoseconds (000000000..999999999)
+.It %Z
+Timezone abbreviation
+.It %z
+Numeric timezone (+hhmm)
+.It %%
+A literal percent sign
+.It %n
+A newline
+.It %t
+A tab
+.El
+.Sh EXIT STATUS
+.Ex -std date
+.Sh EXAMPLES
+Display the current date and time:
+.Bd -literal -offset indent
+$ date
+Sat Feb 15 10:30:00 UTC 2025
+.Ed
+.Pp
+Display date in ISO format:
+.Bd -literal -offset indent
+$ date '+%Y-%m-%d'
+2025-02-15
+.Ed
+.Pp
+Display the Unix epoch in UTC:
+.Bd -literal -offset indent
+$ date -u -d @0
+Thu Jan  1 00:00:00 UTC 1970
+.Ed
+.Sh SEE ALSO
+.Xr touch 1 ,
+.Xr hwclock 8
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+The
+.Fl d ,
+.Fl I ,
+.Fl R ,
+and
+.Fl Fl rfc-3339
+options are extensions compatible with GNU coreutils.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

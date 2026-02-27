@@ -36,6 +36,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "tail", .path = "src/tail.zig", .needs_libc = true, .description = "Display the last part of files" },
     .{ .name = "tee", .path = "src/tee.zig", .needs_libc = true, .description = "Copy input to standard output and files" },
     .{ .name = "wc", .path = "src/wc.zig", .needs_libc = true, .description = "Print newline, word, and byte counts" },
+    .{ .name = "date", .path = "src/date.zig", .needs_libc = true, .description = "Display or set date and time" },
+    .{ .name = "seq", .path = "src/seq.zig", .needs_libc = true, .description = "Print a sequence of numbers" },
 };
 
 /// Parse version from ZON content string

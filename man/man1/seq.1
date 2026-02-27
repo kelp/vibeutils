@@ -1,0 +1,139 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt SEQ 1
+.Os
+.Sh NAME
+.Nm seq
+.Nd print a sequence of numbers
+.Sh SYNOPSIS
+.Nm seq
+.Op Fl w
+.Op Fl f Ar format
+.Op Fl s Ar string
+.Op Ar first Op Ar increment
+.Ar last
+.Sh DESCRIPTION
+The
+.Nm
+utility prints a sequence of numbers, one per line (by default), from
+.Ar first
+(default 1), to near
+.Ar last
+as possible, in increments of
+.Ar increment
+(default 1).
+When
+.Ar first
+is larger than
+.Ar last ,
+the default
+.Ar increment
+is still 1, so no output is produced unless a negative
+.Ar increment
+is specified.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl f Ar format , Fl Fl format Ns = Ns Ar format
+Use a
+.Xr printf 1
+style floating-point
+.Ar format
+for printing each number.
+Supported conversion specifiers are
+.Cm %f
+(fixed-point),
+.Cm %e
+(scientific notation), and
+.Cm %g
+(general).
+The default format is auto-detected from the input precision.
+.It Fl s Ar string , Fl Fl separator Ns = Ns Ar string
+Use
+.Ar string
+to separate numbers.
+The default separator is a newline character.
+.It Fl w , Fl Fl equal-width
+Equalize the widths of all numbers by padding with leading zeroes
+as necessary.
+The width is determined by the widest of
+.Ar first
+and
+.Ar last .
+.El
+.Sh EXIT STATUS
+.Ex -std seq
+.Sh EXAMPLES
+Print 1 through 5:
+.Bd -literal -offset indent
+$ seq 5
+1
+2
+3
+4
+5
+.Ed
+.Pp
+Print 3 through 7:
+.Bd -literal -offset indent
+$ seq 3 7
+3
+4
+5
+6
+7
+.Ed
+.Pp
+Print even numbers from 0 to 10:
+.Bd -literal -offset indent
+$ seq 0 2 10
+0
+2
+4
+6
+8
+10
+.Ed
+.Pp
+Count down from 5 to 1:
+.Bd -literal -offset indent
+$ seq 5 -1 1
+5
+4
+3
+2
+1
+.Ed
+.Pp
+Print with comma separator:
+.Bd -literal -offset indent
+$ seq -s ", " 3
+1, 2, 3
+.Ed
+.Pp
+Print with zero-padded equal width:
+.Bd -literal -offset indent
+$ seq -w 1 10
+01
+02
+03
+04
+05
+06
+07
+08
+09
+10
+.Ed
+.Sh SEE ALSO
+.Xr jot 1 ,
+.Xr printf 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX.
+It is compatible with the GNU coreutils
+.Nm
+command.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

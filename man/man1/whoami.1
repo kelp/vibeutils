@@ -1,0 +1,53 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt WHOAMI 1
+.Os
+.Sh NAME
+.Nm whoami
+.Nd print effective user name
+.Sh SYNOPSIS
+.Nm whoami
+.Op Fl hV
+.Sh DESCRIPTION
+The
+.Nm
+utility prints the user name associated with the current effective
+user ID to the standard output.
+It is functionally equivalent to:
+.Bd -literal -offset indent
+id -un
+.Ed
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl h , Fl Fl help
+Display a help message and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std whoami
+.Sh EXAMPLES
+Print the current user name:
+.Bd -literal -offset indent
+$ whoami
+alice
+.Ed
+.Pp
+Use in a script to check if running as root:
+.Bd -literal -offset indent
+if [ "$(whoami)" = "root" ]; then
+    echo "Running as root"
+fi
+.Ed
+.Sh SEE ALSO
+.Xr id 1 ,
+.Xr logname 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX but is widely available on
+Unix-like systems.
+The behavior is compatible with GNU coreutils.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
