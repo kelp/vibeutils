@@ -1,0 +1,116 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt MKTEMP 1
+.Os
+.Sh NAME
+.Nm mktemp
+.Nd create a temporary file or directory
+.Sh SYNOPSIS
+.Nm mktemp
+.Op Fl dqu
+.Op Fl p Ar dir
+.Op Fl -suffix Ns = Ns Ar suff
+.Op Fl t
+.Op Ar template
+.Sh DESCRIPTION
+The
+.Nm
+utility creates a temporary file or directory safely and prints its name.
+The
+.Ar template
+must contain at least three consecutive
+.Ql X
+characters at the end, which are replaced with random alphanumeric
+characters to ensure uniqueness.
+If no
+.Ar template
+is specified,
+.Pa tmp.XXXXXXXXXX
+is used.
+.Pp
+The file is created with mode 0600 and the directory with mode 0700
+to prevent other users from accessing the temporary resource.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl d , Fl Fl directory
+Create a directory instead of a file.
+.It Fl u , Fl Fl dry-run
+Do not create anything; merely print a name.
+This is inherently unsafe, as another process could create a file
+with the same name between the time
+.Nm
+prints it and the caller uses it.
+.It Fl q , Fl Fl quiet
+Suppress diagnostic messages about failure to create the file
+or directory.
+Still exits with a non-zero status on failure.
+.It Fl p Ar dir , Fl Fl tmpdir Ns = Ns Ar dir
+Use
+.Ar dir
+as the directory in which to create the temporary resource.
+If not specified, the value of the
+.Ev TMPDIR
+environment variable is used, or
+.Pa /tmp
+if
+.Ev TMPDIR
+is not set.
+.It Fl -suffix Ns = Ns Ar suff
+Append
+.Ar suff
+to the
+.Ar template .
+The
+.Ar suff
+must not contain a directory separator.
+.It Fl t
+Interpret
+.Ar template
+relative to the directory specified by
+.Fl p
+or the
+.Ev TMPDIR
+environment variable or
+.Pa /tmp .
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width TMPDIR
+.It Ev TMPDIR
+Directory in which to create temporary files.
+Defaults to
+.Pa /tmp
+if not set.
+.El
+.Sh EXIT STATUS
+.Ex -std mktemp
+.Sh EXAMPLES
+Create a temporary file:
+.Bd -literal -offset indent
+$ mktemp
+/tmp/tmp.A1b2C3d4E5
+.Ed
+.Pp
+Create a temporary directory:
+.Bd -literal -offset indent
+$ mktemp -d
+/tmp/tmp.X9y8Z7w6V5
+.Ed
+.Pp
+Create a temporary file in a specific directory:
+.Bd -literal -offset indent
+$ mktemp -p /var/tmp myapp.XXXXXX
+/var/tmp/myapp.K3m4N5
+.Ed
+.Sh SEE ALSO
+.Xr mkdir 1 ,
+.Xr rm 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX but is widely available on
+BSD and GNU systems.
+This implementation is compatible with GNU coreutils
+.Nm .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

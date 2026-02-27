@@ -1,0 +1,103 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt REALPATH 1
+.Os
+.Sh NAME
+.Nm realpath
+.Nd resolve canonical file names
+.Sh SYNOPSIS
+.Nm realpath
+.Op Fl emsqz
+.Op Fl -relative-to Ns = Ns Ar dir
+.Op Fl -relative-base Ns = Ns Ar dir
+.Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility prints the resolved absolute pathname for each
+.Ar file
+argument.
+All
+.Sq \&.
+and
+.Sq ..
+components are resolved, along with extra
+.Sq /
+characters and symbolic links.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl e , Fl Fl canonicalize-existing
+All components of the path must exist.
+This is the default behavior.
+.It Fl m , Fl Fl canonicalize-missing
+No component of the path needs to exist.
+Missing components are resolved logically.
+.It Fl s , Fl Fl no-symlinks , Fl Fl strip
+Do not resolve symbolic links.
+Only resolve
+.Sq \&.
+and
+.Sq ..
+components and produce an absolute path.
+.It Fl z , Fl Fl zero
+End each output line with a NUL character instead of a newline.
+.It Fl q , Fl Fl quiet
+Suppress most error messages.
+.It Fl -relative-to Ns = Ns Ar dir
+Print the resolved path relative to
+.Ar dir .
+.It Fl -relative-base Ns = Ns Ar dir
+Print the resolved path relative to
+.Ar dir
+if the path is a descendant of
+.Ar dir ;
+otherwise print the absolute path.
+.It Fl h , Fl Fl help
+Display a help message and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std realpath
+.Sh EXAMPLES
+Resolve a path with
+.Sq ..
+components:
+.Bd -literal -offset indent
+$ realpath /usr/bin/../lib
+/usr/lib
+.Ed
+.Pp
+Resolve a path that does not exist:
+.Bd -literal -offset indent
+$ realpath -m /tmp/new/path
+/tmp/new/path
+.Ed
+.Pp
+Resolve without following symlinks:
+.Bd -literal -offset indent
+$ realpath -s ./relative/../path
+/current/dir/path
+.Ed
+.Sh SEE ALSO
+.Xr basename 1 ,
+.Xr dirname 1 ,
+.Xr readlink 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+The
+.Fl m ,
+.Fl s ,
+.Fl q ,
+.Fl z ,
+.Fl -relative-to ,
+and
+.Fl -relative-base
+options are extensions compatible with GNU coreutils.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

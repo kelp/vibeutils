@@ -40,6 +40,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "seq", .path = "src/seq.zig", .needs_libc = true, .description = "Print a sequence of numbers" },
     .{ .name = "whoami", .path = "src/whoami.zig", .needs_libc = true, .description = "Print effective user name" },
     .{ .name = "id", .path = "src/id.zig", .needs_libc = true, .description = "Print user and group information" },
+    .{ .name = "mktemp", .path = "src/mktemp.zig", .needs_libc = true, .description = "Create temporary file or directory" },
+    .{ .name = "printf", .path = "src/printf.zig", .needs_libc = true, .description = "Format and print data" },
 };
 
 /// Parse version from ZON content string
