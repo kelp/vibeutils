@@ -1,0 +1,138 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt PRINTF 1
+.Os
+.Sh NAME
+.Nm printf
+.Nd format and print data
+.Sh SYNOPSIS
+.Nm printf
+.Ar format
+.Op Ar argument ...
+.Sh DESCRIPTION
+The
+.Nm
+utility formats and prints its arguments under the control of the
+.Ar format
+string.
+The
+.Ar format
+is a character string which contains three types of objects:
+plain characters, which are simply copied to standard output;
+character escape sequences, which are converted and copied to
+standard output; and format specifications, each of which causes
+printing of the next successive
+.Ar argument .
+.Pp
+If there are more
+.Ar argument Ns s
+than format specifications, the format string is reused
+as often as necessary to consume all arguments.
+Missing arguments are treated as empty strings for
+.Cm %s
+and as zero for numeric conversions.
+.Pp
+The following escape sequences are recognized:
+.Bl -tag -width Ds -compact
+.It Li \ea
+Alert (bell)
+.It Li \eb
+Backspace
+.It Li \ef
+Form feed
+.It Li \en
+New line
+.It Li \er
+Carriage return
+.It Li \et
+Horizontal tab
+.It Li \ev
+Vertical tab
+.It Li \e\e
+Backslash
+.It Li \e0nnn
+Character with octal value nnn (1-3 digits)
+.It Li \exhh
+Character with hex value hh (1-2 digits)
+.El
+.Pp
+The following format specifications are supported:
+.Bl -tag -width Ds -compact
+.It Li %s
+String
+.It Li %b
+String with backslash escape interpretation
+.It Li %c
+First character of argument
+.It Li %d , %i
+Signed decimal integer
+.It Li %u
+Unsigned decimal integer
+.It Li %o
+Unsigned octal integer
+.It Li %x , %X
+Unsigned hexadecimal integer (lowercase/uppercase)
+.It Li %f
+Floating-point number
+.It Li %e , %E
+Scientific notation (lowercase/uppercase)
+.It Li %g , %G
+Shorter of %f or %e (lowercase/uppercase)
+.It Li %%
+Literal percent sign
+.El
+.Pp
+Format specifications may include optional flags, field width,
+and precision:
+.Bl -tag -width Ds
+.It Fl
+Left-justify within the given field width.
+.It Li +
+Always show sign for signed conversions.
+.It Li 0
+Zero-pad numeric conversions.
+.It Ar width
+Minimum field width.
+.It Li \&. Ns Ar precision
+For strings, maximum characters to print.
+For floats, digits after the decimal point.
+.El
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl Fl help
+Display help message and exit.
+.It Fl Fl version
+Display version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std printf
+.Sh EXAMPLES
+Print a formatted string with a newline:
+.Bd -literal -offset indent
+$ printf "Hello, %s!\en" world
+Hello, world!
+.Ed
+.Pp
+Print a padded table:
+.Bd -literal -offset indent
+$ printf "%-10s %5d\en" Alice 30 Bob 25
+Alice         30
+Bob           25
+.Ed
+.Pp
+Print a number in hex:
+.Bd -literal -offset indent
+$ printf "%#x\en" 255
+0xff
+.Ed
+.Sh SEE ALSO
+.Xr echo 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+IEEE Std 1003.1-2024 ("POSIX.1")
+specification.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
