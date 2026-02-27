@@ -100,7 +100,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     // Resolve flag combinations following GNU cat conventions
     const options = resolveFlagCombinations(parsed_args);
 
-    var stdin_buffer: [4096]u8 = undefined;
+    var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
     const stdin = &stdin_reader.interface;
 
@@ -132,7 +132,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
                 };
                 defer file.close();
 
-                var file_buffer: [4096]u8 = undefined;
+                var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 processInput(&file_reader.interface, stdout_writer, options, &line_state) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
@@ -156,10 +156,10 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -637,7 +637,7 @@ test "cat handles very long lines without truncation" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Create a line longer than the 4096-byte read buffer
+    // Create a line longer than the 8192-byte read buffer
     const long_line = "A" ** 8192 ++ "\n";
     try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", long_line);
 
@@ -658,7 +658,7 @@ test "cat with -n handles very long lines correctly" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Create a line longer than the 4096-byte read buffer
+    // Create a line longer than the 8192-byte read buffer
     const long_line = "A" ** 8192 ++ "\n";
     try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", long_line);
 

@@ -478,7 +478,7 @@ fn formatDate(
     const fmt_z: [*:0]const u8 = @ptrCast(processed.items.ptr);
 
     // Call strftime
-    var output_buf: [4096]u8 = undefined;
+    var output_buf: [8192]u8 = undefined;
     const len = strftime(&output_buf, output_buf.len, fmt_z, tm);
 
     if (len == 0 and processed.items.len > 1) {
@@ -562,11 +562,11 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 

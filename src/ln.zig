@@ -111,11 +111,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
@@ -366,7 +366,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 return error.FileExists;
             } else {
                 // Interactive prompt
-                var stdin_buffer: [4096]u8 = undefined;
+                var stdin_buffer: [8192]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
                 const stdin = &stdin_reader.interface;
 

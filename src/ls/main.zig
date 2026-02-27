@@ -98,7 +98,7 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
     // Parse arguments using new parser
     const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
         // Use specific error information instead of generic "invalid argument"
-        var stderr_buffer: [4096]u8 = undefined;
+        var stderr_buffer: [8192]u8 = undefined;
         var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
         const stderr = &stderr_writer.interface;
         common.fatalWithWriter(stderr, "argument parsing failed: {s}", .{@errorName(err)});
@@ -106,11 +106,11 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
     defer allocator.free(args.positionals);
 
     // Create stdout and stderr writers and pass them through
-    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_buffer: [8192]u8 = undefined;
     var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
