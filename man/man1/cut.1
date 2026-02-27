@@ -1,0 +1,150 @@
+.Dd February 26, 2026
+.Dt CUT 1
+.Os
+.Sh NAME
+.Nm cut
+.Nd remove sections from each line of files
+.Sh SYNOPSIS
+.Nm cut
+.Fl b Ar list
+.Op Fl Fl complement
+.Op Fl z
+.Op Ar file ...
+.Nm cut
+.Fl c Ar list
+.Op Fl Fl complement
+.Op Fl z
+.Op Ar file ...
+.Nm cut
+.Fl f Ar list
+.Op Fl d Ar delim
+.Op Fl s
+.Op Fl Fl complement
+.Op Fl Fl output-delimiter Ns = Ns Ar string
+.Op Fl z
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility cuts out selected portions of each line of each input
+.Ar file
+(or standard input if no files are specified or when
+.Ar file
+is
+.Dq - )
+and writes them to the standard output.
+.Pp
+Exactly one of the
+.Fl b , c ,
+or
+.Fl f
+options must be specified.
+The items specified by
+.Ar list
+refer to byte positions, character positions, or fields,
+respectively.
+.Pp
+The following options are available:
+.Bl -tag -width Ds
+.It Fl b Ar list , Fl Fl bytes Ns = Ns Ar list
+Select only the bytes in positions specified by
+.Ar list .
+.It Fl c Ar list , Fl Fl characters Ns = Ns Ar list
+Select only the characters in positions specified by
+.Ar list .
+In the current implementation, this is equivalent to
+.Fl b .
+.It Fl d Ar delim , Fl Fl delimiter Ns = Ns Ar delim
+Use
+.Ar delim
+as the field delimiter character instead of the tab character.
+Only valid with
+.Fl f .
+.It Fl f Ar list , Fl Fl fields Ns = Ns Ar list
+Select only the fields in positions specified by
+.Ar list .
+Fields are separated by the delimiter character (tab by default).
+Lines that do not contain the delimiter are passed through unmodified,
+unless the
+.Fl s
+option is specified.
+.It Fl s , Fl Fl only-delimited
+Suppress lines that do not contain the field delimiter character.
+Only valid with
+.Fl f .
+.It Fl Fl complement
+Complement the set of selected bytes, characters, or fields.
+Output consists of the portions
+.Em not
+selected by the
+.Fl b , c ,
+or
+.Fl f
+options.
+.It Fl Fl output-delimiter Ns = Ns Ar string
+Use
+.Ar string
+as the output field delimiter instead of the input delimiter.
+.It Fl z , Fl Fl zero-terminated
+Use NUL as the line delimiter instead of newline.
+.It Fl h , Fl Fl help
+Display help and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The
+.Ar list
+argument is a comma-separated list of ranges, each of which is one of:
+.Bl -tag -width "N-M"
+.It Ar N
+The
+.Ar N Ns th
+byte, character, or field, counted from 1.
+.It Ar N Ns -
+From the
+.Ar N Ns th
+byte, character, or field to the end of the line.
+.It Ar N Ns - Ns Ar M
+From the
+.Ar N Ns th
+to the
+.Ar M Ns th
+byte, character, or field, inclusive.
+.It - Ns Ar M
+From the first to the
+.Ar M Ns th
+byte, character, or field.
+.El
+.Sh EXIT STATUS
+.Ex -std cut
+.Sh EXAMPLES
+Extract the first three characters of each line:
+.Pp
+.Dl "cut -c 1-3 file.txt"
+.Pp
+Extract the second field from a colon-delimited file:
+.Pp
+.Dl "cut -d: -f2 /etc/passwd"
+.Pp
+Extract multiple fields from a CSV-like file:
+.Pp
+.Dl "cut -d, -f1,3,5 data.csv"
+.Sh SEE ALSO
+.Xr awk 1 ,
+.Xr paste 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2001
+specification.
+.Pp
+The
+.Fl Fl complement ,
+.Fl Fl output-delimiter ,
+and
+.Fl z
+options are GNU extensions.
+.Sh AUTHORS
+.An Travis Cole
