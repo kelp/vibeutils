@@ -223,8 +223,8 @@ test_wc() {
     test_command_exit_code "wc directory input" 1 "$binary" "$test_dir" 2>/dev/null
 
     # Invalid flags
-    test_command_exit_code "wc invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
-    test_command_exit_code "wc unknown short flag" 1 "$binary" -z 2>/dev/null
+    test_command_exit_code "wc invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "wc unknown short flag" 2 "$binary" -z 2>/dev/null
 
     # Mixed valid and invalid files
     local valid_file=$(create_temp_file "Valid content")

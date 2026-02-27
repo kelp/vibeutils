@@ -54,7 +54,7 @@ test_rmdir() {
     rm -rf "$nonempty_err_dir"
 
     # Missing operand (no arguments)
-    test_command_exit_code "rmdir no arguments" 1 "$binary"
+    test_command_exit_code "rmdir no arguments" 2 "$binary"
 
     # Error message for missing operand
     local miss_out=""
@@ -260,7 +260,7 @@ test_rmdir() {
     rm -f "$not_a_dir"
 
     # Invalid flag
-    test_command_exit_code "rmdir invalid flag" 1 "$binary" --invalid-flag 2>/dev/null
+    test_command_exit_code "rmdir invalid flag" 2 "$binary" --invalid-flag 2>/dev/null
 
     echo -e "${CYAN}Testing edge cases...${NC}"
 
