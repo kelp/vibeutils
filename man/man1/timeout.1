@@ -1,0 +1,155 @@
+.\" timeout(1) manual page
+.\" This is part of the vibeutils project
+.Dd $Mdocdate$
+.Dt TIMEOUT 1
+.Os
+.Sh NAME
+.Nm timeout
+.Nd run a command with a time limit
+.Sh SYNOPSIS
+.Nm
+.Op Fl s Ar signal
+.Op Fl k Ar duration
+.Op Fl \-preserve-status
+.Op Fl \-foreground
+.Op Fl v
+.Ar duration
+.Ar command
+.Op Ar arg ...
+.Nm
+.Op Fl h | Fl Fl help
+.Nm
+.Op Fl V | Fl Fl version
+.Sh DESCRIPTION
+The
+.Nm
+utility starts
+.Ar command
+and kills it if it is still running after the specified
+.Ar duration .
+.Pp
+If
+.Ar command
+times out and
+.Fl \-preserve-status
+is not set,
+.Nm
+exits with status 124.
+Otherwise it exits with the status of
+.Ar command .
+If no signal is specified, the
+.Dv TERM
+signal is sent upon timeout.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl s Ar signal , Fl Fl signal Ns = Ns Ar signal
+Send this signal on timeout instead of
+.Dv TERM .
+.Ar signal
+may be a name like
+.Dq HUP
+or a number like
+.Dq 1 .
+.It Fl k Ar duration , Fl Fl kill-after Ns = Ns Ar duration
+If
+.Ar command
+is still running after the initial signal, send
+.Dv KILL
+after this
+.Ar duration .
+.It Fl \-preserve-status
+Exit with the same status as
+.Ar command ,
+even when it times out.
+.It Fl \-foreground
+Do not create a separate process group for
+.Ar command .
+This allows
+.Ar command
+to use the foreground TTY normally.
+.It Fl v , Fl Fl verbose
+Diagnose to standard error any signal sent upon timeout.
+.It Fl h , Fl Fl help
+Display help information and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Pp
+The
+.Ar duration
+argument is a number with an optional suffix:
+.Bl -tag -width Ds
+.It Sy s
+Seconds
+.Pq default
+.It Sy m
+Minutes
+.It Sy h
+Hours
+.It Sy d
+Days
+.El
+.Pp
+A
+.Ar duration
+of 0 disables the timeout.
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It 124
+.Ar command
+timed out and
+.Fl \-preserve-status
+is not set.
+.It 125
+.Nm
+itself fails.
+.It 126
+.Ar command
+is found but cannot be invoked.
+.It 127
+.Ar command
+cannot be found.
+.It 137
+.Ar command
+is sent the
+.Dv KILL
+signal (128+9).
+.El
+.Pp
+Otherwise
+.Nm
+exits with the status of
+.Ar command .
+.Sh EXAMPLES
+Limit a command to 10 seconds:
+.Bd -literal -offset indent
+$ timeout 10 sleep 60
+.Ed
+.Pp
+Limit a build script to 5 minutes:
+.Bd -literal -offset indent
+$ timeout 5m ./build.sh
+.Ed
+.Pp
+Send KILL instead of TERM on timeout:
+.Bd -literal -offset indent
+$ timeout -s KILL 30 long-running-cmd
+.Ed
+.Pp
+Send TERM at 30 seconds, then KILL 5 seconds later if still running:
+.Bd -literal -offset indent
+$ timeout -k 5 30 long-running-cmd
+.Ed
+.Sh SEE ALSO
+.Xr kill 1 ,
+.Xr sleep 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX.
+It is compatible with the GNU coreutils
+.Nm
+command.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
