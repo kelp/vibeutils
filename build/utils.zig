@@ -56,6 +56,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "free", .path = "src/free.zig", .needs_libc = true, .description = "Display amount of free and used memory" },
     .{ .name = "du", .path = "src/du.zig", .needs_libc = true, .description = "Estimate file space usage" },
     .{ .name = "df", .path = "src/df.zig", .needs_libc = true, .description = "Report file system disk space usage" },
+    .{ .name = "dd", .path = "src/dd.zig", .needs_libc = true, .description = "Convert and copy a file" },
+    .{ .name = "find", .path = "src/find.zig", .needs_libc = true, .description = "Search for files in a directory hierarchy" },
 };
 
 /// Parse version from ZON content string
