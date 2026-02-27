@@ -1,0 +1,122 @@
+.Dd February 27, 2026
+.Dt DU 1
+.Os
+.Sh NAME
+.Nm du
+.Nd estimate file space usage
+.Sh SYNOPSIS
+.Nm du
+.Op Fl abchkLsSx
+.Op Fl d Ar depth
+.Op Fl Fl block-size Ns = Ns Ar SIZE
+.Op Fl Fl apparent-size
+.Op Fl Fl help
+.Op Fl Fl version
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility displays the disk usage of each
+.Ar file
+argument and its subdirectories.
+If no
+.Ar file
+is given, the current directory is used.
+.Pp
+Sizes are reported in 1024-byte blocks by default.
+.Pp
+The following options are available:
+.Bl -tag -width Ds
+.It Fl a , Fl Fl all
+Write counts for all files, not just directories.
+.It Fl b , Fl Fl bytes
+Equivalent to
+.Fl Fl apparent-size Fl Fl block-size Ns = Ns 1 .
+.It Fl Fl block-size Ns = Ns Ar SIZE
+Scale sizes by
+.Ar SIZE
+before printing.
+.Ar SIZE
+is an integer with an optional unit suffix:
+.Ql K
+(1024),
+.Ql M
+(1048576),
+.Ql G
+(1073741824),
+.Ql T
+(1099511627776).
+SI suffixes
+.Ql KB ,
+.Ql MB ,
+.Ql GB ,
+.Ql TB
+use powers of 1000.
+.It Fl c , Fl Fl total
+Produce a grand total.
+.It Fl d Ar N , Fl Fl max-depth Ns = Ns Ar N
+Print the total for a directory only if it is
+.Ar N
+or fewer levels below the command line argument.
+.Fl d Ar 0
+is equivalent to
+.Fl s .
+.It Fl h , Fl Fl human-readable
+Print sizes in human readable format (e.g., 1K, 234M, 2G).
+.It Fl k
+Like
+.Fl Fl block-size Ns = Ns 1K .
+.It Fl L , Fl Fl dereference
+Dereference all symbolic links.
+.It Fl s , Fl Fl summarize
+Display only a total for each argument.
+.It Fl S , Fl Fl separate-dirs
+For directories, do not include the size of subdirectories.
+.It Fl x , Fl Fl one-file-system
+Skip directories on different file systems.
+.It Fl Fl apparent-size
+Print apparent sizes rather than disk usage; although the apparent
+size is usually smaller, it may be larger due to holes in sparse
+files, internal fragmentation, or indirect blocks.
+.It Fl Fl help
+Display help and exit.
+.It Fl Fl version
+Output version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std du
+.Sh EXAMPLES
+Summarize disk usage of the current directory:
+.Pp
+.Dl "du -sh"
+.Pp
+Show disk usage of all files in a directory tree:
+.Pp
+.Dl "du -ah /var/log"
+.Pp
+Show disk usage to a maximum depth of 1:
+.Pp
+.Dl "du -d 1 /home"
+.Pp
+Show apparent sizes in bytes:
+.Pp
+.Dl "du -b file.txt"
+.Sh SEE ALSO
+.Xr df 1 ,
+.Xr ls 1 ,
+.Xr stat 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2001
+specification.
+.Pp
+The
+.Fl b , h , d , S , x ,
+.Fl Fl apparent-size ,
+and
+.Fl Fl block-size
+options are GNU extensions.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
