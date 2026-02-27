@@ -1,0 +1,68 @@
+.\" tac(1) man page
+.\" Copyright (c) vibeutils implementation by Travis Cole
+.\"
+.Dd February 26, 2026
+.Dt TAC 1
+.Os
+.Sh NAME
+.Nm tac
+.Nd concatenate and print files in reverse
+.Sh SYNOPSIS
+.Nm
+.Op Fl b
+.Op Fl s Ar separator
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility writes each
+.Ar file
+to standard output, last line first.
+When no
+.Ar file
+is given, or when
+.Ar file
+is
+.Ql - ,
+standard input is read.
+.Pp
+By default, records are separated by newline characters.
+Each file is reversed independently.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl b , Fl Fl before
+Attach the separator before the record instead of after.
+.It Fl s Ar separator , Fl Fl separator Ns = Ns Ar separator
+Use
+.Ar separator
+as the record separator instead of newline.
+.It Fl h , Fl Fl help
+Display help information and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std tac
+.Sh EXAMPLES
+Reverse the lines of a file:
+.Pp
+.Dl $ tac file.txt
+.Pp
+Reverse colon-delimited records:
+.Pp
+.Dl $ echo 'a:b:c:' | tac -s :
+.Pp
+Reverse lines from multiple files:
+.Pp
+.Dl $ tac file1.txt file2.txt
+.Sh SEE ALSO
+.Xr cat 1 ,
+.Xr rev 1 ,
+.Xr tail 1
+.Sh STANDARDS
+The
+.Nm
+utility is a GNU extension and is not specified by POSIX.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
