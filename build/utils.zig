@@ -51,6 +51,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "tr", .path = "src/tr.zig", .needs_libc = true, .description = "Translate or delete characters" },
     .{ .name = "nl", .path = "src/nl.zig", .needs_libc = true, .description = "Number lines of files" },
     .{ .name = "uniq", .path = "src/uniq.zig", .needs_libc = true, .description = "Report or omit repeated lines" },
+    .{ .name = "readlink", .path = "src/readlink.zig", .needs_libc = true, .description = "Print value of a symbolic link" },
+    .{ .name = "cut", .path = "src/cut.zig", .needs_libc = true, .description = "Remove sections from each line of files" },
 };
 
 /// Parse version from ZON content string
