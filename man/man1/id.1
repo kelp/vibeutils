@@ -1,0 +1,93 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt ID 1
+.Os
+.Sh NAME
+.Nm id
+.Nd print real and effective user and group IDs
+.Sh SYNOPSIS
+.Nm id
+.Op Fl GgunrzV
+.Op Ar user
+.Sh DESCRIPTION
+The
+.Nm
+utility prints user and group information for the specified
+.Ar user ,
+or for the current user if no
+.Ar user
+is specified.
+.Pp
+The default output shows the effective user ID, group ID, and all
+group memberships in the format:
+.Bd -literal -offset indent
+uid=N(name) gid=N(name) groups=N(name),N(name),...
+.Ed
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl g , Fl Fl group
+Print only the effective group ID.
+.It Fl G , Fl Fl groups
+Print all group IDs.
+.It Fl h , Fl Fl help
+Display a help message and exit.
+.It Fl n , Fl Fl name
+Print the name instead of the numeric ID.
+Must be used with
+.Fl g ,
+.Fl G ,
+or
+.Fl u .
+.It Fl r , Fl Fl real
+Print the real ID instead of the effective ID.
+Must be used with
+.Fl g ,
+.Fl G ,
+or
+.Fl u .
+.It Fl u , Fl Fl user
+Print only the effective user ID.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.It Fl z , Fl Fl zero
+Delimit entries with NUL characters instead of whitespace.
+.El
+.Pp
+The
+.Fl u ,
+.Fl g ,
+and
+.Fl G
+options are mutually exclusive.
+.Sh EXIT STATUS
+.Ex -std id
+.Sh EXAMPLES
+Print full identity information:
+.Bd -literal -offset indent
+$ id
+uid=1000(alice) gid=1000(alice) groups=1000(alice),27(sudo)
+.Ed
+.Pp
+Print only the effective user name:
+.Bd -literal -offset indent
+$ id -un
+alice
+.Ed
+.Pp
+Print all group names for a specific user:
+.Bd -literal -offset indent
+$ id -Gn root
+root
+.Ed
+.Sh SEE ALSO
+.Xr groups 1 ,
+.Xr logname 1 ,
+.Xr whoami 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
