@@ -1,0 +1,83 @@
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
+.Dt READLINK 1
+.Os
+.Sh NAME
+.Nm readlink
+.Nd print value of a symbolic link or canonical file name
+.Sh SYNOPSIS
+.Nm readlink
+.Op Fl fenm
+.Op Fl nqvz
+.Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility prints the target of a symbolic link.
+When used with the canonicalize options, it prints the resolved
+absolute pathname.
+.Pp
+If
+.Nm
+is invoked without a canonicalize option, the given
+.Ar file
+must be a symbolic link.
+With a canonicalize option,
+.Ar file
+need not be a symbolic link.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl f , Fl Fl canonicalize
+Canonicalize by following every symlink in every component of the
+given name recursively.
+All but the last component must exist.
+.It Fl e , Fl Fl canonicalize-existing
+Canonicalize by following every symlink in every component of the
+given name recursively.
+All components must exist.
+.It Fl m , Fl Fl canonicalize-missing
+Canonicalize by following every symlink in every component of the
+given name recursively, without requirements on component existence.
+.It Fl n , Fl Fl no-newline
+Do not output the trailing newline.
+.It Fl q , Fl Fl quiet , Fl Fl silent
+Suppress most error messages.
+.It Fl v , Fl Fl verbose
+Report error messages.
+.It Fl z , Fl Fl zero
+End each output line with NUL, not newline.
+.El
+.Sh EXIT STATUS
+.Ex -std readlink
+.Sh EXAMPLES
+Print the target of a symbolic link:
+.Bd -literal -offset indent
+$ readlink /usr/bin/vi
+/usr/bin/nvi
+.Ed
+.Pp
+Resolve the canonical path of a symlink:
+.Bd -literal -offset indent
+$ readlink -f /usr/bin/vi
+/usr/bin/nvi
+.Ed
+.Pp
+Resolve with NUL-terminated output for use with xargs:
+.Bd -literal -offset indent
+$ readlink -fz /usr/bin/vi | xargs -0 echo
+/usr/bin/nvi
+.Ed
+.Sh SEE ALSO
+.Xr ln 1 ,
+.Xr realpath 1 ,
+.Xr stat 1
+.Sh STANDARDS
+The
+.Nm
+utility is not specified by POSIX.
+It is compatible with the GNU coreutils
+.Nm
+command.
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
