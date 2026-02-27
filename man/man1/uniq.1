@@ -1,0 +1,112 @@
+.\" uniq(1) man page
+.\" Copyright (c) vibeutils implementation by Travis Cole
+.\"
+.Dd February 26, 2026
+.Dt UNIQ 1
+.Os
+.Sh NAME
+.Nm uniq
+.Nd report or omit repeated lines
+.Sh SYNOPSIS
+.Nm
+.Op Fl cduDiz
+.Op Fl f Ar fields
+.Op Fl s Ar chars
+.Op Fl w Ar chars
+.Op Ar input Op Ar output
+.Sh DESCRIPTION
+The
+.Nm
+utility reads the specified
+.Ar input
+file comparing adjacent lines, and writes a copy of each unique
+input line to the
+.Ar output
+file.
+If
+.Ar input
+is a single dash
+.Pq Sq -
+or absent, the standard input is read.
+If
+.Ar output
+is absent, standard output is used for output.
+.Pp
+The second and succeeding copies of identical adjacent input
+lines are not written.
+Repeated lines in the input will not be detected if they are
+not adjacent, so it may be necessary to sort the files first.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl c , Fl Fl count
+Precede each output line with the count of the number of
+times the line occurred in the input, followed by a single
+space.
+.It Fl d , Fl Fl repeated
+Only output lines that are repeated in the input.
+.It Fl D
+Output all lines that are repeated in the input.
+Unlike
+.Fl d ,
+which outputs one copy per group,
+.Fl D
+outputs every repeated line.
+.It Fl f Ar fields , Fl Fl skip-fields Ns = Ns Ar fields
+Ignore the first
+.Ar fields
+fields in each input line when doing comparisons.
+A field is a string of non-blank characters separated from
+adjacent fields by blanks.
+Field numbers are one based, i.e., the first field is field one.
+.It Fl i , Fl Fl ignore-case
+Case insensitive comparison of lines.
+.It Fl s Ar chars , Fl Fl skip-chars Ns = Ns Ar chars
+Ignore the first
+.Ar chars
+characters in each input line when doing comparisons.
+If specified in conjunction with the
+.Fl f
+option, the first
+.Ar chars
+characters after the first
+.Ar fields
+fields will be ignored.
+.It Fl u , Fl Fl unique
+Only output lines that are not repeated in the input.
+.It Fl w Ar chars , Fl Fl check-chars Ns = Ns Ar chars
+Compare no more than
+.Ar chars
+characters in each input line
+.Pq or after any skipping due to Fl f No or Fl s .
+.It Fl z , Fl Fl zero-terminated
+Delimit lines with NUL characters rather than newlines.
+.It Fl h , Fl Fl help
+Display help information and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
+.El
+.Sh EXIT STATUS
+.Ex -std uniq
+.Sh EXAMPLES
+Remove adjacent duplicate lines from a file:
+.Pp
+.Dl $ sort names.txt | uniq
+.Pp
+Show duplicate lines with their counts:
+.Pp
+.Dl $ sort words.txt | uniq -c | sort -rn | head
+.Pp
+Show only lines that appear more than once:
+.Pp
+.Dl $ sort data.txt | uniq -d
+.Sh SEE ALSO
+.Xr comm 1 ,
+.Xr sort 1
+.Sh STANDARDS
+The
+.Nm
+utility conforms to
+.St -p1003.1-2008 .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"

@@ -49,6 +49,8 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "stat", .path = "src/stat.zig", .needs_libc = true, .description = "Display file or file system status" },
     .{ .name = "sort", .path = "src/sort.zig", .needs_libc = true, .description = "Sort lines of text files" },
     .{ .name = "tr", .path = "src/tr.zig", .needs_libc = true, .description = "Translate or delete characters" },
+    .{ .name = "nl", .path = "src/nl.zig", .needs_libc = true, .description = "Number lines of files" },
+    .{ .name = "uniq", .path = "src/uniq.zig", .needs_libc = true, .description = "Report or omit repeated lines" },
 };
 
 /// Parse version from ZON content string
