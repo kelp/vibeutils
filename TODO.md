@@ -1,9 +1,10 @@
 # vibeutils - GNU Coreutils in Zig
 
 ## Progress Summary
-- **Completed**: 27/47 utilities (basename, cat, chmod, chown, cp, date, dirname, echo, false, head, ln, ls, mkdir, mv, pwd, rm, rmdir, seq, sleep, tail, tee, test, touch, true, wc, whoami, yes)
+- **Completed**: 47/47 utilities - ALL IMPLEMENTED
+- **Utilities**: basename, cat, chmod, chown, cp, cut, date, dd, df, dirname, du, echo, env, false, find, free, grep, head, id, ln, ls, mkdir, mktemp, mv, nl, printf, pwd, readlink, realpath, rm, rmdir, seq, sleep, sort, stat, tac, tail, tee, test, timeout, touch, tr, true, uniq, wc, whoami, yes
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
-- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.1 migration complete**
+- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
 
 ## Project Goals
@@ -444,7 +445,7 @@ For each utility:
 - [x] Implement: Relative date calculations
 - [x] Man page: Write concise man page with examples
 
-#### 21. env
+#### 21. env ✓
 - [ ] Test: Print current environment
 - [ ] Test: Run command with modified env (env VAR=value cmd)
 - [ ] Test: Clear environment (-i, --ignore-environment)
@@ -500,7 +501,7 @@ For each utility:
 - [x] Implement: User lookup
 - [x] Man page: Write concise man page with examples
 
-#### 26. id
+#### 26. id ✓
 - [ ] Test: Print all IDs (default)
 - [ ] Test: User ID only (-u, --user)
 - [ ] Test: Group ID only (-g, --group)
@@ -513,7 +514,7 @@ For each utility:
 - [ ] Implement: Format selection
 - [ ] Man page: Write concise man page with examples
 
-#### 27. printf
+#### 27. printf ✓
 - [ ] Test: Basic format strings (%s, %d, %f)
 - [ ] Test: Escape sequences (\n, \t, \x41)
 - [ ] Test: Width and precision (%.2f, %10s)
@@ -525,7 +526,7 @@ For each utility:
 - [ ] Implement: Escape sequence handling
 - [ ] Man page: Write concise man page with examples
 
-#### 28. free
+#### 28. free ✓
 - [ ] Test: Basic memory information display (total, used, free, available)
 - [ ] Test: Human readable format (-h) with K/M/G/T units
 - [ ] Test: Show swap information (default)
@@ -547,7 +548,7 @@ For each utility:
 
 ### Phase 2: Text Processing Utilities
 
-#### 29. dd
+#### 29. dd ✓
 - [ ] Test: Basic copy (if=input of=output)
 - [ ] Test: Block size (bs=1M, ibs=512, obs=4096)
 - [ ] Test: Count limit (count=100)
@@ -560,7 +561,7 @@ For each utility:
 - [ ] Implement: Progress reporting
 - [ ] Man page: Write concise man page with examples
 
-#### 30. realpath
+#### 30. realpath ✓
 - [ ] Test: Resolve to absolute path
 - [ ] Test: Canonicalize existing (-e, --canonicalize-existing)
 - [ ] Test: Canonicalize missing (-m, --canonicalize-missing)
@@ -572,7 +573,7 @@ For each utility:
 - [ ] Implement: Relative path computation
 - [ ] Man page: Write concise man page with examples
 
-#### 31. readlink
+#### 31. readlink ✓
 - [ ] Test: Print symlink target
 - [ ] Test: Canonicalize (-f, --canonicalize)
 - [ ] Test: Canonicalize existing (-e)
@@ -583,7 +584,7 @@ For each utility:
 - [ ] Implement: Path canonicalization
 - [ ] Man page: Write concise man page with examples
 
-#### 32. mktemp
+#### 32. mktemp ✓
 - [ ] Test: Create temporary file
 - [ ] Test: Create temporary directory (-d, --directory)
 - [ ] Test: Custom template (mktemp /tmp/test.XXX)
@@ -595,7 +596,7 @@ For each utility:
 - [ ] Implement: Template parsing
 - [ ] Man page: Write concise man page with examples
 
-#### 33. timeout (Priority: High - Missing on macOS)
+#### 33. timeout ✓
 - [ ] Test: Basic timeout with seconds (timeout 5 sleep 10)
 - [ ] Test: Command succeeds before timeout (exit status 0)
 - [ ] Test: Command killed on timeout (exit status 124)
@@ -629,7 +630,7 @@ For each utility:
 - macOS/BSD: Use setitimer or kqueue timers
 - Signal handling must be robust across platforms
 
-#### 34. tac
+#### 34. tac ✓
 - [ ] Test: Reverse file lines
 - [ ] Test: Multiple files
 - [ ] Test: Custom separator (-s, --separator)
@@ -641,7 +642,7 @@ For each utility:
 - [ ] Implement: Separator handling
 - [ ] Man page: Write concise man page with examples
 
-#### 35. nl
+#### 35. nl ✓
 - [ ] Test: Number all lines (default)
 - [ ] Test: Number non-empty lines (-b a, -b t)
 - [ ] Test: Number format (-n ln, -n rn, -n rz)
@@ -698,7 +699,7 @@ For each utility:
 - [x] Implement: Performance-optimized byte counting
 - [x] Man page: Write concise man page with examples
 
-#### 39. sort
+#### 39. sort ✓
 - [ ] Test: Basic alphabetical sort
 - [ ] Test: Numeric sort (-n)
 - [ ] Test: Reverse sort (-r)
@@ -711,7 +712,7 @@ For each utility:
 - [ ] Implement: Key extraction
 - [ ] Man page: Write concise man page with examples
 
-#### 40. uniq
+#### 40. uniq ✓
 - [ ] Test: Remove adjacent duplicates
 - [ ] Test: Count occurrences (-c)
 - [ ] Test: Only duplicates (-d)
@@ -723,7 +724,7 @@ For each utility:
 - [ ] Implement: Field skipping
 - [ ] Man page: Write concise man page with examples
 
-#### 41. cut
+#### 41. cut ✓
 - [ ] Test: Byte selection (-b)
 - [ ] Test: Character selection (-c)
 - [ ] Test: Field selection (-f)
@@ -735,7 +736,7 @@ For each utility:
 - [ ] Implement: Field extraction
 - [ ] Man page: Write concise man page with examples
 
-#### 42. tr
+#### 42. tr ✓
 - [ ] Test: Character translation
 - [ ] Test: Character deletion (-d)
 - [ ] Test: Squeeze repeats (-s)
@@ -749,7 +750,7 @@ For each utility:
 
 ### Phase 3: File Information Utilities
 
-#### 43. stat
+#### 43. stat ✓
 - [ ] Test: File information display
 - [ ] Test: Custom format (-c)
 - [ ] Test: Filesystem info (-f)
@@ -760,7 +761,7 @@ For each utility:
 - [ ] Implement: Human-readable output
 - [ ] Man page: Write concise man page with examples
 
-#### 44. du
+#### 44. du ✓
 - [ ] Test: Directory size calculation
 - [ ] Test: Human readable (-h)
 - [ ] Test: Summary only (-s)
@@ -772,7 +773,7 @@ For each utility:
 - [ ] Implement: Caching for performance
 - [ ] Man page: Write concise man page with examples
 
-#### 45. df
+#### 45. df ✓
 - [ ] Test: Filesystem listing
 - [ ] Test: Human readable (-h)
 - [ ] Test: Filesystem type (-t)
@@ -785,7 +786,7 @@ For each utility:
 
 ### Phase 4: Advanced Utilities
 
-#### 46. find
+#### 46. find ✓
 - [ ] Test: Name matching (-name)
 - [ ] Test: Type filtering (-type)
 - [ ] Test: Size filtering (-size)
@@ -798,7 +799,7 @@ For each utility:
 - [ ] Implement: Action execution
 - [ ] Man page: Write concise man page with examples
 
-#### 47. grep
+#### 47. grep ✓
 - [ ] Test: Basic pattern matching
 - [ ] Test: Regular expressions (-E)
 - [ ] Test: Case insensitive (-i)
