@@ -285,7 +285,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
     // Preserve directory permissions when preserve option is set
     if (options.preserve) {
         if (std.fs.cwd().statFile(source_path)) |source_stat| {
-            if (std.fs.cwd().openDir(dest_path, .{})) |dest_dir_const| {
+            if (std.fs.cwd().openDir(dest_path, .{ .iterate = true })) |dest_dir_const| {
                 var dest_dir = dest_dir_const;
                 defer dest_dir.close();
                 dest_dir.chmod(source_stat.mode) catch |err| {
