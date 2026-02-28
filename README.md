@@ -14,37 +14,33 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 
 ## Project Status
 
-**Pre-1.0**: Expect breaking changes as we refine the design. 24 utilities implemented with comprehensive test coverage.
+**Pre-1.0**: 47 utilities implemented with comprehensive test
+coverage. Expect breaking changes as we refine the design.
 
 ### Implemented Utilities
 
-- ✅ `basename` - Strip directory and suffix from filenames
-- ✅ `cat` - Concatenate and display files
-- ✅ `chmod` - Change file permissions
-- ✅ `chown` - Change file ownership
-- ✅ `cp` - Copy files and directories with progress indication
-- ✅ `dirname` - Extract directory from path
-- ✅ `echo` - Display text
-- ✅ `false` - Return unsuccessful exit status
-- ✅ `head` - Display first lines of files
-- ✅ `ln` - Create links (hard and symbolic)
-- ✅ `ls` - List directory contents with colors and icons
-- ✅ `mkdir` - Create directories
-- ✅ `mv` - Move/rename files and directories
-- ✅ `pwd` - Print working directory
-- ✅ `rm` - Remove files and directories safely
-- ✅ `rmdir` - Remove empty directories
-- ✅ `sleep` - Delay for specified time
-- ✅ `tail` - Display last lines of files
-- ✅ `tee` - Write to stdout and files simultaneously
-- ✅ `test` - Evaluate conditional expressions
-- ✅ `touch` - Update file timestamps
-- ✅ `true` - Return successful exit status
-- ✅ `wc` - Count lines, words, and characters
-- ✅ `yes` - Output string repeatedly until killed
+**File Operations**
+`cat` `cp` `dd` `ln` `mkdir` `mktemp` `mv` `rm` `rmdir`
+`touch`
 
-### Coming Soon
-Text processing utilities (sort, uniq) and file information tools (stat, du, df).
+**File Information**
+`df` `du` `find` `ls` `readlink` `realpath` `stat`
+
+**Text Processing**
+`cut` `grep` `head` `nl` `sort` `tac` `tail` `tee` `tr`
+`uniq` `wc`
+
+**Path & Names**
+`basename` `dirname` `pwd`
+
+**User & Permissions**
+`chmod` `chown` `id` `whoami`
+
+**System & Process**
+`date` `env` `free` `seq` `sleep` `timeout`
+
+**Output & Control**
+`echo` `false` `printf` `test` `true` `yes`
 
 ## Installation
 
@@ -109,34 +105,26 @@ rm -i important.txt
 ## Development
 
 ```bash
-# Build all utilities
-make build
+make build          # Build all utilities
+make test           # Run unit tests
+make it             # Run integration tests
+make coverage       # Coverage report
+make fmt            # Format code
+make help           # All targets
 
-# Run tests
-make test
-
-# Run tests with coverage
-make coverage  # Report: coverage/index.html
-
-# Run privileged tests (requires fakeroot)
-make test-privileged-local
-
-# Run specific utility
-make run-echo ARGS="Hello, vibeutils!"
-
-# Format code
-make fmt
-
-# See all targets
-make help
+# Single utility
+make build UTIL=grep
+make test UTIL=grep
+make run UTIL=grep ARGS="-r TODO src/"
 ```
 
 ### Testing
 
-- Cross-platform testing on BSD, Linux, and macOS
-- Privileged operation tests using fakeroot
-- Target: 90%+ coverage via kcov
-- Unit tests embedded in source files
+- Unit tests embedded in each source file
+- Integration tests in `tests/utilities/`
+- Fuzz tests for all utilities (Linux)
+- Privileged tests via fakeroot
+- Target: 90%+ coverage
 
 ## License
 
