@@ -46,7 +46,10 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [ zig ];
+          packages = [
+            zig
+            pkgs.actionlint
+          ];
         };
       }
     );
