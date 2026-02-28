@@ -65,8 +65,13 @@ nix shell github:kelp/vibeutils
 
 # Build locally
 nix build github:kelp/vibeutils
+```
 
-# Add to your flake inputs
+For faster installs with prebuilt binaries, use the Cachix
+binary cache:
+
+```bash
+cachix use vibeutils
 nix shell github:kelp/vibeutils
 ```
 
