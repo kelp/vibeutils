@@ -54,6 +54,9 @@ benchmark_results.txt
 *.patch
 core.*
 
+# Nix
+result
+
 # Local development files
 .env
 .env.local
