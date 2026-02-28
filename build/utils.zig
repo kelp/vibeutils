@@ -6,6 +6,7 @@ pub const UtilityMeta = struct {
     path: []const u8,
     needs_libc: bool,
     description: []const u8,
+    c_sources: []const []const u8 = &.{},
 };
 
 /// All utilities with their metadata
@@ -58,7 +59,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "df", .path = "src/df.zig", .needs_libc = true, .description = "Report file system disk space usage" },
     .{ .name = "dd", .path = "src/dd.zig", .needs_libc = true, .description = "Convert and copy a file" },
     .{ .name = "find", .path = "src/find.zig", .needs_libc = true, .description = "Search for files in a directory hierarchy" },
-    .{ .name = "grep", .path = "src/grep.zig", .needs_libc = true, .description = "Print lines that match patterns" },
+    .{ .name = "grep", .path = "src/grep.zig", .needs_libc = true, .description = "Print lines that match patterns", .c_sources = &.{"src/regex_alloc.c"} },
 };
 
 /// Parse version from ZON content string

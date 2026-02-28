@@ -15,6 +15,15 @@ const c = @cImport({
     @cInclude("regex.h");
 });
 
+const is_linux = builtin.os.tag == .linux;
+
+// On Linux, regex_t is opaque to Zig (glibc internal types can't be parsed).
+// Use C helper functions for heap allocation instead of Zig's allocator.
+const regex_c = if (is_linux) struct {
+    extern "c" fn regex_heap_alloc() ?*c.regex_t;
+    extern "c" fn regex_heap_free(re: *c.regex_t) void;
+} else struct {};
+
 const prog_name = "grep";
 
 // ============================================================================
@@ -74,7 +83,7 @@ const GrepOptions = struct {
 
 /// Compiled pattern for matching
 const CompiledPattern = union(enum) {
-    regex: c.regex_t,
+    regex: *c.regex_t,
     fixed: FixedPattern,
 
     const FixedPattern = struct {
@@ -405,13 +414,21 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
 
     const pattern_z = allocator.dupeZ(u8, actual_pattern) catch return null;
 
-    var regex: c.regex_t = undefined;
-    const result = c.regcomp(&regex, pattern_z.ptr, cflags);
+    const regex = if (comptime is_linux)
+        (regex_c.regex_heap_alloc() orelse return null)
+    else
+        (allocator.create(c.regex_t) catch return null);
+    const result = c.regcomp(regex, pattern_z.ptr, cflags);
     if (result != 0) {
         var errbuf: [256]u8 = undefined;
-        const err_len = c.regerror(@intCast(result), &regex, &errbuf, errbuf.len);
+        const err_len = c.regerror(@intCast(result), regex, &errbuf, errbuf.len);
         const err_msg = errbuf[0..err_len];
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid regular expression: {s}", .{err_msg});
+        if (comptime is_linux) {
+            regex_c.regex_heap_free(regex);
+        } else {
+            allocator.destroy(regex);
+        }
         return null;
     }
 
@@ -419,9 +436,16 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
 }
 
 /// Free a compiled pattern
-fn freePattern(pat: *CompiledPattern) void {
+fn freePattern(allocator: Allocator, pat: *CompiledPattern) void {
     switch (pat.*) {
-        .regex => |*re| c.regfree(re),
+        .regex => |re| {
+            c.regfree(re);
+            if (comptime is_linux) {
+                regex_c.regex_heap_free(re);
+            } else {
+                allocator.destroy(re);
+            }
+        },
         .fixed => {},
     }
 }
@@ -459,7 +483,7 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
             const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
             defer allocator.free(line_z);
             var pmatch: [1]c.regmatch_t = undefined;
-            const exec_result = c.regexec(&re, line_z.ptr, 1, &pmatch, 0);
+            const exec_result = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
             if (exec_result == 0) {
                 const start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
                 const end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
@@ -958,7 +982,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Compile patterns
     var compiled = std.ArrayListUnmanaged(CompiledPattern){};
     defer {
-        for (compiled.items) |*cp| freePattern(cp);
+        for (compiled.items) |*cp| freePattern(allocator, cp);
         compiled.deinit(allocator);
     }
 
@@ -1266,13 +1290,30 @@ test "fixed string case insensitive" {
     try testing.expect(result.matched);
 }
 
+fn testAllocRegex() ?*c.regex_t {
+    if (comptime is_linux) {
+        return regex_c.regex_heap_alloc();
+    } else {
+        return testing.allocator.create(c.regex_t) catch return null;
+    }
+}
+
+fn testFreeRegex(re: *c.regex_t) void {
+    if (comptime is_linux) {
+        regex_c.regex_heap_free(re);
+    } else {
+        testing.allocator.destroy(re);
+    }
+}
+
 test "regex matching basic" {
     const cflags: c_int = c.REG_EXTENDED;
     const pat_str: [:0]const u8 = "hel+o";
-    var regex: c.regex_t = undefined;
-    const comp_result = c.regcomp(&regex, pat_str.ptr, cflags);
+    const regex = testAllocRegex() orelse return error.OutOfMemory;
+    defer testFreeRegex(regex);
+    const comp_result = c.regcomp(regex, pat_str.ptr, cflags);
     try testing.expectEqual(@as(c_int, 0), comp_result);
-    defer c.regfree(&regex);
+    defer c.regfree(regex);
 
     const pattern = CompiledPattern{ .regex = regex };
     const result = matchLine(&pattern, "say hello world", testing.allocator);
@@ -1282,10 +1323,11 @@ test "regex matching basic" {
 test "regex no match" {
     const cflags: c_int = c.REG_EXTENDED | c.REG_NOSUB;
     const pat_str: [:0]const u8 = "^xyz$";
-    var regex: c.regex_t = undefined;
-    const comp_result = c.regcomp(&regex, pat_str.ptr, cflags);
+    const regex = testAllocRegex() orelse return error.OutOfMemory;
+    defer testFreeRegex(regex);
+    const comp_result = c.regcomp(regex, pat_str.ptr, cflags);
     try testing.expectEqual(@as(c_int, 0), comp_result);
-    defer c.regfree(&regex);
+    defer c.regfree(regex);
 
     const pattern = CompiledPattern{ .regex = regex };
     const result = matchLine(&pattern, "hello world", testing.allocator);
@@ -1410,22 +1452,4 @@ test "runGrep invalid regex returns misuse" {
 test "runGrep -m max-count" {
     const exit_code = try testRunGrep("hello one\nhello two\nhello three\nhello four\n", &.{ "-m", "2", "hello" });
     try testing.expectEqual(@as(u8, 0), exit_code);
-}
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("grep");
-
-test "grep fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testGrepFuzzWrapper, .{});
-}
-
-fn testGrepFuzzWrapper(allocator: Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    if (!common.fuzz.shouldFuzzUtilityRuntime("grep")) return;
-    // Skip actual execution for stdin-dependent utility
 }

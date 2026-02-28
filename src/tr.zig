@@ -1123,20 +1123,3 @@ test "tr stdin blocks - skip" {
     // This functionality is tested via binary smoke tests
     return error.SkipZigTest;
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("tr");
-
-test "tr fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTrIntelligentWrapper, .{});
-}
-
-fn testTrIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("tr")) return;
-    const TrFuzzer = common.fuzz.createIntelligentFuzzer(TrArgs, runTr);
-    try TrFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

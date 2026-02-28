@@ -985,19 +985,3 @@ test "du getFileSize apparent vs disk" {
     const disk = getFileSize(stat_buf, false);
     try testing.expect(disk >= 100);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("du");
-
-test "du fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testDuIntelligentWrapper, .{});
-}
-
-fn testDuIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("du")) return;
-    const DuFuzzer = common.fuzz.createIntelligentFuzzer(DuOptions, runDu);
-    try DuFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

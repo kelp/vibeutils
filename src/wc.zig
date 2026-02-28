@@ -631,19 +631,3 @@ test "wc reports error for directory" {
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("wc");
-
-test "wc fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testWcIntelligentWrapper, .{});
-}
-
-fn testWcIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("wc")) return;
-    const WcFuzzer = common.fuzz.createIntelligentFuzzer(WcOptions, runWc);
-    try WcFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

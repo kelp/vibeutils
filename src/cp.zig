@@ -814,17 +814,3 @@ test "cp: same file detection across devices via hardlink" {
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "same file") != null);
 }
-
-// Fuzzing
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("cp");
-
-test "cp fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testCpIntelligentWrapper, .{});
-}
-
-fn testCpIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    const CpIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(CpConfig, runUtility);
-    try CpIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

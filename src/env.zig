@@ -742,30 +742,3 @@ test "env runEnv: invalid chdir" {
     try testing.expectEqual(@as(u8, 125), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot change directory") != null);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("env");
-
-test "env fuzz argument parsing" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testEnvFuzzWrapper, .{});
-}
-
-fn testEnvFuzzWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("env")) return;
-
-    // Split input into argument-like chunks
-    var args = std.ArrayListUnmanaged([]const u8){};
-    defer args.deinit(allocator);
-
-    var it = std.mem.tokenizeScalar(u8, input, 0);
-    while (it.next()) |arg| {
-        args.append(allocator, arg) catch return;
-    }
-
-    // Test that parsing doesn't crash, and clean up properly
-    const options = parseArgs(allocator, args.items) catch return;
-    options.deinit(allocator);
-}

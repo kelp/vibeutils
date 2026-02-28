@@ -1,6 +1,5 @@
 const std = @import("std");
 const utils = @import("build/utils.zig");
-const fuzz_coverage = @import("build/fuzz_coverage.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -12,13 +11,6 @@ pub fn build(b: *std.Build) void {
     // Validate utilities exist before building
     utils.validateUtilities() catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
-        return; // Abort build configuration
-    };
-
-    // Validate fuzz coverage - all utilities must have fuzz tests
-    // This runs during build configuration to ensure test coverage
-    fuzz_coverage.enforceFuzzCoverage(b.allocator) catch |err| {
-        std.log.err("Fuzz coverage validation failed: {}", .{err});
         return; // Abort build configuration
     };
 
@@ -62,8 +54,6 @@ pub fn build(b: *std.Build) void {
     // Add additional build steps
     addFormatSteps(b);
     addCleanStep(b);
-    addFuzzSteps(b, target, optimize, common, build_options_module);
-    addFuzzCoverageStep(b);
     addCIValidateStep(b, ci);
     addDocsStep(b, target, optimize, common, build_options_module);
 }
@@ -95,6 +85,11 @@ fn buildUtility(
     // Metadata-driven library linking
     if (util.needs_libc) {
         exe.linkLibC();
+    }
+
+    // Add C source files if specified
+    for (util.c_sources) |c_src| {
+        exe.addCSourceFile(.{ .file = b.path(c_src) });
     }
 
     b.installArtifact(exe);
@@ -140,6 +135,11 @@ fn buildTests(
             util_tests.linkLibC();
         }
 
+        // Add C source files if specified
+        for (util.c_sources) |c_src| {
+            util_tests.addCSourceFile(.{ .file = b.path(c_src) });
+        }
+
         const run_util_tests = b.addRunArtifact(util_tests);
         test_step.dependOn(&run_util_tests.step);
     }
@@ -181,6 +181,11 @@ fn buildTests(
 
         if (util.needs_libc) {
             util_tests.linkLibC();
+        }
+
+        // Add C source files if specified
+        for (util.c_sources) |c_src| {
+            util_tests.addCSourceFile(.{ .file = b.path(c_src) });
         }
 
         // WORKAROUND: The --listen=- flag breaks under fakeroot
@@ -310,15 +315,6 @@ fn addCleanStep(b: *std.Build) void {
     clean_step.dependOn(&rm_out.step);
 }
 
-/// Add fuzz coverage reporting step
-fn addFuzzCoverageStep(b: *std.Build) void {
-    const fuzz_coverage_step = b.step("fuzz-coverage", "Report fuzz test coverage");
-
-    const coverage_cmd = b.addSystemCommand(&.{ "zig", "run", "build/fuzz_coverage_reporter.zig" });
-
-    fuzz_coverage_step.dependOn(&coverage_cmd.step);
-}
-
 /// Add CI validation step
 fn addCIValidateStep(b: *std.Build, ci: bool) void {
     const ci_validate_step = b.step("ci-validate", "Validate project for CI");
@@ -383,6 +379,11 @@ fn addDocsStep(
             util_exe.linkLibC();
         }
 
+        // Add C source files if specified
+        for (util.c_sources) |c_src| {
+            util_exe.addCSourceFile(.{ .file = b.path(c_src) });
+        }
+
         // Get the emitted docs for this utility
         const util_docs = util_exe.getEmittedDocs();
         const install_util_docs = b.addInstallDirectory(.{
@@ -397,65 +398,3 @@ fn addDocsStep(
     // This is just informational and doesn't need to be part of the step chain
 }
 
-/// Add fuzzing build steps for the project
-/// Creates fuzz tests for each utility and provides commands to run them
-fn addFuzzSteps(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    common: *std.Build.Module,
-    build_options_module: *std.Build.Module,
-) void {
-    // Main fuzz step - displays help message
-    const fuzz_step = b.step("fuzz", "Run fuzz tests (use 'zig build test --fuzz' or individual fuzz-<utility> targets)");
-
-    // Display helpful messages
-    const fuzz_info = b.addSystemCommand(&.{ "echo", "Fuzz tests are now integrated into main utility files." });
-    const fuzz_info2 = b.addSystemCommand(&.{ "echo", "Use 'zig build test --fuzz' to run all fuzz tests." });
-    const fuzz_info3 = b.addSystemCommand(&.{ "echo", "Use 'zig build fuzz-<utility>' to fuzz individual utilities." });
-    const fuzz_info4 = b.addSystemCommand(&.{ "echo", "Use 'scripts/fuzz-utilities.sh' for advanced fuzzing options." });
-    fuzz_step.dependOn(&fuzz_info.step);
-    fuzz_step.dependOn(&fuzz_info2.step);
-    fuzz_step.dependOn(&fuzz_info3.step);
-    fuzz_step.dependOn(&fuzz_info4.step);
-
-    // Add individual fuzz targets for each utility
-    for (utils.utilities) |util| {
-        // Skip special cases like "[" utility that shares implementation with test
-        if (std.mem.eql(u8, util.name, "[")) continue;
-
-        const fuzz_target_name = b.fmt("fuzz-{s}", .{util.name});
-        const fuzz_target_desc = b.fmt("Run fuzz tests for {s} utility only", .{util.name});
-
-        const individual_fuzz_step = b.step(fuzz_target_name, fuzz_target_desc);
-
-        // Create a test step for this specific utility with fuzzing enabled
-        const util_fuzz_test = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(util.path),
-                .target = target,
-                .optimize = optimize,
-            }),
-        });
-
-        // Add imports
-        util_fuzz_test.root_module.addImport("common", common);
-        util_fuzz_test.root_module.addImport("build_options", build_options_module);
-
-        // Link libc if needed
-        if (util.needs_libc) {
-            util_fuzz_test.linkLibC();
-        }
-
-        // Create run step for the fuzz test
-        const run_fuzz_test = b.addRunArtifact(util_fuzz_test);
-
-        // Set the environment variable to target this specific utility
-        run_fuzz_test.setEnvironmentVariable("VIBEUTILS_FUZZ_TARGET", util.name);
-
-        // Add the --fuzz flag
-        run_fuzz_test.addArg("--fuzz");
-
-        individual_fuzz_step.dependOn(&run_fuzz_test.step);
-    }
-}

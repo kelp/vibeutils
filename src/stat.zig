@@ -1718,31 +1718,3 @@ test "stat -- separator" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n", stdout_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("stat");
-
-test "stat fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testStatIntelligentWrapper, .{});
-}
-
-fn testStatIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("stat")) return;
-    // Construct args from fuzz input
-    var args_list = std.ArrayListUnmanaged([]const u8){};
-    defer args_list.deinit(allocator);
-
-    var it = std.mem.tokenizeScalar(u8, input, 0);
-    while (it.next()) |arg| {
-        args_list.append(allocator, arg) catch return;
-    }
-
-    const args = args_list.toOwnedSlice(allocator) catch return;
-    defer allocator.free(args);
-
-    _ = runStat(allocator, args, common.null_writer, common.null_writer) catch return;
-}

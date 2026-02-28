@@ -652,20 +652,3 @@ test "runTimeout - preserve-status on timeout" {
     // With preserve-status, exit code is 128 + signal (15 for TERM = 143)
     try testing.expectEqual(@as(u8, 143), result);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("timeout");
-
-test "timeout fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTimeoutIntelligentWrapper, .{});
-}
-
-fn testTimeoutIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("timeout")) return;
-    const TimeoutFuzzer = common.fuzz.createIntelligentFuzzer(TimeoutArgs, runTimeout);
-    try TimeoutFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

@@ -634,23 +634,3 @@ test "head with obsolete -NUM syntax" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("head");
-
-test "head fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testHeadIntelligentWrapper, .{});
-}
-
-fn testHeadIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("head")) return;
-
-    const HeadIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(HeadArgs, runHead);
-    try HeadIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

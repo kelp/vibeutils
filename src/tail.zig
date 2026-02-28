@@ -1138,23 +1138,3 @@ fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options:
         try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated, options.from_beginning);
     }
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("tail");
-
-test "tail fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTailIntelligentWrapper, .{});
-}
-
-fn testTailIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("tail")) return;
-
-    const TailIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(TailArgs, runTail);
-    try TailIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

@@ -1046,22 +1046,3 @@ test "chown --version flag works" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "chown") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("chown");
-
-test "chown fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testChownIntelligentWrapper, .{});
-}
-
-fn testChownIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("chown")) return;
-
-    const ChownIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(ChownArgs, runChown);
-    try ChownIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

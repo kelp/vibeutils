@@ -85,9 +85,7 @@ services:
     
     working_dir: /workspace
     command: /bin/bash
-    ports:
-      - "8080:8080"  # Expose port for fuzzing web UI
-    
+
     # Network security
     networks:
       - vibeutils-test

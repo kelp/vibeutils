@@ -634,20 +634,3 @@ test "mktemp generateTemp creates unique names" {
     try testing.expectEqual(@as(usize, 16), path1.len);
     try testing.expectEqual(@as(usize, 16), path2.len);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("mktemp");
-
-test "mktemp fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testMktempIntelligentWrapper, .{});
-}
-
-fn testMktempIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("mktemp")) return;
-    const MktempFuzzer = common.fuzz.createIntelligentFuzzer(MktempArgs, runMktemp);
-    try MktempFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

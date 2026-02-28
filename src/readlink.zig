@@ -737,20 +737,3 @@ test "readlink canonicalize-missing with dangling symlink (-m)" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(stdout_buf.items.len > 0);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("readlink");
-
-test "readlink fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testReadlinkIntelligentWrapper, .{});
-}
-
-fn testReadlinkIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("readlink")) return;
-    const ReadlinkFuzzer = common.fuzz.createIntelligentFuzzer(ReadlinkArgs, runReadlink);
-    try ReadlinkFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

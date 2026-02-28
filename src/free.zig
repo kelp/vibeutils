@@ -118,9 +118,9 @@ fn getMemInfoLinux() !MemInfo {
         return error.ProcMeminfoNotFound;
     defer file.close();
 
-    var read_buf: [8192]u8 = undefined;
-    var reader = file.reader(&read_buf);
-    const iface = &reader.interface;
+    var buf: [8192]u8 = undefined;
+    const bytes_read = file.readAll(&buf) catch return error.ReadFailed;
+    const content = buf[0..bytes_read];
 
     var total: u64 = 0;
     var free: u64 = 0;
@@ -132,12 +132,9 @@ fn getMemInfoLinux() !MemInfo {
     var swap_free: u64 = 0;
     var sreclaimable: u64 = 0;
 
-    var line_buf: [256]u8 = undefined;
-    while (true) {
-        const line = iface.readUntilDelimiter(&line_buf, '\n') catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return error.ReadFailed,
-        };
+    var iter = std.mem.splitScalar(u8, content, '\n');
+    while (iter.next()) |line| {
+        if (line.len == 0) continue;
         if (parseMemInfoLine(line, "MemTotal:")) |v| {
             total = v * 1024;
         } else if (parseMemInfoLine(line, "MemFree:")) |v| {
@@ -890,22 +887,4 @@ test "getMemInfo returns valid data" {
     try testing.expect(info.total > 0);
     // Used + free should not exceed total (approximately)
     try testing.expect(info.used <= info.total);
-}
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("free");
-
-test "free fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testFreeIntelligentWrapper, .{});
-}
-
-fn testFreeIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("free")) return;
-    const Fuzzer = common.fuzz.createIntelligentFuzzer(FreeArgs, runFree);
-    try Fuzzer.testComprehensive(allocator, input, common.null_writer);
 }

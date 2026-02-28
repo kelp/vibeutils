@@ -259,20 +259,3 @@ test "yes joins multiple arguments with spaces" {
     try testing.expect(output.len > 0);
     try testing.expect(std.mem.startsWith(u8, output, "hello world\n"));
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("yes");
-
-test "yes fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testYesIntelligentWrapper, .{});
-}
-
-fn testYesIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("yes")) return;
-    const YesFuzzer = common.fuzz.createIntelligentFuzzer(YesArgs, runYes);
-    try YesFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

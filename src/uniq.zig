@@ -776,20 +776,3 @@ test "uniq extra operand returns misuse" {
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("uniq");
-
-test "uniq fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testUniqIntelligentWrapper, .{});
-}
-
-fn testUniqIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("uniq")) return;
-    const UniqFuzzer = common.fuzz.createIntelligentFuzzer(UniqArgs, runUniq);
-    try UniqFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

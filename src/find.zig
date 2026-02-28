@@ -1822,20 +1822,3 @@ test "find: -perm filter" {
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rwx.txt") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rw.txt") == null);
 }
-
-// ============================================================================
-// FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("find");
-
-test "find fuzz" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testFindFuzzWrapper, .{});
-}
-
-fn testFindFuzzWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    // find has unique argument parsing (not standard argparse), skip generic fuzzing
-}

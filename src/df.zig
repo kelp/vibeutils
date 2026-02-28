@@ -4,8 +4,8 @@
 //! file system containing each file argument. With no arguments, disk
 //! space is shown for all currently mounted file systems.
 //!
-//! This implementation follows GNU coreutils df behavior and targets
-//! macOS (darwin) as the primary platform.
+//! This implementation follows GNU coreutils df behavior and supports
+//! macOS (darwin) and Linux platforms.
 
 const std = @import("std");
 const common = @import("common");
@@ -18,12 +18,13 @@ const c = std.c;
 const prog_name = "df";
 
 // ============================================================================
-// macOS C interop
+// Platform-specific C interop
 // ============================================================================
 
 const MNT_LOCAL: u32 = 0x00001000;
 
 const is_darwin = builtin.os.tag == .macos or builtin.os.tag.isDarwin();
+const is_linux = builtin.os.tag == .linux;
 
 // macOS statfs structure (matches sys/mount.h)
 const StatFs = extern struct {
@@ -48,8 +49,17 @@ const StatFs = extern struct {
 
 const MNT_NOWAIT: c_int = 2;
 
-extern "c" fn getfsstat(buf: ?[*]StatFs, bufsize: c_int, mode: c_int) c_int;
-extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+// Platform-specific C interop (wrapped to avoid linker errors on wrong platform)
+const darwin_c = if (is_darwin) struct {
+    extern "c" fn getfsstat(buf: ?[*]StatFs, bufsize: c_int, mode: c_int) c_int;
+    extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
+} else struct {};
+
+const linux_c = if (is_linux) struct {
+    const lc = @cImport({
+        @cInclude("sys/statvfs.h");
+    });
+} else struct {};
 
 // ============================================================================
 // Options
@@ -300,14 +310,16 @@ fn parseSuffix(suffix: []const u8, base: u64) ?u64 {
 fn getMountedFilesystems(allocator: Allocator) ![]FsInfo {
     if (comptime is_darwin) {
         return getMountedFilesystemsDarwin(allocator);
+    } else if (comptime is_linux) {
+        return getMountedFilesystemsLinux(allocator);
     } else {
-        @compileError("df: unsupported platform (currently macOS only)");
+        @compileError("df: unsupported platform");
     }
 }
 
 fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
     // First call to get count
-    const count = getfsstat(null, 0, MNT_NOWAIT);
+    const count = darwin_c.getfsstat(null, 0, MNT_NOWAIT);
     if (count < 0) return error.SystemResources;
     if (count == 0) return allocator.alloc(FsInfo, 0);
 
@@ -316,7 +328,7 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
     defer allocator.free(buf);
 
     const bufsize: c_int = @intCast(ucount * @sizeOf(StatFs));
-    const actual = getfsstat(buf.ptr, bufsize, MNT_NOWAIT);
+    const actual = darwin_c.getfsstat(buf.ptr, bufsize, MNT_NOWAIT);
     if (actual < 0) return error.SystemResources;
 
     const actual_count: usize = @intCast(actual);
@@ -347,6 +359,16 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
 }
 
 fn getFilesystemForPath(allocator: Allocator, path: []const u8) !FsInfo {
+    if (comptime is_darwin) {
+        return getFilesystemForPathDarwin(allocator, path);
+    } else if (comptime is_linux) {
+        return getFilesystemForPathLinux(allocator, path);
+    } else {
+        @compileError("df: unsupported platform");
+    }
+}
+
+fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
     var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
     @memcpy(path_buf[0..path.len], path);
@@ -354,7 +376,7 @@ fn getFilesystemForPath(allocator: Allocator, path: []const u8) !FsInfo {
     const c_path = path_buf[0..path.len :0];
 
     var sfs: StatFs = undefined;
-    const ret = statfs(c_path, &sfs);
+    const ret = darwin_c.statfs(c_path, &sfs);
     if (ret != 0) {
         return switch (std.posix.errno(ret)) {
             .ACCES => error.AccessDenied,
@@ -401,6 +423,140 @@ fn extractCString(buf: []const u8) []const u8 {
 }
 
 // ============================================================================
+// Linux filesystem enumeration
+// ============================================================================
+
+fn getMountedFilesystemsLinux(allocator: Allocator) ![]FsInfo {
+    const file = std.fs.cwd().openFile("/proc/mounts", .{}) catch {
+        return error.SystemResources;
+    };
+    defer file.close();
+
+    var buf: [32768]u8 = undefined;
+    const bytes_read = file.readAll(&buf) catch return error.SystemResources;
+    const content = buf[0..bytes_read];
+
+    var result = std.ArrayListUnmanaged(FsInfo){};
+
+    // /proc/mounts format: device mountpoint fstype options dump pass
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        if (line.len == 0) continue;
+
+        var iter = std.mem.splitScalar(u8, line, ' ');
+        const source_raw = iter.next() orelse continue;
+        const mount_point_raw = iter.next() orelse continue;
+        const fstype_raw = iter.next() orelse continue;
+
+        // statvfs the mount point
+        var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (mount_point_raw.len > std.fs.max_path_bytes) continue;
+        @memcpy(path_buf[0..mount_point_raw.len], mount_point_raw);
+        path_buf[mount_point_raw.len] = 0;
+        const c_path = path_buf[0..mount_point_raw.len :0];
+
+        var svfs: linux_c.lc.struct_statvfs = undefined;
+        const ret = linux_c.lc.statvfs(c_path, &svfs);
+        if (ret != 0) continue; // skip mount points we can't stat
+
+        const source = allocator.dupe(u8, source_raw) catch return error.OutOfMemory;
+        const mount_point = allocator.dupe(u8, mount_point_raw) catch return error.OutOfMemory;
+        const fstype = allocator.dupe(u8, fstype_raw) catch return error.OutOfMemory;
+
+        try result.append(allocator, FsInfo{
+            .source = source,
+            .fstype = fstype,
+            .mount_point = mount_point,
+            .total_blocks = svfs.f_blocks,
+            .used_blocks = svfs.f_blocks -| svfs.f_bfree,
+            .avail_blocks = svfs.f_bavail,
+            .block_size = svfs.f_frsize,
+            .total_inodes = svfs.f_files,
+            .used_inodes = svfs.f_files -| svfs.f_ffree,
+            .avail_inodes = svfs.f_ffree,
+            .flags = 0,
+        });
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn getFilesystemForPathLinux(allocator: Allocator, path: []const u8) !FsInfo {
+    var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const c_path = path_buf[0..path.len :0];
+
+    var svfs: linux_c.lc.struct_statvfs = undefined;
+    const ret = linux_c.lc.statvfs(c_path, &svfs);
+    if (ret != 0) {
+        return error.SystemResources;
+    }
+
+    // Find the source device and fstype by reading /proc/mounts and
+    // matching the longest mount point prefix of the path.
+    var best_source: []const u8 = "unknown";
+    var best_mount: []const u8 = path;
+    var best_fstype: []const u8 = "unknown";
+    var best_len: usize = 0;
+
+    const file = std.fs.cwd().openFile("/proc/mounts", .{}) catch {
+        // Can't read mounts, return with what we have from statvfs
+        return FsInfo{
+            .source = try allocator.dupe(u8, "unknown"),
+            .fstype = try allocator.dupe(u8, "unknown"),
+            .mount_point = try allocator.dupe(u8, path),
+            .total_blocks = svfs.f_blocks,
+            .used_blocks = svfs.f_blocks -| svfs.f_bfree,
+            .avail_blocks = svfs.f_bavail,
+            .block_size = svfs.f_frsize,
+            .total_inodes = svfs.f_files,
+            .used_inodes = svfs.f_files -| svfs.f_ffree,
+            .avail_inodes = svfs.f_ffree,
+            .flags = 0,
+        };
+    };
+    defer file.close();
+
+    var buf: [32768]u8 = undefined;
+    const bytes_read = file.readAll(&buf) catch 0;
+    const content = buf[0..bytes_read];
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        if (line.len == 0) continue;
+
+        var iter = std.mem.splitScalar(u8, line, ' ');
+        const src = iter.next() orelse continue;
+        const mnt = iter.next() orelse continue;
+        const fst = iter.next() orelse continue;
+
+        // Find longest matching mount point prefix
+        if (std.mem.startsWith(u8, path, mnt) and mnt.len > best_len) {
+            best_source = src;
+            best_mount = mnt;
+            best_fstype = fst;
+            best_len = mnt.len;
+        }
+    }
+
+    return FsInfo{
+        .source = try allocator.dupe(u8, best_source),
+        .fstype = try allocator.dupe(u8, best_fstype),
+        .mount_point = try allocator.dupe(u8, best_mount),
+        .total_blocks = svfs.f_blocks,
+        .used_blocks = svfs.f_blocks -| svfs.f_bfree,
+        .avail_blocks = svfs.f_bavail,
+        .block_size = svfs.f_frsize,
+        .total_inodes = svfs.f_files,
+        .used_inodes = svfs.f_files -| svfs.f_ffree,
+        .avail_inodes = svfs.f_ffree,
+        .flags = 0,
+    };
+}
+
+// ============================================================================
 // Filtering
 // ============================================================================
 
@@ -414,7 +570,12 @@ fn shouldIncludeFs(fs: FsInfo, opts: DfOptions) bool {
 
     // -l: local only
     if (opts.local) {
-        if (fs.flags & MNT_LOCAL == 0) return false;
+        if (comptime is_darwin) {
+            if (fs.flags & MNT_LOCAL == 0) return false;
+        } else {
+            // On Linux, check fstype for network filesystems
+            if (isNetworkFs(fs.fstype)) return false;
+        }
     }
 
     // -t TYPE: include only this type
@@ -440,6 +601,16 @@ fn isPseudoFs(fstype: []const u8) bool {
     };
     for (pseudo_types) |pt| {
         if (std.mem.eql(u8, fstype, pt)) return true;
+    }
+    return false;
+}
+
+fn isNetworkFs(fstype: []const u8) bool {
+    const network_types = [_][]const u8{
+        "nfs", "nfs4", "cifs", "smbfs", "ncpfs", "afs", "coda", "gfs", "gfs2",
+    };
+    for (network_types) |nt| {
+        if (std.mem.eql(u8, fstype, nt)) return true;
     }
     return false;
 }
@@ -1370,21 +1541,4 @@ test "formatSize - human readable" {
     // 1000 blocks * 4096 = 4096000 bytes = ~3.9M
     const result = formatSize(&buf, 1000, 4096, opts);
     try testing.expectEqualStrings("3.9M", result);
-}
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("df");
-
-test "df fuzz" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testDfFuzzWrapper, .{});
-}
-
-fn testDfFuzzWrapper(allocator: Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    if (!common.fuzz.shouldFuzzUtilityRuntime("df")) return;
 }

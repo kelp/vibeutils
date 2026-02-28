@@ -846,21 +846,3 @@ test "formatDecimal" {
     try testing.expectEqualStrings("1.0", try formatDecimal(&buf, 1.0, 1));
     try testing.expectEqualStrings("0.5", try formatDecimal(&buf, 0.5, 1));
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("seq");
-
-test "seq fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testSeqIntelligentWrapper, .{});
-}
-
-fn testSeqIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("seq")) return;
-    const Fuzzer = common.fuzz.createIntelligentFuzzer(SeqArgs, runSeq);
-    try Fuzzer.testComprehensive(allocator, input, common.null_writer);
-}

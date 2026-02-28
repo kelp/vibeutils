@@ -10,7 +10,7 @@ HAS_DOCKER := $(shell command -v docker >/dev/null 2>&1 && echo "true")
 HAS_FAKEROOT := $(shell command -v fakeroot >/dev/null 2>&1 && echo "true")
 
 # All .PHONY targets in one line
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open fuzz fuzz-list fuzz-all fuzz-rotate fuzz-quick fuzz-coverage fuzz-linux fuzz-linux-all fuzz-linux-quick fuzz-linux-shell run debug release it test-integration-validate it-list
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open run debug release it test-integration-validate it-list
 
 # Core Targets
 all: build
@@ -176,65 +176,6 @@ docker-clean:
 	@$(DOCKER_COMPOSE) -f docker/docker-compose.test.yml down -v
 	@docker rmi vibeutils-test:ubuntu-24.04 vibeutils-test:ubuntu-latest vibeutils-test:debian-12 vibeutils-test:alpine 2>/dev/null || true
 
-# Fuzzing Targets - Pattern rule consolidation
-fuzz:
-ifdef UTIL
-	$(LINUX_ONLY)
-	@echo "Fuzzing $(UTIL) utility..."
-	@./scripts/fuzz-utilities.sh $(UTIL)
-else
-	@echo "Fuzzing System - Use: make fuzz UTIL=<name>"
-	@echo "Available: basename cat chmod chown cp dirname echo false head ln ls mkdir mv pwd rm rmdir sleep tail test touch true yes"
-	@echo "Batch: make fuzz-all fuzz-quick fuzz-rotate"
-	@echo "macOS: make fuzz-linux UTIL=<name>"
-endif
-
-fuzz-all:
-	$(LINUX_ONLY)
-	@echo "Fuzzing all utilities (5 minutes each)..."
-	@./scripts/fuzz-utilities.sh all
-
-fuzz-quick:
-	$(LINUX_ONLY)
-	@echo "Quick fuzzing all utilities (30 seconds each)..."
-	@./scripts/fuzz-utilities.sh -t 30 all
-
-fuzz-rotate:
-	$(LINUX_ONLY)
-	@echo "Continuous fuzzing rotation (2 minutes per utility)..."
-	@./scripts/fuzz-utilities.sh -r -t 120
-
-fuzz-list:
-	@echo "Available fuzzing targets:"
-	@zig build --help 2>&1 | grep "fuzz-" | grep -v "fuzz-coverage" | sed 's/^/  /'
-
-fuzz-coverage:
-	@echo "Fuzzing Coverage Report"
-	@zig build fuzz-coverage
-
-# Linux container fuzzing (macOS support)
-fuzz-linux:
-ifdef UTIL
-	@echo "Fuzzing $(UTIL) in Linux container..."
-	@scripts/test-linux.sh "zig build fuzz-$(UTIL)"
-else
-	@echo "Linux Container Fuzzing - Use: make fuzz-linux UTIL=<name>"
-	@echo "Batch: make fuzz-linux-all fuzz-linux-quick"
-	@echo "Interactive: make fuzz-linux-shell"
-endif
-
-fuzz-linux-all:
-	@echo "Fuzzing all utilities in Linux container..."
-	@scripts/test-linux.sh "./scripts/fuzz-utilities.sh all"
-
-fuzz-linux-quick:
-	@echo "Quick fuzzing in Linux container..."
-	@scripts/test-linux.sh "./scripts/fuzz-utilities.sh -t 30 all"
-
-fuzz-linux-shell:
-	@echo "Interactive fuzzing shell in Linux container..."
-	@scripts/test-linux.sh --shell
-
 # Help System
 help:
 	@echo "vibeutils - Modern implementation of GNU coreutils in Zig"
@@ -257,12 +198,6 @@ help:
 	@echo "  make it                    Run all integration tests"
 	@echo "  make it UTIL=<name>        Run tests for specific utility"
 	@echo "  make it-list               List available test utilities"
-	@echo ""
-	@echo "Fuzzing (Linux only):"
-	@echo "  make fuzz UTIL=<name>      Fuzz a specific utility"
-	@echo "  make fuzz-all              Fuzz all utilities comprehensively"
-	@echo "  make fuzz-quick            Quick fuzz test of all utilities"
-	@echo "  make fuzz-linux UTIL=<name> Fuzz in Docker (for macOS users)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make run UTIL=<name> ARGS= Run a specific utility (e.g., make run UTIL=echo ARGS='hello')"

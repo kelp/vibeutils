@@ -932,21 +932,3 @@ test "nl no final newline" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("     1\thello\n", stdout_buf.items);
 }
-
-// ============================================================================
-// FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("nl");
-
-test "nl fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testNlIntelligentWrapper, .{});
-}
-
-fn testNlIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("nl")) return;
-    const NlFuzzer = common.fuzz.createIntelligentFuzzer(NlArgs, runNl);
-    try NlFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

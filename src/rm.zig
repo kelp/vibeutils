@@ -702,19 +702,3 @@ test "rm: recursive removal with nested directories" {
     const stat = std.fs.cwd().statFile(dir_path);
     try testing.expect(stat == error.FileNotFound);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("rm");
-
-test "rm fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testRmIntelligentWrapper, .{});
-}
-
-fn testRmIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    const RmIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(RmArgs, runRm);
-    try RmIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

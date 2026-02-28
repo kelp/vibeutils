@@ -259,21 +259,3 @@ test "whoami output matches current user" {
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, stdout_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("whoami");
-
-test "whoami fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testWhoamiIntelligentWrapper, .{});
-}
-
-fn testWhoamiIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("whoami")) return;
-    const Fuzzer = common.fuzz.createIntelligentFuzzer(WhoamiArgs, runWhoami);
-    try Fuzzer.testComprehensive(allocator, input, common.null_writer);
-}

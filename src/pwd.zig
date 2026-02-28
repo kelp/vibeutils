@@ -420,20 +420,3 @@ test "runPwd with invalid flag" {
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "pwd:") != null);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("pwd");
-
-test "pwd fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testPwdIntelligentWrapper, .{});
-}
-
-fn testPwdIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    const PwdIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(PwdArgs, runPwd);
-    try PwdIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

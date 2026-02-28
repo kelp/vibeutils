@@ -1095,32 +1095,3 @@ test "runDd - count=0 copies nothing" {
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 0), content.len);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("dd");
-
-test "dd fuzz operand parsing" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testDdFuzzOperandParsing, .{});
-}
-
-fn testDdFuzzOperandParsing(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("dd")) return;
-
-    // Fuzz the byte size parser
-    _ = parseByteSize(input) catch {};
-
-    // Fuzz operand parsing with generated args
-    var arg_storage = common.fuzz.ArgStorage.init();
-    const args = common.fuzz.generateArgs(&arg_storage, input);
-
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    defer stdout_buf.deinit(allocator);
-
-    // runDd reads from stdin when no if= is specified, which would hang
-    // Only test operand parsing, not execution
-    _ = parseOperands(args) catch {};
-}

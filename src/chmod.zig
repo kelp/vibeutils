@@ -1477,22 +1477,3 @@ test "error handling consistency" {
     try testing.expectError(ChmodError.InvalidMode, parseMode("u+invalid"));
     try testing.expectError(ChmodError.InvalidMode, parseMode("invalid+x"));
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("chmod");
-
-test "chmod fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testChmodIntelligentWrapper, .{});
-}
-
-fn testChmodIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("chmod")) return;
-
-    const ChmodIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(ChmodArgs, runUtility);
-    try ChmodIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

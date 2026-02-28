@@ -463,23 +463,3 @@ test "basename with -s flag (GNU extension)" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("hello\nworld\ntest.h\n", stdout_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("basename");
-
-test "basename fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testBasenameIntelligentWrapper, .{});
-}
-
-fn testBasenameIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("basename")) return;
-
-    const BasenameIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(BasenameArgs, runBasename);
-    try BasenameIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

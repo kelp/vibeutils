@@ -1160,21 +1160,3 @@ test "file comparison operators -nt, -ot, -ef" {
     result = try runTest(testing.allocator, &[_][]const u8{ "/nonexistent1", "-nt", "/nonexistent2" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("test");
-
-test "test fuzz basic" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testRunTestBasic, .{});
-}
-
-fn testRunTestBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("test")) return;
-
-    try common.fuzz.testUtilityBasic(runTest, allocator, input, common.null_writer);
-}

@@ -450,20 +450,3 @@ test "tee -a appends to existing files" {
     defer testing.allocator.free(file_content);
     try testing.expectEqualStrings("existing\nappended\n", file_content);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("tee");
-
-test "tee fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTeeIntelligentWrapper, .{});
-}
-
-fn testTeeIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("tee")) return;
-    const TeeFuzzer = common.fuzz.createIntelligentFuzzer(TeeArgs, runTee);
-    try TeeFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

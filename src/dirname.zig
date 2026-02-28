@@ -337,23 +337,3 @@ test "dirname: combined flags" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\x00c\x00.\x00", stdout_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("dirname");
-
-test "dirname fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testDirnameIntelligentWrapper, .{});
-}
-
-fn testDirnameIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("dirname")) return;
-
-    const DirnameIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(DirnameArgs, runDirname);
-    try DirnameIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

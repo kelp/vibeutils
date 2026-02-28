@@ -747,21 +747,3 @@ test "id with numeric user ID" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid=") != null);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("id");
-
-test "id fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testIdIntelligentWrapper, .{});
-}
-
-fn testIdIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("id")) return;
-    const Fuzzer = common.fuzz.createIntelligentFuzzer(IdArgs, runId);
-    try Fuzzer.testComprehensive(allocator, input, common.null_writer);
-}

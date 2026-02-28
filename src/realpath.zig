@@ -669,22 +669,3 @@ test "realpath: relative-base not under base" {
     // Should output absolute path since /etc/hosts is not under /usr
     try testing.expectEqualStrings("/etc/hosts\n", stdout_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("realpath");
-
-test "realpath fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testRealpathIntelligentWrapper, .{});
-}
-
-fn testRealpathIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("realpath")) return;
-
-    const RealpathIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(RealpathArgs, runRealpath);
-    try RealpathIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

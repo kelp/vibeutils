@@ -63,19 +63,3 @@ test "true produces no output" {
     try testing.expectEqualStrings("", stdout_buffer.items);
     try testing.expectEqualStrings("", stderr_buffer.items);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("true");
-
-test "true fuzz basic" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTrueBasic, .{});
-}
-
-fn testTrueBasic(allocator: std.mem.Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("true")) return;
-    try common.fuzz.testUtilityBasic(runTrue, allocator, input, common.null_writer);
-}

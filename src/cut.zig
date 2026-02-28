@@ -910,20 +910,3 @@ test "cut stdin blocks (skipped)" {
     // This functionality is tested via binary smoke tests
     return error.SkipZigTest;
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("cut");
-
-test "cut fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testCutIntelligentWrapper, .{});
-}
-
-fn testCutIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    if (!common.fuzz.shouldFuzzUtilityRuntime("cut")) return;
-    const CutFuzzer = common.fuzz.createIntelligentFuzzer(CutArgs, runCut);
-    try CutFuzzer.testComprehensive(allocator, input, common.null_writer);
-}

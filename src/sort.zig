@@ -1191,21 +1191,3 @@ test "compareGeneralNumeric with scientific notation" {
     try testing.expectEqual(std.math.Order.gt, compareGeneralNumeric("1e3", "1e2"));
     try testing.expectEqual(std.math.Order.eq, compareGeneralNumeric("100", "1e2"));
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("sort");
-
-test "sort fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testSortFuzzWrapper, .{});
-}
-
-fn testSortFuzzWrapper(allocator: Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    if (!common.fuzz.shouldFuzzUtilityRuntime("sort")) return;
-    // Skip actual execution for stdin-dependent utility
-}

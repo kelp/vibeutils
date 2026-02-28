@@ -527,20 +527,3 @@ test "tac with no arguments blocks on stdin" {
     // This functionality is tested via binary smoke tests
     return error.SkipZigTest;
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("tac");
-
-test "tac fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testTacIntelligentWrapper, .{});
-}
-
-fn testTacIntelligentWrapper(allocator: Allocator, input: []const u8) !void {
-    _ = allocator;
-    _ = input;
-    if (!common.fuzz.shouldFuzzUtilityRuntime("tac")) return;
-}

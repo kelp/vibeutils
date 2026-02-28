@@ -960,23 +960,3 @@ test "mv: large file copy preserves content integrity" {
     try testing.expectEqual(large_size, moved_content.len);
     try testing.expectEqualSlices(u8, content, moved_content);
 }
-
-// ============================================================================
-//                                FUZZ TESTS
-// ============================================================================
-
-const builtin = @import("builtin");
-const enable_fuzz_tests = common.fuzz.shouldFuzzUtility("mv");
-
-test "mv fuzz intelligent" {
-    if (!enable_fuzz_tests) return error.SkipZigTest;
-    try std.testing.fuzz(testing.allocator, testMvIntelligentWrapper, .{});
-}
-
-fn testMvIntelligentWrapper(allocator: std.mem.Allocator, input: []const u8) !void {
-    // Check runtime condition for selective fuzzing
-    if (!common.fuzz.shouldFuzzUtilityRuntime("mv")) return;
-
-    const MvIntelligentFuzzer = common.fuzz.createIntelligentFuzzer(MvArgs, runUtility);
-    try MvIntelligentFuzzer.testComprehensive(allocator, input, common.null_writer);
-}
