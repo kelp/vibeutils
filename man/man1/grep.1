@@ -1,0 +1,225 @@
+.Dd February 27, 2026
+.Dt GREP 1
+.Os
+.Sh NAME
+.Nm grep
+.Nd print lines that match patterns
+.Sh SYNOPSIS
+.Nm
+.Op Fl EFGivclLnHhoqswxrR
+.Op Fl e Ar pattern
+.Op Fl f Ar file
+.Op Fl m Ar num
+.Op Fl A Ar num
+.Op Fl B Ar num
+.Op Fl C Ar num
+.Op Fl Fl color Ns Op = Ns Ar when
+.Op Fl Fl include Ns = Ns Ar glob
+.Op Fl Fl exclude Ns = Ns Ar glob
+.Op Fl Fl exclude-dir Ns = Ns Ar glob
+.Op Ar pattern
+.Op Ar file ...
+.Sh DESCRIPTION
+The
+.Nm
+utility searches for
+.Ar pattern
+in each
+.Ar file
+or standard input.
+By default,
+.Nm
+prints each line that matches the pattern.
+.Pp
+If no
+.Ar file
+is specified, or if
+.Ar file
+is
+.Ql - ,
+.Nm
+reads from standard input.
+When
+.Fl r
+or
+.Fl R
+is specified and no files are given,
+.Nm
+searches the current directory recursively.
+.Pp
+The following options are available:
+.Bl -tag -width Ds
+.It Fl E , Fl Fl extended-regexp
+Interpret
+.Ar pattern
+as an extended regular expression (ERE).
+.It Fl F , Fl Fl fixed-strings
+Interpret
+.Ar pattern
+as a list of fixed strings (not regular expressions),
+separated by newlines, any of which is to be matched.
+.It Fl G , Fl Fl basic-regexp
+Interpret
+.Ar pattern
+as a basic regular expression (BRE).
+This is the default.
+.It Fl e Ar pattern , Fl Fl regexp Ns = Ns Ar pattern
+Use
+.Ar pattern
+as the search pattern.
+This option can be specified multiple times to search for
+any of the patterns.
+This is useful to protect patterns beginning with
+.Ql - .
+.It Fl f Ar file , Fl Fl file Ns = Ns Ar file
+Obtain patterns from
+.Ar file ,
+one per line.
+.It Fl i , Fl Fl ignore-case
+Perform case-insensitive matching.
+By default,
+.Nm
+is case-sensitive.
+.It Fl v , Fl Fl invert-match
+Invert the sense of matching, to select non-matching lines.
+.It Fl c , Fl Fl count
+Suppress normal output; instead print a count of matching
+lines for each input file.
+.It Fl l , Fl Fl files-with-matches
+Suppress normal output; instead print the name of each input
+file from which output would normally have been printed.
+Scanning stops on the first match.
+.It Fl L , Fl Fl files-without-match
+Suppress normal output; instead print the name of each input
+file from which no output would normally have been printed.
+.It Fl n , Fl Fl line-number
+Prefix each line of output with the 1-based line number
+within its input file.
+.It Fl H , Fl Fl with-filename
+Print the file name for each match.
+This is the default when there is more than one file to search.
+.It Fl h , Fl Fl no-filename
+Suppress the prefixing of file names on output.
+This is the default when there is only one file to search.
+.It Fl o , Fl Fl only-matching
+Print only the matched (non-empty) parts of a matching line,
+with each such part on a separate output line.
+.It Fl q , Fl Fl quiet , Fl Fl silent
+Quiet mode.
+Do not write anything to standard output.
+Exit immediately with zero status if any match is found,
+even if an error was detected.
+.It Fl s , Fl Fl no-messages
+Suppress error messages about nonexistent or unreadable files.
+.It Fl w , Fl Fl word-regexp
+Select only those lines containing matches that form whole words.
+The match must be at the beginning or end of a line, or preceded
+and followed by a non-word character.
+.It Fl x , Fl Fl line-regexp
+Select only those matches that exactly match the whole line.
+.It Fl r , Fl Fl recursive
+Read all files under each directory, recursively.
+Symbolic links are not followed.
+.It Fl R , Fl Fl dereference-recursive
+Read all files under each directory, recursively.
+Follow all symbolic links.
+.It Fl m Ar num , Fl Fl max-count Ns = Ns Ar num
+Stop reading a file after
+.Ar num
+matching lines.
+.It Fl A Ar num , Fl Fl after-context Ns = Ns Ar num
+Print
+.Ar num
+lines of trailing context after matching lines.
+Places a separator
+.Pq Ql --
+between contiguous groups of matches.
+.It Fl B Ar num , Fl Fl before-context Ns = Ns Ar num
+Print
+.Ar num
+lines of leading context before matching lines.
+Places a separator
+.Pq Ql --
+between contiguous groups of matches.
+.It Fl C Ar num , Fl Fl context Ns = Ns Ar num
+Print
+.Ar num
+lines of output context.
+Places a separator
+.Pq Ql --
+between contiguous groups of matches.
+.It Fl Fl color Ns Op = Ns Ar when
+Surround matching strings with escape sequences to display them
+in color on the terminal.
+.Ar when
+is
+.Ql always ,
+.Ql never ,
+or
+.Ql auto .
+The default is
+.Ql auto .
+.It Fl Fl include Ns = Ns Ar glob
+Search only files whose base name matches
+.Ar glob .
+.It Fl Fl exclude Ns = Ns Ar glob
+Skip files whose base name matches
+.Ar glob .
+.It Fl Fl exclude-dir Ns = Ns Ar glob
+Skip directories whose base name matches
+.Ar glob
+during recursive search.
+.It Fl Fl help
+Display a brief help message and exit.
+.It Fl Fl version
+Display version information and exit.
+.El
+.Sh EXIT STATUS
+The
+.Nm
+utility exits with one of the following values:
+.Pp
+.Bl -tag -width Ds -compact
+.It 0
+One or more lines were selected.
+.It 1
+No lines were selected.
+.It 2
+An error occurred.
+.El
+.Sh EXAMPLES
+Search for the string
+.Dq error
+in a log file:
+.Pp
+.Dl $ grep error /var/log/syslog
+.Pp
+Search case-insensitively for
+.Dq warning
+in all C source files:
+.Pp
+.Dl $ grep -ri warning --include='*.c' src/
+.Pp
+Count the number of lines containing
+.Dq TODO
+in all files under the current directory:
+.Pp
+.Dl $ grep -rc TODO .
+.Sh SEE ALSO
+.Xr awk 1 ,
+.Xr sed 1
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification, with additional GNU extensions for
+.Fl r ,
+.Fl R ,
+.Fl Fl color ,
+.Fl Fl include ,
+.Fl Fl exclude ,
+and
+.Fl Fl exclude-dir .
+.Sh AUTHORS
+.An "vibeutils implementation by Travis Cole"
