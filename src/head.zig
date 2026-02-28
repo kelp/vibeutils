@@ -31,10 +31,47 @@ const HeadArgs = struct {
     };
 };
 
+/// Expand obsolete -NUM syntax (e.g., -5) to -n NUM for backwards compatibility
+fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
+    // Count how many extra args we need (one extra per -NUM arg)
+    var extra: usize = 0;
+    for (args) |arg| {
+        if (isObsoleteNumArg(arg)) extra += 1;
+    }
+    if (extra == 0) return allocator.dupe([]const u8, args);
+
+    const expanded = try allocator.alloc([]const u8, args.len + extra);
+    var i: usize = 0;
+    for (args) |arg| {
+        if (isObsoleteNumArg(arg)) {
+            expanded[i] = "-n";
+            i += 1;
+            expanded[i] = arg[1..]; // strip leading '-'
+            i += 1;
+        } else {
+            expanded[i] = arg;
+            i += 1;
+        }
+    }
+    return expanded;
+}
+
+/// Check if an argument matches the obsolete -NUM pattern (e.g., "-5", "-100")
+fn isObsoleteNumArg(arg: []const u8) bool {
+    if (arg.len < 2 or arg[0] != '-') return false;
+    for (arg[1..]) |c| {
+        if (c < '0' or c > '9') return false;
+    }
+    return true;
+}
+
 /// Core head functionality accepting parsed arguments and writers.
 /// Processes files or stdin according to the provided options.
 pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const parsed_args = common.argparse.ArgParser.parse(HeadArgs, allocator, args) catch |err| {
+    const expanded_args = try expandObsoleteArgs(allocator, args);
+    defer allocator.free(expanded_args);
+
+    const parsed_args = common.argparse.ArgParser.parse(HeadArgs, allocator, expanded_args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "head", "unrecognized option", .{});
@@ -576,6 +613,26 @@ test "head with multiple files shows headers" {
     // Should contain both files' content
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content A") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content B") != null);
+}
+
+test "head with obsolete -NUM syntax" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-3", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_buffer.items);
 }
 
 // ============================================================================
