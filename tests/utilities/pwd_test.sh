@@ -273,7 +273,7 @@ test_pwd() {
     # Test that stderr contains error message for invalid flag
     local invalid_stderr
     invalid_stderr=$("$binary" --invalid 2>&1 >/dev/null)
-    if [[ "$invalid_stderr" =~ pwd.*invalid ]]; then
+    if [[ "$invalid_stderr" =~ pwd.*unrecognized ]]; then
         print_test_result "pwd invalid flag error message" "PASS"
     else
         print_test_result "pwd invalid flag error message" "FAIL" "Should show error with program name"

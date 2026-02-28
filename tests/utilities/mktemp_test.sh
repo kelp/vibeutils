@@ -180,7 +180,7 @@ test_mktemp() {
     output=$("$binary")
     if [[ -f "$output" ]]; then
         local perms
-        perms=$(stat -f "%Lp" "$output" 2>/dev/null || stat -c "%a" "$output" 2>/dev/null)
+        perms=$(get_file_permissions "$output")
         if [[ "$perms" == "600" ]]; then
             print_test_result "mktemp file has mode 0600" "PASS"
         else
@@ -193,7 +193,7 @@ test_mktemp() {
     output=$("$binary" -d)
     if [[ -d "$output" ]]; then
         local perms
-        perms=$(stat -f "%Lp" "$output" 2>/dev/null || stat -c "%a" "$output" 2>/dev/null)
+        perms=$(get_file_permissions "$output")
         if [[ "$perms" == "700" ]]; then
             print_test_result "mktemp directory has mode 0700" "PASS"
         else

@@ -256,6 +256,11 @@ fn processPath(
                 const rel = std.fs.path.relative(allocator, resolved_base, resolved) catch {
                     break :blk try allocator.dupe(u8, resolved);
                 };
+                // Empty relative path means same directory
+                if (rel.len == 0) {
+                    allocator.free(rel);
+                    break :blk try allocator.dupe(u8, ".");
+                }
                 break :blk rel;
             } else {
                 break :blk try allocator.dupe(u8, resolved);
@@ -265,6 +270,11 @@ fn processPath(
             const rel = std.fs.path.relative(allocator, resolved_base, resolved) catch {
                 break :blk try allocator.dupe(u8, resolved);
             };
+            // Empty relative path means same directory
+            if (rel.len == 0) {
+                allocator.free(rel);
+                break :blk try allocator.dupe(u8, ".");
+            }
             break :blk rel;
         }
     } else blk: {

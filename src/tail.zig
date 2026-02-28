@@ -49,6 +49,7 @@ const TailOptions = struct {
     verbose: bool = false,
     zero_terminated: bool = false,
     from_beginning: bool = false,
+    from_beginning_bytes: bool = false,
 
     /// Returns true if we should show headers for multiple files
     pub fn shouldShowHeaders(self: TailOptions, file_count: usize) bool {
@@ -141,9 +142,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     // Parse byte count (-c flag) - overrides line count
     if (parsed_args.bytes) |bytes_str| {
         if (bytes_str.len > 0 and bytes_str[0] == '+') {
-            // -c +NUM is not supported - reject with error
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "-c +NUM (from-beginning byte mode) is not supported", .{});
-            return @intFromEnum(common.ExitCode.misuse);
+            options.from_beginning_bytes = true;
         }
         options.byte_count = parseNumericArg(bytes_str) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of bytes: '{s}'", .{bytes_str});
@@ -308,7 +307,7 @@ fn processStdin(allocator: std.mem.Allocator, stdout_writer: anytype, options: T
     const stdin = &stdin_reader.interface;
 
     if (options.byte_count) |byte_count| {
-        try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null);
+        try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null, options.from_beginning_bytes);
     } else {
         const line_count = options.line_count.?;
         try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
@@ -321,7 +320,7 @@ fn processFile(allocator: std.mem.Allocator, file: std.fs.File, stdout_writer: a
         var file_buffer: [8192]u8 = undefined;
         var file_reader = file.reader(&file_buffer);
         const file_interface = &file_reader.interface;
-        try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file);
+        try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file, options.from_beginning_bytes);
     } else {
         const line_count = options.line_count.?;
         try processInputByLinesFromFile(allocator, file, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
@@ -329,7 +328,11 @@ fn processFile(allocator: std.mem.Allocator, file: std.fs.File, stdout_writer: a
 }
 
 /// Process input by byte count
-fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64, file: ?std.fs.File) !void {
+fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64, file: ?std.fs.File, from_beginning: bool) !void {
+    if (from_beginning) {
+        return processInputByBytesFromBeginning(reader, writer, byte_count, file);
+    }
+
     if (byte_count == 0) return; // Output nothing for 0 bytes
 
     // If we have a file, try to seek to optimize reading
@@ -370,6 +373,54 @@ fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: an
     } else {
         // No file handle, fall back to buffering approach
         return processInputByBytesNoSeek(allocator, reader, writer, byte_count);
+    }
+}
+
+/// Process input by bytes from beginning: skip first (byte_count - 1) bytes, output the rest
+fn processInputByBytesFromBeginning(reader: anytype, writer: anytype, byte_count: u64, file: ?std.fs.File) !void {
+    // -c +N means output starting from byte N (1-indexed)
+    // So skip the first (N-1) bytes
+    const skip = if (byte_count > 0) byte_count - 1 else 0;
+
+    if (file) |f| {
+        // For seekable files, just seek past the skip bytes
+        const file_size = f.getEndPos() catch {
+            return processInputByBytesFromBeginningStream(reader, writer, skip);
+        };
+
+        if (skip >= file_size) return; // Nothing to output
+
+        try f.seekTo(skip);
+        var buffer: [BUFFER_SIZE]u8 = undefined;
+        while (true) {
+            const bytes_read = try f.read(&buffer);
+            if (bytes_read == 0) break;
+            try writer.writeAll(buffer[0..bytes_read]);
+        }
+    } else {
+        return processInputByBytesFromBeginningStream(reader, writer, skip);
+    }
+}
+
+/// Process stream input by bytes from beginning (non-seekable)
+fn processInputByBytesFromBeginningStream(reader: anytype, writer: anytype, skip: u64) !void {
+    var skipped: u64 = 0;
+
+    while (true) {
+        const available = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => return,
+            else => |e| return e,
+        };
+        if (available.len == 0) return;
+
+        if (skipped < skip) {
+            const to_skip = @min(available.len, @as(usize, @intCast(skip - skipped)));
+            reader.toss(to_skip);
+            skipped += @as(u64, @intCast(to_skip));
+        } else {
+            try writer.writeAll(available);
+            reader.toss(available.len);
+        }
     }
 }
 
@@ -1024,7 +1075,7 @@ fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options:
         var file_buffer: [8192]u8 = undefined;
         var file_reader = file.reader(&file_buffer);
         const file_interface = &file_reader.interface;
-        try processInputByBytes(testing.allocator, file_interface, writer, byte_count, file);
+        try processInputByBytes(testing.allocator, file_interface, writer, byte_count, file, options.from_beginning_bytes);
     } else {
         const line_count = options.line_count orelse 10;
         try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated, options.from_beginning);

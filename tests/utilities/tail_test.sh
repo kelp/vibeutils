@@ -58,14 +58,14 @@ test_tail() {
     test_command_output "tail -c 0" "" "$binary" -c 0 "$byte_file"
     test_command_output "tail -c 50 (more than file)" "1234567890ABCDEFGHIJ" "$binary" -c 50 "$byte_file"
     
-    # +NUM syntax for bytes (key tests only)
-    test_command_output "tail -c +1" "J" "$binary" -c +1 "$byte_file"
-    test_command_output "tail -c +8" "CDEFGHIJ" "$binary" -c +8 "$byte_file"
-    test_command_output "tail -c +25 (more than file)" "1234567890ABCDEFGHIJ" "$binary" -c +25 "$byte_file"
+    # +NUM syntax for bytes (from byte N onwards, 1-indexed)
+    test_command_output "tail -c +1" "1234567890ABCDEFGHIJ" "$binary" -c +1 "$byte_file"
+    test_command_output "tail -c +8" "890ABCDEFGHIJ" "$binary" -c +8 "$byte_file"
+    test_command_output "tail -c +25 (more than file)" "" "$binary" -c +25 "$byte_file"
     
     # --bytes long option
     test_command_output "tail --bytes=7" "DEFGHIJ" "$binary" --bytes=7 "$byte_file"
-    test_command_output "tail --bytes=+8" "CDEFGHIJ" "$binary" --bytes=+8 "$byte_file"
+    test_command_output "tail --bytes=+8" "890ABCDEFGHIJ" "$binary" --bytes=+8 "$byte_file"
     
     # Empty file edge case
     test_command_output "tail -c 10 empty file" "" "$binary" -c 10 "$test_file3"
@@ -107,8 +107,7 @@ test_tail() {
     
     # Stdin with byte count
     test_command_output "tail -c from stdin" "7890" bash -c "printf '1234567890' | '$binary' -c 4"
-    # BUG: tail -c +6 should output "67890" (from byte 6 onwards) but outputs "567890" (last 6 bytes)
-    test_command_output "tail -c +6 from stdin" "567890" bash -c "printf '1234567890' | '$binary' -c +6"
+    test_command_output "tail -c +6 from stdin" "67890" bash -c "printf '1234567890' | '$binary' -c +6"
     
     # Mix files and stdin
     local expected_file_stdin=$'==> '"$test_file_a"$' <==\nFile A Line 1\nFile A Line 2\nFile A Line 3\n==> standard input <==\nstdin_content'

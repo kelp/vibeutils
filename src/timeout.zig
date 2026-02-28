@@ -432,6 +432,13 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
         return final_exit;
     }
 
+    // SIGKILL (9) cannot be caught, so the child always dies via signal.
+    // GNU timeout returns the signal exit code (137 = 128+9) in this case
+    // rather than the generic timeout code (124).
+    if (timeout_signal == 9) {
+        return final_exit;
+    }
+
     return 124;
 }
 

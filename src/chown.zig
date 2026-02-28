@@ -30,6 +30,8 @@ const ChownArgs = struct {
     verbose: bool = false,
     /// Affect symbolic links instead of referenced files
     no_dereference: bool = false,
+    /// Traverse symlinks given on the command line
+    H: bool = false,
     /// Traverse every symbolic link to a directory encountered
     L: bool = false,
     /// Do not traverse any symbolic links (default behavior)
@@ -50,6 +52,7 @@ const ChownArgs = struct {
         .quiet = .{ .desc = "Suppress most error messages" },
         .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
         .no_dereference = .{ .short = 'h', .desc = "Affect symbolic links instead of any referenced file" },
+        .H = .{ .short = 'H', .desc = "Traverse symlinks given on the command line" },
         .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .recursive = .{ .short = 'R', .desc = "Operate on files and directories recursively" },
@@ -119,6 +122,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         .silent = parsed_args.silent or parsed_args.quiet,
         .verbose = parsed_args.verbose,
         .no_dereference = parsed_args.no_dereference,
+        .traverse_cmdline_symlinks = parsed_args.H,
         .traverse_all_symlinks = parsed_args.L,
         .no_traverse_symlinks = parsed_args.P,
         .recursive = parsed_args.recursive,
@@ -202,6 +206,7 @@ fn printHelp(writer: anytype) !void {
         \\option is also specified.  If more than one is specified, only the final
         \\one takes effect.
         \\
+        \\  -H                     traverse symlinks given on the command line
         \\  -L                     traverse every symbolic link to a directory
         \\                         encountered
         \\  -P                     do not traverse any symbolic links (default)
@@ -236,6 +241,8 @@ const ChownOptions = struct {
     verbose: bool = false,
     /// Don't follow symlinks
     no_dereference: bool = false,
+    /// Follow symlinks given on the command line
+    traverse_cmdline_symlinks: bool = false,
     /// Follow all symlinks
     traverse_all_symlinks: bool = false,
     /// Never follow symlinks

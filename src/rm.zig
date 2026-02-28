@@ -144,9 +144,9 @@ fn promptUser(prompt: []const u8, stderr_writer: anytype) !bool {
     try stderr_writer.print("{s}", .{prompt});
 
     // Flush stderr to ensure prompt is visible before reading stdin
-    // Only flush if the writer type has a flush method (file-based buffered writers do)
     const WriterType = @TypeOf(stderr_writer);
-    if (comptime @hasDecl(WriterType, "flush")) {
+    const ActualType = if (@typeInfo(WriterType) == .pointer) std.meta.Child(WriterType) else WriterType;
+    if (comptime @hasDecl(ActualType, "flush")) {
         stderr_writer.flush() catch {};
     }
 

@@ -77,11 +77,7 @@ test_dd() {
     local seek_input=$(create_temp_file "DATA")
     "$binary" if="$seek_input" of="$seek_output" bs=4 seek=1 conv=notrunc status=none 2>/dev/null
     local seek_size
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        seek_size=$(stat -f%z "$seek_output")
-    else
-        seek_size=$(stat -c%s "$seek_output")
-    fi
+    seek_size=$(get_file_size "$seek_output")
     if [[ "$seek_size" -eq 8 ]]; then
         print_test_result "dd seek=1 bs=4" "PASS"
     else
@@ -183,11 +179,8 @@ test_dd() {
     local suffix_input=$(create_temp_file "$(printf '%02048d' 0)")
     local suffix_output="$TEMP_DIR/dd_suffix.txt"
     "$binary" if="$suffix_input" of="$suffix_output" bs=1K count=1 status=none 2>/dev/null
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        local file_size=$(stat -f%z "$suffix_output")
-    else
-        local file_size=$(stat -c%s "$suffix_output")
-    fi
+    local file_size
+    file_size=$(get_file_size "$suffix_output")
     if [[ "$file_size" -eq 1024 ]]; then
         print_test_result "dd bs=1K suffix" "PASS"
     else

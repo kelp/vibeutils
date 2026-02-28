@@ -112,23 +112,32 @@ test_du() {
 
     echo -e "${CYAN}Testing hardlink dedup...${NC}"
 
-    # Create a hardlink and verify it's not double-counted
-    echo "hardlink test data" > "$tmpdir/original.txt"
-    ln "$tmpdir/original.txt" "$tmpdir/hardlink.txt"
+    # Use separate directories to avoid directory metadata size changes
+    local hldir_hardlink
+    hldir_hardlink=$(mktemp -d)
+    local hldir_copy
+    hldir_copy=$(mktemp -d)
 
-    local size_with_hardlink
-    size_with_hardlink=$("$binary" -sb "$tmpdir" 2>/dev/null | tail -1 | awk '{print $1}')
-    rm "$tmpdir/hardlink.txt"
-    local size_without_hardlink
-    size_without_hardlink=$("$binary" -sb "$tmpdir" 2>/dev/null | tail -1 | awk '{print $1}')
+    # Create identical content: one with hardlink, one with copy
+    dd if=/dev/urandom bs=1024 count=1 of="$hldir_hardlink/original.dat" 2>/dev/null
+    ln "$hldir_hardlink/original.dat" "$hldir_hardlink/link.dat"
+    cp "$hldir_hardlink/original.dat" "$hldir_copy/original.dat"
+    cp "$hldir_hardlink/original.dat" "$hldir_copy/copy.dat"
 
-    # With hardlink dedup, the sizes should be equal
-    if [[ "$size_with_hardlink" -eq "$size_without_hardlink" ]]; then
+    local size_hardlink
+    size_hardlink=$("$binary" -sb "$hldir_hardlink" 2>/dev/null | tail -1 | awk '{print $1}')
+    local size_copy
+    size_copy=$("$binary" -sb "$hldir_copy" 2>/dev/null | tail -1 | awk '{print $1}')
+
+    # Hardlink dir should be smaller (file counted once); copy dir counts both
+    if [[ "$size_hardlink" -lt "$size_copy" ]]; then
         print_test_result "du deduplicates hardlinks" "PASS"
     else
         print_test_result "du deduplicates hardlinks" "FAIL" \
-            "With: $size_with_hardlink, without: $size_without_hardlink"
+            "Hardlink dir: $size_hardlink, copy dir: $size_copy (expected hardlink < copy)"
     fi
+
+    rm -rf "$hldir_hardlink" "$hldir_copy"
 
     # Cleanup
     rm -rf "$tmpdir"

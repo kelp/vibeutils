@@ -131,8 +131,8 @@ test_mkdir() {
 
     echo -e "${CYAN}Testing flag combinations...${NC}"
 
-    # Test -p and -v together
-    local expected_pv="mkdir: created directory 'combo/test/path'"
+    # Test -p and -v together (GNU behavior: prints all created directories)
+    local expected_pv=$'mkdir: created directory \'combo\'\nmkdir: created directory \'combo/test\'\nmkdir: created directory \'combo/test/path\''
     test_command_output "mkdir -pv combination" "$expected_pv" "$binary" -pv "combo/test/path"
     rm -rf combo
 
@@ -149,13 +149,13 @@ test_mkdir() {
         rm -rf combo_vm
     fi
 
-    # Test all flags together
+    # Test all flags together (GNU behavior: prints all created directories)
     if [[ "$PLATFORM" != "windows" ]]; then
-        local expected_all="mkdir: created directory 'combo/all/flags'"
+        local expected_all=$'mkdir: created directory \'combo\'\nmkdir: created directory \'combo/all\'\nmkdir: created directory \'combo/all/flags\''
         test_command_output "mkdir -pvm all flags" "$expected_all" "$binary" -pvm 755 "combo/all/flags"
         rm -rf combo
     else
-        local expected_all="mkdir: created directory 'combo/all/flags'"
+        local expected_all=$'mkdir: created directory \'combo\'\nmkdir: created directory \'combo/all\'\nmkdir: created directory \'combo/all/flags\''
         test_command_output "mkdir -pv on Windows" "$expected_all" "$binary" -pv "combo/all/flags"
         rm -rf combo
     fi

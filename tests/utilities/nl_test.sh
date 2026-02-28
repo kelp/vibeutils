@@ -34,9 +34,9 @@ test_nl() {
 
     echo -e "${CYAN}Testing body numbering styles (-b)...${NC}"
 
-    # -b a: number all lines
+    # -b a: number all lines (blank lines get number + separator)
     test_command_output "nl -b a numbers all" "     1	hello
-     2
+     2	
      3	world" "$binary" -b a "$blank_file"
 
     # -b t: number non-empty (default)
@@ -103,7 +103,7 @@ test_nl() {
     echo -e "${CYAN}Testing combined options...${NC}"
 
     test_command_output "nl combined -b a -n rz -w 4 -s '. '" "0001. hello
-0002.
+0002. 
 0003. world" "$binary" -b a -n rz -w 4 -s ". " "$blank_file"
 
     test_command_output "nl combined -v 100 -i 10 -n rz" "000100	hello
@@ -116,7 +116,7 @@ test_nl() {
      2	world" bash -c "printf 'hello\nworld\n' | '$binary'"
 
     test_command_output "nl stdin -b a" "     1	hello
-     2
+     2	
      3	world" bash -c "printf 'hello\n\nworld\n' | '$binary' -b a"
 
     # Dash argument means stdin
@@ -197,7 +197,7 @@ test_nl() {
     fi
 
     # POSIX default separator is tab
-    if echo "$posix_output" | head -1 | grep -qP '\t'; then
+    if echo "$posix_output" | head -1 | grep -q '	'; then
         print_test_result "nl POSIX default tab separator" "PASS"
     else
         print_test_result "nl POSIX default tab separator" "FAIL" "Expected tab separator"

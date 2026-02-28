@@ -120,8 +120,8 @@ test_cut() {
     # Custom output delimiter for fields
     test_command_output "cut --output-delimiter=, -f1,3 tab" "one,three" bash -c "printf 'one\ttwo\tthree' | '$binary' --output-delimiter=, -f 1,3"
 
-    # Output delimiter with colon input
-    test_command_output "cut -d: --output-delimiter=/ -f1,6 passwd" $'root/root\nnobody/nonexistent' bash -c "cat '$colon_file' | '$binary' -d: --output-delimiter=/ -f1,6"
+    # Output delimiter with colon input (field 6 starts with / so output has //)
+    test_command_output "cut -d: --output-delimiter=/ -f1,6 passwd" $'root//root\nnobody//nonexistent' bash -c "cat '$colon_file' | '$binary' -d: --output-delimiter=/ -f1,6"
 
     echo -e "${CYAN}Testing range edge cases...${NC}"
 

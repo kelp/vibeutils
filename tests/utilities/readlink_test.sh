@@ -9,6 +9,15 @@ test_readlink() {
     local util="readlink"
     local binary="$BIN_DIR/$util"
 
+    # Helper to get canonical path for comparison
+    # On macOS, /var is a symlink to /private/var, so readlink -f
+    # returns /private/var/... while $TMPDIR contains /var/...
+    _canon() {
+        /usr/bin/readlink -f "$1" 2>/dev/null \
+            || realpath "$1" 2>/dev/null \
+            || echo "$1"
+    }
+
     # Verify binary exists
     test_binary_exists "$util" || return 1
 
@@ -97,11 +106,13 @@ test_readlink() {
     local canon_exit=""
     run_command canon_cmd canon_out canon_err canon_exit \
         "$binary" -f "$canon_link"
-    if [[ $canon_exit -eq 0 && "$canon_out" == "$canon_target" ]]; then
+    local canon_expected
+    canon_expected=$(_canon "$canon_target")
+    if [[ $canon_exit -eq 0 && "$canon_out" == "$canon_expected" ]]; then
         print_test_result "readlink -f symlink" "PASS"
     else
         print_test_result "readlink -f symlink" "FAIL" \
-            "Expected '$canon_target', got '$canon_out'"
+            "Expected '$canon_expected', got '$canon_out'"
     fi
 
     # Canonicalize a regular file (should succeed with -f)
@@ -111,11 +122,13 @@ test_readlink() {
     local reg_exit=""
     run_command reg_cmd reg_out reg_err reg_exit \
         "$binary" -f "$reg_target"
-    if [[ $reg_exit -eq 0 && "$reg_out" == "$reg_target" ]]; then
+    local reg_expected
+    reg_expected=$(_canon "$reg_target")
+    if [[ $reg_exit -eq 0 && "$reg_out" == "$reg_expected" ]]; then
         print_test_result "readlink -f regular file" "PASS"
     else
         print_test_result "readlink -f regular file" "FAIL" \
-            "Expected '$reg_target', got '$reg_out'"
+            "Expected '$reg_expected', got '$reg_out'"
     fi
 
     # --canonicalize long option
@@ -144,11 +157,13 @@ test_readlink() {
     local ce_exit=""
     run_command ce_cmd ce_out ce_err ce_exit \
         "$binary" -e "$ce_target"
-    if [[ $ce_exit -eq 0 && "$ce_out" == "$ce_target" ]]; then
+    local ce_expected
+    ce_expected=$(_canon "$ce_target")
+    if [[ $ce_exit -eq 0 && "$ce_out" == "$ce_expected" ]]; then
         print_test_result "readlink -e existing file" "PASS"
     else
         print_test_result "readlink -e existing file" "FAIL" \
-            "Expected '$ce_target', got '$ce_out'"
+            "Expected '$ce_expected', got '$ce_out'"
     fi
 
     # -e on nonexistent path (should fail)
@@ -177,11 +192,13 @@ test_readlink() {
     local cm_exit=""
     run_command cm_cmd cm_out cm_err cm_exit \
         "$binary" -m "$cm_target"
-    if [[ $cm_exit -eq 0 && "$cm_out" == "$cm_target" ]]; then
+    local cm_expected
+    cm_expected=$(_canon "$cm_target")
+    if [[ $cm_exit -eq 0 && "$cm_out" == "$cm_expected" ]]; then
         print_test_result "readlink -m existing file" "PASS"
     else
         print_test_result "readlink -m existing file" "FAIL" \
-            "Expected '$cm_target', got '$cm_out'"
+            "Expected '$cm_expected', got '$cm_out'"
     fi
 
     # -m on nonexistent path (should succeed)
@@ -383,10 +400,12 @@ test_readlink() {
     local chain_f_exit=""
     run_command chain_f_cmd chain_f_out chain_f_err chain_f_exit \
         "$binary" -f "$chain_link3"
-    if [[ $chain_f_exit -eq 0 && "$chain_f_out" == "$chain_target" ]]; then
+    local chain_expected
+    chain_expected=$(_canon "$chain_target")
+    if [[ $chain_f_exit -eq 0 && "$chain_f_out" == "$chain_expected" ]]; then
         print_test_result "readlink -f chain resolves to end" "PASS"
     else
         print_test_result "readlink -f chain resolves to end" "FAIL" \
-            "Expected '$chain_target', got '$chain_f_out'"
+            "Expected '$chain_expected', got '$chain_f_out'"
     fi
 }

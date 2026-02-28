@@ -311,8 +311,10 @@ fn execCommand(allocator: Allocator, command: []const []const u8, env_map: *cons
     };
 
     const result = child.wait() catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", "waiting for '{s}': {s}", .{ command[0], @errorName(err) });
-        return 126;
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], @errorName(err) });
+        // FileNotFound means the command was not found (127)
+        // Other errors mean it was found but could not be invoked (126)
+        return if (err == error.FileNotFound) 127 else 126;
     };
 
     return switch (result) {

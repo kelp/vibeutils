@@ -41,8 +41,8 @@ test_tr() {
 
     echo -e "${CYAN}Testing character ranges...${NC}"
 
-    # Numeric range
-    test_command_output "tr digit range" "----------" bash -c "echo -n '0123456789' | '$binary' 0-9 '---------\-'"
+    # Numeric range (use -- to prevent SET2 from being treated as flags)
+    test_command_output "tr digit range" "----------" bash -c "echo -n '0123456789' | '$binary' -- 0-9 '----------'"
 
     # Alphabetic range
     test_command_output "tr alpha range" "ABCDE" bash -c "echo -n 'abcde' | '$binary' a-e A-E"
@@ -61,7 +61,7 @@ test_tr() {
     test_command_output "tr -d delete chars" "hll wrld" bash -c "echo -n 'hello world' | '$binary' -d aeiou"
 
     # Delete digits
-    test_command_output "tr -d delete digits" "hello" bash -c "echo -n 'h3l1l0' | '$binary' -d 0-9"
+    test_command_output "tr -d delete digits" "hello" bash -c "echo -n 'h1e2l3l4o5' | '$binary' -d 0-9"
 
     # Delete with character class
     test_command_output "tr -d delete class digits" "abc" bash -c "echo -n 'a1b2c3' | '$binary' -d '[:digit:]'"
@@ -93,13 +93,13 @@ test_tr() {
     # Complement delete: keep only digits
     test_command_output "tr -cd keep digits" "123" bash -c "echo -n 'hello123world' | '$binary' -cd '0-9'"
 
-    # Complement translate
-    test_command_output "tr -c complement translate" "..123....." bash -c "echo -n 'hello123world' | '$binary' -c '0-9' '.'"
+    # Complement translate (replace everything not a digit with .)
+    test_command_output "tr -c complement translate" ".....123....." bash -c "echo -n 'hello123world' | '$binary' -c '0-9' '.'"
 
     echo -e "${CYAN}Testing truncate mode (-t)...${NC}"
 
-    # Truncate SET1 to length of SET2
-    test_command_output "tr -t truncate set1" "xycxyz" bash -c "echo -n 'abcabc' | '$binary' -t abc xy"
+    # Truncate SET1 to length of SET2 (c is not mapped, stays as c)
+    test_command_output "tr -t truncate set1" "xycxyc" bash -c "echo -n 'abcabc' | '$binary' -t abc xy"
 
     echo -e "${CYAN}Testing escape sequences...${NC}"
 

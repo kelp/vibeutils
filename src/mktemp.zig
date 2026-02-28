@@ -8,6 +8,7 @@
 //! This implementation follows GNU coreutils mktemp behavior.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -250,7 +251,7 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
         }
 
         if (is_dir) {
-            // Try to create directory with mode 0o700
+            // Try to create directory
             std.fs.cwd().makeDir(candidate) catch |err| {
                 allocator.free(candidate);
                 switch (err) {
@@ -258,12 +259,13 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
                     else => return err,
                 }
             };
-            // Set directory permissions to 0o700
-            // makeDir doesn't allow setting mode on all platforms,
-            // so set it explicitly afterwards
-            std.fs.cwd().access(candidate, .{}) catch {
-                // Directory was created, access check is just a sanity check
-            };
+            // Set directory permissions to 0o700 for security
+            if (builtin.os.tag != .windows) {
+                const path_z = std.posix.toPosixPath(candidate) catch {
+                    return candidate;
+                };
+                _ = std.c.chmod(&path_z, 0o700);
+            }
             return candidate;
         } else {
             // Try to create file atomically with mode 0o600

@@ -135,9 +135,20 @@ pub const ArgParser = struct {
                                     .NoValue => {}, // Boolean flag
                                 }
                             } else {
-                                // Middle of combined flags, must be boolean
+                                // Middle of combined flags - try boolean first
                                 if (!try parseShortFlag(T, &result, flag_char)) {
-                                    return ParseError.UnknownFlag;
+                                    // Not a boolean flag; try as a value-taking flag
+                                    // with remaining chars as the value (POSIX: -dVALUE)
+                                    const remaining = arg[j + 1 ..];
+                                    const used = try parseShortFlagWithValue(T, &result, flag_char, remaining, null, i);
+                                    switch (used) {
+                                        .Unknown => {
+                                            return ParseError.UnknownFlag;
+                                        },
+                                        .NoValue, .ValueUsed => {
+                                            break; // consumed rest of arg
+                                        },
+                                    }
                                 }
                             }
                         }

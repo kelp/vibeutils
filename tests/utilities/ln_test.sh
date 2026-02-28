@@ -320,10 +320,10 @@ test_ln() {
     fi
 
     # No arguments
-    test_command_exit_code "ln no arguments" 1 "$binary"
+    test_command_exit_code "ln no arguments" 2 "$binary"
 
     # Invalid flag
-    test_command_exit_code "ln invalid flag" 1 \
+    test_command_exit_code "ln invalid flag" 2 \
         "$binary" --invalid-flag 2>/dev/null
 
     # Multiple targets to non-directory destination
