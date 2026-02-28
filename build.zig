@@ -397,4 +397,3 @@ fn addDocsStep(
     // Add a completion message (without circular dependency)
     // This is just informational and doesn't need to be part of the step chain
 }
-

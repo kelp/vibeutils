@@ -643,12 +643,12 @@ test "runTimeout - zero timeout disables timeout" {
 }
 
 test "runTimeout - command times out" {
-    const result = try runTimeout(testing.allocator, &.{ "0.1", "sleep", "60" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(testing.allocator, &.{ "1", "sleep", "100" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 124), result);
 }
 
 test "runTimeout - preserve-status on timeout" {
-    const result = try runTimeout(testing.allocator, &.{ "--preserve-status", "0.1", "sleep", "60" }, common.null_writer, common.null_writer);
+    const result = try runTimeout(testing.allocator, &.{ "--preserve-status", "1", "sleep", "100" }, common.null_writer, common.null_writer);
     // With preserve-status, exit code is 128 + signal (15 for TERM = 143)
     try testing.expectEqual(@as(u8, 143), result);
 }

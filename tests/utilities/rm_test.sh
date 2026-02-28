@@ -406,7 +406,7 @@ test_rm() {
 
     # CRASH BUG: rm -rf . should be prevented but currently crashes
     local crash_test_dir=$(create_temp_dir)
-    (cd "$crash_test_dir" && timeout 5 "$binary" -rf . >/dev/null 2>&1)
+    (cd "$crash_test_dir" && "$binary" -rf . >/dev/null 2>&1)
     local crash_exit=$?
     if [[ $crash_exit -eq 1 ]]; then
         print_test_result "CRASH BUG: rm -rf . protection" "PASS"
@@ -419,7 +419,7 @@ test_rm() {
     local parent_test_dir=$(create_temp_dir)
     local child_dir="$parent_test_dir/child"
     mkdir "$child_dir"
-    (cd "$child_dir" && timeout 5 "$binary" -rf .. >/dev/null 2>&1)
+    (cd "$child_dir" && "$binary" -rf .. >/dev/null 2>&1)
     local parent_exit=$?
     if [[ $parent_exit -eq 1 ]]; then
         print_test_result "SAFETY BUG: rm -rf .. protection" "PASS"

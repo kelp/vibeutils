@@ -465,9 +465,21 @@ test_mv() {
 
     echo -e "${CYAN}Testing cross-filesystem moves (if applicable)...${NC}"
 
-    # This is hard to test portably, but we can test the behavior
     # Try to move to /tmp which might be a different filesystem
+    # First verify TEMP_DIR is not already under /tmp, then check
+    # that they are actually on different filesystems using device IDs
+    local cross_test_possible=false
     if [[ "$TEMP_DIR" != "/tmp"* ]]; then
+        # Verify /tmp and TEMP_DIR are on different devices
+        local tmp_dev temp_dev
+        tmp_dev=$(stat -c %d /tmp 2>/dev/null || stat -f %d /tmp 2>/dev/null || echo "")
+        temp_dev=$(stat -c %d "$TEMP_DIR" 2>/dev/null || stat -f %d "$TEMP_DIR" 2>/dev/null || echo "")
+        if [[ -n "$tmp_dev" ]] && [[ -n "$temp_dev" ]] && [[ "$tmp_dev" != "$temp_dev" ]]; then
+            cross_test_possible=true
+        fi
+    fi
+
+    if [[ "$cross_test_possible" == "true" ]]; then
         local cross_src=$(create_temp_file "Cross filesystem content")
         local cross_dest="/tmp/vibeutils_cross_test_$$.txt"
 
@@ -483,7 +495,7 @@ test_mv() {
             print_test_result "mv cross-filesystem" "SKIP" "Operation failed"
         fi
     else
-        print_test_result "mv cross-filesystem" "SKIP" "Same filesystem"
+        print_test_result "mv cross-filesystem" "SKIP" "Same filesystem or cannot determine"
     fi
 
     echo -e "${CYAN}Testing unusual but valid operations...${NC}"

@@ -127,6 +127,7 @@ export -f get_file_size
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
+TESTS_SKIPPED=0
 declare -a FAILED_TESTS=()
 
 # Initialize test session
@@ -134,6 +135,7 @@ init_test_session() {
     TESTS_RUN=0
     TESTS_PASSED=0
     TESTS_FAILED=0
+    TESTS_SKIPPED=0
     FAILED_TESTS=()
 
     # Detect platform for cross-platform compatibility
@@ -167,12 +169,18 @@ print_test_result() {
     local result="$2"
     local details="${3:-}"
     local failed_command="${4:-}"
-    
+
     TESTS_RUN=$((TESTS_RUN + 1))
-    
+
     if [[ "$result" == "PASS" ]]; then
         echo -e "${GREEN}✓${NC} $test_name"
         TESTS_PASSED=$((TESTS_PASSED + 1))
+    elif [[ "$result" == "SKIP" ]]; then
+        echo -e "${YELLOW}-${NC} $test_name (skipped)"
+        if [[ -n "$details" ]]; then
+            echo "    $details"
+        fi
+        TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
     else
         echo -e "${RED}✗${NC} $test_name"
         if [[ -n "$details" ]]; then
@@ -427,20 +435,23 @@ create_temp_dir() {
 # Print test summary
 print_test_summary() {
     local utility_name="${1:-Tests}"
-    
+
     echo -e "\n${BLUE}$utility_name Summary${NC}"
     echo "$(printf '=%.0s' $(seq 1 $((${#utility_name} + 8))))"
     echo "Tests run: $TESTS_RUN"
     echo -e "Passed: ${GREEN}$TESTS_PASSED${NC}"
+    if [[ $TESTS_SKIPPED -gt 0 ]]; then
+        echo -e "Skipped: ${YELLOW}$TESTS_SKIPPED${NC}"
+    fi
     echo -e "Failed: ${RED}$TESTS_FAILED${NC}"
-    
+
     if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
         echo -e "\n${RED}Failed tests:${NC}"
         for test in "${FAILED_TESTS[@]}"; do
             echo -e "  ${RED}✗${NC} $test"
         done
     fi
-    
+
     if [[ $TESTS_FAILED -eq 0 ]]; then
         echo -e "\n${GREEN}All tests passed!${NC}"
         return 0
