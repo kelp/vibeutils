@@ -49,6 +49,7 @@
           packages = [
             zig
             pkgs.actionlint
+            pkgs.gnumake
           ];
         };
       }

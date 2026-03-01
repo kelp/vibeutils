@@ -57,6 +57,9 @@ core.*
 # Nix
 result
 
+# direnv
+.direnv/
+
 # Local development files
 .env
 .env.local
