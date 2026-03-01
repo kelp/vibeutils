@@ -29,6 +29,10 @@
           {
             "type": "command",
             "command": "case \"$TOOL_INPUT_file_path\" in *.zig) zig fmt \"$TOOL_INPUT_file_path\" 2>/dev/null || true ;; esac"
+          },
+          {
+            "type": "command",
+            "command": "case \"$TOOL_INPUT_file_path\" in */man1/*.1) mandoc -T lint \"$TOOL_INPUT_file_path\" 2>&1 || true ;; esac"
           }
         ]
       }
@@ -39,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo \"$TOOL_INPUT_file_path\" | grep -qE '(zig-out|zig-cache|\\.zig-cache)/' && echo 'BLOCK: Do not edit build artifacts' && exit 1; exit 0"
+            "command": "echo \"$TOOL_INPUT_file_path\" | grep -qE '(zig-out|zig-cache|\\.zig-cache|docs/html)/' && echo 'BLOCK: Do not edit build artifacts' && exit 1; exit 0"
           }
         ]
       }
