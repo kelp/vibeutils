@@ -1290,6 +1290,53 @@ Comprehensive performance tracking system to monitor improvements and regression
 4. **Security**: Continuous vulnerability scanning and static analysis
 5. **Release Process**: Fully automated multi-platform releases
 
+## Modern Features Roadmap
+
+See `docs/plans/2026-03-01-modern-features-design.md` for
+full design.
+
+### 1. Colored `--help` Output
+- [ ] Modify argparse to render colored help on TTY
+- [ ] Bold utility name and section headers
+- [ ] Cyan flag names, yellow arguments
+- [ ] Respect NO_COLOR, plain text when piped
+
+### 2. `grep --color=auto`
+- [ ] Highlight matched text in bold red
+- [ ] Filename in magenta, line numbers in green
+- [ ] `--color=auto/always/never` flags
+- [ ] Match GNU grep color conventions
+
+### 3. `VIBEUTILS_MODERN=1` Environment Variable
+- [ ] Add `common.isModernMode()` check
+- [ ] `df`, `du`, `ls -l`: human-readable by default
+- [ ] Explicit flags always override
+
+### 4. `df`/`du` Color-Coded Capacity
+- [ ] `df`: green/yellow/red by usage percentage
+- [ ] `df`: optional inline usage bar
+- [ ] `du`: color size relative to largest entry
+
+### 5. Progress Feedback for `cp`/`mv`/`dd`
+- [ ] Progress module in `src/common/`
+- [ ] Show status line on stderr after 2s delay
+- [ ] Update in place, clear when done
+- [ ] Only when stderr is a TTY
+
+### 6. Smarter Error Messages
+- [ ] File not found with fuzzy "did you mean?" suggestion
+- [ ] Permission denied with hint
+- [ ] Directory not empty with `rm -r` suggestion
+- [ ] Start with `rm`, `cp`, `cat`
+
+### 7. `diff` Utility
+- [ ] Myers diff algorithm implementation
+- [ ] Unified diff as default format
+- [ ] Colored output (red/green/cyan)
+- [ ] Flags: `-u`, `-c`, `-y`, `-r`, `-q`
+- [ ] `--color=auto/always/never`
+- [ ] Man page
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
