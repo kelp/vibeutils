@@ -7,10 +7,9 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 ## Features
 
 - 🎨 Colored output with terminal detection
-- 🚀 Fast, memory-safe implementations
+- 🚀 Memory-safe implementations
 - 💻 GNU compatibility for scripts
 - 🔒 OpenBSD-inspired security and simplicity
-- 📊 Progress bars for long operations
 
 ## Project Status
 
@@ -98,9 +97,6 @@ All utilities support standard GNU options plus modern enhancements:
 # Colorful ls with git status
 ls -la
 
-# Copy with progress bar
-cp -r large_directory/ destination/
-
 # Safe rm with prompts
 rm -i important.txt
 ```
@@ -125,7 +121,6 @@ make run UTIL=grep ARGS="-r TODO src/"
 
 - Unit tests embedded in each source file
 - Integration tests in `tests/utilities/`
-- Fuzz tests for all utilities (Linux)
 - Privileged tests via fakeroot
 - Target: 90%+ coverage
 
