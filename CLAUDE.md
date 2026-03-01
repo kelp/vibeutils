@@ -156,40 +156,10 @@ Use mdoc format with consistent section ordering:
 
 ### Referencing Man Pages
 
-When implementing a new command, always consult POSIX specifications, OpenBSD, and GNU coreutils man pages to determine the most useful set of flags to support:
-
-1. **POSIX.1-2017 Specifications**: The authoritative standard at `https://pubs.opengroup.org/onlinepubs/9699919799/utilities/contents.html`
-   - Direct utility lookup: `https://pubs.opengroup.org/onlinepubs/9699919799/utilities/<command>.html`
-   - Example: `https://pubs.opengroup.org/onlinepubs/9699919799/utilities/echo.html`
-   - Defines required behavior, flags, and exit codes for POSIX compliance
-   - Free online access without registration
-   - Includes rationale for design decisions
-   - Full index at: `https://pubs.opengroup.org/onlinepubs/9699919799/idx/utilities.html`
-   - Utility conventions: `https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap12.html`
-
-2. **OpenBSD man pages**: Access online at `https://man.openbsd.org/<command>`
-   - Example: `https://man.openbsd.org/mkdir` for the mkdir command
-   - Focus on security, simplicity, and correctness
-   - Often have cleaner, more focused flag sets
-
-3. **GNU coreutils man pages**: 
-   - **On Linux**: Available locally via `man <command>`
-   - **On macOS with GNU coreutils installed**: Use g-prefixed commands for man pages
-     - Example: `man gls` for GNU ls, `man gcp` for GNU cp
-     - GNU coreutils can be installed via Homebrew: `brew install coreutils`
-     - All GNU utilities are prefixed with 'g' to avoid conflicts with BSD versions
-   - **Online reference**: `https://www.gnu.org/software/coreutils/manual/html_node/index.html`
-     - Example: `https://www.gnu.org/software/coreutils/manual/html_node/mkdir-invocation.html`
-     - Note: macOS ships with BSD versions by default, not GNU coreutils
-   - More extensive feature set with many flags
-   - Required for GNU compatibility
-
-4. **Implementation strategy**:
-   - Start with POSIX-required functionality as the baseline
-   - Verify behavior against the POSIX specification for compliance
-   - Add commonly used GNU extensions for compatibility
-   - Include OpenBSD security/safety features where applicable
-   - Document any intentional differences from POSIX/GNU/BSD behavior
+Consult POSIX, OpenBSD, and GNU man pages when implementing
+a new command. See `docs/MAN_PAGE_REFERENCES.md` for URLs
+and lookup instructions. Priority: POSIX baseline, then GNU
+extensions, then OpenBSD safety features.
 
 ## Testing
 
@@ -284,12 +254,10 @@ Only validate for **correctness**:
 - **`docs/ZIG_BREAKING_CHANGES.md`** - ⚠️ READ FIRST - fixes your outdated training
 - `docs/ZIG_PATTERNS.md` - Zig idioms and patterns
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
+- `docs/INTEGRATION_TESTING.md` - Integration testing guide
 - `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
-- `docs/zig-0.15.1-release-notes.md` - Full 0.15.x release notes (0.15.2 is bugfix-only)
-- `docs/zig-0.15.1-docs.md` - Full Zig 0.15.x documentation (0.15.2 has no API changes)
-
-**📖 Fuzzing Documentation:**
-- `docs/FUZZING.md` - Comprehensive fuzzing guide (quick start, architecture, usage patterns)
+- `docs/zig-0.15.1-release-notes.md` - Full 0.15.x release notes
+- `docs/zig-0.15.2-docs.md` - Full Zig 0.15.2 standard library documentation
 
 **⚠️ IMPORTANT: Use Grep tool to find examples in these docs**
 
