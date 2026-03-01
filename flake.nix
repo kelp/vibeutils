@@ -49,7 +49,9 @@
           packages = [
             zig
             pkgs.actionlint
+            pkgs.bash
             pkgs.gnumake
+            pkgs.mandoc
           ];
         };
       }
