@@ -77,7 +77,7 @@ test_ls() {
     fi
 
     # Long format should show permissions (rwx pattern)
-    if echo "$long_output" | grep -qE '[drwx-]{10}'; then
+    if echo "$long_output" | strip_ansi | grep -qE '[drwx-]{10}'; then
         print_test_result "ls -l shows permissions" "PASS"
     else
         print_test_result "ls -l shows permissions" "FAIL" "No permission string found in output"
@@ -320,7 +320,7 @@ test_ls() {
     # -la combination
     local la_output
     la_output=$("$binary" -la "$test_dir" 2>/dev/null)
-    if [[ "$la_output" == *".hidden_file"* ]] && echo "$la_output" | grep -qE '[drwx-]{10}'; then
+    if [[ "$la_output" == *".hidden_file"* ]] && echo "$la_output" | strip_ansi | grep -qE '[drwx-]{10}'; then
         print_test_result "ls -la shows hidden files with details" "PASS"
     else
         print_test_result "ls -la shows hidden files with details" "FAIL" "Expected hidden files and permissions"
@@ -329,7 +329,7 @@ test_ls() {
     # -lR combination
     local lr_output
     lr_output=$("$binary" -lR "$nested_dir" 2>/dev/null)
-    if [[ "$lr_output" == *"deep.txt"* ]] && echo "$lr_output" | grep -qE '[drwx-]{10}'; then
+    if [[ "$lr_output" == *"deep.txt"* ]] && echo "$lr_output" | strip_ansi | grep -qE '[drwx-]{10}'; then
         print_test_result "ls -lR recursive long format" "PASS"
     else
         print_test_result "ls -lR recursive long format" "FAIL" "Expected recursive listing with permissions"
@@ -406,5 +406,33 @@ test_ls() {
         print_test_result "ls -l shows symlink arrow" "PASS"
     else
         print_test_result "ls -l shows symlink arrow" "FAIL" "Expected -> in long format for symlink"
+    fi
+
+    echo -e "${CYAN}Testing truecolor icon output...${NC}"
+
+    local icon_dir=$(create_temp_dir)
+    create_temp_file "fn main() void {}" "$icon_dir/hello.zig"
+    create_temp_file "fn main() {}" "$icon_dir/hello.rs"
+
+    # With LS_ICONS=always and COLORTERM=truecolor, long-format output
+    # should contain truecolor escape sequences (38;2;R;G;B) for the
+    # colorized metadata columns (sizes, dates, permissions).
+    local tc_output
+    tc_output=$(LS_ICONS=always COLORTERM=truecolor TERM=xterm "$binary" -l "$icon_dir" 2>/dev/null)
+    if echo "$tc_output" | grep -q '38;2;'; then
+        print_test_result "ls truecolor icons emit RGB sequences" "PASS"
+    else
+        print_test_result "ls truecolor icons emit RGB sequences" "FAIL" "No 38;2; truecolor sequence found in output"
+    fi
+
+    echo -e "${CYAN}Testing NO_COLOR suppresses escape sequences...${NC}"
+
+    # With NO_COLOR=1, no escape sequences should appear at all.
+    local nc_output
+    nc_output=$(NO_COLOR=1 LS_ICONS=always "$binary" -1 "$icon_dir" 2>/dev/null)
+    if echo "$nc_output" | grep -q $'\x1b\['; then
+        print_test_result "ls NO_COLOR suppresses escapes" "FAIL" "Found escape sequences despite NO_COLOR=1"
+    else
+        print_test_result "ls NO_COLOR suppresses escapes" "PASS"
     fi
 }

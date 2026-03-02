@@ -57,7 +57,7 @@ pub const IconTheme = struct {
     gitignore: []const u8 = "\u{f1d3}", //
     license: []const u8 = "\u{f718}", //
     readme: []const u8 = "\u{f48a}", //
-    makefile: []const u8 = "\u{f489}", //
+    makefile: []const u8 = "\u{f0ad}", //
     dockerfile: []const u8 = "\u{f308}", //
 
     // Lock files
@@ -687,7 +687,7 @@ test "get icon for special files" {
     const theme = IconTheme{};
 
     try testing.expectEqualStrings("\u{f1d3}", getIcon(&theme, ".gitignore", false, false, false));
-    try testing.expectEqualStrings("\u{f489}", getIcon(&theme, "Makefile", false, false, false));
+    try testing.expectEqualStrings("\u{f0ad}", getIcon(&theme, "Makefile", false, false, false));
     try testing.expectEqualStrings("\u{f308}", getIcon(&theme, "Dockerfile", false, false, false));
     try testing.expectEqualStrings("\u{f48a}", getIcon(&theme, "README", false, false, false));
     try testing.expectEqualStrings("\u{f718}", getIcon(&theme, "LICENSE", false, false, false));
@@ -709,8 +709,8 @@ test "get icon case insensitive" {
     try testing.expectEqualStrings("\u{f1c5}", getIcon(&theme, "Photo.JPG", false, false, false));
 
     // Special files too
-    try testing.expectEqualStrings("\u{f489}", getIcon(&theme, "makefile", false, false, false));
-    try testing.expectEqualStrings("\u{f489}", getIcon(&theme, "MAKEFILE", false, false, false));
+    try testing.expectEqualStrings("\u{f0ad}", getIcon(&theme, "makefile", false, false, false));
+    try testing.expectEqualStrings("\u{f0ad}", getIcon(&theme, "MAKEFILE", false, false, false));
 }
 
 test "get icon defaults to file icon" {
