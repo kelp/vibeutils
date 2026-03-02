@@ -4,12 +4,23 @@ Memory-safe Unix utilities written in Zig, inspired by GNU coreutils and OpenBSD
 
 **MIT Licensed** • **Linux** • **macOS** • **BSD**
 
-## Features
+## What's Different
 
-- 🎨 Colored output with terminal detection
-- 🚀 Memory-safe implementations
-- 💻 GNU compatibility for scripts
-- 🔒 OpenBSD-inspired security and simplicity
+vibeutils covers the 80% of GNU coreutils you actually use,
+with modern terminal enhancements that activate
+automatically.
+
+**ls** gains the most:
+- `--icons` — Nerd Font file type icons
+- `--git` — inline git status per file
+- `--time-style=relative` — "2 hours ago" instead of
+  timestamps (default in long format)
+
+**Across all utilities:**
+- Colored `--help` with syntax-highlighted flags
+- Smart terminal detection (NO_COLOR, 256-color, truecolor)
+- Graceful degradation to plain text in pipes and dumb
+  terminals
 
 ## Project Status
 
@@ -88,18 +99,6 @@ zig build -Doptimize=ReleaseSafe
 ```
 
 Find binaries in `zig-out/bin/`.
-
-## Usage
-
-All utilities support standard GNU options plus modern enhancements:
-
-```bash
-# Colorful ls with git status
-ls -la
-
-# Safe rm with prompts
-rm -i important.txt
-```
 
 ## Development
 
