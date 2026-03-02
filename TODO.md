@@ -446,16 +446,16 @@ For each utility:
 - [x] Man page: Write concise man page with examples
 
 #### 21. env ✓
-- [ ] Test: Print current environment
-- [ ] Test: Run command with modified env (env VAR=value cmd)
-- [ ] Test: Clear environment (-i, --ignore-environment)
-- [ ] Test: Unset variables (-u, --unset)
-- [ ] Test: Change directory (-C, --chdir)
-- [ ] Test: Split string arguments (-S)
-- [ ] Implement: Environment manipulation
-- [ ] Implement: Command execution with env
-- [ ] Implement: Argument splitting parser
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Print current environment
+- [x] Test: Run command with modified env (env VAR=value cmd)
+- [x] Test: Clear environment (-i, --ignore-environment)
+- [x] Test: Unset variables (-u, --unset)
+- [x] Test: Change directory (-C, --chdir)
+- [x] Test: Split string arguments (-S)
+- [x] Implement: Environment manipulation
+- [x] Implement: Command execution with env
+- [x] Implement: Argument splitting parser
+- [x] Man page: Write concise man page with examples
 
 #### 22. seq ✓
 - [x] Test: Generate sequence (seq 10)
@@ -502,125 +502,125 @@ For each utility:
 - [x] Man page: Write concise man page with examples
 
 #### 26. id ✓
-- [ ] Test: Print all IDs (default)
-- [ ] Test: User ID only (-u, --user)
-- [ ] Test: Group ID only (-g, --group)
-- [ ] Test: All group IDs (-G, --groups)
-- [ ] Test: Names instead of numbers (-n, --name)
-- [ ] Test: Real instead of effective (-r, --real)
-- [ ] Test: Different user (id username)
-- [ ] Implement: ID retrieval syscalls
-- [ ] Implement: User/group lookups
-- [ ] Implement: Format selection
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Print all IDs (default)
+- [x] Test: User ID only (-u, --user)
+- [x] Test: Group ID only (-g, --group)
+- [x] Test: All group IDs (-G, --groups)
+- [x] Test: Names instead of numbers (-n, --name)
+- [x] Test: Real instead of effective (-r, --real)
+- [x] Test: Different user (id username)
+- [x] Implement: ID retrieval syscalls
+- [x] Implement: User/group lookups
+- [x] Implement: Format selection
+- [x] Man page: Write concise man page with examples
 
 #### 27. printf ✓
-- [ ] Test: Basic format strings (%s, %d, %f)
-- [ ] Test: Escape sequences (\n, \t, \x41)
-- [ ] Test: Width and precision (%.2f, %10s)
-- [ ] Test: Multiple arguments with reuse
-- [ ] Test: Octal/hex formats (%o, %x, %X)
-- [ ] Test: Error handling (type mismatches)
-- [ ] Implement: Format string parser
-- [ ] Implement: Type conversions
-- [ ] Implement: Escape sequence handling
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Basic format strings (%s, %d, %f)
+- [x] Test: Escape sequences (\n, \t, \x41)
+- [x] Test: Width and precision (%.2f, %10s)
+- [x] Test: Multiple arguments with reuse
+- [x] Test: Octal/hex formats (%o, %x, %X)
+- [x] Test: Error handling (type mismatches)
+- [x] Implement: Format string parser
+- [x] Implement: Type conversions
+- [x] Implement: Escape sequence handling
+- [x] Man page: Write concise man page with examples
 
 #### 28. free ✓
-- [ ] Test: Basic memory information display (total, used, free, available)
-- [ ] Test: Human readable format (-h) with K/M/G/T units
-- [ ] Test: Show swap information (default)
-- [ ] Test: Hide swap information (-s, --no-swap)
-- [ ] Test: Continuous monitoring (-c, --count with interval)
-- [ ] Test: Wide format (-w) for better readability
+- [x] Test: Basic memory information display (total, used, free, available)
+- [x] Test: Human readable format (-h) with K/M/G/T units
+- [x] Test: Show swap information (default)
+- [x] Test: Hide swap information (-s, --no-swap)
+- [x] Test: Continuous monitoring (-c, --count with interval)
+- [x] Test: Wide format (-w) for better readability
 - [ ] Test: Color-coded memory usage levels (green/yellow/red)
-- [ ] Test: Cross-platform support (Linux /proc/meminfo, macOS vm_stat)
+- [x] Test: Cross-platform support (Linux /proc/meminfo, macOS vm_stat)
 - [ ] Test: Memory pressure indicators and warnings
 - [ ] Test: Unicode glyphs and progress bars for visual appeal
-- [ ] Implement: Linux memory parsing (/proc/meminfo)
-- [ ] Implement: macOS memory info via syscalls (host_statistics64)
-- [ ] Implement: Human-readable size formatting
+- [x] Implement: Linux memory parsing (/proc/meminfo)
+- [x] Implement: macOS memory info via syscalls (host_statistics64)
+- [x] Implement: Human-readable size formatting
 - [ ] Implement: Color-coded output with terminal detection
 - [ ] Implement: Progress bar visualization for memory usage
 - [ ] Implement: Modern glyphs and icons for memory types
-- [ ] Implement: Continuous monitoring with refresh
-- [ ] Man page: Write concise man page with examples
+- [x] Implement: Continuous monitoring with refresh
+- [x] Man page: Write concise man page with examples
 
 ### Phase 2: Text Processing Utilities
 
 #### 29. dd ✓
-- [ ] Test: Basic copy (if=input of=output)
-- [ ] Test: Block size (bs=1M, ibs=512, obs=4096)
-- [ ] Test: Count limit (count=100)
-- [ ] Test: Seek/skip (seek=10, skip=5)
-- [ ] Test: Conversion (conv=ucase,lcase,notrunc,sync)
-- [ ] Test: Status output (status=progress)
-- [ ] Test: Direct I/O (iflag=direct, oflag=direct)
-- [ ] Implement: Block-based I/O
-- [ ] Implement: Conversion operations
-- [ ] Implement: Progress reporting
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Basic copy (if=input of=output)
+- [x] Test: Block size (bs=1M, ibs=512, obs=4096)
+- [x] Test: Count limit (count=100)
+- [x] Test: Seek/skip (seek=10, skip=5)
+- [x] Test: Conversion (conv=ucase,lcase,notrunc,sync)
+- [x] Test: Status output (status=progress)
+- [x] Test: Direct I/O (iflag=direct, oflag=direct)
+- [x] Implement: Block-based I/O
+- [x] Implement: Conversion operations
+- [x] Implement: Progress reporting
+- [x] Man page: Write concise man page with examples
 
 #### 30. realpath ✓
-- [ ] Test: Resolve to absolute path
-- [ ] Test: Canonicalize existing (-e, --canonicalize-existing)
-- [ ] Test: Canonicalize missing (-m, --canonicalize-missing)
-- [ ] Test: No symlinks (-s, --strip, --no-symlinks)
-- [ ] Test: Relative to directory (--relative-to)
-- [ ] Test: Relative base (--relative-base)
-- [ ] Implement: Path resolution
-- [ ] Implement: Symlink following
-- [ ] Implement: Relative path computation
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Resolve to absolute path
+- [x] Test: Canonicalize existing (-e, --canonicalize-existing)
+- [x] Test: Canonicalize missing (-m, --canonicalize-missing)
+- [x] Test: No symlinks (-s, --strip, --no-symlinks)
+- [x] Test: Relative to directory (--relative-to)
+- [x] Test: Relative base (--relative-base)
+- [x] Implement: Path resolution
+- [x] Implement: Symlink following
+- [x] Implement: Relative path computation
+- [x] Man page: Write concise man page with examples
 
 #### 31. readlink ✓
-- [ ] Test: Print symlink target
-- [ ] Test: Canonicalize (-f, --canonicalize)
-- [ ] Test: Canonicalize existing (-e)
-- [ ] Test: Canonicalize missing (-m)
-- [ ] Test: No newline (-n, --no-newline)
-- [ ] Test: Error on non-symlink
-- [ ] Implement: Symlink reading
-- [ ] Implement: Path canonicalization
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Print symlink target
+- [x] Test: Canonicalize (-f, --canonicalize)
+- [x] Test: Canonicalize existing (-e)
+- [x] Test: Canonicalize missing (-m)
+- [x] Test: No newline (-n, --no-newline)
+- [x] Test: Error on non-symlink
+- [x] Implement: Symlink reading
+- [x] Implement: Path canonicalization
+- [x] Man page: Write concise man page with examples
 
 #### 32. mktemp ✓
-- [ ] Test: Create temporary file
-- [ ] Test: Create temporary directory (-d, --directory)
-- [ ] Test: Custom template (mktemp /tmp/test.XXX)
-- [ ] Test: Dry run (-u, --dry-run)
-- [ ] Test: Custom tmpdir (--tmpdir)
-- [ ] Test: Suffix (--suffix=.txt)
-- [ ] Implement: Secure random name generation
-- [ ] Implement: Atomic file creation
-- [ ] Implement: Template parsing
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Create temporary file
+- [x] Test: Create temporary directory (-d, --directory)
+- [x] Test: Custom template (mktemp /tmp/test.XXX)
+- [x] Test: Dry run (-u, --dry-run)
+- [x] Test: Custom tmpdir (--tmpdir)
+- [x] Test: Suffix (--suffix=.txt)
+- [x] Implement: Secure random name generation
+- [x] Implement: Atomic file creation
+- [x] Implement: Template parsing
+- [x] Man page: Write concise man page with examples
 
 #### 33. timeout ✓
-- [ ] Test: Basic timeout with seconds (timeout 5 sleep 10)
-- [ ] Test: Command succeeds before timeout (exit status 0)
-- [ ] Test: Command killed on timeout (exit status 124)
-- [ ] Test: Floating point durations (timeout 2.5 sleep 3)
-- [ ] Test: Time units (5s, 2m, 1h, 0.5d)
-- [ ] Test: Zero timeout disables (timeout 0 sleep 1)
-- [ ] Test: Exit status preservation (--preserve-status)
-- [ ] Test: Kill after timeout (-k 2s kills if TERM ignored)
-- [ ] Test: Custom signals (-s INT, -s KILL, -s 15)
-- [ ] Test: Foreground mode (-f) for interactive commands
-- [ ] Test: Verbose mode (-v) diagnostic output
-- [ ] Test: Command not found (exit 127)
-- [ ] Test: Command not executable (exit 126)
-- [ ] Test: Signal handling (SIGTERM, SIGKILL propagation)
-- [ ] Test: Child process handling
-- [ ] Test: Error cases (invalid duration, invalid signal)
-- [ ] Implement: Duration parser (float + units)
-- [ ] Implement: Process spawning with exec
-- [ ] Implement: Timer using setitimer or timerfd
-- [ ] Implement: Signal management and propagation
-- [ ] Implement: Foreground TTY handling
-- [ ] Implement: Exit status handling
-- [ ] Implement: Verbose diagnostic messages
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Basic timeout with seconds (timeout 5 sleep 10)
+- [x] Test: Command succeeds before timeout (exit status 0)
+- [x] Test: Command killed on timeout (exit status 124)
+- [x] Test: Floating point durations (timeout 2.5 sleep 3)
+- [x] Test: Time units (5s, 2m, 1h, 0.5d)
+- [x] Test: Zero timeout disables (timeout 0 sleep 1)
+- [x] Test: Exit status preservation (--preserve-status)
+- [x] Test: Kill after timeout (-k 2s kills if TERM ignored)
+- [x] Test: Custom signals (-s INT, -s KILL, -s 15)
+- [x] Test: Foreground mode (-f) for interactive commands
+- [x] Test: Verbose mode (-v) diagnostic output
+- [x] Test: Command not found (exit 127)
+- [x] Test: Command not executable (exit 126)
+- [x] Test: Signal handling (SIGTERM, SIGKILL propagation)
+- [x] Test: Child process handling
+- [x] Test: Error cases (invalid duration, invalid signal)
+- [x] Implement: Duration parser (float + units)
+- [x] Implement: Process spawning with exec
+- [x] Implement: Timer using setitimer or timerfd
+- [x] Implement: Signal management and propagation
+- [x] Implement: Foreground TTY handling
+- [x] Implement: Exit status handling
+- [x] Implement: Verbose diagnostic messages
+- [x] Man page: Write concise man page with examples
 
 ##### timeout - Implementation Notes
 **Why Priority**: macOS lacks timeout, causing issues in scripts/CI
@@ -631,29 +631,29 @@ For each utility:
 - Signal handling must be robust across platforms
 
 #### 34. tac ✓
-- [ ] Test: Reverse file lines
-- [ ] Test: Multiple files
-- [ ] Test: Custom separator (-s, --separator)
-- [ ] Test: Separator before line (-b, --before)
-- [ ] Test: Regex separator (-r, --regex)
-- [ ] Test: Large file handling
-- [ ] Implement: Reverse line reading
-- [ ] Implement: Memory-efficient algorithm
-- [ ] Implement: Separator handling
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Reverse file lines
+- [x] Test: Multiple files
+- [x] Test: Custom separator (-s, --separator)
+- [x] Test: Separator before line (-b, --before)
+- [x] Test: Regex separator (-r, --regex)
+- [x] Test: Large file handling
+- [x] Implement: Reverse line reading
+- [x] Implement: Memory-efficient algorithm
+- [x] Implement: Separator handling
+- [x] Man page: Write concise man page with examples
 
 #### 35. nl ✓
-- [ ] Test: Number all lines (default)
-- [ ] Test: Number non-empty lines (-b a, -b t)
-- [ ] Test: Number format (-n ln, -n rn, -n rz)
-- [ ] Test: Starting number (-v 100)
-- [ ] Test: Increment (-i 2)
-- [ ] Test: Width (-w 4)
-- [ ] Test: Separator (-s ": ")
-- [ ] Implement: Line numbering logic
-- [ ] Implement: Format options
-- [ ] Implement: Section handling
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Number all lines (default)
+- [x] Test: Number non-empty lines (-b a, -b t)
+- [x] Test: Number format (-n ln, -n rn, -n rz)
+- [x] Test: Starting number (-v 100)
+- [x] Test: Increment (-i 2)
+- [x] Test: Width (-w 4)
+- [x] Test: Separator (-s ": ")
+- [x] Implement: Line numbering logic
+- [x] Implement: Format options
+- [x] Implement: Section handling
+- [x] Man page: Write concise man page with examples
 
 #### 36. head ✓
 - [x] Test: Default 10 lines
@@ -681,7 +681,7 @@ For each utility:
 - [x] Implement: CircularLineBuffer for performance
 - [x] Implement: Zero-terminated line support
 - [x] Implement: Zig 0.15.1 Reader API migration
-- [ ] Man page: Write concise man page with examples
+- [x] Man page: Write concise man page with examples
 
 #### 38. wc ✓
 - [x] Test: Line count (-l)
@@ -700,117 +700,117 @@ For each utility:
 - [x] Man page: Write concise man page with examples
 
 #### 39. sort ✓
-- [ ] Test: Basic alphabetical sort
-- [ ] Test: Numeric sort (-n)
-- [ ] Test: Reverse sort (-r)
-- [ ] Test: Key-based sort (-k)
-- [ ] Test: Unique sort (-u)
-- [ ] Test: Case-insensitive (-f)
-- [ ] Test: Memory limit handling
-- [ ] Implement: In-memory sorting
-- [ ] Implement: External merge sort
-- [ ] Implement: Key extraction
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Basic alphabetical sort
+- [x] Test: Numeric sort (-n)
+- [x] Test: Reverse sort (-r)
+- [x] Test: Key-based sort (-k)
+- [x] Test: Unique sort (-u)
+- [x] Test: Case-insensitive (-f)
+- [x] Test: Memory limit handling
+- [x] Implement: In-memory sorting
+- [x] Implement: External merge sort
+- [x] Implement: Key extraction
+- [x] Man page: Write concise man page with examples
 
 #### 40. uniq ✓
-- [ ] Test: Remove adjacent duplicates
-- [ ] Test: Count occurrences (-c)
-- [ ] Test: Only duplicates (-d)
-- [ ] Test: Only unique (-u)
-- [ ] Test: Skip fields (-f)
-- [ ] Test: Case-insensitive (-i)
-- [ ] Implement: Line comparison
-- [ ] Implement: Counting logic
-- [ ] Implement: Field skipping
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Remove adjacent duplicates
+- [x] Test: Count occurrences (-c)
+- [x] Test: Only duplicates (-d)
+- [x] Test: Only unique (-u)
+- [x] Test: Skip fields (-f)
+- [x] Test: Case-insensitive (-i)
+- [x] Implement: Line comparison
+- [x] Implement: Counting logic
+- [x] Implement: Field skipping
+- [x] Man page: Write concise man page with examples
 
 #### 41. cut ✓
-- [ ] Test: Byte selection (-b)
-- [ ] Test: Character selection (-c)
-- [ ] Test: Field selection (-f)
-- [ ] Test: Delimiter (-d)
-- [ ] Test: Complement (-c)
-- [ ] Test: Multiple files
-- [ ] Implement: Range parsing
-- [ ] Implement: UTF-8 character handling
-- [ ] Implement: Field extraction
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Byte selection (-b)
+- [x] Test: Character selection (-c)
+- [x] Test: Field selection (-f)
+- [x] Test: Delimiter (-d)
+- [x] Test: Complement (-c)
+- [x] Test: Multiple files
+- [x] Implement: Range parsing
+- [x] Implement: UTF-8 character handling
+- [x] Implement: Field extraction
+- [x] Man page: Write concise man page with examples
 
 #### 42. tr ✓
-- [ ] Test: Character translation
-- [ ] Test: Character deletion (-d)
-- [ ] Test: Squeeze repeats (-s)
-- [ ] Test: Complement set (-c)
-- [ ] Test: Character classes [:alpha:]
-- [ ] Test: Range expansion [a-z]
-- [ ] Implement: Translation tables
-- [ ] Implement: Unicode support
-- [ ] Implement: Character class parsing
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Character translation
+- [x] Test: Character deletion (-d)
+- [x] Test: Squeeze repeats (-s)
+- [x] Test: Complement set (-c)
+- [x] Test: Character classes [:alpha:]
+- [x] Test: Range expansion [a-z]
+- [x] Implement: Translation tables
+- [x] Implement: Unicode support
+- [x] Implement: Character class parsing
+- [x] Man page: Write concise man page with examples
 
 ### Phase 3: File Information Utilities
 
 #### 43. stat ✓
-- [ ] Test: File information display
-- [ ] Test: Custom format (-c)
-- [ ] Test: Filesystem info (-f)
-- [ ] Test: Dereference (-L)
-- [ ] Test: Terse output (-t)
-- [ ] Implement: System call wrapper
-- [ ] Implement: Format string parser
-- [ ] Implement: Human-readable output
-- [ ] Man page: Write concise man page with examples
+- [x] Test: File information display
+- [x] Test: Custom format (-c)
+- [x] Test: Filesystem info (-f)
+- [x] Test: Dereference (-L)
+- [x] Test: Terse output (-t)
+- [x] Implement: System call wrapper
+- [x] Implement: Format string parser
+- [x] Implement: Human-readable output
+- [x] Man page: Write concise man page with examples
 
 #### 44. du ✓
-- [ ] Test: Directory size calculation
-- [ ] Test: Human readable (-h)
-- [ ] Test: Summary only (-s)
-- [ ] Test: Max depth (-d)
-- [ ] Test: Exclude patterns
-- [ ] Test: Hard link handling
-- [ ] Implement: Directory traversal
-- [ ] Implement: Size calculation
-- [ ] Implement: Caching for performance
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Directory size calculation
+- [x] Test: Human readable (-h)
+- [x] Test: Summary only (-s)
+- [x] Test: Max depth (-d)
+- [x] Test: Exclude patterns
+- [x] Test: Hard link handling
+- [x] Implement: Directory traversal
+- [x] Implement: Size calculation
+- [x] Implement: Caching for performance
+- [x] Man page: Write concise man page with examples
 
 #### 45. df ✓
-- [ ] Test: Filesystem listing
-- [ ] Test: Human readable (-h)
-- [ ] Test: Filesystem type (-t)
-- [ ] Test: Inode information (-i)
-- [ ] Test: Mount point resolution
-- [ ] Implement: Mount point parsing
-- [ ] Implement: Space calculation
-- [ ] Implement: Filesystem filtering
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Filesystem listing
+- [x] Test: Human readable (-h)
+- [x] Test: Filesystem type (-t)
+- [x] Test: Inode information (-i)
+- [x] Test: Mount point resolution
+- [x] Implement: Mount point parsing
+- [x] Implement: Space calculation
+- [x] Implement: Filesystem filtering
+- [x] Man page: Write concise man page with examples
 
 ### Phase 4: Advanced Utilities
 
 #### 46. find ✓
-- [ ] Test: Name matching (-name)
-- [ ] Test: Type filtering (-type)
-- [ ] Test: Size filtering (-size)
-- [ ] Test: Time filtering (-mtime)
-- [ ] Test: Execution (-exec)
-- [ ] Test: Logical operators
-- [ ] Test: Depth control
-- [ ] Implement: Expression parser
-- [ ] Implement: Directory walker
-- [ ] Implement: Action execution
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Name matching (-name)
+- [x] Test: Type filtering (-type)
+- [x] Test: Size filtering (-size)
+- [x] Test: Time filtering (-mtime)
+- [x] Test: Execution (-exec)
+- [x] Test: Logical operators
+- [x] Test: Depth control
+- [x] Implement: Expression parser
+- [x] Implement: Directory walker
+- [x] Implement: Action execution
+- [x] Man page: Write concise man page with examples
 
 #### 47. grep ✓
-- [ ] Test: Basic pattern matching
-- [ ] Test: Regular expressions (-E)
-- [ ] Test: Case insensitive (-i)
-- [ ] Test: Invert match (-v)
-- [ ] Test: Line numbers (-n)
-- [ ] Test: Recursive (-r)
-- [ ] Test: Binary file handling
-- [ ] Implement: Pattern compilation
-- [ ] Implement: Line matching
-- [ ] Implement: Performance optimizations
-- [ ] Man page: Write concise man page with examples
+- [x] Test: Basic pattern matching
+- [x] Test: Regular expressions (-E)
+- [x] Test: Case insensitive (-i)
+- [x] Test: Invert match (-v)
+- [x] Test: Line numbers (-n)
+- [x] Test: Recursive (-r)
+- [x] Test: Binary file handling
+- [x] Implement: Pattern compilation
+- [x] Implement: Line matching
+- [x] Implement: Performance optimizations
+- [x] Man page: Write concise man page with examples
 
 ## Testing Strategy
 - **Coverage Goals**: 90%+ line, 85%+ branch, 100% error paths
@@ -1126,7 +1126,7 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 #### 2. GitHub Actions Workflow ✓
 - [x] Linux: Test with fakeroot (automated privilege simulation)
 - [x] macOS: Native testing with privilege simulation support
-- [ ] BSD: Set up VM-based testing with vmactions
+- [x] BSD: Set up VM-based testing with vmactions
 - [x] Add privileged test matrix to CI pipeline
 - [x] Cross-platform CI/CD with Ubuntu and macOS runners
 - [x] Coverage reporting with Codecov integration
@@ -1143,7 +1143,7 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 - [x] test-privileged: Cross-platform privileged test runner
 - [x] test-privileged-linux: Linux-specific with fakeroot (make test-privileged)
 - [x] test-privileged-macos: macOS with Docker fallback (make test-privileged-local)
-- [ ] test-privileged-bsd: BSD VMs with available tools
+- [x] test-privileged-bsd: BSD VMs with available tools
 
 ### Fallback Strategies
 1. Test error paths (permission denied scenarios)
@@ -1295,41 +1295,53 @@ Comprehensive performance tracking system to monitor improvements and regression
 See `docs/plans/2026-03-01-modern-features-design.md` for
 full design.
 
-### 1. Colored `--help` Output
-- [ ] Modify argparse to render colored help on TTY
-- [ ] Bold utility name and section headers
-- [ ] Cyan flag names, yellow arguments
-- [ ] Respect NO_COLOR, plain text when piped
+### 1. Colored `--help` Output ✓
+- [x] Modify argparse to render colored help on TTY
+- [x] Bold utility name and section headers
+- [x] Cyan flag names, yellow arguments
+- [x] Respect NO_COLOR, plain text when piped
 
-### 2. `grep --color=auto`
-- [ ] Highlight matched text in bold red
-- [ ] Filename in magenta, line numbers in green
-- [ ] `--color=auto/always/never` flags
-- [ ] Match GNU grep color conventions
+### 2. `grep --color=auto` ✓
+- [x] Highlight matched text in bold red
+- [x] Filename in magenta, line numbers in green
+- [x] `--color=auto/always/never` flags
+- [x] Match GNU grep color conventions
 
 ### 3. `VIBEUTILS_MODERN=1` Environment Variable
 - [ ] Add `common.isModernMode()` check
 - [ ] `df`, `du`, `ls -l`: human-readable by default
 - [ ] Explicit flags always override
 
-### 4. `df`/`du` Color-Coded Capacity
+### 4. Color-Coded Numeric Output
 - [ ] `df`: green/yellow/red by usage percentage
 - [ ] `df`: optional inline usage bar
 - [ ] `du`: color size relative to largest entry
+- [ ] `du`: file-type icons before paths
+- [ ] `wc`: color line/word/byte counts
 
-### 5. Progress Feedback for `cp`/`mv`/`dd`
+### 5. `tree` Utility
+- [ ] Recursive directory listing with box-drawing lines
+- [ ] File-type icons via common/icons
+- [ ] Truecolor/256/basic icon coloring (reuse ls pattern)
+- [ ] `-L` depth limit, `-d` directories only
+- [ ] `-I` pattern exclusion
+- [ ] Summary line (N directories, M files)
+- [ ] `--color=auto/always/never`, respect NO_COLOR
+- [ ] Man page
+
+### 6. Progress Feedback for `cp`/`mv`/`dd`
 - [ ] Progress module in `src/common/`
 - [ ] Show status line on stderr after 2s delay
 - [ ] Update in place, clear when done
 - [ ] Only when stderr is a TTY
 
-### 6. Smarter Error Messages
+### 7. Smarter Error Messages
 - [ ] File not found with fuzzy "did you mean?" suggestion
 - [ ] Permission denied with hint
 - [ ] Directory not empty with `rm -r` suggestion
 - [ ] Start with `rm`, `cp`, `cat`
 
-### 7. `diff` Utility
+### 8. `diff` Utility
 - [ ] Myers diff algorithm implementation
 - [ ] Unified diff as default format
 - [ ] Colored output (red/green/cyan)
