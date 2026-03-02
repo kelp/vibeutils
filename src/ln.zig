@@ -154,7 +154,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -188,8 +188,8 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
 }
 
 /// Print help information to provided writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: ln [OPTION]... [-T] TARGET LINK_NAME
         \\  or:  ln [OPTION]... TARGET
         \\  or:  ln [OPTION]... TARGET... DIRECTORY

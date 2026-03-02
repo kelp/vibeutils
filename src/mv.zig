@@ -704,8 +704,8 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.print(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: mv [OPTION]... SOURCE DEST
         \\  or:  mv [OPTION]... SOURCE... DIRECTORY
         \\Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
@@ -718,7 +718,7 @@ fn printHelp(writer: anytype) !void {
         \\  -h, --help                 display this help and exit
         \\  -V, --version              output version information and exit
         \\
-    , .{});
+    );
 }
 
 /// Main entry point for mv utility
@@ -771,7 +771,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 

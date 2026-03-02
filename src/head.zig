@@ -92,7 +92,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -186,8 +186,8 @@ pub fn main() !void {
 }
 
 /// Print help message to the specified writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: head [OPTION]... [FILE]...
         \\Print the first 10 lines of each FILE to standard output.
         \\With more than one FILE, precede each with a header giving the file name.

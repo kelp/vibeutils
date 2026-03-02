@@ -113,7 +113,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     defer allocator.free(config.positionals);
 
     if (config.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
     if (config.version) {
@@ -538,8 +538,8 @@ fn handleForceOverwrite(dest_path: []const u8) !void {
 }
 
 /// Print help message for cp
-fn printHelp(writer: anytype) !void {
-    try writer.print(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: cp [OPTION]... SOURCE DEST
         \\   or: cp [OPTION]... SOURCE... DIRECTORY
         \\Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
@@ -558,7 +558,7 @@ fn printHelp(writer: anytype) !void {
         \\  cp -r dir1 dir2       Copy dir1 and its contents to dir2
         \\  cp file1 file2 dir/   Copy multiple files into dir/
         \\
-    , .{});
+    );
 }
 
 // Tests

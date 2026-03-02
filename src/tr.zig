@@ -407,7 +407,7 @@ pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -663,8 +663,8 @@ fn processSqueeze(
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: tr [OPTION]... SET1 [SET2]
         \\Translate, squeeze, or delete characters from standard input,
         \\writing to standard output.
@@ -1116,10 +1116,4 @@ test "tr empty input produces empty output" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buffer.items);
-}
-
-test "tr stdin blocks - skip" {
-    // Skip this test as it would block waiting for stdin
-    // This functionality is tested via binary smoke tests
-    return error.SkipZigTest;
 }

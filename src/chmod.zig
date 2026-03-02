@@ -44,7 +44,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -127,7 +127,7 @@ pub fn main() !void {
 }
 
 /// Print usage information and examples
-fn printHelp(writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
     const help_text =
         \\Usage: chmod [OPTION]... MODE[,MODE]... FILE...
         \\  or:  chmod [OPTION]... OCTAL-MODE FILE...
@@ -151,7 +151,7 @@ fn printHelp(writer: anytype) !void {
         \\  chmod -R go-w /path/to/dir       Recursively remove write for group/other
         \\
     ;
-    try writer.writeAll(help_text);
+    try common.help.printColorized(allocator, writer, help_text);
 }
 
 /// Print version information

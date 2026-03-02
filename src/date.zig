@@ -502,7 +502,7 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // Handle help
     if (opts.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -579,8 +579,8 @@ pub fn main() !void {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: date [OPTION]... [+FORMAT]
         \\Display the current time in the given FORMAT, or set the system date.
         \\

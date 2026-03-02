@@ -30,6 +30,20 @@ pub fn isExecutable(entry: Entry) bool {
     return false;
 }
 
+/// Get color for a file kind (without needing an Entry)
+pub fn getColorForKind(kind: std.fs.File.Kind) common.style.Style(std.fs.File.Writer).Color {
+    const Color = common.style.Style(std.fs.File.Writer).Color;
+    return switch (kind) {
+        .directory => Color.bright_blue,
+        .sym_link => Color.bright_cyan,
+        .block_device => Color.bright_yellow,
+        .character_device => Color.bright_yellow,
+        .named_pipe => Color.yellow,
+        .unix_domain_socket => Color.magenta,
+        else => Color.default,
+    };
+}
+
 /// Get appropriate color for file type
 pub fn getFileColor(entry: Entry) common.style.Style(std.fs.File.Writer).Color {
     const Color = common.style.Style(std.fs.File.Writer).Color;
@@ -85,24 +99,6 @@ pub fn getFileTypeIndicator(entry: Entry) u8 {
         },
         else => return 0,
     }
-}
-
-/// Calculate the display width of an entry (name + optional icon + optional indicator + git status)
-pub fn getEntryDisplayWidth(entry: Entry, show_indicator: bool, show_icons: bool, show_git_status: bool) usize {
-    var width = entry.name.len;
-    if (show_git_status and entry.git_status != .not_in_repo) {
-        // Git status indicator + space = 3 characters
-        width += 3;
-    }
-    if (show_icons) {
-        // Icon + space = 2 characters (assuming single-width display)
-        width += 2;
-    }
-    if (show_indicator) {
-        const indicator = getFileTypeIndicator(entry);
-        if (indicator != 0) width += 1;
-    }
-    return width;
 }
 
 /// Print entry name with optional icon, color and file type indicator
@@ -221,25 +217,4 @@ test "display - isExecutable" {
     // Test directory (not considered executable for our purposes)
     const dir_entry = Entry{ .name = "testdir", .kind = .directory };
     try testing.expect(!isExecutable(dir_entry));
-}
-
-test "display - getEntryDisplayWidth" {
-    const entry = Entry{ .name = "test.txt", .kind = .file };
-
-    // Just filename
-    try testing.expectEqual(@as(usize, 8), getEntryDisplayWidth(entry, false, false, false));
-
-    // With indicator
-    try testing.expectEqual(@as(usize, 8), getEntryDisplayWidth(entry, true, false, false)); // No indicator for regular file
-
-    // With icon
-    try testing.expectEqual(@as(usize, 10), getEntryDisplayWidth(entry, false, true, false));
-
-    // With git status
-    var git_entry = entry;
-    git_entry.git_status = .modified;
-    try testing.expectEqual(@as(usize, 11), getEntryDisplayWidth(git_entry, false, false, true));
-
-    // All options
-    try testing.expectEqual(@as(usize, 13), getEntryDisplayWidth(git_entry, true, true, true));
 }

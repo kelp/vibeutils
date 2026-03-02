@@ -83,7 +83,7 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -247,8 +247,8 @@ fn writeRecordsReversed(records: []const []const u8, sep_byte: u8, before: bool,
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: tac [OPTION]... [FILE]...
         \\Write each FILE to standard output, last line first.
         \\
@@ -520,10 +520,4 @@ test "tac reverseByStringSeparator basic" {
 
     try reverseByStringSeparator(testing.allocator, "x<>y<>z<>", "<>", false, buffer.writer(testing.allocator));
     try testing.expectEqualStrings("z<>y<>x<>", buffer.items);
-}
-
-test "tac with no arguments blocks on stdin" {
-    // Skip this test as it would block waiting for stdin
-    // This functionality is tested via binary smoke tests
-    return error.SkipZigTest;
 }

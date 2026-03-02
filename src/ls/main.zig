@@ -67,7 +67,7 @@ const LsArgs = struct {
         .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
         .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
         .test_icons = .{ .short = 0, .desc = "Show sample icons to test Nerd Font support" },
-        .time_style = .{ .short = 0, .desc = "Time/date format (valid: relative, iso, long-iso)", .value_name = "STYLE" },
+        .time_style = .{ .short = 0, .desc = "Time/date format (valid: default, relative, iso, long-iso)", .value_name = "STYLE" },
         .git = .{ .short = 0, .desc = "Show git status indicators for files" },
     };
 };
@@ -150,7 +150,7 @@ pub fn runLs(allocator: std.mem.Allocator, args: LsArgs, stdout_writer: anytype,
 fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
     // Handle help
     if (args.help) {
-        try printHelp(writer);
+        try printHelp(allocator, writer);
         return;
     }
 
@@ -185,12 +185,14 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     }
 
     // Parse time style
-    // Default to 'relative' for human-friendly time displays
-    var time_style = TimeStyle.relative;
+    // Default to traditional format; -h implies relative unless explicit --time-style
+    var time_style = TimeStyle.default;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
+            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'default'\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
         };
+    } else if (args.human_readable) {
+        time_style = .relative;
     }
 
     // Detect terminal status for icons and colors
@@ -253,12 +255,12 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
 }
 
 /// Print help message with usage examples
-fn printHelp(writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
     // Use auto-generated help from ArgParser
     try common.argparse.ArgParser.printHelp(LsArgs, "ls", writer);
 
-    // Add custom examples section
-    try writer.writeAll(
+    // Add custom examples section with colorization
+    try common.help.printColorized(allocator, writer,
         \\
         \\List information about the FILEs (the current directory by default).
         \\Sort entries alphabetically by default.

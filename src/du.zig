@@ -465,7 +465,7 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     defer allocator.free(opts.positionals);
 
     if (opts.help) {
-        printHelp(stdout);
+        printHelp(allocator, stdout);
         return 0;
     }
 
@@ -530,8 +530,8 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 // Help and version
 // ============================================================================
 
-fn printHelp(writer: anytype) void {
-    writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) void {
+    common.help.printColorized(allocator, writer,
         \\Usage: du [OPTION]... [FILE]...
         \\Summarize disk usage of the set of FILEs, recursively for directories.
         \\

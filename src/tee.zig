@@ -50,7 +50,7 @@ pub fn runTee(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -166,8 +166,8 @@ pub fn main() !void {
 }
 
 /// Print help message to the specified writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: tee [OPTION]... [FILE]...
         \\Copy standard input to each FILE, and also to standard output.
         \\
@@ -336,18 +336,6 @@ test "tee --version shows version information" {
     const result = try runTee(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, buffer.items, "tee") != null);
-}
-
-test "tee with no arguments should succeed (basic structure)" {
-    // Skip this test as it would block waiting for stdin
-    // This functionality is tested via binary smoke tests
-    return error.SkipZigTest;
-}
-
-test "tee with -a flag should succeed (basic structure)" {
-    // Skip this test as it would block waiting for stdin
-    // This functionality is tested via binary smoke tests
-    return error.SkipZigTest;
 }
 
 test "tee with unknown flag should return error" {

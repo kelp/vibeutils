@@ -102,8 +102,8 @@ fn printVersion(writer: anytype) !void {
 }
 
 /// Print help information
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: nl [OPTION]... [FILE]...
         \\Write each FILE to standard output, with line numbers added.
         \\
@@ -550,7 +550,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 

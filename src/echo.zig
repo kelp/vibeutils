@@ -18,7 +18,6 @@ const testing = std.testing;
 /// Once a non-flag argument is encountered, all remaining arguments
 /// (including ones that look like flags) are treated as positional.
 pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    _ = allocator;
     _ = stderr_writer;
     var suppress_newline = false;
     var interpret_escapes = false;
@@ -27,7 +26,7 @@ pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     // Scan args for flags. Stop at the first non-flag argument.
     for (args, 0..) |arg, i| {
         if (std.mem.eql(u8, arg, "--help")) {
-            try printHelp(stdout_writer);
+            try printHelp(allocator, stdout_writer);
             return @intFromEnum(common.ExitCode.success);
         }
         if (std.mem.eql(u8, arg, "--version")) {
@@ -107,8 +106,8 @@ pub fn main() !void {
 }
 
 /// Print help message to the specified writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: echo [OPTION]... [STRING]...
         \\Echo the STRING(s) to standard output.
         \\

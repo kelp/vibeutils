@@ -92,7 +92,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     defer allocator.free(options.positionals);
 
     if (options.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return 0;
     }
 
@@ -304,8 +304,8 @@ fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options:
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: wc [OPTION]... [FILE]...
         \\Print newline, word, and byte counts for each FILE, and a total line if
         \\more than one FILE is specified. A word is a non-zero-length sequence of

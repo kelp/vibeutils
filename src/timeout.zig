@@ -226,8 +226,8 @@ fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: timeout [OPTION] DURATION COMMAND [ARG]...
         \\  or:  timeout [OPTION]
         \\Start COMMAND, and kill it if still running after DURATION.
@@ -292,7 +292,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return 0;
     }
 

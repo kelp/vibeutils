@@ -98,7 +98,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -324,8 +324,8 @@ fn outputLine(writer: anytype, line: []const u8, count: u64, opts: UniqArgs, del
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: uniq [OPTION]... [INPUT [OUTPUT]]
         \\Filter adjacent matching lines from INPUT (or standard input),
         \\writing to OUTPUT (or standard output).
@@ -387,11 +387,6 @@ test "uniq with unknown flag returns misuse" {
     const args = [_][]const u8{"--unknown-flag"};
     const result = try runUniq(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
-}
-
-test "uniq with no arguments blocks on stdin" {
-    // Skip: filter utility that reads stdin
-    return error.SkipZigTest;
 }
 
 test "uniq getCompareSlice no options" {

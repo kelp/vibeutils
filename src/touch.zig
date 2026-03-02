@@ -86,7 +86,7 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -151,11 +151,9 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 }
 
 /// Prints the help message using the provided writer.
-fn printHelp(writer: anytype) !void {
-    const prog_name = "touch";
-
-    try writer.print(
-        \\Usage: {s} [OPTION]... FILE...
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
+        \\Usage: touch [OPTION]... FILE...
         \\Update the access and modification times of each FILE to the current time.
         \\
         \\A FILE argument that does not exist is created empty, unless -c or -h
@@ -175,7 +173,7 @@ fn printHelp(writer: anytype) !void {
         \\  --help               display this help and exit
         \\  -V, --version        output version information and exit
         \\
-    , .{prog_name});
+    );
 }
 
 /// Options structure for touch operations.

@@ -136,8 +136,8 @@ fn parseTotalTime(args: []const []const u8) !u64 {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.print(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: sleep NUMBER[SUFFIX]...
         \\  or:  sleep OPTION
         \\Pause for NUMBER seconds.  SUFFIX may be 's' for seconds (the default),
@@ -158,7 +158,7 @@ fn printHelp(writer: anytype) !void {
         \\Report bugs to: kelp@plek.org
         \\Home page: <https://tcole.net>
         \\
-    , .{});
+    );
 }
 
 /// Print version information
@@ -181,7 +181,7 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 

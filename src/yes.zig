@@ -42,7 +42,7 @@ pub fn runYes(
 
     // Handle help flag
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -88,8 +88,8 @@ pub fn runYes(
 }
 
 /// Prints help text for the yes utility.
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: yes [STRING]...
         \\   or: yes [OPTION]
         \\
@@ -193,7 +193,11 @@ const LimitedCapture = struct {
         return self.captured[0..self.pos];
     }
 
-    fn writeAll(self: *LimitedCapture, data: []const u8) error{BrokenPipe}!void {
+    pub fn writeByte(self: *LimitedCapture, byte: u8) error{BrokenPipe}!void {
+        return self.writeAll(&.{byte});
+    }
+
+    pub fn writeAll(self: *LimitedCapture, data: []const u8) error{BrokenPipe}!void {
         if (self.pos >= self.limit) return error.BrokenPipe;
         const remaining = self.limit - self.pos;
         const to_write = @min(data.len, remaining);

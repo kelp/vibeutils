@@ -65,8 +65,8 @@ fn printVersion(writer: anytype) !void {
 }
 
 /// Print usage information to the specified writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: tail [OPTION]... [FILE]...
         \\Print the last 10 lines of each FILE to standard output.
         \\With more than one FILE, precede each with a header giving the file name.
@@ -146,7 +146,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -876,12 +876,6 @@ test "tail handles very long lines" {
     try testing.expectEqualStrings(expected, buffer.items);
 }
 
-test "tail reads from stdin when no files" {
-    // Skip this test due to FixedBufferStream API limitations with takeDelimiterExclusive
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
-}
-
 test "tail with multiple files shows headers by default" {
     const args = [_][]const u8{ "file1.txt", "file2.txt" };
     const result = try runTail(testing.allocator, &args, common.null_writer, common.null_writer);
@@ -898,12 +892,6 @@ test "tail with -v always shows headers" {
     const args = [_][]const u8{ "-v", "file1.txt" };
     const result = try runTail(testing.allocator, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 1), result); // Should fail with general error due to missing file
-}
-
-test "tail with dash reads from stdin" {
-    // Skip this test due to FixedBufferStream API limitations with takeDelimiterExclusive
-    // The functionality is tested by the binary smoke tests
-    return error.SkipZigTest;
 }
 
 test "tail handles non-existent file" {

@@ -123,7 +123,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -149,7 +149,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 }
 
 /// Print help information to provided writer.
-fn printHelp(writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
     const help_text =
         \\Usage: rmdir [OPTION]... DIRECTORY...
         \\Remove the DIRECTORY(ies), if they are empty.
@@ -164,7 +164,7 @@ fn printHelp(writer: anytype) !void {
         \\      --version   output version information and exit
         \\
     ;
-    try writer.writeAll(help_text);
+    try common.help.printColorized(allocator, writer, help_text);
 }
 
 /// Print version information to provided writer.

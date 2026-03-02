@@ -47,7 +47,7 @@ pub fn runWhoami(allocator: Allocator, args: []const []const u8, stdout_writer: 
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -100,8 +100,8 @@ pub fn main() !void {
 }
 
 /// Print help message to the specified writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: whoami [OPTION]...
         \\Print the user name associated with the current effective user ID.
         \\Same as id -un.

@@ -907,7 +907,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     defer allocator.free(opts.positionals);
 
     if (opts.help) {
-        printHelp(stdout) catch {};
+        printHelp(allocator, stdout) catch {};
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -1010,8 +1010,8 @@ pub fn main() !void {
 // Help and version
 // ============================================================================
 
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: df [OPTION]... [FILE]...
         \\Show information about the file system on which each FILE resides,
         \\or all file systems by default.

@@ -55,7 +55,7 @@ pub fn collectFilteredEntries(
 /// Check if entries need metadata enhancement
 pub fn needsMetadata(options: LsOptions) bool {
     return options.long_format or options.sort_by_time or options.sort_by_size or
-        options.file_type_indicators or options.color_mode != .never or options.show_inodes or
+        options.file_type_indicators or options.show_inodes or
         options.show_git_status;
 }
 
@@ -76,8 +76,8 @@ fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []cons
     return try allocator.dupe(u8, target);
 }
 
-/// Batch metadata processing for improved performance
-pub fn enhanceEntriesWithMetadataBatch(
+/// Enhance entries with stat info, symlink targets, and git status
+pub fn enhanceEntriesWithMetadata(
     allocator: std.mem.Allocator,
     entries: []Entry,
     dir: std.fs.Dir,
@@ -94,7 +94,7 @@ pub fn enhanceEntriesWithMetadataBatch(
 
     // Determine what metadata we need
     const needs_stat = options.long_format or options.sort_by_time or options.sort_by_size or
-        (options.file_type_indicators) or options.color_mode != .never or options.show_inodes;
+        options.file_type_indicators or options.show_inodes;
     const needs_symlink = options.long_format;
     const needs_git = options.show_git_status and git_context != null;
 
@@ -136,19 +136,6 @@ pub fn enhanceEntriesWithMetadataBatch(
             entries[i].git_status = git_context.?.getFileStatus(entries[i].name) orelse .not_in_repo;
         }
     }
-}
-
-/// Enhance entries with stat info and symlink targets (legacy function for compatibility)
-pub fn enhanceEntriesWithMetadata(
-    allocator: std.mem.Allocator,
-    entries: []Entry,
-    dir: std.fs.Dir,
-    options: LsOptions,
-    git_context: ?*types.GitContext,
-    stderr_writer: anytype,
-) anyerror!void {
-    // Delegate to the more efficient batch implementation
-    return enhanceEntriesWithMetadataBatch(allocator, entries, dir, options, git_context, stderr_writer);
 }
 
 /// Process subdirectories recursively
@@ -232,9 +219,9 @@ test "entry_collector - needsMetadata" {
     const long_options = LsOptions{ .long_format = true };
     try testing.expect(needsMetadata(long_options));
 
-    // Color mode needs metadata
+    // Color mode alone no longer needs metadata (fast by default)
     const color_options = LsOptions{ .color_mode = .always };
-    try testing.expect(needsMetadata(color_options));
+    try testing.expect(!needsMetadata(color_options));
 
     // Time sorting needs metadata
     const time_options = LsOptions{ .sort_by_time = true };

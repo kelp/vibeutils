@@ -317,7 +317,7 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -503,8 +503,8 @@ pub fn main() !void {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: seq [OPTION]... LAST
         \\   or: seq [OPTION]... FIRST LAST
         \\   or: seq [OPTION]... FIRST INCREMENT LAST

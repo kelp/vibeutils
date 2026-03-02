@@ -54,8 +54,8 @@ pub const file_ops = @import("file_ops.zig");
 /// Unicode display width calculation for terminal output
 pub const unicode = @import("unicode.zig");
 
-/// Fuzzing utilities and helpers for property-based testing
-pub const fuzz = @import("fuzz.zig");
+/// Help text colorization for terminal output
+pub const help = @import("help.zig");
 
 /// Test directory utilities for managing temporary file systems in tests
 pub const test_dir = @import("test_dir.zig");

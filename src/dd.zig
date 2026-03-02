@@ -263,8 +263,8 @@ fn printStats(stderr: anytype, stats: DdStats, status: StatusLevel) void {
     }) catch {};
 }
 
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: dd [OPERAND]...
         \\  or:  dd --help
         \\  or:  dd --version
@@ -323,7 +323,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     };
 
     if (config.help) {
-        printHelp(stdout) catch {};
+        printHelp(allocator, stdout) catch {};
         return @intFromEnum(common.ExitCode.success);
     }
 

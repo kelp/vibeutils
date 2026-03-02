@@ -347,7 +347,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     defer opts.deinit(allocator);
 
     if (opts.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -920,8 +920,8 @@ fn linesEqual(a: []const u8, b: []const u8, opts: *const SortOptions) bool {
     return !compareLines(ctx, a, b) and !compareLines(ctx, b, a);
 }
 
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: sort [OPTION]... [FILE]...
         \\Write sorted concatenation of all FILE(s) to standard output.
         \\
@@ -1012,11 +1012,6 @@ test "sort invalid short flag returns misuse" {
     const args = [_][]const u8{"-x"};
     const result = try runSort(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
-}
-
-test "sort with no args blocks on stdin (skip)" {
-    // Filter utility: would block on stdin
-    return error.SkipZigTest;
 }
 
 test "parseKeyDef simple field" {

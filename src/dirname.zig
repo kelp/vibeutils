@@ -49,7 +49,7 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -113,8 +113,8 @@ fn extractDirname(path: []const u8) []const u8 {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: dirname [OPTION] NAME...
         \\Output each NAME with its last non-slash component and trailing slashes
         \\removed; if NAME contains no /'s, output '.' (meaning the current directory).

@@ -86,6 +86,24 @@ pub fn Style(comptime Writer: type) type {
             try self.writer.print("\x1b[{d}m", .{@intFromEnum(color)});
         }
 
+        /// Set bold text
+        pub fn setBold(self: Self) !void {
+            if (self.color_mode == .none) return;
+            try self.writer.writeAll("\x1b[1m");
+        }
+
+        /// Set foreground to RGB color (truecolor only, no-op otherwise)
+        pub fn setRgb(self: Self, r: u8, g: u8, b: u8) !void {
+            if (self.color_mode != .truecolor) return;
+            try self.writer.print("\x1b[38;2;{d};{d};{d}m", .{ r, g, b });
+        }
+
+        /// Set foreground to 256-color palette (extended+ only, no-op otherwise)
+        pub fn set256(self: Self, index: u8) !void {
+            if (@intFromEnum(self.color_mode) < @intFromEnum(ColorMode.extended)) return;
+            try self.writer.print("\x1b[38;5;{d}m", .{index});
+        }
+
         /// Reset all styling
         pub fn reset(self: Self) !void {
             if (self.color_mode == .none) return;
@@ -98,4 +116,49 @@ test "Style color detection" {
     const TestStyle = Style(std.ArrayList(u8).Writer);
     const mode = try TestStyle.ColorMode.detect(std.testing.allocator);
     try std.testing.expect(@intFromEnum(mode) >= 0);
+}
+
+test "Style setRgb truecolor" {
+    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
+    defer buffer.deinit(std.testing.allocator);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(std.testing.allocator) };
+    try s.setRgb(100, 200, 50);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;2;100;200;50m", buffer.items);
+}
+
+test "Style setRgb no-op on basic" {
+    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
+    defer buffer.deinit(std.testing.allocator);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(std.testing.allocator) };
+    try s.setRgb(100, 200, 50);
+    try std.testing.expectEqual(@as(usize, 0), buffer.items.len);
+}
+
+test "Style set256 extended" {
+    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
+    defer buffer.deinit(std.testing.allocator);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .extended, .writer = buffer.writer(std.testing.allocator) };
+    try s.set256(142);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;142m", buffer.items);
+}
+
+test "Style set256 works on truecolor too" {
+    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
+    defer buffer.deinit(std.testing.allocator);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(std.testing.allocator) };
+    try s.set256(42);
+    try std.testing.expectEqualSlices(u8, "\x1b[38;5;42m", buffer.items);
+}
+
+test "Style set256 no-op on basic" {
+    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
+    defer buffer.deinit(std.testing.allocator);
+    const TestStyle = Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(std.testing.allocator) };
+    try s.set256(42);
+    try std.testing.expectEqual(@as(usize, 0), buffer.items.len);
 }

@@ -407,7 +407,7 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
-        printHelp(stdout_writer);
+        printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -491,8 +491,8 @@ pub fn main() !void {
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
-fn printHelp(writer: anytype) void {
-    writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) void {
+    common.help.printColorized(allocator, writer,
         \\Usage: free [OPTION]...
         \\Display the amount of free and used memory in the system.
         \\

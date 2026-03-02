@@ -104,7 +104,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     // Handle information requests (help/version) - these exit immediately
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -186,8 +186,8 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: chown [OPTION]... [OWNER][:[GROUP]] FILE...
         \\  or:  chown [OPTION]... --reference=RFILE FILE...
         \\Change the owner and/or group of each FILE to OWNER and/or GROUP.
@@ -1012,7 +1012,7 @@ test "chown printHelp does not crash" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
 
-    try printHelp(stdout_buffer.writer(testing.allocator));
+    try printHelp(testing.allocator, stdout_buffer.writer(testing.allocator));
 
     // Verify help output contains key content
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: chown") != null);

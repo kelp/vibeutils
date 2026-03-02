@@ -87,7 +87,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -172,8 +172,8 @@ pub fn main() !void {
 }
 
 /// Print usage information to the specified writer
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: cat [OPTION]... [FILE]...
         \\Concatenate FILE(s) to standard output.
         \\
@@ -408,12 +408,6 @@ test "cat concatenates multiple files" {
     try testing.expectEqualStrings("First file\nSecond file\n", stdout_buffer.items);
 }
 
-test "cat reads from stdin when no files" {
-    // Testing stdin requires mocking stdin, which is complex with runCat
-    // This functionality is tested in integration tests
-    return error.SkipZigTest;
-}
-
 test "cat with -n numbers all lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -528,12 +522,6 @@ test "cat handles non-existent file" {
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
     try testing.expect(stderr_buffer.items.len > 0);
-}
-
-test "cat with dash reads stdin" {
-    // Testing stdin with dash requires mocking stdin, which is complex with runCat
-    // This functionality is tested in integration tests
-    return error.SkipZigTest;
 }
 
 test "cat with -A shows all (equivalent to -vET)" {

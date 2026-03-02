@@ -10,6 +10,7 @@ pub const ColorMode = enum {
 
 /// Time formatting style for -l output
 pub const TimeStyle = enum {
+    default, // Traditional: "Mar  1 14:30" or "Jan 15  2024"
     relative, // Smart relative dates like "2 hours ago"
     iso, // ISO format: 2024-01-15 15:30
     @"long-iso", // Long ISO: 2024-01-15 15:30:45.123456789 +0000
@@ -36,7 +37,7 @@ pub const LsOptions = struct {
     numeric_ids: bool = false,
     comma_format: bool = false,
     icon_mode: common.icons.IconMode = .auto,
-    time_style: TimeStyle = .relative,
+    time_style: TimeStyle = .default,
     show_git_status: bool = false,
     is_terminal: bool = false, // Terminal status for icon display
 };
@@ -63,7 +64,7 @@ pub const Entry = struct {
 
         // Add Git status indicator width if enabled
         if (show_git_status and self.git_status != .not_in_repo) {
-            width += 2; // Status indicator + space
+            width += 3; // 2-char status indicator + space
         }
 
         // Add filename width (using actual display width for Unicode)

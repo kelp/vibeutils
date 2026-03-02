@@ -1160,7 +1160,7 @@ pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, 
     // Handle --help and --version before expression parsing
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
-            printHelp(stdout);
+            printHelp(allocator, stdout);
             return @intFromEnum(common.ExitCode.success);
         }
         if (std.mem.eql(u8, arg, "--version")) {
@@ -1206,7 +1206,7 @@ pub fn main() !void {
     if (exit_code != 0) std.process.exit(exit_code);
 }
 
-fn printHelp(writer: anytype) void {
+fn printHelp(allocator: Allocator, writer: anytype) void {
     const help_text =
         \\Usage: find [-H] [-L] [path...] [expression]
         \\
@@ -1248,7 +1248,7 @@ fn printHelp(writer: anytype) void {
         \\      --version      Output version information and exit
         \\
     ;
-    writer.print("{s}", .{help_text}) catch {};
+    common.help.printColorized(allocator, writer, help_text) catch {};
 }
 
 fn printVersion(writer: anytype) void {

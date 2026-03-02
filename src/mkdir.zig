@@ -82,7 +82,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
     // Handle help
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -127,8 +127,8 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 }
 
 /// Print help message to provided writer
-fn printHelp(writer: anytype) !void {
-    try writer.print(
+fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: mkdir [OPTION]... DIRECTORY...
         \\Create the DIRECTORY(ies), if they do not already exist.
         \\
@@ -143,7 +143,7 @@ fn printHelp(writer: anytype) !void {
         \\  mkdir -p a/b/c      Create directory tree including parents
         \\  mkdir -m 755 bin    Create directory with permissions rwxr-xr-x
         \\
-    , .{});
+    );
 }
 
 /// Print version information to provided writer

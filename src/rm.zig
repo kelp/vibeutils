@@ -54,7 +54,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
     // Handle help flag
     if (parsed_args.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -112,7 +112,7 @@ pub fn main() !void {
 }
 
 /// Prints help information to the specified writer.
-fn printHelp(writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: anytype) !void {
     const help_text =
         \\Usage: rm [OPTION]... [FILE]...
         \\Remove (unlink) the FILE(s).
@@ -130,7 +130,7 @@ fn printHelp(writer: anytype) !void {
         \\option to remove each listed directory, too, along with all of its contents.
         \\
     ;
-    try writer.print("{s}", .{help_text});
+    try common.help.printColorized(allocator, writer, help_text);
 }
 
 /// Prints version information to the specified writer.

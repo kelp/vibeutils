@@ -209,7 +209,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return 0;
     }
 
@@ -473,8 +473,8 @@ pub fn main() !void {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: cut OPTION... [FILE]...
         \\Print selected parts of lines from each FILE to standard output.
         \\
@@ -903,10 +903,4 @@ test "cut nonexistent file returns error" {
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "nonexistent_test_file") != null);
-}
-
-test "cut stdin blocks (skipped)" {
-    // Skip this test as it would block waiting for stdin
-    // This functionality is tested via binary smoke tests
-    return error.SkipZigTest;
 }

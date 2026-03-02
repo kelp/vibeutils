@@ -99,7 +99,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
-        try printHelp(stdout_writer);
+        try printHelp(allocator, stdout_writer);
         return @intFromEnum(common.ExitCode.success);
     }
 
@@ -309,8 +309,8 @@ fn fillRandom(buf: []u8) void {
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: mktemp [OPTION]... [TEMPLATE]
         \\Create a temporary file or directory, safely, and print its name.
         \\TEMPLATE must contain at least 3 consecutive 'X's in last component.

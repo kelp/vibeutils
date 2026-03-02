@@ -60,6 +60,22 @@ pub const IconTheme = struct {
     makefile: []const u8 = "\u{f489}", //
     dockerfile: []const u8 = "\u{f308}", //
 
+    // Lock files
+    lock: []const u8 = "\u{f023}", //
+
+    // Nix
+    nix: []const u8 = "\u{f313}", //
+
+    // Shell scripts
+    shell: []const u8 = "\u{e795}", //
+
+    // Web
+    web: []const u8 = "\u{e736}", //
+    css: []const u8 = "\u{e749}", //
+
+    // Database
+    database: []const u8 = "\u{f1c0}", //
+
     // Fallback for unknown
     unknown: []const u8 = "\u{f15b}", //
 };
@@ -97,6 +113,11 @@ const extension_map = [_]ExtensionEntry{
             return t.archive;
         }
     }.get },
+    .{ .ext = "bash", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.shell;
+        }
+    }.get },
     .{ .ext = "c", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.c;
@@ -127,9 +148,39 @@ const extension_map = [_]ExtensionEntry{
             return t.cpp;
         }
     }.get },
+    .{ .ext = "css", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.css;
+        }
+    }.get },
+    .{ .ext = "csv", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.text;
+        }
+    }.get },
     .{ .ext = "cxx", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.cpp;
+        }
+    }.get },
+    .{ .ext = "deb", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
+        }
+    }.get },
+    .{ .ext = "dmg", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
+        }
+    }.get },
+    .{ .ext = "env", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.config;
+        }
+    }.get },
+    .{ .ext = "fish", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.shell;
         }
     }.get },
     .{ .ext = "flac", .get_icon = struct {
@@ -167,6 +218,16 @@ const extension_map = [_]ExtensionEntry{
             return t.cpp;
         }
     }.get },
+    .{ .ext = "htm", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.web;
+        }
+    }.get },
+    .{ .ext = "html", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.web;
+        }
+    }.get },
     .{ .ext = "ico", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.image;
@@ -175,6 +236,11 @@ const extension_map = [_]ExtensionEntry{
     .{ .ext = "ini", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.config;
+        }
+    }.get },
+    .{ .ext = "iso", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
         }
     }.get },
     .{ .ext = "java", .get_icon = struct {
@@ -200,6 +266,26 @@ const extension_map = [_]ExtensionEntry{
     .{ .ext = "json", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.json;
+        }
+    }.get },
+    .{ .ext = "jsx", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.javascript;
+        }
+    }.get },
+    .{ .ext = "lock", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.lock;
+        }
+    }.get },
+    .{ .ext = "log", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.text;
+        }
+    }.get },
+    .{ .ext = "lua", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.config;
         }
     }.get },
     .{ .ext = "m4a", .get_icon = struct {
@@ -242,6 +328,11 @@ const extension_map = [_]ExtensionEntry{
             return t.video;
         }
     }.get },
+    .{ .ext = "nix", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.nix;
+        }
+    }.get },
     .{ .ext = "ogg", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.audio;
@@ -265,6 +356,11 @@ const extension_map = [_]ExtensionEntry{
     .{ .ext = "pm", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.perl;
+        }
+    }.get },
+    .{ .ext = "pkg", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
         }
     }.get },
     .{ .ext = "png", .get_icon = struct {
@@ -292,9 +388,29 @@ const extension_map = [_]ExtensionEntry{
             return t.ruby;
         }
     }.get },
+    .{ .ext = "rpm", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
+        }
+    }.get },
     .{ .ext = "rs", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.rust;
+        }
+    }.get },
+    .{ .ext = "scss", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.css;
+        }
+    }.get },
+    .{ .ext = "sh", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.shell;
+        }
+    }.get },
+    .{ .ext = "sql", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.database;
         }
     }.get },
     .{ .ext = "svg", .get_icon = struct {
@@ -303,6 +419,11 @@ const extension_map = [_]ExtensionEntry{
         }
     }.get },
     .{ .ext = "tar", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
+        }
+    }.get },
+    .{ .ext = "tgz", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.archive;
         }
@@ -327,6 +448,11 @@ const extension_map = [_]ExtensionEntry{
             return t.text;
         }
     }.get },
+    .{ .ext = "vue", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.javascript;
+        }
+    }.get },
     .{ .ext = "wav", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.audio;
@@ -347,6 +473,11 @@ const extension_map = [_]ExtensionEntry{
             return t.archive;
         }
     }.get },
+    .{ .ext = "xml", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.config;
+        }
+    }.get },
     .{ .ext = "yaml", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.yaml;
@@ -363,6 +494,16 @@ const extension_map = [_]ExtensionEntry{
         }
     }.get },
     .{ .ext = "zip", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.archive;
+        }
+    }.get },
+    .{ .ext = "zsh", .get_icon = struct {
+        fn get(t: *const IconTheme) []const u8 {
+            return t.shell;
+        }
+    }.get },
+    .{ .ext = "zst", .get_icon = struct {
         fn get(t: *const IconTheme) []const u8 {
             return t.archive;
         }
@@ -414,6 +555,7 @@ pub fn getIcon(theme: *const IconTheme, name: []const u8, is_dir: bool, is_link:
     if (std.mem.eql(u8, lower_name, "dockerfile")) return theme.dockerfile;
     if (std.mem.startsWith(u8, lower_name, "readme")) return theme.readme;
     if (std.mem.startsWith(u8, lower_name, "license")) return theme.license;
+    if (std.mem.eql(u8, lower_name, "flake.lock")) return theme.nix;
 
     // Get extension
     const ext_pos = std.mem.lastIndexOf(u8, name, ".");
@@ -610,4 +752,40 @@ test "stack buffer case conversion" {
     // With stack buffer truncation, this might not match .rs extension,
     // so we just ensure it returns some valid icon
     try testing.expect(icon.len > 0);
+}
+
+test "get icon for new file types" {
+    const theme = IconTheme{};
+
+    // Lock files
+    try testing.expectEqualStrings("\u{f023}", getIcon(&theme, "Cargo.lock", false, false, false));
+
+    // Nix files
+    try testing.expectEqualStrings("\u{f313}", getIcon(&theme, "flake.nix", false, false, false));
+    try testing.expectEqualStrings("\u{f313}", getIcon(&theme, "flake.lock", false, false, false));
+
+    // Shell scripts
+    try testing.expectEqualStrings("\u{e795}", getIcon(&theme, "install.sh", false, false, false));
+    try testing.expectEqualStrings("\u{e795}", getIcon(&theme, "config.bash", false, false, false));
+    try testing.expectEqualStrings("\u{e795}", getIcon(&theme, "config.zsh", false, false, false));
+    try testing.expectEqualStrings("\u{e795}", getIcon(&theme, "config.fish", false, false, false));
+
+    // Package/archive extensions
+    try testing.expectEqualStrings("\u{f1c6}", getIcon(&theme, "package.deb", false, false, false));
+    try testing.expectEqualStrings("\u{f1c6}", getIcon(&theme, "package.rpm", false, false, false));
+    try testing.expectEqualStrings("\u{f1c6}", getIcon(&theme, "app.dmg", false, false, false));
+    try testing.expectEqualStrings("\u{f1c6}", getIcon(&theme, "app.pkg", false, false, false));
+
+    // Web files
+    try testing.expectEqualStrings("\u{e736}", getIcon(&theme, "index.html", false, false, false));
+    try testing.expectEqualStrings("\u{e736}", getIcon(&theme, "page.htm", false, false, false));
+    try testing.expectEqualStrings("\u{e749}", getIcon(&theme, "style.css", false, false, false));
+    try testing.expectEqualStrings("\u{e749}", getIcon(&theme, "style.scss", false, false, false));
+
+    // Database
+    try testing.expectEqualStrings("\u{f1c0}", getIcon(&theme, "schema.sql", false, false, false));
+
+    // Data files
+    try testing.expectEqualStrings("\u{f15c}", getIcon(&theme, "data.csv", false, false, false));
+    try testing.expectEqualStrings("\u{e615}", getIcon(&theme, "config.xml", false, false, false));
 }

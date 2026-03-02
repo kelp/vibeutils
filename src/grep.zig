@@ -874,8 +874,8 @@ fn searchDirectory(
 // Help and Version
 // ============================================================================
 
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: grep [OPTION]... PATTERNS [FILE]...
         \\Search for PATTERNS in each FILE.
         \\Example: grep -i 'hello world' menu.h main.c
@@ -964,7 +964,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
     defer opts.deinit(allocator);
 
     if (opts.help) {
-        printHelp(stdout_writer) catch {};
+        printHelp(allocator, stdout_writer) catch {};
         return @intFromEnum(common.ExitCode.success);
     }
 

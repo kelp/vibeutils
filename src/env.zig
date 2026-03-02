@@ -96,7 +96,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
     defer options.deinit(allocator);
 
     if (options.help) {
-        printHelp(stdout_writer) catch {};
+        printHelp(allocator, stdout_writer) catch {};
         return 0;
     }
 
@@ -326,8 +326,8 @@ fn execCommand(allocator: Allocator, command: []const []const u8, env_map: *cons
 }
 
 /// Print help message
-fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
+fn printHelp(allocator: Allocator, writer: anytype) !void {
+    try common.help.printColorized(allocator, writer,
         \\Usage: env [OPTION]... [-] [NAME=VALUE]... [COMMAND [ARG]...]
         \\Set each NAME to VALUE in the environment and run COMMAND.
         \\
