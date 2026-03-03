@@ -139,6 +139,39 @@ test_du() {
 
     rm -rf "$hldir_hardlink" "$hldir_copy"
 
+    echo -e "${CYAN}Testing --color option...${NC}"
+
+    # --color=never produces no ANSI escapes
+    output=$("$binary" --color=never -s "$tmpdir" 2>/dev/null)
+    if ! printf '%s' "$output" | grep -q $'\033\['; then
+        print_test_result "du --color=never produces no ANSI escapes" "PASS"
+    else
+        print_test_result "du --color=never produces no ANSI escapes" "FAIL" \
+            "Output contains ANSI escapes: '$output'"
+    fi
+
+    # --color=always produces ANSI escapes
+    output=$("$binary" --color=always -s "$tmpdir" 2>/dev/null)
+    if printf '%s' "$output" | grep -q $'\033\['; then
+        print_test_result "du --color=always produces ANSI escapes" "PASS"
+    else
+        print_test_result "du --color=always produces ANSI escapes" "FAIL" \
+            "Output missing ANSI escapes: '$output'"
+    fi
+
+    # --color=auto in a non-TTY context produces no ANSI escapes
+    output=$("$binary" --color=auto -s "$tmpdir" 2>/dev/null)
+    if ! printf '%s' "$output" | grep -q $'\033\['; then
+        print_test_result "du --color=auto (non-TTY) produces no ANSI escapes" "PASS"
+    else
+        print_test_result "du --color=auto (non-TTY) produces no ANSI escapes" "FAIL" \
+            "Output contains ANSI escapes in non-TTY context: '$output'"
+    fi
+
+    # Invalid --color value exits with error
+    test_command_exit_code "du --color=invalid exits 2" 2 \
+        "$binary" --color=invalid
+
     # Cleanup
     rm -rf "$tmpdir"
 }

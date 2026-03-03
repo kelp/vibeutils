@@ -16,6 +16,12 @@ const c = std.c;
 
 const prog_name = "du";
 
+const ColorMode = enum {
+    never,
+    auto,
+    always,
+};
+
 // ============================================================================
 // Options
 // ============================================================================
@@ -49,6 +55,8 @@ const DuOptions = struct {
     help: bool = false,
     /// Display version
     version: bool = false,
+    /// Colorize the output
+    color: ?[]const u8 = null,
     /// Positional arguments (paths)
     positionals: []const []const u8 = &.{},
 
@@ -67,6 +75,7 @@ const DuOptions = struct {
         .block_size = .{ .short = 0, .desc = "Scale sizes by SIZE before printing", .value_name = "SIZE" },
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
     };
 };
 
@@ -85,6 +94,7 @@ const DuConfig = struct {
     one_file_system: bool,
     apparent_size: bool,
     block_size: u64,
+    color_mode: ColorMode,
 };
 
 fn resolveConfig(opts: DuOptions) !DuConfig {
@@ -99,6 +109,7 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         .one_file_system = opts.one_file_system,
         .apparent_size = opts.apparent_size,
         .block_size = 1024, // default
+        .color_mode = .auto,
     };
 
     // -b implies --apparent-size --block-size=1
@@ -125,6 +136,19 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
     // --max-depth=N
     if (opts.max_depth) |depth_str| {
         config.max_depth = std.fmt.parseInt(u64, depth_str, 10) catch return error.InvalidMaxDepth;
+    }
+
+    // Parse color mode
+    if (opts.color) |when| {
+        if (std.mem.eql(u8, when, "always")) {
+            config.color_mode = .always;
+        } else if (std.mem.eql(u8, when, "auto")) {
+            config.color_mode = .auto;
+        } else if (std.mem.eql(u8, when, "never")) {
+            config.color_mode = .never;
+        } else {
+            return error.InvalidColorMode;
+        }
     }
 
     return config;
@@ -255,6 +279,7 @@ fn calculateDu(
     root_dev: ?u64,
     seen_inodes: *std.AutoHashMap(u128, void),
     stdout: anytype,
+    style: anytype,
     stderr: anytype,
     has_error: *bool,
 ) u64 {
@@ -274,7 +299,7 @@ fn calculateDu(
         // Report symlink itself if -a
         const link_size = getFileSize(stat_buf, config.apparent_size);
         if (config.all and shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, link_size, config, path);
+            printEntry(stdout, style, link_size, config, path);
         }
         return link_size;
     }
@@ -303,7 +328,7 @@ fn calculateDu(
         const file_size = getFileSize(stat_buf, config.apparent_size);
         // Always print top-level arguments (depth == 0); print children only with -a
         if ((depth == 0 or config.all) and shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, file_size, config, path);
+            printEntry(stdout, style, file_size, config, path);
         }
         return file_size;
     }
@@ -319,7 +344,7 @@ fn calculateDu(
         has_error.* = true;
         // Still report the directory entry size itself
         if (shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, dir_own_size, config, path);
+            printEntry(stdout, style, dir_own_size, config, path);
         }
         return dir_own_size;
     };
@@ -348,6 +373,7 @@ fn calculateDu(
             effective_root_dev,
             seen_inodes,
             stdout,
+            style,
             stderr,
             has_error,
         );
@@ -357,7 +383,7 @@ fn calculateDu(
     const total_size = if (config.separate_dirs) dir_own_size else dir_own_size + subtree_size;
 
     if (shouldPrintAtDepth(depth, config)) {
-        printEntry(stdout, total_size, config, path);
+        printEntry(stdout, style, total_size, config, path);
     }
 
     return dir_own_size + subtree_size;
@@ -370,18 +396,24 @@ fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
     return true;
 }
 
-fn printEntry(writer: anytype, size_bytes: u64, config: DuConfig, path: []const u8) void {
+fn printEntry(writer: anytype, style: anytype, size_bytes: u64, config: DuConfig, path: []const u8) void {
     if (config.human_readable) {
         var hr_buf: [32]u8 = undefined;
         const formatted = formatHumanReadable(&hr_buf, size_bytes);
-        writer.print("{s}\t{s}\n", .{ formatted, path }) catch {};
+        common.colors.applySizeColor(style, size_bytes) catch {};
+        writer.print("{s}", .{formatted}) catch {};
+        style.reset() catch {};
+        writer.print("\t{s}\n", .{path}) catch {};
     } else {
         // Scale by block_size
         const blocks = if (config.block_size <= 1)
             size_bytes
         else
             (size_bytes + config.block_size - 1) / config.block_size;
-        writer.print("{d}\t{s}\n", .{ blocks, path }) catch {};
+        common.colors.applySizeColor(style, size_bytes) catch {};
+        writer.print("{d}", .{blocks}) catch {};
+        style.reset() catch {};
+        writer.print("\t{s}\n", .{path}) catch {};
     }
 }
 
@@ -490,8 +522,31 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 common.printErrorWithProgram(allocator, stderr, prog_name, "invalid maximum depth '{s}'", .{opts.max_depth orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
+            error.InvalidColorMode => {
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
         }
     };
+
+    // Initialize styling for color output
+    const StyleType = common.style.Style(@TypeOf(stdout));
+    var style = StyleType{ .color_mode = .none, .writer = stdout };
+    switch (config.color_mode) {
+        .never => style.color_mode = .none,
+        .always => {
+            // --color=always overrides NO_COLOR; fall back to basic
+            // (16-color) if terminal capability cannot be detected.
+            const detected = StyleType.ColorMode.detect(allocator) catch .basic;
+            style.color_mode = if (detected == .none) .basic else detected;
+        },
+        .auto => {
+            const stdout_file = std.fs.File.stdout();
+            if (stdout_file.isTty()) {
+                style.color_mode = StyleType.ColorMode.detect(allocator) catch .none;
+            }
+        },
+    }
 
     const paths = if (opts.positionals.len == 0)
         &[_][]const u8{"."}
@@ -513,6 +568,7 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             null,
             &seen_inodes,
             stdout,
+            style,
             stderr,
             &has_error,
         );
@@ -520,7 +576,7 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     }
 
     if (config.total) {
-        printEntry(stdout, grand_total, config, "total");
+        printEntry(stdout, style, grand_total, config, "total");
     }
 
     return if (has_error) @as(u8, 1) else 0;
@@ -548,6 +604,8 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -S, --separate-dirs   for directories do not include size of subdirectories
         \\  -x, --one-file-system skip directories on different file systems
         \\      --apparent-size   print apparent sizes rather than disk usage
+        \\      --color=WHEN      colorize sizes; WHEN is 'always', 'auto' (default),
+        \\                          or 'never'
         \\      --help            display this help and exit
         \\      --version         output version information and exit
         \\
@@ -950,6 +1008,7 @@ test "du shouldPrintAtDepth" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1024,
+        .color_mode = .auto,
     };
     try testing.expect(shouldPrintAtDepth(0, config_no_limit));
     try testing.expect(shouldPrintAtDepth(100, config_no_limit));
@@ -984,4 +1043,41 @@ test "du getFileSize apparent vs disk" {
     // Disk usage should be >= 100 (rounded to block boundaries)
     const disk = getFileSize(stat_buf, false);
     try testing.expect(disk >= 100);
+}
+
+test "resolveConfig - color mode always" {
+    var opts = DuOptions{};
+    opts.color = "always";
+    const config = try resolveConfig(opts);
+    try testing.expectEqual(ColorMode.always, config.color_mode);
+}
+
+test "resolveConfig - color mode never" {
+    var opts = DuOptions{};
+    opts.color = "never";
+    const config = try resolveConfig(opts);
+    try testing.expectEqual(ColorMode.never, config.color_mode);
+}
+
+test "resolveConfig - color mode default" {
+    const opts = DuOptions{};
+    const config = try resolveConfig(opts);
+    try testing.expectEqual(ColorMode.auto, config.color_mode);
+}
+
+test "resolveConfig - invalid color mode" {
+    var opts = DuOptions{};
+    opts.color = "invalid";
+    try testing.expectError(error.InvalidColorMode, resolveConfig(opts));
+}
+
+test "du --color=invalid exits with code 2" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--color=invalid"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
 }

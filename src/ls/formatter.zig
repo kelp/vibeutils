@@ -116,39 +116,8 @@ fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8,
 /// 16-color: green (normal), bold green (human-readable).
 fn writeSizeColored(style: anytype, writer: anytype, size_str: []const u8, size: u64, human_readable: bool) !void {
     if (style.color_mode != .none) {
-        switch (style.color_mode) {
-            .truecolor => {
-                if (size < 1024) {
-                    try style.setRgb(115, 195, 120);
-                } else if (size < 100 * 1024) {
-                    try style.setRgb(150, 195, 110);
-                } else if (size < 1024 * 1024) {
-                    try style.setRgb(195, 185, 100);
-                } else if (size < 10 * 1024 * 1024) {
-                    try style.setRgb(210, 155, 90);
-                } else {
-                    try style.setRgb(210, 115, 100);
-                }
-            },
-            .extended => {
-                if (size < 1024) {
-                    try style.set256(114);
-                } else if (size < 100 * 1024) {
-                    try style.set256(149);
-                } else if (size < 1024 * 1024) {
-                    try style.set256(185);
-                } else if (size < 10 * 1024 * 1024) {
-                    try style.set256(215);
-                } else {
-                    try style.set256(209);
-                }
-            },
-            .basic => {
-                if (human_readable) try style.setBold();
-                try style.setColor(.green);
-            },
-            .none => {},
-        }
+        if (human_readable and style.color_mode == .basic) try style.setBold();
+        try common.colors.applySizeColor(style, size);
     }
 
     if (human_readable) {

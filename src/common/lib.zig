@@ -57,6 +57,9 @@ pub const unicode = @import("unicode.zig");
 /// Help text colorization for terminal output
 pub const help = @import("help.zig");
 
+/// Shared color functions for size-based coloring
+pub const colors = @import("colors.zig");
+
 /// Test directory utilities for managing temporary file systems in tests
 pub const test_dir = @import("test_dir.zig");
 
