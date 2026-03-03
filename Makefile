@@ -10,7 +10,7 @@ HAS_DOCKER := $(shell command -v docker >/dev/null 2>&1 && echo "true")
 HAS_FAKEROOT := $(shell command -v fakeroot >/dev/null 2>&1 && echo "true")
 
 # All .PHONY targets in one line
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose lint-actions ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open run debug release it test-integration-validate it-list
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose lint-actions ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open run debug build-release release it test-integration-validate it-list
 
 # Core Targets
 all: build
@@ -101,8 +101,16 @@ endif
 debug:
 	zig build -Doptimize=Debug
 
-release:
+build-release:
 	zig build -Doptimize=ReleaseSmall
+
+release:
+ifndef VERSION
+	@echo "Usage: make release VERSION=<semver>"
+	@echo "Example: make release VERSION=0.7.0"
+	@exit 1
+endif
+	@scripts/release.sh $(VERSION)
 
 fmt:
 	zig build fmt
@@ -208,6 +216,10 @@ help:
 	@echo "  make fmt                   Format all Zig code"
 	@echo "  make docs                  Generate HTML documentation"
 	@echo "  make docker-shell          Open shell in test container"
+	@echo ""
+	@echo "Release:"
+	@echo "  make release VERSION=X.Y.Z Bump version, tag, push, trigger CI release"
+	@echo "  make build-release         Build optimized binaries (ReleaseSmall)"
 	@echo ""
 	@echo "For more details on any target, see the Makefile or run 'make <target>'"
 
