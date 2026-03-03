@@ -65,11 +65,11 @@ echo "  Integration tests passed"
 echo ""
 
 # Update version in build.zig.zon
-sed -i '' "s/\.version = \"${CURRENT}\"/\.version = \"${VERSION}\"/" build.zig.zon
+sed -i.bak "s/\.version = \"${CURRENT}\"/\.version = \"${VERSION}\"/" build.zig.zon && rm -f build.zig.zon.bak
 echo "Updated build.zig.zon"
 
 # Update version in flake.nix
-sed -i '' "s/version = \"${CURRENT}\"/version = \"${VERSION}\"/" flake.nix
+sed -i.bak "s/version = \"${CURRENT}\"/version = \"${VERSION}\"/" flake.nix && rm -f flake.nix.bak
 echo "Updated flake.nix"
 
 # Verify the updates took effect
