@@ -10,12 +10,20 @@ on:
         required: true
 
 jobs:
-  build-and-release:
-    runs-on: macos-14
-    permissions:
-      contents: write
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-linux-gnu
+            archive-name: linux-arm64
+          - target: x86_64-linux-gnu
+            archive-name: linux-amd64
+          - target: aarch64-macos-none
+            archive-name: darwin-arm64
+          - target: x86_64-macos-none
+            archive-name: darwin-amd64
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,12 +32,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-
-      - name: Build
-        run: zig build -Doptimize=ReleaseSafe --prefix dist
-
-      - name: Copy man pages
-        run: mkdir -p dist/share/man/man1 && cp man/man1/* dist/share/man/man1/
 
       - name: Extract version
         id: version
@@ -42,15 +44,64 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Build for ${{ matrix.archive-name }}
+        run: >
+          zig build
+          -Dtarget=${{ matrix.target }}
+          -Doptimize=ReleaseSafe
+          --prefix dist
+
+      - name: Copy man pages
+        run: mkdir -p dist/share/man/man1 && cp man/man1/* dist/share/man/man1/
+
       - name: Create tarball
         run: >
-          tar -czf vibeutils-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz
+          tar -czf
+          vibeutils-${{ steps.version.outputs.version }}-${{ matrix.archive-name }}.tar.gz
           -C dist .
 
-      - name: Compute SHA256
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibeutils-${{ matrix.archive-name }}
+          path: vibeutils-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Compute SHA256 for Homebrew
         id: sha
         run: |
-          SHA=$(shasum -a 256 vibeutils-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz | awk '{print $1}')
+          SHA=$(sha256sum artifacts/vibeutils-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz | awk '{print $1}')
           echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Delete existing draft release
@@ -59,7 +110,7 @@ jobs:
       - name: Create GitHub release
         run: >
           gh release create ${{ steps.version.outputs.tag }}
-          vibeutils-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz
+          artifacts/vibeutils-*.tar.gz
           --title "vibeutils ${{ steps.version.outputs.version }}"
           --generate-notes
 
@@ -77,8 +128,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           SHA="${{ steps.sha.outputs.sha256 }}"
           URL="https://github.com/kelp/vibeutils/releases/download/${TAG}/vibeutils-${VERSION}-darwin-arm64.tar.gz"
-          sed -i '' "s|url \".*\"|url \"${URL}\"|" "$FORMULA"
-          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA}\"|" "$FORMULA"
+          sed -i "s|url \".*\"|url \"${URL}\"|" "$FORMULA"
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" "$FORMULA"
 
       - name: Commit and push formula
         run: |
