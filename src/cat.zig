@@ -38,7 +38,7 @@ const CatArgs = struct {
         .squeeze_blank = .{ .short = 's', .desc = "Suppress repeated empty output lines" },
         .show_tabs_and_nonprinting = .{ .short = 't', .desc = "Equivalent to -vT" },
         .show_tabs = .{ .short = 'T', .desc = "Display TAB characters as ^I" },
-        .ignored_u = .{ .short = 'u', .desc = "(ignored)" },
+        .ignored_u = .{ .short = 'u', .desc = "(no effect; for compatibility)" },
         .show_nonprinting = .{ .short = 'v', .desc = "Use ^ and M- notation, except for LFD and TAB" },
     };
 };
@@ -187,7 +187,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -s, --squeeze-blank      suppress repeated empty output lines
         \\  -t                       equivalent to -vT
         \\  -T, --show-tabs          display TAB characters as ^I
-        \\  -u                       (ignored)
+        \\  -u                       (no effect; for compatibility)
         \\  -v, --show-nonprinting   use ^ and M- notation, except for LFD and TAB
         \\      --help               display this help and exit
         \\      --version            output version information and exit

@@ -26,9 +26,9 @@ const MvArgs = struct {
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .interactive = .{ .short = 'i', .desc = "Prompt before overwrite" },
-        .force = .{ .short = 'f', .desc = "Force overwrite without prompting" },
-        .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
-        .no_clobber = .{ .short = 'n', .desc = "Do not overwrite an existing file" },
+        .force = .{ .short = 'f', .desc = "overwrite without prompting" },
+        .verbose = .{ .short = 'v', .desc = "print each action" },
+        .no_clobber = .{ .short = 'n', .desc = "never overwrite an existing file" },
     };
 };
 
@@ -710,11 +710,10 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  or:  mv [OPTION]... SOURCE... DIRECTORY
         \\Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
         \\
-        \\Mandatory arguments to long options are mandatory for short options too.
-        \\  -f, --force                do not prompt before overwriting
+        \\  -f, --force                overwrite without prompting
         \\  -i, --interactive          prompt before overwrite
-        \\  -n, --no-clobber           do not overwrite an existing file
-        \\  -v, --verbose              explain what is being done
+        \\  -n, --no-clobber           never overwrite an existing file
+        \\  -v, --verbose              print each action
         \\  -h, --help                 display this help and exit
         \\  -V, --version              output version information and exit
         \\

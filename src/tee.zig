@@ -171,7 +171,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\Usage: tee [OPTION]... [FILE]...
         \\Copy standard input to each FILE, and also to standard output.
         \\
-        \\  -a, --append      append to the given FILEs, do not overwrite
+        \\  -a, --append      append to the given FILEs
         \\  -i, --ignore-interrupts  ignore interrupt signals
         \\  -p                diagnose errors writing to non pipes
         \\      --help        display this help and exit

@@ -159,7 +159,6 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\A FILE argument that does not exist is created empty, unless -c or -h
         \\is supplied.
         \\
-        \\Options:
         \\  -a                   change only the access time
         \\  -c, --no-create      do not create any files
         \\  -f                   (ignored)

@@ -882,9 +882,9 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\PATTERNS can contain multiple patterns separated by newlines.
         \\
         \\Pattern selection and interpretation:
-        \\  -E, --extended-regexp     PATTERNS are extended regular expressions
-        \\  -F, --fixed-strings       PATTERNS are strings
-        \\  -G, --basic-regexp        PATTERNS are basic regular expressions
+        \\  -E, --extended-regexp     interpret PATTERNS as extended regular expressions
+        \\  -F, --fixed-strings       interpret PATTERNS as fixed strings
+        \\  -G, --basic-regexp        interpret PATTERNS as basic regular expressions
         \\  -e, --regexp=PATTERNS     use PATTERNS for matching
         \\  -f, --file=FILE           take PATTERNS from FILE
         \\  -i, --ignore-case         ignore case distinctions in patterns and data
@@ -894,8 +894,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\Miscellaneous:
         \\  -s, --no-messages         suppress error messages
         \\  -v, --invert-match        select non-matching lines
-        \\      --help                display this help text and exit
-        \\      --version             display version information and exit
+        \\      --help                display this help and exit
+        \\      --version             output version information and exit
         \\
         \\Output control:
         \\  -m, --max-count=NUM       stop after NUM selected lines

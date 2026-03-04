@@ -141,10 +141,9 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\Usage: sleep NUMBER[SUFFIX]...
         \\  or:  sleep OPTION
         \\Pause for NUMBER seconds.  SUFFIX may be 's' for seconds (the default),
-        \\'m' for minutes, 'h' for hours or 'd' for days.  Unlike most implementations
-        \\that require NUMBER be an integer, here NUMBER may be an arbitrary floating
-        \\point number.  Given two or more arguments, pause for the amount of time
-        \\specified by the sum of their values.
+        \\'m' for minutes, 'h' for hours or 'd' for days.  NUMBER may be a
+        \\floating-point value.  Given two or more arguments, pause for the amount
+        \\of time specified by the sum of their values.
         \\
         \\  -h, --help     display this help and exit
         \\  -V, --version  output version information and exit
@@ -154,9 +153,6 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  sleep 2.5m     # Pause for 2 minutes and 30 seconds
         \\  sleep 1h 30m   # Pause for 1 hour and 30 minutes
         \\  sleep 1d       # Pause for 1 day
-        \\
-        \\Report bugs to: kelp@plek.org
-        \\Home page: <https://tcole.net>
         \\
     );
 }

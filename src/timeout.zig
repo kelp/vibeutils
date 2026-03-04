@@ -62,7 +62,7 @@ const TimeoutArgs = struct {
         .signal = .{ .short = 's', .desc = "Signal to send on timeout", .value_name = "SIGNAL" },
         .@"kill-after" = .{ .short = 'k', .desc = "Send KILL after DURATION if still running", .value_name = "DURATION" },
         .@"preserve-status" = .{ .desc = "Exit with same status as COMMAND" },
-        .foreground = .{ .desc = "Don't create separate process group" },
+        .foreground = .{ .desc = "run in the foreground process group" },
         .verbose = .{ .short = 'v', .desc = "Diagnose to stderr any signal sent" },
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
@@ -242,7 +242,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\                           after DURATION
         \\      --preserve-status    exit with the same status as COMMAND, even
         \\                           when the command times out
-        \\      --foreground         don't create a separate process group
+        \\      --foreground         run in the foreground process group
         \\  -v, --verbose            diagnose to stderr any signal sent
         \\  -h, --help               display this help and exit
         \\  -V, --version            output version information and exit
@@ -266,9 +266,6 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  timeout 5m ./build.sh   # Limit script to 5 minutes
         \\  timeout -s KILL 30 cmd  # Send KILL instead of TERM
         \\  timeout -k 5 30 cmd     # TERM at 30s, KILL at 35s
-        \\
-        \\Report bugs to: kelp@plek.org
-        \\Home page: <https://tcole.net>
         \\
     );
 }

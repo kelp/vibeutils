@@ -28,7 +28,7 @@ const TrArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .complement = .{ .short = 'c', .desc = "Use the complement of SET1" },
         .complement_c = .{ .short = 'C', .desc = "Use the complement of SET1" },
-        .delete = .{ .short = 'd', .desc = "Delete characters in SET1, do not translate" },
+        .delete = .{ .short = 'd', .desc = "delete characters in SET1 without translating" },
         .squeeze_repeats = .{ .short = 's', .desc = "Replace each sequence of a repeated character that is listed in the last specified SET, with a single occurrence of that character" },
         .truncate_set1 = .{ .short = 't', .desc = "First truncate SET1 to length of SET2" },
     };
@@ -670,7 +670,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\writing to standard output.
         \\
         \\  -c, -C, --complement    use the complement of SET1
-        \\  -d, --delete            delete characters in SET1, do not translate
+        \\  -d, --delete            delete characters in SET1 without translating
         \\  -s, --squeeze-repeats   replace each sequence of a repeated character
         \\                          that is listed in the last specified SET,
         \\                          with a single occurrence of that character

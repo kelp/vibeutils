@@ -357,7 +357,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\
         \\  -e, --canonicalize-existing  all components must exist (default)
         \\  -m, --canonicalize-missing   no components need exist
-        \\  -s, --no-symlinks, --strip   don't resolve symlinks
+        \\  -s, --no-symlinks, --strip   do not resolve symlinks
         \\  -z, --zero                   end each output line with NUL, not newline
         \\  -q, --quiet                  suppress most error messages
         \\      --relative-to=DIR        print path relative to DIR
@@ -368,7 +368,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\
         \\Examples:
         \\  realpath /usr/bin/../lib      Output "/usr/lib".
-        \\  realpath -m /tmp/new/path     Resolve even if path doesn't exist.
+        \\  realpath -m /tmp/new/path     Resolve even if path does not exist.
         \\  realpath -s ./file            Resolve without following symlinks.
         \\
     );

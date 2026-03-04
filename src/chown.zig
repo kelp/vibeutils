@@ -193,7 +193,6 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\Change the owner and/or group of each FILE to OWNER and/or GROUP.
         \\With --reference, change the owner and group of each FILE to those of RFILE.
         \\
-        \\Options:
         \\  -c, --changes          like verbose but report only when a change is made
         \\  -f, --silent, --quiet  suppress most error messages
         \\  -v, --verbose          output a diagnostic for every file processed
@@ -201,6 +200,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --reference=RFILE  use RFILE's owner and group rather than
         \\                         specifying OWNER:GROUP values
         \\  -R, --recursive        operate on files and directories recursively
+        \\      --help             display this help and exit
+        \\  -V, --version          output version information and exit
         \\
         \\The following options modify how a hierarchy is traversed when the -R
         \\option is also specified.  If more than one is specified, only the final
@@ -219,9 +220,6 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  chown root /u        Change the owner of /u to "root".
         \\  chown root:staff /u  Change the owner of /u to "root" and the group to "staff".
         \\  chown -hR root /u    Change the owner of /u and subfiles to "root".
-        \\
-        \\      --help     display this help and exit
-        \\  -V, --version  output version information and exit
         \\
     );
 }

@@ -34,9 +34,9 @@ const ReadlinkArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .canonicalize = .{ .short = 'f', .desc = "Canonicalize by following every symlink; all components must exist" },
-        .@"canonicalize-existing" = .{ .short = 'e', .desc = "Canonicalize; all components must exist (same as -f)" },
-        .@"canonicalize-missing" = .{ .short = 'm', .desc = "Canonicalize; components need not exist" },
+        .canonicalize = .{ .short = 'f', .desc = "canonicalize path; all but the last component must exist" },
+        .@"canonicalize-existing" = .{ .short = 'e', .desc = "canonicalize path; all components must exist" },
+        .@"canonicalize-missing" = .{ .short = 'm', .desc = "canonicalize path; components need not exist" },
         .@"no-newline" = .{ .short = 'n', .desc = "Do not output trailing newline" },
         .zero = .{ .short = 'z', .desc = "End each output line with NUL, not newline" },
         .verbose = .{ .short = 'v', .desc = "Report error messages" },
@@ -286,15 +286,10 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\Usage: readlink [OPTION]... FILE...
         \\Print value of a symbolic link or canonical file name.
         \\
-        \\  -f, --canonicalize           canonicalize by following every symlink in
-        \\                               every component of the given name recursively;
-        \\                               all but the last component must exist
-        \\  -e, --canonicalize-existing  canonicalize by following every symlink in
-        \\                               every component of the given name recursively,
-        \\                               all components must exist
-        \\  -m, --canonicalize-missing   canonicalize by following every symlink in
-        \\                               every component of the given name recursively,
-        \\                               without requirements on components existence
+        \\  -f, --canonicalize           canonicalize path; all but the last component
+        \\                               must exist
+        \\  -e, --canonicalize-existing  canonicalize path; all components must exist
+        \\  -m, --canonicalize-missing   canonicalize path; components need not exist
         \\  -n, --no-newline             do not output the trailing delimiter
         \\  -q, --quiet, --silent        suppress most error messages
         \\  -v, --verbose                report error messages

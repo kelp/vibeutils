@@ -1213,39 +1213,39 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\Search for files in a directory hierarchy.
         \\
         \\Global options:
-        \\  -H                 Follow symbolic links on the command line only
-        \\  -L, -follow        Follow all symbolic links
-        \\  -depth             Process directory contents before directory itself
-        \\  -maxdepth N        Descend at most N levels below starting points
-        \\  -mindepth N        Do not apply tests at levels less than N
+        \\  -H                 follow symbolic links on the command line only
+        \\  -L, -follow        follow all symbolic links
+        \\  -depth             process directory contents before directory itself
+        \\  -maxdepth N        descend at most N levels below starting points
+        \\  -mindepth N        do not apply tests at levels less than N
         \\
         \\Tests (predicates):
-        \\  -name PATTERN      Base name matches shell glob pattern
-        \\  -iname PATTERN     Like -name but case insensitive
-        \\  -path PATTERN      Full path matches shell glob pattern
-        \\  -type TYPE         File type: f d l b c p s
-        \\  -size N[cwbkMG]    File uses N units of space
-        \\  -empty             File is empty (regular file or directory)
-        \\  -newer FILE        Modified more recently than FILE
-        \\  -mtime N           Modified N*24 hours ago (+N/-N/N)
-        \\  -perm MODE         Permission bits match MODE (octal)
-        \\  -user NAME         File belongs to user NAME
-        \\  -group NAME        File belongs to group NAME
+        \\  -name PATTERN      base name matches shell glob pattern
+        \\  -iname PATTERN     like -name but case insensitive
+        \\  -path PATTERN      full path matches shell glob pattern
+        \\  -type TYPE         file type: f d l b c p s
+        \\  -size N[cwbkMG]    file uses N units of space
+        \\  -empty             file is empty (regular file or directory)
+        \\  -newer FILE        modified more recently than FILE
+        \\  -mtime N           modified N*24 hours ago (+N/-N/N)
+        \\  -perm MODE         permission bits match MODE (octal)
+        \\  -user NAME         file belongs to user NAME
+        \\  -group NAME        file belongs to group NAME
         \\
         \\Actions:
-        \\  -print             Print full path (default action)
-        \\  -print0            Print full path followed by NUL
-        \\  -delete            Delete file (implies -depth)
-        \\  -exec CMD {} ;     Execute command for each file
+        \\  -print             print full path (default action)
+        \\  -print0            print full path followed by NUL
+        \\  -delete            delete file (implies -depth)
+        \\  -exec CMD {} ;     execute command for each file
         \\
         \\Operators:
-        \\  -and, -a           Logical AND (default between tests)
-        \\  -or, -o            Logical OR
-        \\  -not, !            Logical NOT
-        \\  ( expr )           Grouping
+        \\  -and, -a           logical AND (default between tests)
+        \\  -or, -o            logical OR
+        \\  -not, !            logical NOT
+        \\  ( expr )           grouping
         \\
-        \\      --help         Display this help and exit
-        \\      --version      Output version information and exit
+        \\      --help         display this help and exit
+        \\      --version      output version information and exit
         \\
     ;
     common.help.printColorized(allocator, writer, help_text) catch {};

@@ -544,7 +544,6 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\   or: cp [OPTION]... SOURCE... DIRECTORY
         \\Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
         \\
-        \\Options:
         \\  -d, --no-dereference     never follow symbolic links in SOURCE
         \\  -f, --force              force overwrite without prompting
         \\  -h, --help               display this help and exit

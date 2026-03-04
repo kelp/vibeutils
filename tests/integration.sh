@@ -171,7 +171,20 @@ main() {
             echo -e "${RED}Legacy smoke tests failed - basic functionality broken${NC}"
             overall_result=1
         fi
-        
+
+        # Run help consistency validation
+        echo ""
+        echo -e "${YELLOW}========================================${NC}"
+        echo -e "${YELLOW}Running help text consistency checks${NC}"
+        echo -e "${YELLOW}========================================${NC}"
+
+        init_test_session
+        source "$SCRIPT_DIR/utilities/help_consistency_checks.sh"
+        test_help_consistency
+        if ! print_test_summary "Help Consistency"; then
+            overall_result=1
+        fi
+
         echo ""
         echo -e "${YELLOW}========================================${NC}"
         echo -e "${YELLOW}Running comprehensive per-utility tests${NC}"

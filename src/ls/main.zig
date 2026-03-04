@@ -256,14 +256,34 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
 
 /// Print help message with usage examples
 fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
-    // Use auto-generated help from ArgParser
-    try common.argparse.ArgParser.printHelp(LsArgs, "ls", writer);
-
-    // Add custom examples section with colorization
     try common.help.printColorized(allocator, writer,
-        \\
+        \\Usage: ls [OPTION]... [FILE]...
         \\List information about the FILEs (the current directory by default).
         \\Sort entries alphabetically by default.
+        \\
+        \\  -a, --all                  do not ignore entries starting with .
+        \\  -A, --almost-all           do not list implied . and ..
+        \\  -l, --long-format          use a long listing format
+        \\  -h, --human-readable       with -l, print sizes in human readable format
+        \\  -k, --kilobytes            with -l, print sizes in kilobytes
+        \\  -1, --one-per-line         list one file per line
+        \\  -d, --directory            list directories themselves, not their contents
+        \\  -F, --file-type-indicators append indicator (one of */=>@|) to entries
+        \\  -i, --show-inodes          print the index number of each file
+        \\  -m, --comma-format         fill width with a comma separated list of entries
+        \\  -n, --numeric-ids          with -l, show numeric user and group IDs
+        \\  -R, --recursive            list subdirectories recursively
+        \\  -t, --sort-by-time         sort by modification time, newest first
+        \\  -S, --sort-by-size         sort by file size, largest first
+        \\  -r, --reverse-sort         reverse order while sorting
+        \\      --color=WHEN           when to use colors (valid: always, auto, never)
+        \\      --group-directories-first  group directories before files
+        \\      --icons=WHEN           when to show icons (valid: always, auto, never)
+        \\      --test-icons           test Nerd Font icon rendering
+        \\      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
+        \\      --git                  show git status indicators for files
+        \\  -V, --version              output version information and exit
+        \\      --help                 display this help and exit
         \\
         \\Examples:
         \\  ls           List files in the current directory

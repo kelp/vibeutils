@@ -111,7 +111,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\Usage: echo [OPTION]... [STRING]...
         \\Echo the STRING(s) to standard output.
         \\
-        \\  -n         do not output the trailing newline
+        \\  -n         suppress the trailing newline
         \\  -e         enable interpretation of backslash escapes
         \\  -E         disable interpretation of backslash escapes (default)
         \\  --help     display this help and exit

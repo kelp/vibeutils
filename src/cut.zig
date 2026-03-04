@@ -45,7 +45,7 @@ const CutArgs = struct {
         .characters = .{ .short = 'c', .desc = "Select only these characters", .value_name = "LIST" },
         .delimiter = .{ .short = 'd', .desc = "Use DELIM instead of TAB", .value_name = "DELIM" },
         .fields = .{ .short = 'f', .desc = "Select only these fields", .value_name = "LIST" },
-        .only_delimited = .{ .short = 's', .desc = "Do not print lines without delimiters" },
+        .only_delimited = .{ .short = 's', .desc = "print only lines containing delimiters" },
         .complement = .{ .short = 0, .desc = "Complement the set of selected bytes/chars/fields" },
         .output_delimiter = .{ .short = 0, .desc = "Use STRING as output delimiter", .value_name = "STRING" },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
@@ -486,7 +486,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -f, --fields=LIST       select only these fields; also print any line
         \\                            that contains no delimiter character, unless
         \\                            the -s option is specified
-        \\  -s, --only-delimited    do not print lines not containing delimiters
+        \\  -s, --only-delimited    print only lines containing delimiters
         \\      --complement         complement the set of selected bytes, characters
         \\                            or fields
         \\      --output-delimiter=STRING  use STRING as the output delimiter;

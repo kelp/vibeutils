@@ -31,13 +31,13 @@ const TailArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
-        .version = .{ .short = 'V', .desc = "Output version information and exit" },
-        .lines = .{ .short = 'n', .desc = "Output the last NUM lines, instead of the last 10" },
-        .bytes = .{ .short = 'c', .desc = "Output the last NUM bytes" },
-        .quiet = .{ .short = 'q', .desc = "Never output headers when multiple files are being examined" },
-        .verbose = .{ .short = 'v', .desc = "Always output headers when examining files" },
-        .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
+        .help = .{ .short = 'h', .desc = "display this help and exit" },
+        .version = .{ .short = 'V', .desc = "output version information and exit" },
+        .lines = .{ .short = 'n', .desc = "output the last NUM lines, instead of the last 10" },
+        .bytes = .{ .short = 'c', .desc = "output the last NUM bytes" },
+        .quiet = .{ .short = 'q', .desc = "never output headers when multiple files are being examined" },
+        .verbose = .{ .short = 'v', .desc = "always output headers when examining files" },
+        .zero_terminated = .{ .short = 'z', .desc = "line delimiter is NUL, not newline" },
     };
 };
 
@@ -73,14 +73,14 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\With no FILE, or when FILE is -, read standard input.
         \\
-        \\  -c, --bytes=NUM          Output the last NUM bytes
-        \\  -n, --lines=[+]NUM       Output the last NUM lines, instead of the last 10;
+        \\  -c, --bytes=NUM          output the last NUM bytes
+        \\  -n, --lines=[+]NUM       output the last NUM lines, instead of the last 10;
         \\                           or use -n +NUM to output starting with line NUM
-        \\  -q, --quiet, --silent    Never output headers giving file names
-        \\  -v, --verbose            Always output headers giving file names
-        \\  -z, --zero-terminated    Use NUL as line delimiter, not newline
-        \\      --help               Display this help and exit
-        \\      --version            Output version information and exit
+        \\  -q, --quiet, --silent    never output headers giving file names
+        \\  -v, --verbose            always output headers giving file names
+        \\  -z, --zero-terminated    use NUL as line delimiter, not newline
+        \\      --help               display this help and exit
+        \\      --version            output version information and exit
         \\
         \\NUM may have a multiplier suffix:
         \\b 512, kB 1000, K 1024, MB 1000*1000, M 1024*1024,

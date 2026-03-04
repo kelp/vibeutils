@@ -95,9 +95,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\Repeatedly output a line with all specified STRING(s), or 'y'.
         \\
-        \\Options:
-        \\  -h, --help     Display this help and exit
-        \\  -V, --version  Output version information and exit
+        \\  -h, --help     display this help and exit
+        \\  -V, --version  output version information and exit
         \\
         \\Examples:
         \\  yes              # Output 'y' repeatedly

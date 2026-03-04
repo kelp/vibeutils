@@ -7,7 +7,6 @@ const testing = std.testing;
 /// - Type-safe argument parsing with compile-time validation
 /// - Support for boolean flags, strings, integers, and enums
 /// - Custom short flag mappings via struct metadata
-/// - Automatic help text generation
 /// - POSIX-style argument handling (short/long flags, combined flags, --)
 ///
 /// Example:
@@ -191,88 +190,6 @@ pub const ArgParser = struct {
         return parse(T, allocator, args.items);
     }
 
-    /// Generate help text for the argument parser
-    /// Supports custom metadata for field descriptions and short flags
-    pub fn printHelp(comptime T: type, prog_name: []const u8, writer: anytype) !void {
-        try writer.print("Usage: {s} [OPTIONS]", .{prog_name});
-
-        // Check if type has positionals field
-        const type_info = @typeInfo(T);
-        inline for (type_info.@"struct".fields) |field| {
-            if (comptime std.mem.eql(u8, field.name, "positionals")) {
-                try writer.print(" [ARGS]...", .{});
-            }
-        }
-        try writer.print("\n\n", .{});
-
-        // Print help text if available
-        if (@hasDecl(T, "help_text")) {
-            try writer.print("{s}\n", .{T.help_text});
-        } else {
-            // Auto-generate help text from struct fields
-            try writer.print("Options:\n", .{});
-            inline for (type_info.@"struct".fields) |field| {
-                if (comptime std.mem.eql(u8, field.name, "positionals")) continue;
-
-                const field_type_info = @typeInfo(field.type);
-                const is_supported = isSupportedFieldType(field.type);
-
-                if (is_supported) {
-                    // Get short flag from metadata or default
-                    const short_flag = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name))
-                        if (@hasField(@TypeOf(@field(T.meta, field.name)), "short"))
-                            @field(T.meta, field.name).short
-                        else
-                            comptime getShortFlag(field.name)
-                    else
-                        comptime getShortFlag(field.name);
-
-                    const long_flag = comptime getLongFlag(field.name);
-
-                    if (short_flag != 0) {
-                        try writer.print("  -{c}, --{s}", .{ short_flag, long_flag });
-                    } else {
-                        try writer.print("      --{s}", .{long_flag});
-                    }
-
-                    // Add value indicator based on type
-                    if (field_type_info == .optional) {
-                        const value_name = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name) and
-                            @hasField(@TypeOf(@field(T.meta, field.name)), "value_name"))
-                            @field(T.meta, field.name).value_name
-                        else
-                            getValueName(field_type_info.optional.child);
-                        try writer.print("={s}", .{value_name});
-                    }
-
-                    // Add spacing for alignment
-                    const current_len = if (short_flag != 0) 6 + long_flag.len else 4 + long_flag.len;
-                    const value_len = if (field_type_info == .optional)
-                        1 + getValueName(field_type_info.optional.child).len
-                    else
-                        0;
-                    const padding_needed = if (current_len + value_len < 25)
-                        25 - current_len - value_len
-                    else
-                        2;
-
-                    var j: usize = 0;
-                    while (j < padding_needed) : (j += 1) {
-                        try writer.print(" ", .{});
-                    }
-
-                    // Get description from metadata or default
-                    const desc = if (@hasDecl(T, "meta") and @hasField(@TypeOf(T.meta), field.name) and
-                        @hasField(@TypeOf(@field(T.meta, field.name)), "desc"))
-                        @field(T.meta, field.name).desc
-                    else
-                        comptime getDescription(field.name);
-                    try writer.print("{s}\n", .{desc});
-                }
-            }
-        }
-    }
-
     fn parseLongFlag(comptime T: type, obj: *T, flag_name: []const u8) !bool {
         const type_info = @typeInfo(T);
         inline for (type_info.@"struct".fields) |field| {
@@ -427,23 +344,6 @@ pub const ArgParser = struct {
         }
     }
 
-    fn getDescription(comptime name: []const u8) []const u8 {
-        // Common descriptions
-        if (comptime std.mem.eql(u8, name, "help")) return "Display this help and exit";
-        if (comptime std.mem.eql(u8, name, "version")) return "Output version information and exit";
-        if (comptime std.mem.eql(u8, name, "verbose")) return "Enable verbose output";
-        if (comptime std.mem.eql(u8, name, "suppress_newline")) return "Do not output the trailing newline";
-        if (comptime std.mem.eql(u8, name, "number")) return "Number all output lines";
-        if (comptime std.mem.eql(u8, name, "all")) return "Show all entries";
-        if (comptime std.mem.eql(u8, name, "long")) return "Use long listing format";
-        if (comptime std.mem.eql(u8, name, "recursive")) return "Process directories recursively";
-        if (comptime std.mem.eql(u8, name, "force")) return "Force operation without prompting";
-        if (comptime std.mem.eql(u8, name, "quiet")) return "Suppress normal output";
-
-        // Default: convert field_name to "Enable field name"
-        return "Enable " ++ name;
-    }
-
     /// Parse a value string into the appropriate type
     fn parseValue(comptime T: type, dest: *?T, value_str: []const u8, flag_name: []const u8, position: usize) !void {
         _ = flag_name;
@@ -471,52 +371,6 @@ pub const ArgParser = struct {
         } else {
             @compileError("Unsupported field type: " ++ @typeName(T));
         }
-    }
-
-    /// Check if a type is supported for argument parsing
-    fn isSupportedFieldType(comptime T: type) bool {
-        const type_info = @typeInfo(T);
-
-        if (T == bool) return true;
-
-        if (type_info == .optional) {
-            const child_type = type_info.optional.child;
-            const child_info = @typeInfo(child_type);
-
-            // String
-            if (child_info == .pointer and child_info.pointer.child == u8) return true;
-            // Integer
-            if (child_info == .int) return true;
-            // Float
-            if (child_info == .float) return true;
-            // Enum
-            if (child_info == .@"enum") return true;
-        }
-
-        return false;
-    }
-
-    /// Get a display name for value placeholders in help text
-    fn getValueName(comptime T: type) []const u8 {
-        const type_info = @typeInfo(T);
-
-        if (type_info == .pointer and type_info.pointer.child == u8) {
-            return "VALUE";
-        } else if (type_info == .int) {
-            if (type_info.int.signedness == .unsigned) {
-                return "N";
-            } else {
-                return "NUM";
-            }
-        } else if (type_info == .float) {
-            return "FLOAT";
-        } else if (type_info == .@"enum") {
-            // For enums, just return a generic placeholder
-            // The actual enum values will be shown in the description
-            return "CHOICE";
-        }
-
-        return "VALUE";
     }
 };
 
@@ -593,53 +447,6 @@ test "underscore to hyphen conversion" {
     const result = try ArgParser.parse(TestArgs, testing.allocator, &args);
     try testing.expect(result.suppress_newline == true);
     try testing.expect(result.show_all == true);
-}
-
-test "print help" {
-    const TestArgs = struct {
-        help: bool = false,
-        version: bool = false,
-        suppress_newline: bool = false,
-        positionals: []const []const u8 = &.{},
-
-        pub const help_text =
-            \\-h, --help     Display this help and exit.
-            \\-V, --version  Output version information and exit.
-            \\-n             Do not output the trailing newline.
-            \\<str>...       Text to echo.
-        ;
-    };
-
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-
-    try ArgParser.printHelp(TestArgs, "echo", buffer.writer(testing.allocator));
-    const output = buffer.items;
-
-    // Check for expected content
-    try testing.expect(std.mem.indexOf(u8, output, "Usage: echo") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "[OPTIONS]") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "[ARGS]...") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-h, --help") != null);
-}
-
-test "auto-generated help" {
-    const TestArgs = struct {
-        help: bool = false,
-        verbose: bool = false,
-        all: bool = false,
-    };
-
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
-    const output = buffer.items;
-
-    // Check auto-generated content
-    try testing.expect(std.mem.indexOf(u8, output, "-h, --help") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-v, --verbose") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-a, --all") != null);
 }
 
 test "mixed flags and positionals" {
@@ -789,25 +596,6 @@ test "empty string value" {
     try testing.expectEqualStrings("", result.output.?);
 }
 
-test "string option help generation" {
-    const TestArgs = struct {
-        output: ?[]const u8 = null,
-        color: ?[]const u8 = null,
-        verbose: bool = false,
-    };
-
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
-    const output = buffer.items;
-
-    // Check that string options show VALUE indicator
-    try testing.expect(std.mem.indexOf(u8, output, "--output=VALUE") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "--color=VALUE") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-v, --verbose") != null);
-}
-
 test "argv compatibility helpers" {
     const TestArgs = struct {
         help: bool = false,
@@ -950,25 +738,6 @@ test "custom metadata" {
         try testing.expect(result.mode != null);
         try testing.expectEqual(.fast, result.mode.?);
     }
-
-    // Test help generation with custom metadata
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
-    const output = buffer.items;
-
-    // Check custom descriptions
-    try testing.expect(std.mem.indexOf(u8, output, "Show usage information") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "Number of items") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "Output file path") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "Processing mode") != null);
-
-    // Check custom short flags
-    try testing.expect(std.mem.indexOf(u8, output, "-?, --help") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-n, --count=NUM") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-o, --output=FILE") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-m, --mode=CHOICE") != null);
 }
 
 test "mixed types complex scenario" {
@@ -1096,35 +865,4 @@ test "float parsing" {
         try testing.expect(result.rate != null);
         try testing.expectApproxEqAbs(@as(f32, 0.000123), result.rate.?, 0.000001);
     }
-}
-
-test "help text for all types" {
-    const TestArgs = struct {
-        verbose: bool = false,
-        count: ?u32 = null,
-        rate: ?f32 = null,
-        mode: ?enum { fast, slow, auto } = null,
-        output: ?[]const u8 = null,
-
-        pub const meta = .{
-            .verbose = .{ .short = 'v', .desc = "Enable verbose output" },
-            .count = .{ .short = 'c', .desc = "Number of iterations" },
-            .rate = .{ .short = 'r', .desc = "Sample rate", .value_name = "HZ" },
-            .mode = .{ .short = 'm', .desc = "Processing mode" },
-            .output = .{ .short = 'o', .desc = "Output file" },
-        };
-    };
-
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-
-    try ArgParser.printHelp(TestArgs, "test", buffer.writer(testing.allocator));
-    const output = buffer.items;
-
-    // Check all types are properly displayed
-    try testing.expect(std.mem.indexOf(u8, output, "-v, --verbose") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-c, --count=N") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-r, --rate=HZ") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-m, --mode=CHOICE") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "-o, --output=VALUE") != null);
 }
