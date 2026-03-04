@@ -5,21 +5,54 @@ const testing = std.testing;
 
 /// ANSI escape sequences for help text colorization.
 const esc_bold = "\x1b[1m";
+const esc_dim = "\x1b[2m";
 const esc_cyan = "\x1b[36m";
 const esc_yellow = "\x1b[33m";
+const esc_green = "\x1b[32m";
+const esc_bright_blue = "\x1b[94m";
 const esc_reset = "\x1b[0m";
 
-/// Print help text with ANSI colors when the terminal supports it.
+/// Nerd Font glyphs for help section markers.
+const glyph_usage = "\u{f0ad} "; // wrench
+const glyph_options = "\u{f1de} "; // sliders
+const glyph_examples = "\u{f0eb} "; // lightbulb
+const glyph_flag = "\u{f024} "; // flag
+
+/// Terminal capability flags for help rendering.
+pub const HelpStyle = struct {
+    use_color: bool = false,
+    use_glyphs: bool = false,
+};
+
+/// Print help text with ANSI colors and optional nerd-font glyphs
+/// when the terminal supports them.
 ///
-/// Detects whether stdout is a TTY with color support and delegates
-/// to colorizeHelp with the appropriate flag.
+/// Detects whether stdout is a TTY with color support and whether
+/// the locale indicates unicode capability. Delegates to colorizeHelp
+/// with the appropriate flags.
 pub fn printColorized(
     allocator: Allocator,
     writer: anytype,
     help_text: []const u8,
 ) !void {
-    const use_color = shouldColorize(allocator);
-    try colorizeHelp(writer, help_text, use_color);
+    const help_style = detectHelpStyle(allocator);
+    try colorizeHelp(writer, help_text, help_style);
+}
+
+/// Detect terminal capabilities for help rendering.
+///
+/// Returns color and glyph flags based on TTY status, color mode,
+/// and locale unicode support.
+pub fn detectHelpStyle(allocator: Allocator) HelpStyle {
+    if (!std.posix.isatty(std.fs.File.stdout().handle)) return .{};
+    const DummyWriter = @TypeOf(std.io.null_writer);
+    const ColorMode = style.Style(DummyWriter).ColorMode;
+    const mode = ColorMode.detect(allocator) catch return .{};
+    if (mode == .none) return .{};
+    return .{
+        .use_color = true,
+        .use_glyphs = hasUnicodeSupport(allocator),
+    };
 }
 
 /// Determine whether color output is appropriate.
@@ -27,26 +60,62 @@ pub fn printColorized(
 /// Returns true only when stdout is a TTY and the terminal supports
 /// at least basic color (NO_COLOR is not set, TERM is not "dumb").
 pub fn shouldColorize(allocator: Allocator) bool {
-    if (!std.posix.isatty(std.fs.File.stdout().handle)) return false;
-    // Use any Writer type to access ColorMode — detect() does not
-    // use the Writer type parameter at all.
-    const DummyWriter = @TypeOf(std.io.null_writer);
-    const ColorMode = style.Style(DummyWriter).ColorMode;
-    const mode = ColorMode.detect(allocator) catch return false;
-    return mode != .none;
+    return detectHelpStyle(allocator).use_color;
+}
+
+/// Check whether the locale indicates UTF-8 / unicode support.
+///
+/// Inspects LC_ALL, LC_CTYPE, and LANG in priority order. Returns
+/// true if any contains "UTF-8" or "utf8" (case-insensitive).
+pub fn hasUnicodeSupport(allocator: Allocator) bool {
+    const vars = [_][]const u8{ "LC_ALL", "LC_CTYPE", "LANG" };
+    for (vars) |name| {
+        if (std.process.getEnvVarOwned(allocator, name)) |val| {
+            defer allocator.free(val);
+            if (containsUtf8(val)) return true;
+        } else |_| {}
+    }
+    return false;
+}
+
+/// Return true if the string contains "UTF-8" or "utf8" (case-insensitive).
+fn containsUtf8(val: []const u8) bool {
+    // Check common patterns: ".UTF-8", ".utf8", ".utf-8"
+    var lower_buf: [256]u8 = undefined;
+    const len = @min(val.len, lower_buf.len);
+    for (val[0..len], 0..) |c, i| {
+        lower_buf[i] = std.ascii.toLower(c);
+    }
+    const lower = lower_buf[0..len];
+    if (std.mem.indexOf(u8, lower, "utf-8") != null) return true;
+    if (std.mem.indexOf(u8, lower, "utf8") != null) return true;
+    return false;
 }
 
 /// Write help text to writer, applying ANSI color when use_color is true.
 ///
 /// Classifies each line and applies colors:
-/// - Usage lines: bold utility name, cyan flags, yellow UPPERCASE args
-/// - Section headers: bold entire line
-/// - Flag lines: cyan flags, yellow =VALUE and UPPERCASE placeholders
-/// - DD-style operand lines: cyan name, yellow value placeholder
-/// - Everything else: unchanged
+/// - Usage lines: green label, bold utility name, cyan flags, yellow UPPERCASE args
+/// - Section headers: bold with optional nerd-font glyph
+/// - Flag lines: cyan flags, yellow =VALUE and UPPERCASE placeholders, dim description
+/// - DD-style operand lines: cyan name, yellow value placeholder, dim description
+/// - Everything else: dim text for visual hierarchy
 ///
 /// No heap allocation. Purely streaming output.
-pub fn colorizeHelp(writer: anytype, help_text: []const u8, use_color: bool) !void {
+pub fn colorizeHelp(writer: anytype, help_text: []const u8, help_style: anytype) !void {
+    // Accept either HelpStyle struct or bool for backward compatibility
+    const use_color, const use_glyphs = blk: {
+        const T = @TypeOf(help_style);
+        if (T == bool) {
+            break :blk .{ help_style, false };
+        } else if (T == HelpStyle) {
+            break :blk .{ help_style.use_color, help_style.use_glyphs };
+        } else {
+            // Comptime-known struct with use_color and use_glyphs fields
+            break :blk .{ help_style.use_color, help_style.use_glyphs };
+        }
+    };
+
     if (!use_color) {
         try writer.writeAll(help_text);
         return;
@@ -58,7 +127,7 @@ pub fn colorizeHelp(writer: anytype, help_text: []const u8, use_color: bool) !vo
         const line_end = std.mem.indexOfScalar(u8, help_text[pos..], '\n');
         const line = if (line_end) |end| help_text[pos .. pos + end] else help_text[pos..];
 
-        try colorizeLine(writer, line);
+        try colorizeLine(writer, line, use_glyphs);
 
         if (line_end) |end| {
             try writer.writeAll("\n");
@@ -70,7 +139,7 @@ pub fn colorizeHelp(writer: anytype, help_text: []const u8, use_color: bool) !vo
 }
 
 /// Classify and colorize a single line (without trailing newline).
-fn colorizeLine(writer: anytype, line: []const u8) !void {
+fn colorizeLine(writer: anytype, line: []const u8, use_glyphs: bool) !void {
     const trimmed = std.mem.trimLeft(u8, line, " ");
     const indent_len = line.len - trimmed.len;
 
@@ -84,7 +153,7 @@ fn colorizeLine(writer: anytype, line: []const u8) !void {
     if (std.mem.startsWith(u8, trimmed, "Usage:") or
         (indent_len > 0 and std.mem.startsWith(u8, trimmed, "or:")))
     {
-        try colorizeUsageLine(writer, line, indent_len, trimmed);
+        try colorizeUsageLine(writer, line, indent_len, trimmed, use_glyphs);
         return;
     }
 
@@ -105,14 +174,76 @@ fn colorizeLine(writer: anytype, line: []const u8) !void {
 
     // Section header: no leading whitespace, ends with ':'
     if (indent_len == 0 and trimmed.len > 1 and trimmed[trimmed.len - 1] == ':') {
-        try writer.writeAll(esc_bold);
-        try writer.writeAll(line);
-        try writer.writeAll(esc_reset);
+        try colorizeSectionHeader(writer, line, use_glyphs);
         return;
     }
 
-    // Default: write unchanged
+    // Default: dim text with UPPERCASE placeholder highlighting
+    try colorizeDefaultLine(writer, line);
+}
+
+/// Colorize a default (non-classified) line: dim text with UPPERCASE
+/// placeholders highlighted in yellow.
+fn colorizeDefaultLine(writer: anytype, line: []const u8) !void {
+    var in_dim = false;
+    var i: usize = 0;
+    while (i < line.len) {
+        if (line[i] == ' ') {
+            if (!in_dim) {
+                try writer.writeAll(esc_dim);
+                in_dim = true;
+            }
+            try writer.writeByte(' ');
+            i += 1;
+            continue;
+        }
+
+        var end = i;
+        while (end < line.len and line[end] != ' ') : (end += 1) {}
+        const token = line[i..end];
+
+        if (isUppercasePlaceholder(token)) {
+            if (in_dim) {
+                try writer.writeAll(esc_reset);
+                in_dim = false;
+            }
+            try writer.writeAll(esc_yellow);
+            try writer.writeAll(token);
+            try writer.writeAll(esc_reset);
+        } else {
+            if (!in_dim) {
+                try writer.writeAll(esc_dim);
+                in_dim = true;
+            }
+            try writer.writeAll(token);
+        }
+
+        i = end;
+    }
+    if (in_dim) {
+        try writer.writeAll(esc_reset);
+    }
+}
+
+/// Map well-known section header labels to nerd-font glyphs.
+fn getGlyphForSection(header: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, header, "Options:")) return glyph_options;
+    if (std.mem.eql(u8, header, "Examples:")) return glyph_examples;
+    if (std.mem.eql(u8, header, "Flags:")) return glyph_flag;
+    return null;
+}
+
+/// Colorize a section header line with optional nerd-font glyph.
+fn colorizeSectionHeader(writer: anytype, line: []const u8, use_glyphs: bool) !void {
+    try writer.writeAll(esc_bold);
+    try writer.writeAll(esc_bright_blue);
+    if (use_glyphs) {
+        if (getGlyphForSection(line)) |glyph| {
+            try writer.writeAll(glyph);
+        }
+    }
     try writer.writeAll(line);
+    try writer.writeAll(esc_reset);
 }
 
 /// Check if a trimmed line looks like a DD-style operand (word=VALUE).
@@ -129,17 +260,27 @@ fn isDdOperandLine(trimmed: []const u8) bool {
 }
 
 /// Colorize a Usage/or: line.
-fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8) !void {
+fn colorizeUsageLine(writer: anytype, line: []const u8, indent_len: usize, trimmed: []const u8, use_glyphs: bool) !void {
     // Write leading whitespace
     try writer.writeAll(line[0..indent_len]);
 
-    // Write the prefix ("Usage:" or "or:")
+    // Write the prefix ("Usage:" or "or:") in green+bold
     const prefix_end = if (std.mem.startsWith(u8, trimmed, "Usage:"))
         @as(usize, 6)
     else
         @as(usize, 3);
 
+    // Add glyph before "Usage:" label
+    if (use_glyphs and std.mem.startsWith(u8, trimmed, "Usage:")) {
+        try writer.writeAll(esc_green);
+        try writer.writeAll(glyph_usage);
+        try writer.writeAll(esc_reset);
+    }
+
+    try writer.writeAll(esc_bold);
+    try writer.writeAll(esc_green);
     try writer.writeAll(trimmed[0..prefix_end]);
+    try writer.writeAll(esc_reset);
 
     // Tokenize the rest and colorize
     const rest = trimmed[prefix_end..];
@@ -264,10 +405,17 @@ fn colorizeFlagTokens(writer: anytype, flag_part: []const u8) !void {
 }
 
 /// Colorize description text, highlighting UPPERCASE placeholders.
+/// Regular description words are rendered dim for visual hierarchy.
 fn colorizeDescriptionTokens(writer: anytype, desc: []const u8) !void {
+    // Track whether we've started the dim region
+    var in_dim = false;
     var i: usize = 0;
     while (i < desc.len) {
         if (desc[i] == ' ') {
+            if (!in_dim) {
+                try writer.writeAll(esc_dim);
+                in_dim = true;
+            }
             try writer.writeByte(' ');
             i += 1;
             continue;
@@ -278,14 +426,25 @@ fn colorizeDescriptionTokens(writer: anytype, desc: []const u8) !void {
         const token = desc[i..end];
 
         if (isUppercasePlaceholder(token)) {
+            if (in_dim) {
+                try writer.writeAll(esc_reset);
+                in_dim = false;
+            }
             try writer.writeAll(esc_yellow);
             try writer.writeAll(token);
             try writer.writeAll(esc_reset);
         } else {
+            if (!in_dim) {
+                try writer.writeAll(esc_dim);
+                in_dim = true;
+            }
             try writer.writeAll(token);
         }
 
         i = end;
+    }
+    if (in_dim) {
+        try writer.writeAll(esc_reset);
     }
 }
 
@@ -372,6 +531,8 @@ test "usage line colorization" {
     try colorizeHelp(buffer.writer(testing.allocator), text, true);
     const result = buffer.items;
 
+    // "Usage:" label should be bold green
+    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ esc_green ++ "Usage:" ++ esc_reset) != null);
     // Utility name "echo" should be bold
     try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ "echo" ++ esc_reset) != null);
     // [OPTION]... should be yellow (uppercase placeholder)
@@ -380,13 +541,66 @@ test "usage line colorization" {
     try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "[STRING]..." ++ esc_reset) != null);
 }
 
-test "section header bold" {
+test "usage line with glyphs" {
+    const text = "Usage: echo [OPTION]...\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = buffer.items;
+
+    // Should contain the usage glyph
+    try testing.expect(std.mem.indexOf(u8, result, glyph_usage) != null);
+}
+
+test "section header bold with color" {
     const text = "Options:\n";
     var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buffer.deinit(testing.allocator);
 
     try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    try testing.expectEqualStrings(esc_bold ++ "Options:" ++ esc_reset ++ "\n", buffer.items);
+    try testing.expectEqualStrings(esc_bold ++ esc_bright_blue ++ "Options:" ++ esc_reset ++ "\n", buffer.items);
+}
+
+test "section header with glyphs" {
+    const text = "Options:\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = buffer.items;
+
+    // Should contain the options glyph
+    try testing.expect(std.mem.indexOf(u8, result, glyph_options) != null);
+    // Should still be bold + bright blue
+    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ esc_bright_blue) != null);
+}
+
+test "examples header gets glyph" {
+    const text = "Examples:\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = buffer.items;
+
+    try testing.expect(std.mem.indexOf(u8, result, glyph_examples) != null);
+}
+
+test "unknown section header gets no glyph" {
+    const text = "Notes:\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = buffer.items;
+
+    // Should not contain any of the known glyphs
+    try testing.expect(std.mem.indexOf(u8, result, glyph_options) == null);
+    try testing.expect(std.mem.indexOf(u8, result, glyph_examples) == null);
+    try testing.expect(std.mem.indexOf(u8, result, glyph_flag) == null);
+    // But should still be bold + bright blue
+    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ esc_bright_blue) != null);
 }
 
 test "flag line colorization" {
@@ -400,7 +614,8 @@ test "flag line colorization" {
     // Flags should be cyan
     try testing.expect(std.mem.indexOf(u8, result, esc_cyan ++ "-n" ++ esc_reset) != null);
     try testing.expect(std.mem.indexOf(u8, result, esc_cyan ++ "--number" ++ esc_reset) != null);
-    // Description text should not have color codes around it
+    // Description text should be dim
+    try testing.expect(std.mem.indexOf(u8, result, esc_dim) != null);
     try testing.expect(std.mem.indexOf(u8, result, "number all output lines") != null);
 }
 
@@ -418,17 +633,18 @@ test "flag line with equals value" {
     try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "WHEN" ++ esc_reset) != null);
 }
 
-test "continuation lines unchanged" {
+test "continuation lines dim with uppercase highlight" {
     const text = "                  LEVEL is one of: none, noxfer, progress\n";
     var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buffer.deinit(testing.allocator);
 
     try colorizeHelp(buffer.writer(testing.allocator), text, true);
 
-    // Continuation/description lines with no leading '-' or '=' pattern
-    // should still get UPPERCASE placeholder treatment for LEVEL
+    // Continuation/description lines should have dim text with UPPERCASE
+    // placeholders highlighted in yellow
     const result = buffer.items;
     try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "LEVEL" ++ esc_reset) != null);
+    try testing.expect(std.mem.indexOf(u8, result, esc_dim) != null);
 }
 
 test "dd-style operand line" {
@@ -531,5 +747,51 @@ test "text without trailing newline" {
     defer buffer.deinit(testing.allocator);
 
     try colorizeHelp(buffer.writer(testing.allocator), text, false);
+    try testing.expectEqualStrings(text, buffer.items);
+}
+
+test "containsUtf8 detection" {
+    try testing.expect(containsUtf8("en_US.UTF-8"));
+    try testing.expect(containsUtf8("en_US.utf8"));
+    try testing.expect(containsUtf8("C.UTF-8"));
+    try testing.expect(containsUtf8("POSIX.utf-8"));
+    try testing.expect(!containsUtf8("C"));
+    try testing.expect(!containsUtf8("POSIX"));
+    try testing.expect(!containsUtf8(""));
+}
+
+test "default line gets dim treatment" {
+    const text = "Some descriptive text line.\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, true);
+    const result = buffer.items;
+
+    // Default lines should be dim
+    try testing.expect(std.mem.indexOf(u8, result, esc_dim) != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Some descriptive text line.") != null);
+}
+
+test "HelpStyle struct with color only" {
+    const text = "Options:\n  -v, --verbose    be verbose\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = false });
+    const result = buffer.items;
+
+    // Section header should have color
+    try testing.expect(std.mem.indexOf(u8, result, esc_bold) != null);
+    // No glyphs
+    try testing.expect(std.mem.indexOf(u8, result, glyph_options) == null);
+}
+
+test "HelpStyle no color passthrough" {
+    const text = "Options:\n  -v    be verbose\n";
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = false, .use_glyphs = false });
     try testing.expectEqualStrings(text, buffer.items);
 }
