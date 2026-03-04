@@ -41,17 +41,54 @@ pub fn printColorized(
 
 /// Detect terminal capabilities for help rendering.
 ///
-/// Returns color and glyph flags based on TTY status, color mode,
-/// and locale unicode support.
+/// Checks VIBEUTILS_STYLE env var first (plain/color/full), then
+/// falls back to terminal and locale detection. NO_COLOR always
+/// disables color regardless of VIBEUTILS_STYLE.
 pub fn detectHelpStyle(allocator: Allocator) HelpStyle {
-    if (!std.posix.isatty(std.fs.File.stdout().handle)) return .{};
+    const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
     const DummyWriter = @TypeOf(std.io.null_writer);
     const ColorMode = style.Style(DummyWriter).ColorMode;
-    const mode = ColorMode.detect(allocator) catch return .{};
-    if (mode == .none) return .{};
+    const mode = ColorMode.detect(allocator) catch .none;
+    const has_color = mode != .none;
+    const has_unicode = hasUnicodeSupport(allocator);
+
+    const vibe_style: ?[]const u8 = std.posix.getenv("VIBEUTILS_STYLE");
+
+    return parseVibeStyle(vibe_style, is_tty, has_color, has_unicode);
+}
+
+/// Determine help style from VIBEUTILS_STYLE value and terminal state.
+///
+/// Pure function for testability. Parameters:
+/// - vibe_style: value of VIBEUTILS_STYLE env var, or null if unset
+/// - is_tty: whether stdout is a terminal
+/// - has_color: whether the terminal supports color (NO_COLOR not set, TERM not dumb)
+/// - has_unicode: whether the locale indicates unicode support
+fn parseVibeStyle(
+    vibe_style: ?[]const u8,
+    is_tty: bool,
+    has_color: bool,
+    has_unicode: bool,
+) HelpStyle {
+    // Non-TTY always gets plain output
+    if (!is_tty) return .{};
+
+    if (vibe_style) |val| {
+        if (std.mem.eql(u8, val, "plain")) {
+            return .{};
+        } else if (std.mem.eql(u8, val, "color")) {
+            return .{ .use_color = has_color };
+        } else if (std.mem.eql(u8, val, "full")) {
+            return .{ .use_color = has_color, .use_glyphs = has_unicode };
+        }
+        // Invalid values fall through to default detection
+    }
+
+    // Default: color if supported, glyphs if unicode available
+    if (!has_color) return .{};
     return .{
         .use_color = true,
-        .use_glyphs = hasUnicodeSupport(allocator),
+        .use_glyphs = has_unicode,
     };
 }
 
@@ -111,8 +148,7 @@ pub fn colorizeHelp(writer: anytype, help_text: []const u8, help_style: anytype)
         } else if (T == HelpStyle) {
             break :blk .{ help_style.use_color, help_style.use_glyphs };
         } else {
-            // Comptime-known struct with use_color and use_glyphs fields
-            break :blk .{ help_style.use_color, help_style.use_glyphs };
+            @compileError("colorizeHelp: help_style must be bool or HelpStyle");
         }
     };
 
@@ -794,4 +830,60 @@ test "HelpStyle no color passthrough" {
 
     try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = false, .use_glyphs = false });
     try testing.expectEqualStrings(text, buffer.items);
+}
+
+test "parseVibeStyle: plain returns both false" {
+    const result = parseVibeStyle("plain", true, true, true);
+    try testing.expect(!result.use_color);
+    try testing.expect(!result.use_glyphs);
+}
+
+test "parseVibeStyle: color returns use_color true, use_glyphs false" {
+    const result = parseVibeStyle("color", true, true, true);
+    try testing.expect(result.use_color);
+    try testing.expect(!result.use_glyphs);
+}
+
+test "parseVibeStyle: full returns both true when conditions met" {
+    const result = parseVibeStyle("full", true, true, true);
+    try testing.expect(result.use_color);
+    try testing.expect(result.use_glyphs);
+}
+
+test "parseVibeStyle: full without unicode returns color only" {
+    const result = parseVibeStyle("full", true, true, false);
+    try testing.expect(result.use_color);
+    try testing.expect(!result.use_glyphs);
+}
+
+test "parseVibeStyle: invalid value falls through to default detection" {
+    // With has_color and has_unicode, default detection returns both true
+    const result = parseVibeStyle("invalid", true, true, true);
+    try testing.expect(result.use_color);
+    try testing.expect(result.use_glyphs);
+}
+
+test "parseVibeStyle: null falls through to default detection" {
+    const result = parseVibeStyle(null, true, true, true);
+    try testing.expect(result.use_color);
+    try testing.expect(result.use_glyphs);
+}
+
+test "parseVibeStyle: not a TTY returns both false regardless" {
+    const result = parseVibeStyle("full", false, true, true);
+    try testing.expect(!result.use_color);
+    try testing.expect(!result.use_glyphs);
+}
+
+test "parseVibeStyle: no_color overrides VIBEUTILS_STYLE color" {
+    // VIBEUTILS_STYLE=full but no_color is set (has_color=false)
+    const result = parseVibeStyle("full", true, false, true);
+    try testing.expect(!result.use_color);
+    try testing.expect(result.use_glyphs);
+}
+
+test "parseVibeStyle: no_color with color style disables color" {
+    const result = parseVibeStyle("color", true, false, true);
+    try testing.expect(!result.use_color);
+    try testing.expect(!result.use_glyphs);
 }

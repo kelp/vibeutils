@@ -15,6 +15,8 @@ const RmArgs = struct {
     recursive: bool = false,
     R: bool = false,
     verbose: bool = false,
+    preserve_root: bool = false,
+    no_preserve_root: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -26,6 +28,8 @@ const RmArgs = struct {
         .recursive = .{ .short = 'r', .desc = "Remove directories and their contents recursively" },
         .R = .{ .short = 'R', .desc = "Remove directories and their contents recursively (same as -r)" },
         .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
+        .preserve_root = .{ .short = 0, .desc = "Do not remove '/' (default)" },
+        .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially" },
     };
 };
 
@@ -36,6 +40,7 @@ const RmOptions = struct {
     interactive_once: bool,
     recursive: bool,
     verbose: bool,
+    preserve_root: bool,
 };
 
 /// Main entry point for the rm command with writer-based interface.
@@ -72,12 +77,14 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     }
 
     // Create options structure - merge -i/-I and -r/-R flags
+    // --preserve-root is default true; --no-preserve-root disables it
     const options = RmOptions{
         .force = parsed_args.force,
         .interactive = parsed_args.interactive,
         .interactive_once = parsed_args.interactive_once,
         .recursive = parsed_args.recursive or parsed_args.R,
         .verbose = parsed_args.verbose,
+        .preserve_root = !parsed_args.no_preserve_root,
     };
 
     const success = try removeFiles(allocator, files, stdout_writer, stderr_writer, options);
@@ -123,6 +130,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\                          or when removing recursively
         \\  -r, -R, --recursive   remove directories and their contents recursively
         \\  -v, --verbose         explain what is being done
+        \\      --preserve-root   do not remove '/' (default)
+        \\      --no-preserve-root  do not treat '/' specially
         \\      --help            display this help and exit
         \\      --version         output version information and exit
         \\
@@ -181,6 +190,13 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
     var any_errors = false;
 
     for (files) |file| {
+        // Check preserve-root protection before anything else
+        if (options.preserve_root and isRootPath(file)) {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "refusing to remove '/'; use --no-preserve-root to override", .{});
+            any_errors = true;
+            continue;
+        }
+
         // Enhanced path validation using OpenBSD-style basename checking
         if (!isPathSafeToRemove(file)) {
             if (file.len == 0) {
@@ -464,6 +480,32 @@ fn extractBasename(path: []const u8) []const u8 {
     return path[start..end];
 }
 
+/// Check if a path normalizes to the root directory "/".
+/// Catches "/", "///", "/.", etc. but NOT "/tmp" or "/usr".
+fn isRootPath(path: []const u8) bool {
+    if (path.len == 0) return false;
+
+    // Must start with /
+    if (path[0] != '/') return false;
+
+    // Strip trailing slashes and dots to normalize
+    var i: usize = path.len;
+    while (i > 1) {
+        const c = path[i - 1];
+        if (c == '/') {
+            i -= 1;
+        } else if (c == '.' and i >= 2 and path[i - 2] == '/') {
+            // Strip trailing "/." component
+            i -= 2;
+        } else {
+            break;
+        }
+    }
+
+    // If we stripped everything down to just "/", it's root
+    return i <= 1;
+}
+
 /// Enhanced path validation that combines all OpenBSD-style safety checks.
 /// Checks for empty paths, root directory, and dot/dotdot patterns.
 fn isPathSafeToRemove(path: []const u8) bool {
@@ -508,9 +550,9 @@ test "rm: root directory protection" {
 
     // Should fail (non-zero exit code)
     try testing.expect(exit_code != 0);
-    // Should have error message
+    // Should have preserve-root error message
     try testing.expect(stderr_buffer.items.len > 0);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "refusing to remove '/'") != null);
 }
 
 test "rm: empty path handling" {
@@ -657,6 +699,7 @@ test "rm: verbose recursive removal" {
         .interactive_once = false,
         .recursive = true,
         .verbose = true,
+        .preserve_root = true,
     };
 
     const success = try removeFiles(testing.allocator, &[_][]const u8{dir_path}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options);
@@ -692,6 +735,7 @@ test "rm: recursive removal with nested directories" {
         .interactive_once = false,
         .recursive = true,
         .verbose = true,
+        .preserve_root = true,
     };
 
     const success = try removeFiles(testing.allocator, &[_][]const u8{dir_path}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options);
@@ -701,4 +745,101 @@ test "rm: recursive removal with nested directories" {
     // Verify directory is gone
     const stat = std.fs.cwd().statFile(dir_path);
     try testing.expect(stat == error.FileNotFound);
+}
+
+test "isRootPath: detects root and normalized root paths" {
+    // Exact root
+    try testing.expect(isRootPath("/"));
+
+    // Multiple slashes normalize to root
+    try testing.expect(isRootPath("///"));
+    try testing.expect(isRootPath("//"));
+
+    // Trailing dot normalizes to root
+    try testing.expect(isRootPath("/."));
+    try testing.expect(isRootPath("/./"));
+
+    // Non-root paths should NOT match
+    try testing.expect(!isRootPath("/tmp"));
+    try testing.expect(!isRootPath("/usr/local/bin"));
+    try testing.expect(!isRootPath("/tmp/"));
+    try testing.expect(!isRootPath("tmp"));
+    try testing.expect(!isRootPath(""));
+    try testing.expect(!isRootPath("."));
+    try testing.expect(!isRootPath(".."));
+    try testing.expect(!isRootPath("./"));
+}
+
+test "rm: triple-slash root protection" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Test removing "///" which normalizes to "/"
+    const args = [_][]const u8{ "-rf", "///" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should fail with preserve-root error
+    try testing.expect(exit_code != 0);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "refusing to remove '/'") != null);
+}
+
+test "rm: no-preserve-root flag is parsed" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Test that --no-preserve-root is recognized as a valid flag
+    // Use a non-existent file with -f to avoid actual filesystem operations
+    const args = [_][]const u8{ "--no-preserve-root", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should succeed (exit code 0) because -f ignores nonexistent files
+    // This proves the flag is recognized and doesn't cause a parse error
+    try testing.expect(exit_code == 0);
+}
+
+test "rm: non-root path does not trigger preserve-root" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Test that /tmp/nonexistent does NOT trigger preserve-root
+    const args = [_][]const u8{ "-f", "/tmp/nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should succeed (-f ignores nonexistent) and NOT show preserve-root error
+    try testing.expect(exit_code == 0);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "refusing to remove '/'") == null);
+}
+
+test "rm: preserve-root flag is accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Test that --preserve-root is recognized (it's the default, but should be accepted)
+    const args = [_][]const u8{ "--preserve-root", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should succeed since -f ignores nonexistent files
+    try testing.expect(exit_code == 0);
+}
+
+test "rm: help text includes preserve-root flags" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--preserve-root") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--no-preserve-root") != null);
 }

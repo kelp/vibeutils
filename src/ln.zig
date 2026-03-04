@@ -100,6 +100,24 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
     return result.toOwnedSlice(allocator);
 }
 
+/// Check if a symlink target is missing (dangling symlink detection).
+/// For relative targets, resolves relative to the symlink's parent directory.
+/// Returns true if the target does not exist.
+fn isTargetMissing(target: []const u8, link_name: []const u8) bool {
+    if (std.fs.path.isAbsolute(target)) {
+        // Absolute target: check directly
+        std.fs.cwd().access(target, .{}) catch return true;
+        return false;
+    }
+
+    // Relative target: resolve relative to the symlink's parent directory
+    const link_dir = std.fs.path.dirname(link_name) orelse ".";
+    var dir = std.fs.cwd().openDir(link_dir, .{}) catch return false;
+    defer dir.close();
+    dir.access(target, .{}) catch return true;
+    return false;
+}
+
 /// Main entry point for ln command
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -449,6 +467,11 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
             return err;
         };
+
+        // Warn if the symlink target does not exist (dangling symlink)
+        if (isTargetMissing(target_path, link_name)) {
+            common.printWarningWithProgram(allocator, stderr_writer, prog_name, "creating dangling symlink: target '{s}' does not exist", .{target});
+        }
     } else {
         // Create hard link - target must exist
         std.fs.cwd().access(target, .{}) catch |err| switch (err) {
@@ -676,4 +699,66 @@ test "ln relative path calculation" {
         defer testing.allocator.free(result);
         try testing.expectEqualStrings(tc.expected, result);
     }
+}
+
+test "isTargetMissing returns true for nonexistent target" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a symlink to a nonexistent target
+    try tmp_dir.dir.symLink("nonexistent.txt", "dangling_link", .{});
+
+    // Get the full path to the link so we can test isTargetMissing
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dangling_link" });
+    defer testing.allocator.free(link_path);
+
+    try testing.expect(isTargetMissing("nonexistent.txt", link_path));
+}
+
+test "isTargetMissing returns false for existing target" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a real file and a symlink pointing to it
+    try createTestFile(tmp_dir.dir, "real_file.txt", "content");
+    try tmp_dir.dir.symLink("real_file.txt", "good_link", .{});
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "good_link" });
+    defer testing.allocator.free(link_path);
+
+    try testing.expect(!isTargetMissing("real_file.txt", link_path));
+}
+
+test "dangling symlink produces warning via createSingleLink" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "warn_link" });
+    defer testing.allocator.free(link_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Create symlink to nonexistent target using createSingleLink
+    try createSingleLink(
+        testing.allocator,
+        "nonexistent_target",
+        link_path,
+        .{ .symbolic = true },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+        true,
+    );
+
+    // Should contain a dangling symlink warning
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
 }

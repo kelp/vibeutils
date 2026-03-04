@@ -167,6 +167,11 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         };
     }
 
+    // Warn if the owner spec looks like an octal permission mode
+    if (ownership.warn_octal_confusion) {
+        common.printWarningWithProgram(allocator, stderr_writer, "chown", "'{s}' looks like a permission mode; did you mean 'chmod {s}'?", .{ owner_spec, owner_spec });
+    }
+
     // Process each file with pre-parsed ownership
     var exit_code: u8 = 0;
     for (files) |file_path| {

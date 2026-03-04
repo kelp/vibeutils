@@ -133,13 +133,14 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     }
 
     // Execute copy operations
-    const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime());
+    var hinted_overwrite = false;
+    const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime(), &hinted_overwrite);
 
     return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
 }
 
 /// Execute all copy operations
-fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions) !bool {
+fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
     const dest = args[args.len - 1];
 
     // If multiple sources, destination must be a directory
@@ -159,7 +160,7 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 
     // Process each source
     for (args[0 .. args.len - 1]) |source| {
-        const result = copySingleFile(allocator, stderr_writer, source, dest, options) catch false;
+        const result = copySingleFile(allocator, stderr_writer, source, dest, options, hinted_overwrite) catch false;
         if (!result) success = false;
     }
 
@@ -167,7 +168,7 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 }
 
 /// Copy a single file or directory
-fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions) !bool {
+fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
     // Get source file type
     const source_type = getFileTypeAtomic(source, options.no_dereference) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ source, getStandardErrorName(err) });
@@ -204,6 +205,12 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
         }
     }
 
+    // Print one-time overwrite hint when destination exists and neither -i nor -f is set
+    if (dest_exists and !options.interactive and !options.force and !hinted_overwrite.*) {
+        common.printHintWithProgram(allocator, stderr_writer, "cp", "use -i for interactive prompts before overwriting", .{});
+        hinted_overwrite.* = true;
+    }
+
     // Execute the copy based on source type
     return switch (source_type) {
         .regular_file => copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
@@ -211,7 +218,7 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
             copySymlink(allocator, stderr_writer, source, final_dest_path, options)
         else
             copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
-        .directory => copyDirectory(allocator, stderr_writer, source, final_dest_path, options),
+        .directory => copyDirectory(allocator, stderr_writer, source, final_dest_path, options, hinted_overwrite),
         .special => blk: {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}': unsupported file type", .{source});
             break :blk false;
@@ -270,7 +277,7 @@ fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []cons
 }
 
 /// Copy a directory recursively
-fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) bool {
     // Create destination directory
     std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -335,7 +342,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
         defer allocator.free(dest_child_path);
 
         // Recursively copy child
-        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options) catch false;
+        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options, hinted_overwrite) catch false;
         if (!result) success = false;
     }
 
@@ -812,4 +819,104 @@ test "cp: same file detection across devices via hardlink" {
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "same file") != null);
+}
+
+test "cp: overwrite hint printed when destination exists without -i or -f" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "source.txt", "dest.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint: use -i") != null);
+}
+
+test "cp: overwrite hint NOT printed with -i flag" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-i", "source.txt", "dest.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
+}
+
+test "cp: overwrite hint NOT printed with -f flag" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "source.txt", "dest.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
+}
+
+test "cp: overwrite hint printed only once for multiple files" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    try test_dir.createFile("src1.txt", "content 1", null);
+    try test_dir.createFile("src2.txt", "content 2", null);
+    try test_dir.createDir("dest_dir");
+    try test_dir.createFile("dest_dir/src1.txt", "old 1", null);
+    try test_dir.createFile("dest_dir/src2.txt", "old 2", null);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "src1.txt", "src2.txt", "dest_dir" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Count occurrences of "hint:" in stderr - should be exactly 1
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, stderr_buffer.items, pos, "hint:")) |idx| {
+        count += 1;
+        pos = idx + 5;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "cp: no hint when destination does not exist" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+    try test_dir.setup();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "source.txt", "new_dest.txt" };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
 }

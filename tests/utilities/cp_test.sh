@@ -554,4 +554,61 @@ test_cp() {
     else
         print_test_result "cp --no-dereference preserves symlink" "FAIL" "Symlink not preserved"
     fi
+
+    echo -e "${CYAN}Testing overwrite hint...${NC}"
+
+    # Hint should appear when overwriting without -i or -f
+    local hint_src=$(create_temp_file "Hint source")
+    local hint_dst=$(create_temp_file "Hint existing")
+    local hint_stderr=$("$binary" "$hint_src" "$hint_dst" 2>&1 >/dev/null)
+    if [[ "$hint_stderr" == *"use -i"* ]]; then
+        print_test_result "cp overwrite hint shown" "PASS"
+    else
+        print_test_result "cp overwrite hint shown" "FAIL" "Expected hint in stderr, got: $hint_stderr"
+    fi
+
+    # Hint should NOT appear with -i flag
+    local hint_i_src=$(create_temp_file "Hint -i source")
+    local hint_i_dst=$(create_temp_file "Hint -i existing")
+    local hint_i_stderr=$("$binary" -i "$hint_i_src" "$hint_i_dst" </dev/null 2>&1 >/dev/null)
+    if [[ "$hint_i_stderr" != *"hint:"* ]]; then
+        print_test_result "cp no hint with -i" "PASS"
+    else
+        print_test_result "cp no hint with -i" "FAIL" "Unexpected hint in stderr: $hint_i_stderr"
+    fi
+
+    # Hint should NOT appear with -f flag
+    local hint_f_src=$(create_temp_file "Hint -f source")
+    local hint_f_dst=$(create_temp_file "Hint -f existing")
+    local hint_f_stderr=$("$binary" -f "$hint_f_src" "$hint_f_dst" 2>&1 >/dev/null)
+    if [[ "$hint_f_stderr" != *"hint:"* ]]; then
+        print_test_result "cp no hint with -f" "PASS"
+    else
+        print_test_result "cp no hint with -f" "FAIL" "Unexpected hint in stderr: $hint_f_stderr"
+    fi
+
+    # Hint should appear only once when overwriting multiple files
+    local hint_multi_dir=$(create_temp_dir)
+    local hint_multi_src1=$(create_temp_file "Multi hint 1")
+    local hint_multi_src2=$(create_temp_file "Multi hint 2")
+    # Pre-populate destination
+    cp "$hint_multi_src1" "$hint_multi_dir/$(basename "$hint_multi_src1")"
+    cp "$hint_multi_src2" "$hint_multi_dir/$(basename "$hint_multi_src2")"
+    local hint_multi_stderr=$("$binary" "$hint_multi_src1" "$hint_multi_src2" "$hint_multi_dir" 2>&1 >/dev/null)
+    local hint_count=$(echo "$hint_multi_stderr" | grep -c "hint:" || true)
+    if [[ "$hint_count" -eq 1 ]]; then
+        print_test_result "cp hint appears only once for multiple files" "PASS"
+    else
+        print_test_result "cp hint appears only once for multiple files" "FAIL" "Expected 1 hint, got $hint_count"
+    fi
+
+    # No hint when destination does not exist
+    local hint_new_src=$(create_temp_file "No hint source")
+    local hint_new_dst="$TEMP_DIR/hint_new_dest.txt"
+    local hint_new_stderr=$("$binary" "$hint_new_src" "$hint_new_dst" 2>&1 >/dev/null)
+    if [[ "$hint_new_stderr" != *"hint:"* ]]; then
+        print_test_result "cp no hint for new destination" "PASS"
+    else
+        print_test_result "cp no hint for new destination" "FAIL" "Unexpected hint: $hint_new_stderr"
+    fi
 }

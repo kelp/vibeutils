@@ -542,4 +542,46 @@ test_mv() {
     else
         print_test_result "mv chain intermediate removed" "FAIL"
     fi
+
+    echo -e "${CYAN}Testing overwrite hint...${NC}"
+
+    # Hint should appear when overwriting with -f (overwrite succeeds, hint suggests -i)
+    local hint_src=$(create_temp_file "Hint source")
+    local hint_dst=$(create_temp_file "Hint existing")
+    local hint_stderr=$("$binary" -f "$hint_src" "$hint_dst" 2>&1 >/dev/null)
+    if [[ "$hint_stderr" == *"use -i"* ]]; then
+        print_test_result "mv overwrite hint shown" "PASS"
+    else
+        print_test_result "mv overwrite hint shown" "FAIL" "Expected hint in stderr, got: $hint_stderr"
+    fi
+
+    # Hint should NOT appear with -i flag
+    local hint_i_src=$(create_temp_file "Hint -i source")
+    local hint_i_dst=$(create_temp_file "Hint -i existing")
+    local hint_i_stderr=$("$binary" -i "$hint_i_src" "$hint_i_dst" </dev/null 2>&1 >/dev/null)
+    if [[ "$hint_i_stderr" != *"hint:"* ]]; then
+        print_test_result "mv no hint with -i" "PASS"
+    else
+        print_test_result "mv no hint with -i" "FAIL" "Unexpected hint in stderr: $hint_i_stderr"
+    fi
+
+    # Hint should NOT appear without -f (error message already mentions -f and -i)
+    local hint_default_src=$(create_temp_file "Hint default source")
+    local hint_default_dst=$(create_temp_file "Hint default existing")
+    local hint_default_stderr=$("$binary" "$hint_default_src" "$hint_default_dst" 2>&1 >/dev/null)
+    if [[ "$hint_default_stderr" != *"hint:"* ]]; then
+        print_test_result "mv no hint without -f" "PASS"
+    else
+        print_test_result "mv no hint without -f" "FAIL" "Unexpected hint in stderr: $hint_default_stderr"
+    fi
+
+    # No hint when destination does not exist
+    local hint_new_src=$(create_temp_file "No hint source")
+    local hint_new_dst="$TEMP_DIR/hint_new_dest.txt"
+    local hint_new_stderr=$("$binary" "$hint_new_src" "$hint_new_dst" 2>&1 >/dev/null)
+    if [[ "$hint_new_stderr" != *"hint:"* ]]; then
+        print_test_result "mv no hint for new destination" "PASS"
+    else
+        print_test_result "mv no hint for new destination" "FAIL" "Unexpected hint: $hint_new_stderr"
+    fi
 }

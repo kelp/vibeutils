@@ -118,7 +118,8 @@ test "mv: file rename in same directory" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, old_path, new_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, old_path, new_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify old file is gone
     try testing.expect(!test_dir.fileExists(old_name));
@@ -155,7 +156,8 @@ test "mv: move to different directory" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify original is gone
     try testing.expect(!test_dir.fileExists(source_name));
@@ -195,7 +197,8 @@ test "mv: directory move" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify original directory is gone
     test_dir.tmp_dir.dir.access("source_dir", .{}) catch |err| {
@@ -233,7 +236,8 @@ test "mv: force mode overwrites existing file" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify source is gone and dest has new content
     try testing.expect(!test_dir.fileExists(source_name));
@@ -267,7 +271,8 @@ test "mv: no-clobber mode preserves existing file" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify source still exists and dest is unchanged
     try testing.expect(test_dir.fileExists(source_name));
@@ -299,7 +304,8 @@ test "mv: files with spaces in names" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -332,7 +338,8 @@ test "mv: files with unicode characters" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -365,7 +372,8 @@ test "mv: files with special characters" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -398,7 +406,8 @@ test "mv: empty file" {
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -639,7 +648,7 @@ fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
 }
 
 /// Move file or directory with atomic rename or cross-filesystem copy
-fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype, hinted_overwrite: *bool) !void {
     // Check for same file using fstat to compare both inode and device
     if (isSameFile(source, dest)) {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
@@ -665,6 +674,14 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 return err;
             },
         }
+    }
+
+    // Print one-time overwrite hint when destination exists with -f (overwrite succeeds, hint suggests -i)
+    if (options.force and !options.interactive and !options.no_clobber and !hinted_overwrite.*) {
+        if (std.fs.cwd().access(dest, .{})) |_| {
+            common.printHintWithProgram(allocator, stderr_writer, "mv", "use -i for interactive prompts before overwriting", .{});
+            hinted_overwrite.* = true;
+        } else |_| {}
     }
 
     // Try atomic rename first
@@ -797,6 +814,8 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         .no_clobber = parsed_args.no_clobber,
     };
 
+    var hinted_overwrite = false;
+
     // Handle multiple sources case
     if (files.len > 2) {
         // Multiple sources - destination must be a directory
@@ -824,7 +843,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch {
+            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                 exit_code = common.ExitCode.general_error;
                 continue;
             };
@@ -843,7 +862,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
                 // Destination doesn't exist, proceed with normal rename
-                moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch {
+                moveFile(allocator, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                     return @intFromEnum(common.ExitCode.general_error);
                 };
 
@@ -861,7 +880,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer) catch {
+            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                 return @intFromEnum(common.ExitCode.general_error);
             };
 
@@ -870,7 +889,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             }
         } else {
             // Destination is a file, proceed with normal move/overwrite logic
-            moveFile(allocator, source, dest, options, stdout_writer, stderr_writer) catch {
+            moveFile(allocator, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                 return @intFromEnum(common.ExitCode.general_error);
             };
 
@@ -902,7 +921,8 @@ test "mv: force overwrite existing file on same filesystem" {
     defer stderr_buf.deinit(testing.allocator);
 
     // Force overwrite via moveFile (exercises PathAlreadyExists handler)
-    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Source should be gone, dest should have new content
     try testing.expect(!test_dir.fileExists(source_name));
@@ -948,7 +968,8 @@ test "mv: large file copy preserves content integrity" {
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
 
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
 
     // Source should be gone
     try testing.expect(!test_dir.fileExists(source_name));
@@ -958,4 +979,115 @@ test "mv: large file copy preserves content integrity" {
     defer testing.allocator.free(moved_content);
     try testing.expectEqual(large_size, moved_content.len);
     try testing.expectEqualSlices(u8, content, moved_content);
+}
+
+test "mv: overwrite hint printed when destination exists with -f" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "new content");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dest", "old content");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+
+    // Hint should have been shown (force succeeds, hint advises about -i)
+    try testing.expect(hinted);
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint: use -i") != null);
+}
+
+test "mv: overwrite hint NOT printed with -i flag" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "new content");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dest", "old content");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    var hinted = false;
+    // With interactive flag, the hint should not appear
+    // (moveFile will try to prompt and may error on PathAlreadyExists, but hint should not show)
+    moveFile(testing.allocator, source_path, dest_path, .{ .interactive = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted) catch {};
+
+    try testing.expect(!hinted);
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
+}
+
+test "mv: overwrite hint NOT printed with -f and -i flags" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "new content");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dest", "old content");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    var hinted = false;
+    // With both force and interactive, -i suppresses the hint
+    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true, .interactive = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+
+    try testing.expect(!hinted);
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
+}
+
+test "mv: overwrite hint NOT printed when destination does not exist" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "content");
+    defer testing.allocator.free(source_name);
+
+    const dest_name = try test_utils.uniqueTestName(testing.allocator, "dest");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getPath(".");
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+
+    try testing.expect(!hinted);
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
 }

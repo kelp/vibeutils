@@ -156,6 +156,25 @@ pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog
     writer.print(fmt ++ "\n", fmt_args) catch return;
 }
 
+/// Print hint message with custom program name to a specific writer
+///
+/// Hints are informational suggestions for the user, displayed in cyan.
+/// Use for one-time suggestions like "use -i for interactive prompts".
+pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+    // Try to use color for hints
+    const StyleType = style.Style(@TypeOf(writer));
+    var s = StyleType.init(allocator, writer) catch {
+        // Fallback to no color if style init fails
+        writer.print("{s}: hint: ", .{prog_name}) catch return;
+        writer.print(fmt ++ "\n", fmt_args) catch return;
+        return;
+    };
+    s.setColor(.bright_cyan) catch {};
+    writer.print("{s}: hint: ", .{prog_name}) catch return;
+    s.reset() catch {};
+    writer.print(fmt ++ "\n", fmt_args) catch return;
+}
+
 /// Print warning message with custom program name to a specific writer
 ///
 /// This version allows utilities to specify their program name explicitly,

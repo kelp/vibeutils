@@ -254,6 +254,11 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             break :blk false;
         };
 
+        // Warn if a numeric mode contains non-octal digits (8 or 9)
+        if (!is_symbolic and hasNonOctalDigits(mode_str)) {
+            common.printWarningWithProgram(allocator, stderr_writer, "chmod", "'{s}' contains non-octal digits; numeric modes use octal (0-7)", .{mode_str});
+        }
+
         // Pre-parse octal mode if it's not symbolic
         if (!is_symbolic) {
             parsed_octal_mode = parseMode(mode_str) catch |err| switch (err) {
@@ -387,6 +392,19 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
     if (had_errors) {
         return ChmodError.FileOperationFailed;
     }
+}
+
+/// Check if a numeric-looking mode string contains non-octal digits (8 or 9).
+/// Returns true only when the string starts with a digit and contains 8 or 9.
+/// Symbolic modes (starting with letters or operators) always return false.
+fn hasNonOctalDigits(mode_str: []const u8) bool {
+    if (mode_str.len == 0) return false;
+    // Only check strings that look numeric (start with a digit)
+    if (!std.ascii.isDigit(mode_str[0])) return false;
+    for (mode_str) |c| {
+        if (c == '8' or c == '9') return true;
+    }
+    return false;
 }
 
 /// Parse a mode string (octal or symbolic) into a Mode struct
@@ -1476,4 +1494,55 @@ test "error handling consistency" {
     try testing.expectError(ChmodError.InvalidOctalMode, parseMode("999"));
     try testing.expectError(ChmodError.InvalidMode, parseMode("u+invalid"));
     try testing.expectError(ChmodError.InvalidMode, parseMode("invalid+x"));
+}
+
+// Tests: Non-octal digit detection
+
+test "hasNonOctalDigits detects 8 and 9 in mode string" {
+    try testing.expect(hasNonOctalDigits("899"));
+    try testing.expect(hasNonOctalDigits("789"));
+}
+
+test "hasNonOctalDigits returns false for valid octal modes" {
+    try testing.expect(!hasNonOctalDigits("755"));
+    try testing.expect(!hasNonOctalDigits("644"));
+}
+
+test "hasNonOctalDigits returns false for symbolic modes" {
+    try testing.expect(!hasNonOctalDigits("u+x"));
+    try testing.expect(!hasNonOctalDigits("go-w"));
+    try testing.expect(!hasNonOctalDigits("a=rwx"));
+}
+
+test "non-octal digit warning is printed to stderr" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
+    const options = ChmodOptions{};
+
+    // Mode "899" contains non-octal digits; chmodFiles should warn on stderr
+    _ = chmodFiles(testing.allocator, "899", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch {};
+
+    // Should contain the non-octal warning
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "non-octal digits") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "899") != null);
+}
+
+test "no non-octal digit warning for valid octal mode" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
+    const options = ChmodOptions{};
+
+    // Mode "755" is valid octal; should not produce a non-octal warning
+    _ = chmodFiles(testing.allocator, "755", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch {};
+
+    // Should NOT contain non-octal warning (may contain other error messages)
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "non-octal digits") == null);
 }

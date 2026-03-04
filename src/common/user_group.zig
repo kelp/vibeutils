@@ -62,6 +62,7 @@ pub const GroupInfo = struct {
 pub const OwnershipSpec = struct {
     user: ?uid_t = null,
     group: ?gid_t = null,
+    warn_octal_confusion: bool = false,
 
     /// Parse ownership specification string like "user:group", "user:", ":group", "user"
     pub fn parse(spec: []const u8, allocator: std.mem.Allocator) Error!OwnershipSpec {
@@ -87,11 +88,30 @@ pub const OwnershipSpec = struct {
         } else {
             // User only format
             result.user = try parseUser(spec, allocator);
+            // Warn if the spec looks like an octal permission mode
+            if (looksLikeOctalMode(spec)) {
+                result.warn_octal_confusion = true;
+            }
         }
 
         return result;
     }
 };
+
+/// Check if a string looks like an octal permission mode (e.g., 644, 755, 0700).
+/// Returns true for 3-digit octal strings (like 755) or 4-digit octal strings
+/// that start with '0' (like 0755). This avoids false positives for common UIDs
+/// like 1000 which are 4-digit numbers that happen to use only octal digits.
+fn looksLikeOctalMode(spec: []const u8) bool {
+    if (spec.len < 3 or spec.len > 4) return false;
+    for (spec) |ch| {
+        if (ch < '0' or ch > '7') return false;
+    }
+    // 4-digit octal modes always start with 0 (e.g., 0755);
+    // numbers like 1000 are common UIDs, not permission modes
+    if (spec.len == 4 and spec[0] != '0') return false;
+    return true;
+}
 
 /// Parse user specification (name or numeric ID)
 pub fn parseUser(user_spec: []const u8, allocator: std.mem.Allocator) Error!uid_t {
@@ -276,4 +296,57 @@ test "lookupUserByName with nonexistent user" {
 
 test "lookupGroupByName with nonexistent group" {
     try testing.expectError(Error.GroupNotFound, lookupGroupByName("nonexistent_group_12345", testing.allocator));
+}
+
+test "octal confusion warning for 700" {
+    const spec = try OwnershipSpec.parse("700", testing.allocator);
+    try testing.expect(spec.warn_octal_confusion);
+}
+
+test "octal confusion warning for 755" {
+    const spec = try OwnershipSpec.parse("755", testing.allocator);
+    try testing.expect(spec.warn_octal_confusion);
+}
+
+test "octal confusion warning for 644" {
+    const spec = try OwnershipSpec.parse("644", testing.allocator);
+    try testing.expect(spec.warn_octal_confusion);
+}
+
+test "no octal confusion for 1000 (valid UID, 4 digits with non-octal range)" {
+    const spec = try OwnershipSpec.parse("1000", testing.allocator);
+    try testing.expect(!spec.warn_octal_confusion);
+}
+
+test "no octal confusion for username" {
+    // Non-numeric strings won't trigger the warning (they fail user lookup instead)
+    // We test with a numeric UID that doesn't look octal
+    const spec = try OwnershipSpec.parse("65534", testing.allocator);
+    try testing.expect(!spec.warn_octal_confusion);
+}
+
+test "no octal confusion for 900 (contains 9, not valid octal)" {
+    const spec = try OwnershipSpec.parse("900", testing.allocator);
+    try testing.expect(!spec.warn_octal_confusion);
+}
+
+test "octal confusion for 4-digit octal 0755" {
+    const spec = try OwnershipSpec.parse("0755", testing.allocator);
+    try testing.expect(spec.warn_octal_confusion);
+}
+
+test "octal confusion for 000" {
+    const spec = try OwnershipSpec.parse("000", testing.allocator);
+    try testing.expect(spec.warn_octal_confusion);
+}
+
+test "no octal confusion for 99 (too short)" {
+    const spec = try OwnershipSpec.parse("99", testing.allocator);
+    try testing.expect(!spec.warn_octal_confusion);
+}
+
+test "no octal confusion for user:group format" {
+    const spec = try OwnershipSpec.parse("755:100", testing.allocator);
+    // When colon is present, it's clearly a user:group spec, no warning
+    try testing.expect(!spec.warn_octal_confusion);
 }
