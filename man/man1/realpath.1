@@ -8,8 +8,8 @@
 .Sh SYNOPSIS
 .Nm realpath
 .Op Fl emsqz
-.Op Fl -relative-to Ns = Ns Ar dir
-.Op Fl -relative-base Ns = Ns Ar dir
+.Op Fl Fl relative-to Ns = Ns Ar dir
+.Op Fl Fl relative-base Ns = Ns Ar dir
 .Ar file ...
 .Sh DESCRIPTION
 The
@@ -44,10 +44,10 @@ components and produce an absolute path.
 End each output line with a NUL character instead of a newline.
 .It Fl q , Fl Fl quiet
 Suppress most error messages.
-.It Fl -relative-to Ns = Ns Ar dir
+.It Fl Fl relative-to Ns = Ns Ar dir
 Print the resolved path relative to
 .Ar dir .
-.It Fl -relative-base Ns = Ns Ar dir
+.It Fl Fl relative-base Ns = Ns Ar dir
 Print the resolved path relative to
 .Ar dir
 if the path is a descendant of
@@ -95,9 +95,9 @@ The
 .Fl s ,
 .Fl q ,
 .Fl z ,
-.Fl -relative-to ,
+.Fl Fl relative-to ,
 and
-.Fl -relative-base
+.Fl Fl relative-base
 options are extensions compatible with GNU coreutils.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

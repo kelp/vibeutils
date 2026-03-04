@@ -45,6 +45,10 @@ Copy directories recursively.
 If this option is not specified,
 .Nm
 will not copy directories.
+.It Fl h , Fl Fl help
+Display help and exit.
+.It Fl V , Fl Fl version
+Output version information and exit.
 .El
 .Sh EXIT STATUS
 .Ex -std cp
@@ -77,9 +81,8 @@ $ cp -p file1 file2
 .Sh STANDARDS
 The
 .Nm
-utility attempts to be compatible with the
+utility is compliant with the
 .St -p1003.1-2008
-specification, with additional support for modern features
-like symbolic link handling.
+specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

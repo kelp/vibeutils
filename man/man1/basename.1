@@ -64,28 +64,6 @@ hello
 world
 test.h
 .Ed
-.Pp
-Process multiple files:
-.Bd -literal -offset indent
-$ basename -a /usr/bin/ls /home/user/file.txt simple
-ls
-file.txt
-simple
-.Ed
-.Pp
-Special cases for root directories:
-.Bd -literal -offset indent
-$ basename /
-/
-$ basename //
-/
-.Ed
-.Pp
-Handle trailing slashes:
-.Bd -literal -offset indent
-$ basename /usr/bin/
-bin
-.Ed
 .Sh SEE ALSO
 .Xr dirname 1
 .Sh STANDARDS

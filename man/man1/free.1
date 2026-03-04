@@ -12,7 +12,7 @@
 .Op Fl w
 .Op Fl s Ar N
 .Op Fl c Ar N
-.Op Fl -si
+.Op Fl Fl si
 .Op Fl V
 .Sh DESCRIPTION
 The
@@ -23,26 +23,26 @@ the kernel.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
-.It Fl b , Fl -bytes
+.It Fl b , Fl Fl bytes
 Display the amount of memory in bytes.
-.It Fl k , Fl -kibi
+.It Fl k , Fl Fl kibi
 Display the amount of memory in kibibytes.
 This is the default.
-.It Fl m , Fl -mebi
+.It Fl m , Fl Fl mebi
 Display the amount of memory in mebibytes.
-.It Fl g , Fl -gibi
+.It Fl g , Fl Fl gibi
 Display the amount of memory in gibibytes.
-.It Fl h , Fl -human
+.It Fl h , Fl Fl human
 Show all output fields automatically scaled to the shortest
 three-digit unit and display the units of print out.
 Uses binary units (Ki, Mi, Gi, Ti).
-.It Fl -si
+.It Fl Fl si
 Use powers of 1000 instead of 1024.
 Modifies the behavior of
 .Fl h .
-.It Fl t , Fl -total
+.It Fl t , Fl Fl total
 Display a line showing the column totals.
-.It Fl w , Fl -wide
+.It Fl w , Fl Fl wide
 Switch to the wide mode.
 The wide mode produces lines longer than 80 characters, splitting
 .Cm buff/cache
@@ -51,19 +51,19 @@ into separate
 and
 .Cm cache
 columns.
-.It Fl s Ar N , Fl -seconds Ns = Ns Ar N
+.It Fl s Ar N , Fl Fl seconds Ns = Ns Ar N
 Continuously display the result every
 .Ar N
 seconds.
-.It Fl c Ar N , Fl -count Ns = Ns Ar N
+.It Fl c Ar N , Fl Fl count Ns = Ns Ar N
 Display the result
 .Ar N
 times.
 Requires
 .Fl s .
-.It Fl V , Fl -version
+.It Fl V , Fl Fl version
 Output version information and exit.
-.It Fl -help
+.It Fl Fl help
 Display a help message and exit.
 .El
 .Sh EXIT STATUS

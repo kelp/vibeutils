@@ -1,5 +1,4 @@
-.\" timeout(1) manual page
-.\" This is part of the vibeutils project
+.\" OpenBSD-style concise man page
 .Dd $Mdocdate$
 .Dt TIMEOUT 1
 .Os
@@ -10,8 +9,8 @@
 .Nm
 .Op Fl s Ar signal
 .Op Fl k Ar duration
-.Op Fl \-preserve-status
-.Op Fl \-foreground
+.Op Fl Fl preserve-status
+.Op Fl Fl foreground
 .Op Fl v
 .Ar duration
 .Ar command
@@ -31,7 +30,7 @@ and kills it if it is still running after the specified
 If
 .Ar command
 times out and
-.Fl \-preserve-status
+.Fl Fl preserve-status
 is not set,
 .Nm
 exits with status 124.
@@ -58,11 +57,11 @@ is still running after the initial signal, send
 .Dv KILL
 after this
 .Ar duration .
-.It Fl \-preserve-status
+.It Fl Fl preserve-status
 Exit with the same status as
 .Ar command ,
 even when it times out.
-.It Fl \-foreground
+.It Fl Fl foreground
 Do not create a separate process group for
 .Ar command .
 This allows
@@ -99,7 +98,7 @@ of 0 disables the timeout.
 .It 124
 .Ar command
 timed out and
-.Fl \-preserve-status
+.Fl Fl preserve-status
 is not set.
 .It 125
 .Nm

@@ -1,6 +1,5 @@
-.\" touch(1) manual page
-.\" This is part of the vibeutils project
-.Dd December 31, 2023
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
 .Dt TOUCH 1
 .Os
 .Sh NAME
@@ -12,7 +11,7 @@
 .Op Fl r Ar file
 .Op Fl t Ar [[CC]YY]MMDDhhmm[.ss]
 .Op Fl d Ar time
-.Op Fl -time Ns = Ns Ar word
+.Op Fl Fl time Ns = Ns Ar word
 .Ar
 .Sh DESCRIPTION
 The
@@ -38,25 +37,25 @@ Change the access time of the file.
 The modification time of the file is not changed unless the
 .Fl m
 flag is also specified.
-.It Fl c , Fl -no-create
+.It Fl c , Fl Fl no-create
 Do not create the file if it does not exist.
 The
 .Nm
 utility does not treat this as an error.
 No error messages are displayed and the exit value is not affected.
-.It Fl d , Fl -date Ns = Ns Ar time
+.It Fl d , Fl Fl date Ns = Ns Ar time
 Parse the provided human-readable
 .Ar time
 and use it instead of the current time.
 (Not yet implemented in vibeutils)
-.It Fl h , Fl -help
+.It Fl h , Fl Fl help
 Display help information and exit.
 .It Fl m
 Change the modification time of the file.
 The access time of the file is not changed unless the
 .Fl a
 flag is also specified.
-.It Fl r , Fl -reference Ns = Ns Ar file
+.It Fl r , Fl Fl reference Ns = Ns Ar file
 Use the access and modification times from the specified
 .Ar file
 instead of the current time.
@@ -95,7 +94,7 @@ The minute of the hour, from 00 to 59.
 .It Ar ss
 The second of the minute, from 00 to 59.
 .El
-.It Fl -time Ns = Ns Ar word
+.It Fl Fl time Ns = Ns Ar word
 Change the specified time:
 .Ar word
 is one of
@@ -109,7 +108,7 @@ or
 .Cm mtime
 (equivalent to
 .Fl m ) .
-.It Fl V , Fl -version
+.It Fl V , Fl Fl version
 Display version information and exit.
 .El
 .Sh EXIT STATUS
@@ -146,8 +145,8 @@ $ touch -a accessed.txt
 .Sh STANDARDS
 The
 .Nm
-utility is expected to be
-.St -p1003.2
-compatible.
+utility is compliant with the
+.St -p1003.1-2008
+specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

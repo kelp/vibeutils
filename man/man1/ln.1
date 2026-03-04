@@ -91,19 +91,6 @@ $ ln -sr /home/user/file.txt /home/user/docs/link
 $ ls -l /home/user/docs/link
 lrwxrwxrwx 1 user user 11 Jul 26 08:45 link -> ../file.txt
 .Ed
-.Sh DIAGNOSTICS
-.Bl -diag
-.It "cross-device link"
-Hard links cannot span file systems.
-Use symbolic links instead.
-.It "file exists"
-The destination file already exists.
-Use
-.Fl f
-to overwrite.
-.It "is a directory"
-Hard links cannot reference directories.
-.El
 .Sh SEE ALSO
 .Xr readlink 1 ,
 .Xr rm 1 ,

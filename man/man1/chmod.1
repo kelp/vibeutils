@@ -1,6 +1,7 @@
-.Dd August 24, 2025
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
 .Dt CHMOD 1
-.Os vibeutils
+.Os
 .Sh NAME
 .Nm chmod
 .Nd change file modes
@@ -31,10 +32,11 @@ the file that the link points to.
 Change the modes of the file hierarchies rooted in the files instead of just
 the files themselves.
 .It Fl v
-Verbose mode. Output a diagnostic for every file processed.
-.It Fl -help
+Verbose mode.
+Output a diagnostic for every file processed.
+.It Fl h , Fl Fl help
 Display help and exit.
-.It Fl -version
+.It Fl V , Fl Fl version
 Output version information and exit.
 .El
 .Pp
@@ -162,7 +164,7 @@ Recursively give the owner read, write and execute permissions:
 The
 .Nm
 utility is compliant with the
-.St -p1003.2
+.St -p1003.1-2008
 specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

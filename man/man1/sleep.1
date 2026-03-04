@@ -1,5 +1,4 @@
-.\" sleep(1) manual page
-.\" This is part of the vibeutils project
+.\" OpenBSD-style concise man page
 .Dd $Mdocdate$
 .Dt SLEEP 1
 .Os
@@ -67,29 +66,6 @@ Pause for 1 hour and 30 minutes by combining arguments:
 .Bd -literal -offset indent
 $ sleep 1h 30m
 .Ed
-.Pp
-Pause for 1 day:
-.Bd -literal -offset indent
-$ sleep 1d
-.Ed
-.Pp
-Use with negative numbers requires the
-.Fl Fl
-separator to prevent interpretation as flags:
-.Bd -literal -offset indent
-$ sleep -- -1
-sleep: invalid time interval
-.Ed
-.Sh DIAGNOSTICS
-.Bl -diag
-.It "sleep: missing operand"
-No time argument was provided.
-.It "sleep: invalid time interval"
-The time argument could not be parsed as a valid number or contains
-an invalid unit suffix.
-.It "sleep: invalid time interval: value too large"
-The specified time value exceeds the maximum supported duration.
-.El
 .Sh SEE ALSO
 .Xr usleep 3
 .Sh STANDARDS

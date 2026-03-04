@@ -1,18 +1,19 @@
-.Dd August 24, 2025
+.\" OpenBSD-style concise man page
+.Dd $Mdocdate$
 .Dt CHOWN 1
-.Os vibeutils
+.Os
 .Sh NAME
 .Nm chown
 .Nd change file owner and group
 .Sh SYNOPSIS
 .Nm chown
 .Op Fl cfhRv
-.Op Fl -reference Ns = Ns Ar rfile
+.Op Fl Fl reference Ns = Ns Ar rfile
 .Ar owner Ns Op : Ns Ar group
 .Ar file ...
 .Nm chown
 .Op Fl cfhRv
-.Op Fl -reference Ns = Ns Ar rfile
+.Op Fl Fl reference Ns = Ns Ar rfile
 .Ar :group
 .Ar file ...
 .Sh DESCRIPTION
@@ -22,31 +23,31 @@ utility changes the user ID and/or the group ID of the specified files.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
-.It Fl c , Fl -changes
+.It Fl c , Fl Fl changes
 Like verbose but report only when a change is made.
-.It Fl f , Fl -silent , Fl -quiet
+.It Fl f , Fl Fl silent , Fl Fl quiet
 Suppress most error messages.
-.It Fl h , Fl -no-dereference
+.It Fl h , Fl Fl no-dereference
 If the file is a symbolic link, change the owner of the link itself,
 rather than the file that the link points to.
-.It Fl R , Fl -recursive
+.It Fl R , Fl Fl recursive
 Change the user ID and/or the group ID for the file hierarchies rooted
 in the files instead of just the files themselves.
-.It Fl v , Fl -verbose
+.It Fl v , Fl Fl verbose
 Output a diagnostic for every file processed.
-.It Fl -dereference
+.It Fl Fl dereference
 Affect the referent of each symbolic link (default), rather than the
 symbolic link itself.
-.It Fl -from Ns = Ns Ar current_owner : Ns Ar current_group
+.It Fl Fl from Ns = Ns Ar current_owner : Ns Ar current_group
 Change the owner and/or group of each file only if its current owner
 and/or group match those specified here.
-.It Fl -reference Ns = Ns Ar rfile
+.It Fl Fl reference Ns = Ns Ar rfile
 Use the owner and group of
 .Ar rfile
 instead of specifying values.
-.It Fl -help
+.It Fl Fl help
 Display help and exit.
-.It Fl -version
+.It Fl Fl version
 Output version information and exit.
 .El
 .Pp
@@ -102,7 +103,7 @@ Copy ownership from another file:
 The
 .Nm
 utility is compliant with the
-.St -p1003.2
+.St -p1003.1-2008
 specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"
