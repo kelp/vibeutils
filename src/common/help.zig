@@ -515,18 +515,26 @@ fn colorizeDdLine(writer: anytype, line: []const u8, indent_len: usize, trimmed:
 
 /// Return true if token is an UPPERCASE placeholder (2+ chars, all
 /// uppercase letters, digits, underscores, or surrounding punctuation
-/// like [] and ...).
+/// like [], ..., trailing commas, and (s) suffixes).
 fn isUppercasePlaceholder(token: []const u8) bool {
     if (token.len < 2) return false;
 
-    // Strip surrounding brackets/parens/ellipsis for checking
+    // Strip surrounding punctuation for checking
     var start: usize = 0;
     var end: usize = token.len;
 
-    // Strip leading punctuation
+    // Strip leading brackets/parens
     while (start < end and (token[start] == '[' or token[start] == '(')) : (start += 1) {}
-    // Strip trailing punctuation
-    while (end > start and (token[end - 1] == ']' or token[end - 1] == ')' or token[end - 1] == '.')) : (end -= 1) {}
+    // Strip trailing punctuation: brackets, parens, ellipsis, commas, semicolons, colons
+    while (end > start and (token[end - 1] == ']' or token[end - 1] == ')' or
+        token[end - 1] == '.' or token[end - 1] == ',' or
+        token[end - 1] == ';' or token[end - 1] == ':')) : (end -= 1)
+    {}
+
+    // Handle (s) suffix: "SOURCE(s)" → strip "(s" from end
+    if (end > start + 2 and token[end - 1] == 's' and token[end - 2] == '(') {
+        end -= 2;
+    }
 
     if (end <= start) return false;
     const inner = token[start..end];
@@ -752,6 +760,16 @@ test "isUppercasePlaceholder" {
     // Actually "N" stripped is "N" which is 1 char — returns false
     try testing.expect(!isUppercasePlaceholder("N"));
     try testing.expect(isUppercasePlaceholder("NR"));
+
+    // Trailing punctuation
+    try testing.expect(isUppercasePlaceholder("DEST,"));
+    try testing.expect(isUppercasePlaceholder("DEST;"));
+    try testing.expect(isUppercasePlaceholder("DEST:"));
+    try testing.expect(isUppercasePlaceholder("DIRECTORY."));
+
+    // Plural suffix (s)
+    try testing.expect(isUppercasePlaceholder("SOURCE(s)"));
+    try testing.expect(isUppercasePlaceholder("FILE(s)"));
 
     // Not placeholders
     try testing.expect(!isUppercasePlaceholder("a"));
