@@ -1335,8 +1335,11 @@ full design.
 
 ### 3b. ls Git Status Auto-Detection ✓
 - [x] Auto-enable git status when inside a git repo
-- [x] `--no-git` flag to disable
+- [x] `--git=WHEN` flag (always/auto/never)
 - [x] Respects VIBEUTILS_STYLE (plain/color disable git)
+- [x] Fix: suppress git status and icons in `-1` mode
+- [x] Fix: alphabetize `--help` flags
+- [x] Fix: flush stderr in `fatalWithWriter` before exit
 
 ### 4. Color-Coded Numeric Output
 - [ ] `df`: green/yellow/red by usage percentage
