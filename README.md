@@ -10,11 +10,15 @@ vibeutils covers the 80% of GNU coreutils you actually use,
 with modern terminal enhancements that activate
 automatically.
 
+![ls with icons, git status, and relative timestamps](docs/images/ls-icons.png)
+
 **ls** gains the most:
 - `--icons` — Nerd Font file type icons
 - `--git` — inline git status per file
 - `--time-style=relative` — "2 hours ago" instead of
   timestamps (default in long format)
+
+![Colored help output with syntax highlighting](docs/images/cp-help.png)
 
 **Across all utilities:**
 - Colored `--help` with syntax-highlighted flags
