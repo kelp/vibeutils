@@ -1014,6 +1014,7 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] **Code quality**: Pre-commit hook for automatic formatting and testing
 - [x] **Coverage system**: Removed non-functional coverage system (Zig 0.15.1 lacks native coverage)
 - [x] **CI/CD pipeline**: GitHub Actions workflows for cross-platform testing
+- [x] **Multi-platform releases**: GitHub Actions matrix build (linux arm64/amd64, darwin arm64/amd64)
 - [ ] Add install targets for man pages
 - [ ] Add benchmarking infrastructure (see Benchmarking System section)
 
@@ -1025,6 +1026,8 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
   - [x] Brief SEE ALSO
   - [x] No verbose explanations
 - [x] Help text standardization (via --help flag)
+- [x] Help text consistency test (automated checks across all utilities)
+- [x] Man page standardization (mdoc format, consistent sections across 48 pages)
 - [x] Design philosophy document
 - [x] Zig patterns reference (ZIG_PATTERNS.md)
 - [x] Standard library summary (STD_LIBRARY_SUMMARY.md)
@@ -1037,7 +1040,10 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 ### Color Support
 - [x] Terminal capability detection (basic, 256, truecolor)
 - [x] NO_COLOR environment variable support
+- [x] VIBEUTILS_STYLE environment variable (plain/color/full)
 - [x] Graceful fallback for limited terminals
+- [x] Colored help output with syntax highlighting
+- [x] Nerd Font glyphs in help and ls
 - [ ] LS_COLORS parsing and theming
 - [ ] Accessibility modes
 - [ ] User-configurable color themes
@@ -1300,6 +1306,9 @@ full design.
 - [x] Bold utility name and section headers
 - [x] Cyan flag names, yellow arguments
 - [x] Respect NO_COLOR, plain text when piped
+- [x] Nerd-font glyphs for section headers
+- [x] Yellow UPPERCASE metavariable highlighting in descriptions
+- [x] Handle trailing punctuation and (s) suffixes
 
 ### 2. `grep --color=auto` ✓
 - [x] Highlight matched text in bold red
@@ -1307,10 +1316,27 @@ full design.
 - [x] `--color=auto/always/never` flags
 - [x] Match GNU grep color conventions
 
-### 3. `VIBEUTILS_MODERN=1` Environment Variable
-- [ ] Add `common.isModernMode()` check
+### 3. `VIBEUTILS_STYLE` Environment Variable ✓
+- [x] `VIBEUTILS_STYLE=full` (default): color, icons, git status
+- [x] `VIBEUTILS_STYLE=color`: color only, no icons or glyphs
+- [x] `VIBEUTILS_STYLE=plain`: no color, no icons, no glyphs
+- [x] Overrides TTY detection when explicitly set
+- [x] NO_COLOR still respected
+- [x] Integrated in ls, grep, du, and help output
 - [ ] `df`, `du`, `ls -l`: human-readable by default
 - [ ] Explicit flags always override
+
+### 3a. Command Linter Warnings ✓
+- [x] chown: warn when argument looks like octal mode
+- [x] chmod: warn when numeric mode contains 8 or 9
+- [x] rm: refuse to remove '/' without --no-preserve-root
+- [x] cp/mv: hint about -i for interactive overwrite prompts
+- [x] ln: warn when creating dangling symlinks
+
+### 3b. ls Git Status Auto-Detection ✓
+- [x] Auto-enable git status when inside a git repo
+- [x] `--no-git` flag to disable
+- [x] Respects VIBEUTILS_STYLE (plain/color disable git)
 
 ### 4. Color-Coded Numeric Output
 - [ ] `df`: green/yellow/red by usage percentage
