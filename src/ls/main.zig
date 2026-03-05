@@ -42,6 +42,7 @@ const LsArgs = struct {
     test_icons: bool = false,
     time_style: ?[]const u8 = null,
     git: bool = false,
+    no_git: bool = false,
     positionals: []const []const u8 = &.{},
 
     /// Metadata for argument parser help generation
@@ -68,7 +69,8 @@ const LsArgs = struct {
         .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
         .test_icons = .{ .short = 0, .desc = "Show sample icons to test Nerd Font support" },
         .time_style = .{ .short = 0, .desc = "Time/date format (valid: default, relative, iso, long-iso)", .value_name = "STYLE" },
-        .git = .{ .short = 0, .desc = "Show git status indicators for files" },
+        .git = .{ .short = 0, .desc = "show git status indicators for files" },
+        .no_git = .{ .short = 0, .desc = "disable git status (overrides auto-detection)" },
     };
 };
 
@@ -230,7 +232,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .comma_format = args.comma_format,
         .icon_mode = icon_mode,
         .time_style = time_style,
-        .show_git_status = args.git,
+        .show_git_status = resolveGitMode(args.git, args.no_git),
         .is_terminal = is_terminal,
     };
 
@@ -291,7 +293,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --icons=WHEN           when to show icons (valid: always, auto, never)
         \\      --test-icons           test Nerd Font icon rendering
         \\      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
-        \\      --git                  show git status indicators for files
+        \\      --git                  show git status indicators (default in git repos)
+        \\      --no-git               disable git status (overrides auto-detection)
         \\  -V, --version              output version information and exit
         \\      --help                 display this help and exit
         \\
@@ -301,7 +304,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  ls -lh       List files with human-readable sizes
         \\  ls -t        List files sorted by modification time
         \\  ls --icons=always --color=always  List with colors and icons
-        \\  ls --git     Show git status for files
+        \\  ls --no-git  List without git status indicators
         \\
     );
 }
@@ -432,6 +435,49 @@ fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_
     defer visited_fs_ids.deinit();
 
     try core.listDirectoryImplWithVisited(dir, path, writer, stderr_writer, options, allocator, style, &visited_fs_ids, git_context);
+}
+
+/// Determine whether to show git status indicators.
+/// Priority: --no-git > --git > VIBEUTILS_STYLE > auto-detect .git dir
+fn resolveGitMode(explicit_git: bool, explicit_no_git: bool) bool {
+    // Explicit --no-git always wins
+    if (explicit_no_git) return false;
+    // Explicit --git always enables
+    if (explicit_git) return true;
+
+    // VIBEUTILS_STYLE: plain and color disable git, full enables
+    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
+        if (std.mem.eql(u8, vibe_style, "plain") or
+            std.mem.eql(u8, vibe_style, "color"))
+        {
+            return false;
+        }
+        // "full" falls through to auto-detect
+    }
+
+    // Auto-detect: enable if we're inside a git repo
+    return isInGitRepo();
+}
+
+/// Check if the current directory is inside a git repository
+/// by walking up looking for a .git directory or file.
+fn isInGitRepo() bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = std.process.getCwd(&buf) catch return false;
+    var path: []const u8 = cwd;
+    while (true) {
+        // Check for .git (directory or file for worktrees)
+        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
+        defer dir.close();
+        if (dir.statFile(".git")) |_| {
+            return true;
+        } else |_| {}
+
+        // Move to parent
+        const parent = std.fs.path.dirname(path) orelse return false;
+        if (std.mem.eql(u8, parent, path)) return false;
+        path = parent;
+    }
 }
 
 // Include security tests
