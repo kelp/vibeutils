@@ -23,7 +23,7 @@
       in {
         packages.default = pkgs.stdenvNoCC.mkDerivation {
           pname = "vibeutils";
-          version = "0.7.0";
+          version = "0.7.1";
 
           src = ./.;
 
