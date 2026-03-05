@@ -1,6 +1,13 @@
 {
   description = "Zig coreutils with modern UX";
 
+  nixConfig = {
+    extra-substituters = [ "https://vibeutils.cachix.org" ];
+    extra-trusted-public-keys = [
+      "vibeutils.cachix.org-1:kZjdX4Bz2/VdgK9dCwE5G3C7ygrptzPTFQMH32Ng0WU="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
@@ -21,7 +28,7 @@
         pkgs = import nixpkgs { inherit system; };
         zig = zig-overlay.packages.${system}."0.15.2";
       in {
-        packages.default = pkgs.stdenvNoCC.mkDerivation {
+        packages.default = pkgs.stdenv.mkDerivation {
           pname = "vibeutils";
           version = "0.7.1";
 
