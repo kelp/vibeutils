@@ -70,9 +70,8 @@ fn parseVibeStyle(
     has_color: bool,
     has_unicode: bool,
 ) HelpStyle {
-    // Non-TTY always gets plain output
-    if (!is_tty) return .{};
-
+    // Explicit VIBEUTILS_STYLE overrides TTY detection
+    // (NO_COLOR still respected via has_color)
     if (vibe_style) |val| {
         if (std.mem.eql(u8, val, "plain")) {
             return .{};
@@ -83,6 +82,9 @@ fn parseVibeStyle(
         }
         // Invalid values fall through to default detection
     }
+
+    // Non-TTY gets plain output by default
+    if (!is_tty) return .{};
 
     // Default: color if supported, glyphs if unicode available
     if (!has_color) return .{};
@@ -869,8 +871,14 @@ test "parseVibeStyle: null falls through to default detection" {
     try testing.expect(result.use_glyphs);
 }
 
-test "parseVibeStyle: not a TTY returns both false regardless" {
+test "parseVibeStyle: explicit style overrides non-TTY" {
     const result = parseVibeStyle("full", false, true, true);
+    try testing.expect(result.use_color);
+    try testing.expect(result.use_glyphs);
+}
+
+test "parseVibeStyle: non-TTY without explicit style returns plain" {
+    const result = parseVibeStyle(null, false, true, true);
     try testing.expect(!result.use_color);
     try testing.expect(!result.use_glyphs);
 }
