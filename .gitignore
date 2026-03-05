@@ -64,3 +64,6 @@ result
 .env
 .env.local
 local_*
+
+# Worktrees
+.worktrees/
