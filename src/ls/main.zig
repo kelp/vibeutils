@@ -166,18 +166,28 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         return;
     }
 
-    // Parse color mode
-    // Default to 'auto' which enables colors in terminal but not in pipes
+    // Parse color and icon modes.
+    // Priority: explicit flags > LS_ICONS env > VIBEUTILS_STYLE env > auto
     var color_mode = ColorMode.auto;
+    var icon_mode = common.icons.getIconModeFromEnv(allocator);
+
+    // VIBEUTILS_STYLE sets defaults when no explicit flags are given
+    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
+        if (std.mem.eql(u8, vibe_style, "plain")) {
+            color_mode = .never;
+            icon_mode = .never;
+        } else if (std.mem.eql(u8, vibe_style, "color")) {
+            icon_mode = .never;
+        }
+        // "full" keeps defaults (auto/auto)
+    }
+
+    // Explicit flags override everything
     if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
             common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
         };
     }
-
-    // Parse icon mode
-    // First check environment variable LS_ICONS, then command-line override
-    var icon_mode = common.icons.getIconModeFromEnv(allocator);
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
             common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});

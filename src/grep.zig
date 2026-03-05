@@ -102,6 +102,13 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
     var opts = GrepOptions{};
     errdefer opts.deinit(allocator);
 
+    // VIBEUTILS_STYLE sets default color mode (explicit --color overrides)
+    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
+        if (std.mem.eql(u8, vibe_style, "plain")) {
+            opts.color = .never;
+        }
+    }
+
     var i: usize = 0;
     var saw_double_dash = false;
 

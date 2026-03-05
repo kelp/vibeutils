@@ -138,7 +138,14 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         config.max_depth = std.fmt.parseInt(u64, depth_str, 10) catch return error.InvalidMaxDepth;
     }
 
-    // Parse color mode
+    // VIBEUTILS_STYLE sets default color mode (explicit --color overrides)
+    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
+        if (std.mem.eql(u8, vibe_style, "plain")) {
+            config.color_mode = .never;
+        }
+    }
+
+    // Parse explicit color mode (overrides VIBEUTILS_STYLE)
     if (opts.color) |when| {
         if (std.mem.eql(u8, when, "always")) {
             config.color_mode = .always;
