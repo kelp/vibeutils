@@ -448,7 +448,7 @@ pub fn printEntries(
                     try writer.print("? ", .{});
                 }
             }
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options.file_type_indicators, false, false);
             try writer.writeByte('\n');
         }
     } else if (options.long_format) {

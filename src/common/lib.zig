@@ -115,9 +115,16 @@ pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
 /// common.fatalWithWriter(stderr, "cannot open file: {s}", .{filename});
 /// // Output: myprogram: cannot open file: test.txt
 /// ```
-pub fn fatalWithWriter(stderr_writer: anytype, comptime fmt: []const u8, fmt_args: anytype) noreturn {
+pub fn fatalWithWriter(_: anytype, comptime fmt: []const u8, fmt_args: anytype) noreturn {
+    // Write directly to stderr with a dedicated buffer to guarantee
+    // output is flushed before exit. The passed writer may be buffered
+    // with no way to flush through the interface pointer.
+    var buf: [4096]u8 = undefined;
+    var w = std.fs.File.stderr().writer(&buf);
+    const stderr = &w.interface;
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-    stderr_writer.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
+    stderr.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
+    stderr.flush() catch {};
     std.process.exit(@intFromEnum(ExitCode.general_error));
 }
 

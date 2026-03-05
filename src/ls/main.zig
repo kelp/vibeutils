@@ -41,8 +41,7 @@ const LsArgs = struct {
     icons: ?[]const u8 = null,
     test_icons: bool = false,
     time_style: ?[]const u8 = null,
-    git: bool = false,
-    no_git: bool = false,
+    git: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
 
     /// Metadata for argument parser help generation
@@ -69,8 +68,7 @@ const LsArgs = struct {
         .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
         .test_icons = .{ .short = 0, .desc = "Show sample icons to test Nerd Font support" },
         .time_style = .{ .short = 0, .desc = "Time/date format (valid: default, relative, iso, long-iso)", .value_name = "STYLE" },
-        .git = .{ .short = 0, .desc = "show git status indicators for files" },
-        .no_git = .{ .short = 0, .desc = "disable git status (overrides auto-detection)" },
+        .git = .{ .short = 0, .desc = "when to show git status (valid: always, auto, never)", .value_name = "WHEN" },
     };
 };
 
@@ -196,6 +194,15 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         };
     }
 
+    if (args.git) |git_arg| {
+        if (!std.mem.eql(u8, git_arg, "always") and
+            !std.mem.eql(u8, git_arg, "auto") and
+            !std.mem.eql(u8, git_arg, "never"))
+        {
+            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--git'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{git_arg});
+        }
+    }
+
     // Parse time style
     // Default to traditional format; -h implies relative unless explicit --time-style
     var time_style = TimeStyle.default;
@@ -232,7 +239,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .comma_format = args.comma_format,
         .icon_mode = icon_mode,
         .time_style = time_style,
-        .show_git_status = resolveGitMode(args.git, args.no_git),
+        .show_git_status = resolveGitMode(args.git),
         .is_terminal = is_terminal,
     };
 
@@ -275,26 +282,25 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\  -a, --all                  do not ignore entries starting with .
         \\  -A, --almost-all           do not list implied . and ..
-        \\  -l, --long-format          use a long listing format
-        \\  -h, --human-readable       with -l, print sizes in human readable format
-        \\  -k, --kilobytes            with -l, print sizes in kilobytes
-        \\  -1, --one-per-line         list one file per line
+        \\      --color=WHEN           when to use colors (valid: always, auto, never)
+        \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
         \\  -F, --file-type-indicators append indicator (one of */=>@|) to entries
-        \\  -i, --show-inodes          print the index number of each file
-        \\  -m, --comma-format         fill width with a comma separated list of entries
-        \\  -n, --numeric-ids          with -l, show numeric user and group IDs
-        \\  -R, --recursive            list subdirectories recursively
-        \\  -t, --sort-by-time         sort by modification time, newest first
-        \\  -S, --sort-by-size         sort by file size, largest first
-        \\  -r, --reverse-sort         reverse order while sorting
-        \\      --color=WHEN           when to use colors (valid: always, auto, never)
+        \\      --git=WHEN             when to show git status (valid: always, auto, never)
         \\      --group-directories-first  group directories before files
+        \\  -h, --human-readable       with -l, print sizes in human readable format
         \\      --icons=WHEN           when to show icons (valid: always, auto, never)
+        \\  -k, --kilobytes            with -l, print sizes in kilobytes
+        \\  -l, --long-format          use a long listing format
+        \\  -n, --numeric-ids          with -l, show numeric user and group IDs
+        \\  -1, --one-per-line         list one file per line
+        \\  -R, --recursive            list subdirectories recursively
+        \\  -r, --reverse-sort         reverse order while sorting
+        \\  -i, --show-inodes          print the index number of each file
+        \\  -S, --sort-by-size         sort by file size, largest first
+        \\  -t, --sort-by-time         sort by modification time, newest first
         \\      --test-icons           test Nerd Font icon rendering
         \\      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
-        \\      --git                  show git status indicators (default in git repos)
-        \\      --no-git               disable git status (overrides auto-detection)
         \\  -V, --version              output version information and exit
         \\      --help                 display this help and exit
         \\
@@ -304,7 +310,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  ls -lh       List files with human-readable sizes
         \\  ls -t        List files sorted by modification time
         \\  ls --icons=always --color=always  List with colors and icons
-        \\  ls --no-git  List without git status indicators
+        \\  ls --git=never  List without git status indicators
         \\
     );
 }
@@ -438,14 +444,15 @@ fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_
 }
 
 /// Determine whether to show git status indicators.
-/// Priority: --no-git > --git > VIBEUTILS_STYLE > auto-detect .git dir
-fn resolveGitMode(explicit_git: bool, explicit_no_git: bool) bool {
-    // Explicit --no-git always wins
-    if (explicit_no_git) return false;
-    // Explicit --git always enables
-    if (explicit_git) return true;
+/// Priority: explicit --git=WHEN > VIBEUTILS_STYLE > auto-detect .git dir
+fn resolveGitMode(git_arg: ?[]const u8) bool {
+    if (git_arg) |value| {
+        if (std.mem.eql(u8, value, "always")) return true;
+        if (std.mem.eql(u8, value, "never")) return false;
+        // "auto" falls through to auto-detect
+    }
 
-    // VIBEUTILS_STYLE: plain and color disable git, full enables
+    // No flag or --git=auto: check VIBEUTILS_STYLE
     if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
         if (std.mem.eql(u8, vibe_style, "plain") or
             std.mem.eql(u8, vibe_style, "color"))
