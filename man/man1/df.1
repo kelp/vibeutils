@@ -24,7 +24,12 @@ argument.
 With no arguments, disk space is shown for all currently mounted
 file systems.
 .Pp
-Values are displayed in 1K-blocks by default.
+By default, sizes are displayed in human-readable format
+(powers of 1024) with colored usage percentages and visual
+usage bars.
+Use
+.Fl P
+for POSIX-compatible plain output without colors or bars.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
@@ -33,6 +38,7 @@ Include pseudo, duplicate, and inaccessible file systems in the
 output.
 .It Fl h , Fl Fl human-readable
 Print sizes in powers of 1024 (e.g., 1023M).
+This is the default.
 .It Fl H , Fl Fl si
 Print sizes in powers of 1000 (e.g., 1.1G).
 .It Fl i , Fl Fl inodes
@@ -40,10 +46,12 @@ List inode information instead of block usage.
 .It Fl k
 Like
 .Fl Fl block-size Ns = Ns 1K .
+Disables human-readable output.
 .It Fl l , Fl Fl local
 Limit listing to local file systems.
 .It Fl P , Fl Fl portability
 Use the POSIX output format (one line per filesystem).
+Disables human-readable sizes, colored output, and usage bars.
 .It Fl T , Fl Fl print-type
 Print file system type.
 .It Fl t Ar type , Fl Fl type Ns = Ns Ar type
@@ -71,28 +79,45 @@ Display a help message and exit.
 .It Fl Fl version
 Output version information and exit.
 .El
+.Sh ENVIRONMENT
+.Bl -tag -width VIBEUTILS_STYLE
+.It Ev VIBEUTILS_STYLE
+Controls visual enhancements.
+Accepted values:
+.Cm full
+(colored output with usage bars, the default),
+.Cm color
+(colored percentage only, no bars), and
+.Cm plain
+(no colors or visual enhancements).
+.It Ev NO_COLOR
+If set, disables all colored output.
+See
+.Lk https://no-color.org .
+.El
 .Sh EXIT STATUS
 .Ex -std df
 .Sh EXAMPLES
 Show disk usage for all mounted file systems:
 .Bd -literal -offset indent
 $ df
-Filesystem     1K-blocks      Used Available Use% Mounted on
-/dev/disk1s1  488245288 234567890 253677398  48% /
+Filesystem       Size       Used  Available  Use%             Usage Mounted on
+/dev/disk3s1     926G       867G        59G   94% [\:██████████]  94% /
+/dev/disk5s1     8.3G       8.1G       255M   97% [\:██████████]  97% /Volumes/watchOS
 .Ed
 .Pp
-Show disk usage in human-readable format:
+Show disk usage in POSIX mode:
 .Bd -literal -offset indent
-$ df -h
-Filesystem      Size  Used Avail Use% Mounted on
-/dev/disk1s1    466G  224G  242G  48% /
+$ df -P /
+Filesystem       1K-blocks       Used  Available  Use% Mounted on
+/dev/disk3s1     971350180  909612836   61737344   94% /
 .Ed
 .Pp
 Show file system types:
 .Bd -literal -offset indent
 $ df -T /
-Filesystem     Type  1K-blocks      Used Available Use% Mounted on
-/dev/disk1s1   apfs 488245288 234567890 253677398  48% /
+Filesystem   Type       Size       Used  Available  Use%             Usage Mounted on
+/dev/disk3s1 apfs       926G       867G        59G   94% [\:██████████]  94% /
 .Ed
 .Sh SEE ALSO
 .Xr du 1 ,

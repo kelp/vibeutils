@@ -71,9 +71,24 @@ const BlockSize = enum {
     custom,
 };
 
+const StyleMode = enum {
+    full,
+    color,
+    plain,
+};
+
+fn parseStyleMode(env_val: ?[]const u8) StyleMode {
+    const val = env_val orelse return .full;
+    if (std.mem.eql(u8, val, "plain")) return .plain;
+    if (std.mem.eql(u8, val, "color")) return .color;
+    if (std.mem.eql(u8, val, "full")) return .full;
+    return .full; // unknown values default to full
+}
+
 const DfOptions = struct {
     all: bool = false,
-    human_readable: bool = false,
+    human_readable: bool = true,
+    style_mode: StyleMode = .full,
     si: bool = false,
     inodes: bool = false,
     block_1k: bool = false,
@@ -114,6 +129,7 @@ const FsInfo = struct {
 
 fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOptions, err: ?[]const u8 } {
     var opts = DfOptions{};
+    opts.style_mode = parseStyleMode(std.posix.getenv("VIBEUTILS_STYLE"));
     var err_msg: ?[]const u8 = null;
     var positionals = std.ArrayListUnmanaged([]const u8){};
     var i: usize = 0;
@@ -161,6 +177,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                 opts.local = true;
             } else if (std.mem.eql(u8, arg, "--portability")) {
                 opts.portability = true;
+                opts.human_readable = false;
+                opts.style_mode = .plain;
             } else if (std.mem.eql(u8, arg, "--print-type")) {
                 opts.print_type = true;
             } else if (std.mem.eql(u8, arg, "--total")) {
@@ -171,6 +189,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                     err_msg = "invalid --block-size argument";
                     break;
                 };
+                opts.human_readable = false;
             } else if (std.mem.eql(u8, arg, "--block-size")) {
                 if (i + 1 < args.len) {
                     i += 1;
@@ -178,6 +197,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                         err_msg = "invalid --block-size argument";
                         break;
                     };
+                    opts.human_readable = false;
                 } else {
                     err_msg = "option '--block-size' requires an argument";
                     break;
@@ -222,9 +242,16 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                 'h' => opts.human_readable = true,
                 'H' => opts.si = true,
                 'i' => opts.inodes = true,
-                'k' => opts.block_1k = true,
+                'k' => {
+                    opts.block_1k = true;
+                    opts.human_readable = false;
+                },
                 'l' => opts.local = true,
-                'P' => opts.portability = true,
+                'P' => {
+                    opts.portability = true;
+                    opts.human_readable = false;
+                    opts.style_mode = .plain;
+                },
                 'T' => opts.print_type = true,
                 't' => {
                     if (j + 1 < arg.len) {
@@ -345,11 +372,11 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
             .fstype = fstype,
             .mount_point = mount_point,
             .total_blocks = fs.f_blocks,
-            .used_blocks = fs.f_blocks - fs.f_bfree,
+            .used_blocks = fs.f_blocks -| fs.f_bfree,
             .avail_blocks = fs.f_bavail,
             .block_size = fs.f_bsize,
             .total_inodes = fs.f_files,
-            .used_inodes = fs.f_files - fs.f_ffree,
+            .used_inodes = fs.f_files -| fs.f_ffree,
             .avail_inodes = fs.f_ffree,
             .flags = fs.f_flags,
         });
@@ -392,11 +419,11 @@ fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
         .fstype = try allocator.dupe(u8, extractCString(&sfs.f_fstypename)),
         .mount_point = try allocator.dupe(u8, extractCString(&sfs.f_mntonname)),
         .total_blocks = sfs.f_blocks,
-        .used_blocks = sfs.f_blocks - sfs.f_bfree,
+        .used_blocks = sfs.f_blocks -| sfs.f_bfree,
         .avail_blocks = sfs.f_bavail,
         .block_size = sfs.f_bsize,
         .total_inodes = sfs.f_files,
-        .used_inodes = sfs.f_files - sfs.f_ffree,
+        .used_inodes = sfs.f_files -| sfs.f_ffree,
         .avail_inodes = sfs.f_ffree,
         .flags = sfs.f_flags,
     };
@@ -616,6 +643,74 @@ fn isNetworkFs(fstype: []const u8) bool {
 }
 
 // ============================================================================
+// Darwin volume grouping
+// ============================================================================
+
+/// Extract the device prefix from a source path (e.g., "/dev/disk3s1" -> "/dev/disk3").
+/// Returns the input unchanged if no partition suffix is found.
+fn extractDevicePrefix(source: []const u8) []const u8 {
+    // Look for pattern like "diskNsM" and strip the "sM" part
+    if (std.mem.indexOf(u8, source, "disk")) |disk_start| {
+        var i = disk_start + 4; // skip "disk"
+        // Skip disk number digits
+        while (i < source.len and source[i] >= '0' and source[i] <= '9') : (i += 1) {}
+        // If we hit 's' followed by digits, that's a partition suffix
+        if (i < source.len and source[i] == 's') {
+            return source[0..i];
+        }
+    }
+    return source;
+}
+
+/// Group macOS volumes that share the same device and size, keeping the most
+/// relevant mount point (preferring "/" or shortest path).
+fn groupDarwinVolumes(allocator: Allocator, filesystems: []const FsInfo) ![]FsInfo {
+    // Key: "device_prefix:total_bytes" -> best entry index in result
+    var groups = std.StringHashMapUnmanaged(usize){};
+    defer {
+        var it = groups.keyIterator();
+        while (it.next()) |key_ptr| {
+            allocator.free(key_ptr.*);
+        }
+        groups.deinit(allocator);
+    }
+
+    var result = std.ArrayListUnmanaged(FsInfo){};
+    errdefer result.deinit(allocator);
+
+    for (filesystems) |fs| {
+        const prefix = extractDevicePrefix(fs.source);
+        const total_bytes = fs.total_blocks * fs.block_size;
+
+        // Create compound key: "prefix:total_bytes"
+        var key_buf: [256]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "{s}:{d}", .{ prefix, total_bytes }) catch {
+            try result.append(allocator, fs);
+            continue;
+        };
+        const key_owned = try allocator.dupe(u8, key);
+
+        if (groups.get(key_owned)) |existing_idx| {
+            allocator.free(key_owned);
+            // Check if current entry is better (shorter mount path or exactly "/")
+            const existing = result.items[existing_idx];
+            if (std.mem.eql(u8, fs.mount_point, "/") or
+                (!std.mem.eql(u8, existing.mount_point, "/") and
+                    fs.mount_point.len < existing.mount_point.len))
+            {
+                result.items[existing_idx] = fs;
+            }
+        } else {
+            const new_idx = result.items.len;
+            try groups.put(allocator, key_owned, new_idx);
+            try result.append(allocator, fs);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+// ============================================================================
 // Human-readable formatting
 // ============================================================================
 
@@ -671,11 +766,108 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
     return std.fmt.bufPrint(buf, "{d}", .{value}) catch "?";
 }
 
+/// Calculate usage percentage as 0-100 with ceiling (matching GNU df).
+fn calcUsagePercent(used: u64, total: u64) u8 {
+    if (total == 0) return 0;
+    const pct = @divTrunc(used * 100 + total - 1, total);
+    return @intCast(@min(pct, 100));
+}
+
 fn formatPercent(buf: []u8, used: u64, total: u64) []const u8 {
     if (total == 0) return "-";
-    // GNU df uses ceiling for percentage: (used * 100 + total - 1) / total
-    const pct = @divTrunc(used * 100 + total - 1, total);
+    const pct = calcUsagePercent(used, total);
     return std.fmt.bufPrint(buf, "{d}%", .{pct}) catch "?";
+}
+
+/// Format a usage bar like [████████░░] 84%
+fn formatUsageBar(buf: []u8, percent: u8) []const u8 {
+    const bar_width: u8 = 10;
+    const filled: u8 = @intCast(@divTrunc(@as(u16, percent) * bar_width + 99, 100));
+    const empty: u8 = bar_width - filled;
+
+    var pos: usize = 0;
+
+    // Opening bracket
+    buf[pos] = '[';
+    pos += 1;
+
+    // Filled blocks (█ = 0xe2 0x96 0x88)
+    for (0..filled) |_| {
+        buf[pos] = 0xe2;
+        buf[pos + 1] = 0x96;
+        buf[pos + 2] = 0x88;
+        pos += 3;
+    }
+
+    // Empty blocks (░ = 0xe2 0x96 0x91)
+    for (0..empty) |_| {
+        buf[pos] = 0xe2;
+        buf[pos + 1] = 0x96;
+        buf[pos + 2] = 0x91;
+        pos += 3;
+    }
+
+    // Closing bracket + space + percent
+    buf[pos] = ']';
+    pos += 1;
+    buf[pos] = ' ';
+    pos += 1;
+
+    // Format percent number
+    const pct_str = std.fmt.bufPrint(buf[pos..], "{d:>3}%", .{percent}) catch return buf[0..pos];
+    pos += pct_str.len;
+
+    return buf[0..pos];
+}
+
+/// Apply color based on usage percentage threshold.
+/// Green (0-69%), Yellow (70-89%), Red (90%+).
+fn applyUsageColor(s: anytype, percent: u8) !void {
+    switch (s.color_mode) {
+        .truecolor => {
+            if (percent < 70) {
+                try s.setRgb(115, 195, 120);
+            } else if (percent < 90) {
+                try s.setRgb(210, 185, 90);
+            } else {
+                try s.setRgb(210, 95, 90);
+            }
+        },
+        .extended => {
+            if (percent < 70) {
+                try s.set256(114);
+            } else if (percent < 90) {
+                try s.set256(220);
+            } else {
+                try s.set256(196);
+            }
+        },
+        .basic => {
+            if (percent < 70) {
+                try s.setColor(.green);
+            } else if (percent < 90) {
+                try s.setColor(.yellow);
+            } else {
+                try s.setColor(.red);
+            }
+        },
+        .none => {},
+    }
+}
+
+/// Truncate long mount paths with "..." prefix.
+/// Short paths pass through unchanged. Long paths become "...tail".
+fn truncatePath(buf: []u8, path: []const u8, max_width: usize) []const u8 {
+    if (path.len <= max_width) return path;
+    if (max_width <= 3) return path[path.len - max_width ..];
+
+    const tail_len = max_width - 3; // room for "..."
+    const start = path.len - tail_len;
+    buf[0] = '.';
+    buf[1] = '.';
+    buf[2] = '.';
+    @memcpy(buf[3..][0..tail_len], path[start..]);
+    return buf[0..max_width];
 }
 
 // ============================================================================
@@ -721,29 +913,54 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
         break :blk "1K-blocks";
     };
 
-    if (opts.print_type) {
-        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            "Filesystem",
-            "Type",
-            size_label,
-            "Used",
-            "Available",
-            "Use%",
-            "Mounted on",
-        });
+    if (opts.style_mode == .full) {
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
+                "Filesystem",
+                "Type",
+                size_label,
+                "Used",
+                "Available",
+                "Use%",
+                "Usage",
+                "Mounted on",
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
+                "Filesystem",
+                size_label,
+                "Used",
+                "Available",
+                "Use%",
+                "Usage",
+                "Mounted on",
+            });
+        }
     } else {
-        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            "Filesystem",
-            size_label,
-            "Used",
-            "Available",
-            "Use%",
-            "Mounted on",
-        });
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+                "Filesystem",
+                "Type",
+                size_label,
+                "Used",
+                "Available",
+                "Use%",
+                "Mounted on",
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+                "Filesystem",
+                size_label,
+                "Used",
+                "Available",
+                "Use%",
+                "Mounted on",
+            });
+        }
     }
 }
 
-fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions) !void {
+fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions, color_mode_int: u8) !void {
     if (opts.inodes) {
         var pct_buf: [16]u8 = undefined;
         const pct = formatPercent(&pct_buf, fs.used_inodes, fs.total_inodes);
@@ -782,29 +999,64 @@ fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions) !void {
     const use_total = fs.used_blocks + fs.avail_blocks;
     const pct_str = formatPercent(&pct_buf, fs.used_blocks, use_total);
 
-    if (opts.print_type) {
-        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            fs.source,
-            fs.fstype,
-            total_str,
-            used_str,
-            avail_str,
-            pct_str,
-            fs.mount_point,
-        });
+    if (opts.style_mode == .plain) {
+        // Plain mode: no color, no bar
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+                fs.source, fs.fstype, total_str, used_str, avail_str, pct_str, fs.mount_point,
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+                fs.source, total_str, used_str, avail_str, pct_str, fs.mount_point,
+            });
+        }
+        return;
+    }
+
+    // Color and full modes: apply color to percent
+    const percent = calcUsagePercent(fs.used_blocks, use_total);
+    const S = common.style.Style(@TypeOf(stdout));
+    const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
+
+    if (opts.style_mode == .full) {
+        // Full mode: color + bar + truncated path
+        var bar_buf: [48]u8 = undefined;
+        const bar_str = formatUsageBar(&bar_buf, percent);
+        var path_buf: [64]u8 = undefined;
+        const mount_str = truncatePath(&path_buf, fs.mount_point, 20);
+
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
+                fs.source, fs.fstype, total_str, used_str, avail_str,
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
+                fs.source, total_str, used_str, avail_str,
+            });
+        }
+        try applyUsageColor(s, percent);
+        try stdout.print("{s:>5}", .{pct_str});
+        try s.reset();
+        try stdout.print(" {s:>17} {s}\n", .{ bar_str, mount_str });
     } else {
-        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            fs.source,
-            total_str,
-            used_str,
-            avail_str,
-            pct_str,
-            fs.mount_point,
-        });
+        // Color mode: color on percent, no bar, no path truncation
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
+                fs.source, fs.fstype, total_str, used_str, avail_str,
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
+                fs.source, total_str, used_str, avail_str,
+            });
+        }
+        try applyUsageColor(s, percent);
+        try stdout.print("{s:>5}", .{pct_str});
+        try s.reset();
+        try stdout.print(" {s}\n", .{fs.mount_point});
     }
 }
 
-fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions) !void {
+fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, color_mode_int: u8) !void {
     if (opts.inodes) {
         var sum_total: u64 = 0;
         var sum_used: u64 = 0;
@@ -881,14 +1133,60 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions) !vo
         break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
     };
 
-    if (opts.print_type) {
-        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            "total", "-", total_str, used_str, avail_str, pct_str, "-",
-        });
+    if (opts.style_mode == .plain) {
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+                "total", "-", total_str, used_str, avail_str, pct_str, "-",
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+                "total", total_str, used_str, avail_str, pct_str, "-",
+            });
+        }
+        return;
+    }
+
+    // Color and full modes: apply color to percent
+    const percent: u8 = if (sum_use_total == 0)
+        0
+    else
+        @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
+
+    const S = common.style.Style(@TypeOf(stdout));
+    const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
+
+    if (opts.style_mode == .full) {
+        var bar_buf: [48]u8 = undefined;
+        const bar_str = formatUsageBar(&bar_buf, percent);
+
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
+                "total", "-", total_str, used_str, avail_str,
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
+                "total", total_str, used_str, avail_str,
+            });
+        }
+        try applyUsageColor(s, percent);
+        try stdout.print("{s:>5}", .{pct_str});
+        try s.reset();
+        try stdout.print(" {s:>17} {s}\n", .{ bar_str, "-" });
     } else {
-        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-            "total", total_str, used_str, avail_str, pct_str, "-",
-        });
+        // Color mode
+        if (opts.print_type) {
+            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} ", .{
+                "total", "-", total_str, used_str, avail_str,
+            });
+        } else {
+            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} ", .{
+                "total", total_str, used_str, avail_str,
+            });
+        }
+        try applyUsageColor(s, percent);
+        try stdout.print("{s:>5}", .{pct_str});
+        try s.reset();
+        try stdout.print(" {s}\n", .{"-"});
     }
 }
 
@@ -916,6 +1214,14 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         return @intFromEnum(common.ExitCode.success);
     }
 
+    // Detect terminal color capability based on style mode
+    const color_mode_int: u8 = blk: {
+        if (opts.style_mode == .plain) break :blk 0;
+        const CM = common.style.Style(@TypeOf(stdout)).ColorMode;
+        const detected = CM.detect(allocator) catch break :blk 0;
+        break :blk @intFromEnum(detected);
+    };
+
     var exit_code: u8 = @intFromEnum(common.ExitCode.success);
 
     if (opts.positionals.len > 0) {
@@ -937,7 +1243,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 continue;
             };
             if (shouldIncludeFs(fs, opts)) {
-                printFsRow(stdout, fs, opts) catch {};
+                printFsRow(stdout, fs, opts, color_mode_int) catch {};
                 displayed.append(allocator, fs) catch {};
             } else {
                 freeFsInfo(allocator, fs);
@@ -945,7 +1251,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         }
 
         if (opts.total and displayed.items.len > 0) {
-            printTotal(stdout, displayed.items, opts) catch {};
+            printTotal(stdout, displayed.items, opts, color_mode_int) catch {};
         }
     } else {
         // Show all mounted filesystems
@@ -955,13 +1261,25 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         };
         defer freeFsInfoSlice(allocator, all_fs);
 
+        // Smart volume grouping on macOS (non-plain mode)
+        const display_fs = blk: {
+            if (comptime is_darwin) {
+                if (opts.style_mode != .plain) {
+                    break :blk groupDarwinVolumes(allocator, all_fs) catch all_fs;
+                }
+            }
+            break :blk all_fs;
+        };
+        // Free the grouped list if it differs from the original
+        defer if (display_fs.ptr != all_fs.ptr) allocator.free(display_fs);
+
         printHeader(stdout, opts) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
 
-        for (all_fs) |fs| {
+        for (display_fs) |fs| {
             if (shouldIncludeFs(fs, opts)) {
-                printFsRow(stdout, fs, opts) catch {};
+                printFsRow(stdout, fs, opts, color_mode_int) catch {};
             }
         }
 
@@ -969,13 +1287,13 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             // Collect displayed items for the total line
             var displayed = std.ArrayListUnmanaged(FsInfo){};
             defer displayed.deinit(allocator);
-            for (all_fs) |fs| {
+            for (display_fs) |fs| {
                 if (shouldIncludeFs(fs, opts)) {
                     displayed.append(allocator, fs) catch {};
                 }
             }
             if (displayed.items.len > 0) {
-                printTotal(stdout, displayed.items, opts) catch {};
+                printTotal(stdout, displayed.items, opts, color_mode_int) catch {};
             }
         }
     }
@@ -1016,13 +1334,16 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\Show information about the file system on which each FILE resides,
         \\or all file systems by default.
         \\
+        \\Displays human-readable sizes by default with colored output and
+        \\usage bars. Use -P for POSIX-compatible plain output.
+        \\
         \\  -a, --all             include pseudo, duplicate, inaccessible file systems
-        \\  -h, --human-readable  print sizes in powers of 1024 (e.g., 1023M)
+        \\  -h, --human-readable  print sizes in powers of 1024 (default)
         \\  -H, --si              print sizes in powers of 1000 (e.g., 1.1G)
         \\  -i, --inodes          list inode information instead of block usage
-        \\  -k                    like --block-size=1K
+        \\  -k                    like --block-size=1K (disables human-readable)
         \\  -l, --local           limit listing to local file systems
-        \\  -P, --portability     use the POSIX output format
+        \\  -P, --portability     use the POSIX output format (no colors or bars)
         \\  -T, --print-type      print file system type
         \\  -t, --type=TYPE       limit listing to file systems of type TYPE
         \\  -x, --exclude-type=TYPE  limit listing to file systems not of type TYPE
@@ -1031,6 +1352,11 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\      --output[=FIELD_LIST]  use the output format defined by FIELD_LIST
         \\      --help             display this help and exit
         \\      --version          output version information and exit
+        \\
+        \\VIBEUTILS_STYLE controls visual enhancements:
+        \\  full    colored output with usage bars (default)
+        \\  color   colored percentage only, no bars
+        \\  plain   no colors or visual enhancements
         \\
     );
 }
@@ -1135,7 +1461,7 @@ test "parseArgs - no args" {
     defer testing.allocator.free(parsed.opts.positionals);
     try testing.expect(parsed.err == null);
     try testing.expect(!parsed.opts.all);
-    try testing.expect(!parsed.opts.human_readable);
+    try testing.expect(parsed.opts.human_readable);
     try testing.expectEqual(@as(usize, 0), parsed.opts.positionals.len);
 }
 
@@ -1153,11 +1479,13 @@ test "parseArgs - short flags" {
     defer testing.allocator.free(parsed.opts.positionals);
     try testing.expect(parsed.err == null);
     try testing.expect(parsed.opts.all);
-    try testing.expect(parsed.opts.human_readable);
+    // -P comes after -h and disables human_readable
+    try testing.expect(!parsed.opts.human_readable);
     try testing.expect(parsed.opts.inodes);
     try testing.expect(parsed.opts.print_type);
     try testing.expect(parsed.opts.local);
     try testing.expect(parsed.opts.portability);
+    try testing.expectEqual(StyleMode.plain, parsed.opts.style_mode);
 }
 
 test "parseArgs - long flags" {
@@ -1272,7 +1600,8 @@ test "parseArgs - double dash separator" {
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
     try testing.expect(parsed.err == null);
-    try testing.expect(!parsed.opts.human_readable);
+    // -h after -- is a positional, not a flag; human_readable keeps its default (true)
+    try testing.expect(parsed.opts.human_readable);
     try testing.expectEqual(@as(usize, 2), parsed.opts.positionals.len);
     try testing.expectEqualStrings("-h", parsed.opts.positionals[0]);
 }
@@ -1526,9 +1855,10 @@ test "runDf - inodes flag" {
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Inodes") != null);
 }
 
-test "formatSize - 1K-blocks default" {
+test "formatSize - 1K-blocks" {
     var buf: [32]u8 = undefined;
-    const opts = DfOptions{};
+    var opts = DfOptions{};
+    opts.human_readable = false;
     // 1000 blocks * 4096 block_size = 4096000 bytes = 4000 1K-blocks
     const result = formatSize(&buf, 1000, 4096, opts);
     try testing.expectEqualStrings("4000", result);
@@ -1541,4 +1871,357 @@ test "formatSize - human readable" {
     // 1000 blocks * 4096 = 4096000 bytes = ~3.9M
     const result = formatSize(&buf, 1000, 4096, opts);
     try testing.expectEqualStrings("3.9M", result);
+}
+
+test "parseStyleMode - values" {
+    try testing.expectEqual(StyleMode.full, parseStyleMode(null));
+    try testing.expectEqual(StyleMode.plain, parseStyleMode("plain"));
+    try testing.expectEqual(StyleMode.color, parseStyleMode("color"));
+    try testing.expectEqual(StyleMode.full, parseStyleMode("full"));
+    try testing.expectEqual(StyleMode.full, parseStyleMode("garbage"));
+}
+
+test "parseArgs - human readable is default" {
+    const args = [_][]const u8{};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.opts.human_readable);
+}
+
+test "parseArgs - k flag disables human readable" {
+    const args = [_][]const u8{"-k"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(!parsed.opts.human_readable);
+}
+
+test "parseArgs - P flag disables human readable and sets plain" {
+    const args = [_][]const u8{"-P"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(!parsed.opts.human_readable);
+    try testing.expectEqual(StyleMode.plain, parsed.opts.style_mode);
+}
+
+test "parseArgs - block-size disables human readable" {
+    const args = [_][]const u8{"--block-size=4K"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(!parsed.opts.human_readable);
+}
+
+test "calcUsagePercent - normal cases" {
+    try testing.expectEqual(@as(u8, 50), calcUsagePercent(50, 100));
+    try testing.expectEqual(@as(u8, 100), calcUsagePercent(100, 100));
+    try testing.expectEqual(@as(u8, 0), calcUsagePercent(0, 100));
+}
+
+test "calcUsagePercent - zero total returns 0" {
+    try testing.expectEqual(@as(u8, 0), calcUsagePercent(0, 0));
+    try testing.expectEqual(@as(u8, 0), calcUsagePercent(50, 0));
+}
+
+test "calcUsagePercent - ceiling rounding" {
+    // 1/1000 should round up to 1%, not 0%
+    try testing.expectEqual(@as(u8, 1), calcUsagePercent(1, 1000));
+    // 1/100 is exactly 1%
+    try testing.expectEqual(@as(u8, 1), calcUsagePercent(1, 100));
+}
+
+test "formatUsageBar - 0 percent" {
+    var buf: [48]u8 = undefined;
+    const result = formatUsageBar(&buf, 0);
+    try testing.expectEqualStrings("[░░░░░░░░░░]   0%", result);
+}
+
+test "formatUsageBar - 50 percent" {
+    var buf: [48]u8 = undefined;
+    const result = formatUsageBar(&buf, 50);
+    try testing.expectEqualStrings("[█████░░░░░]  50%", result);
+}
+
+test "formatUsageBar - 84 percent" {
+    var buf: [48]u8 = undefined;
+    const result = formatUsageBar(&buf, 84);
+    // 84% of 10 = 8.4, ceiling = 9 filled, 1 empty
+    try testing.expectEqualStrings("[█████████░]  84%", result);
+}
+
+test "formatUsageBar - 100 percent" {
+    var buf: [48]u8 = undefined;
+    const result = formatUsageBar(&buf, 100);
+    try testing.expectEqualStrings("[██████████] 100%", result);
+}
+
+test "formatUsageBar - 1 percent" {
+    var buf: [48]u8 = undefined;
+    const result = formatUsageBar(&buf, 1);
+    // 1% of 10 = 0.1, ceiling = 1 filled, 9 empty
+    try testing.expectEqualStrings("[█░░░░░░░░░]   1%", result);
+}
+
+test "applyUsageColor - truecolor green" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 50);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", buffer.items);
+}
+
+test "applyUsageColor - truecolor yellow" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 75);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;210;185;90m", buffer.items);
+}
+
+test "applyUsageColor - truecolor red" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 95);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;210;95;90m", buffer.items);
+}
+
+test "applyUsageColor - basic green" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 30);
+    try testing.expectEqualSlices(u8, "\x1b[32m", buffer.items);
+}
+
+test "applyUsageColor - basic yellow" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 80);
+    try testing.expectEqualSlices(u8, "\x1b[33m", buffer.items);
+}
+
+test "applyUsageColor - basic red" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 90);
+    try testing.expectEqualSlices(u8, "\x1b[31m", buffer.items);
+}
+
+test "applyUsageColor - none writes nothing" {
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const s = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+    try applyUsageColor(s, 50);
+    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+}
+
+test "truncatePath - short unchanged" {
+    var buf: [64]u8 = undefined;
+    const result = truncatePath(&buf, "/mnt", 20);
+    try testing.expectEqualStrings("/mnt", result);
+}
+
+test "truncatePath - exact fit" {
+    var buf: [64]u8 = undefined;
+    const result = truncatePath(&buf, "/mnt/data", 9);
+    try testing.expectEqualStrings("/mnt/data", result);
+}
+
+test "truncatePath - long truncated" {
+    var buf: [64]u8 = undefined;
+    const result = truncatePath(&buf, "/System/Volumes/Data/home", 15);
+    try testing.expectEqualStrings("...es/Data/home", result);
+}
+
+test "truncatePath - root unchanged" {
+    var buf: [64]u8 = undefined;
+    const result = truncatePath(&buf, "/", 20);
+    try testing.expectEqualStrings("/", result);
+}
+
+fn makeFsInfo(source: []const u8, mount_point: []const u8, total_blocks: u64, block_size: u64) FsInfo {
+    return FsInfo{
+        .source = source,
+        .fstype = "apfs",
+        .mount_point = mount_point,
+        .total_blocks = total_blocks,
+        .used_blocks = @divTrunc(total_blocks, 2),
+        .avail_blocks = @divTrunc(total_blocks, 2),
+        .block_size = block_size,
+        .total_inodes = 1000,
+        .used_inodes = 100,
+        .avail_inodes = 900,
+        .flags = MNT_LOCAL,
+    };
+}
+
+test "extractDevicePrefix - disk with partition" {
+    try testing.expectEqualStrings("/dev/disk3", extractDevicePrefix("/dev/disk3s1"));
+    try testing.expectEqualStrings("/dev/disk3", extractDevicePrefix("/dev/disk3s5"));
+    try testing.expectEqualStrings("/dev/disk1", extractDevicePrefix("/dev/disk1s1"));
+}
+
+test "extractDevicePrefix - no partition suffix" {
+    try testing.expectEqualStrings("/dev/sda1", extractDevicePrefix("/dev/sda1"));
+    try testing.expectEqualStrings("tmpfs", extractDevicePrefix("tmpfs"));
+}
+
+test "groupDarwinVolumes - no duplicates unchanged" {
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    const fs2 = makeFsInfo("/dev/disk2s1", "/home", 2000, 4096);
+    const input = [_]FsInfo{ fs1, fs2 };
+    const result = try groupDarwinVolumes(testing.allocator, &input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 2), result.len);
+}
+
+test "groupDarwinVolumes - same device and size collapses" {
+    const fs1 = makeFsInfo("/dev/disk3s1", "/", 1000, 4096);
+    const fs2 = makeFsInfo("/dev/disk3s2", "/System/Volumes/Data", 1000, 4096);
+    const fs3 = makeFsInfo("/dev/disk3s5", "/System/Volumes/VM", 1000, 4096);
+    const input = [_]FsInfo{ fs1, fs2, fs3 };
+    const result = try groupDarwinVolumes(testing.allocator, &input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("/", result[0].mount_point);
+}
+
+test "groupDarwinVolumes - different sizes stay separate" {
+    const fs1 = makeFsInfo("/dev/disk3s1", "/", 1000, 4096);
+    const fs2 = makeFsInfo("/dev/disk3s2", "/data", 2000, 4096);
+    const input = [_]FsInfo{ fs1, fs2 };
+    const result = try groupDarwinVolumes(testing.allocator, &input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 2), result.len);
+}
+
+test "groupDarwinVolumes - preserves root entry data" {
+    const fs1 = makeFsInfo("/dev/disk3s5", "/System/Volumes/VM", 1000, 4096);
+    const fs2 = makeFsInfo("/dev/disk3s1", "/", 1000, 4096);
+    const input = [_]FsInfo{ fs1, fs2 };
+    const result = try groupDarwinVolumes(testing.allocator, &input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("/", result[0].mount_point);
+    try testing.expectEqualStrings("/dev/disk3s1", result[0].source);
+}
+
+test "groupDarwinVolumes - mixed devices" {
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    const fs2 = makeFsInfo("/dev/disk1s2", "/System/Volumes/Data", 1000, 4096);
+    const fs3 = makeFsInfo("/dev/disk2s1", "/external", 5000, 4096);
+    const input = [_]FsInfo{ fs1, fs2, fs3 };
+    const result = try groupDarwinVolumes(testing.allocator, &input);
+    defer testing.allocator.free(result);
+    try testing.expectEqual(@as(usize, 2), result.len);
+}
+
+test "printFsRow - plain mode has no ANSI" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    var opts = DfOptions{};
+    opts.style_mode = .plain;
+    try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
+    // No ANSI escape sequences in plain mode
+    try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") == null);
+}
+
+test "printFsRow - color mode applies ANSI" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    var opts = DfOptions{};
+    opts.style_mode = .color;
+    // Use basic color mode (1) so ANSI codes are emitted
+    try printFsRow(buf.writer(testing.allocator), fs, opts, 1);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") != null);
+    // No bar in color mode
+    try testing.expect(std.mem.indexOf(u8, buf.items, "[") == null or
+        std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") == null);
+}
+
+test "printFsRow - full mode includes bar" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    var opts = DfOptions{};
+    opts.style_mode = .full;
+    try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
+    // Full mode with color_mode_int=0 (none) still shows the bar
+    try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
+        std.mem.indexOf(u8, buf.items, "\xe2\x96\x91") != null);
+}
+
+test "printHeader - full mode shows Usage column" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    var opts = DfOptions{};
+    opts.style_mode = .full;
+    try printHeader(buf.writer(testing.allocator), opts);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Size") != null);
+}
+
+test "printHeader - plain mode no Usage column" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    var opts = DfOptions{};
+    opts.style_mode = .plain;
+    try printHeader(buf.writer(testing.allocator), opts);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") == null);
+}
+
+test "printHeader - color mode no Usage column" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    var opts = DfOptions{};
+    opts.style_mode = .color;
+    try printHeader(buf.writer(testing.allocator), opts);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") == null);
+}
+
+test "printTotal - plain mode has no ANSI" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    const fs2 = makeFsInfo("/dev/disk2s1", "/home", 2000, 4096);
+    const items = [_]FsInfo{ fs1, fs2 };
+    var opts = DfOptions{};
+    opts.style_mode = .plain;
+    try printTotal(buf.writer(testing.allocator), &items, opts, 0);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") == null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "total") != null);
+}
+
+test "printTotal - full mode includes bar" {
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
+    const items = [_]FsInfo{fs1};
+    var opts = DfOptions{};
+    opts.style_mode = .full;
+    try printTotal(buf.writer(testing.allocator), &items, opts, 0);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
+        std.mem.indexOf(u8, buf.items, "\xe2\x96\x91") != null);
+}
+
+test "runDf - help mentions VIBEUTILS_STYLE" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "VIBEUTILS_STYLE") != null);
 }

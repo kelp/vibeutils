@@ -27,11 +27,22 @@ test_df() {
             "Exit code: $exit_code"
     fi
 
-    # Default output should show 1K-blocks
-    if [[ "$output" =~ "1K-blocks" ]]; then
-        print_test_result "df default shows 1K-blocks" "PASS"
+    # Default output should show Size (human-readable is default)
+    if [[ "$output" =~ "Size" ]]; then
+        print_test_result "df default shows Size header" "PASS"
     else
-        print_test_result "df default shows 1K-blocks" "FAIL"
+        print_test_result "df default shows Size header" "FAIL"
+    fi
+
+    echo -e "${CYAN}Testing POSIX portability mode...${NC}"
+
+    # -P should show 1K-blocks (POSIX mode)
+    output=$("$binary" -P / 2>/dev/null)
+    exit_code=$?
+    if [[ $exit_code -eq 0 && "$output" =~ "1K-blocks" ]]; then
+        print_test_result "df -P shows 1K-blocks" "PASS"
+    else
+        print_test_result "df -P shows 1K-blocks" "FAIL"
     fi
 
     echo -e "${CYAN}Testing specific path...${NC}"
