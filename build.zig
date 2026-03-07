@@ -8,6 +8,9 @@ pub fn build(b: *std.Build) void {
     // CI option - enables CI-specific behavior
     const ci = b.option(bool, "ci", "Enable CI-specific behavior") orelse false;
 
+    // Strip option - omit debug symbols for smaller release binaries
+    const strip = b.option(bool, "strip", "Omit debug symbols") orelse false;
+
     // Validate utilities exist before building
     utils.validateUtilities() catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
@@ -39,7 +42,7 @@ pub fn build(b: *std.Build) void {
 
     // Build utilities using metadata-driven approach
     for (utils.utilities) |util| {
-        buildUtility(b, util, target, optimize, common, build_options_module) catch |err| {
+        buildUtility(b, util, target, optimize, strip, common, build_options_module) catch |err| {
             std.log.err("Failed to build utility {s}: {}", .{ util.name, err });
             return; // Abort build configuration
         };
@@ -66,6 +69,7 @@ fn buildUtility(
     util: utils.UtilityMeta,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    strip: bool,
     common: *std.Build.Module,
     build_options_module: *std.Build.Module,
 ) !void {
@@ -75,6 +79,7 @@ fn buildUtility(
             .root_source_file = b.path(util.path),
             .target = target,
             .optimize = optimize,
+            .strip = if (strip) true else null,
         }),
     });
 

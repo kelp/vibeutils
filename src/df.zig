@@ -56,9 +56,21 @@ const darwin_c = if (is_darwin) struct {
 } else struct {};
 
 const linux_c = if (is_linux) struct {
-    const lc = @cImport({
-        @cInclude("sys/statvfs.h");
-    });
+    const Statvfs = extern struct {
+        f_bsize: c_ulong,
+        f_frsize: c_ulong,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_favail: u64,
+        f_fsid: c_ulong,
+        f_flag: c_ulong,
+        f_namemax: c_ulong,
+        __f_spare: [6]c_int = .{ 0, 0, 0, 0, 0, 0 },
+    };
+    extern "c" fn statvfs(path: [*:0]const u8, buf: *Statvfs) c_int;
 } else struct {};
 
 // ============================================================================
@@ -482,8 +494,8 @@ fn getMountedFilesystemsLinux(allocator: Allocator) ![]FsInfo {
         path_buf[mount_point_raw.len] = 0;
         const c_path = path_buf[0..mount_point_raw.len :0];
 
-        var svfs: linux_c.lc.struct_statvfs = undefined;
-        const ret = linux_c.lc.statvfs(c_path, &svfs);
+        var svfs: linux_c.Statvfs = undefined;
+        const ret = linux_c.statvfs(c_path, &svfs);
         if (ret != 0) continue; // skip mount points we can't stat
 
         const source = allocator.dupe(u8, source_raw) catch return error.OutOfMemory;
@@ -515,8 +527,8 @@ fn getFilesystemForPathLinux(allocator: Allocator, path: []const u8) !FsInfo {
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
 
-    var svfs: linux_c.lc.struct_statvfs = undefined;
-    const ret = linux_c.lc.statvfs(c_path, &svfs);
+    var svfs: linux_c.Statvfs = undefined;
+    const ret = linux_c.statvfs(c_path, &svfs);
     if (ret != 0) {
         return error.SystemResources;
     }

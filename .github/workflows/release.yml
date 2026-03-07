@@ -15,9 +15,9 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - target: aarch64-linux-gnu
+          - target: aarch64-linux-musl
             archive-name: linux-arm64
-          - target: x86_64-linux-gnu
+          - target: x86_64-linux-musl
             archive-name: linux-amd64
           - target: aarch64-macos-none
             archive-name: darwin-arm64
@@ -49,6 +49,7 @@ jobs:
           zig build
           -Dtarget=${{ matrix.target }}
           -Doptimize=ReleaseSafe
+          -Dstrip=true
           --prefix dist
 
       - name: Copy man pages

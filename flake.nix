@@ -37,7 +37,6 @@
           nativeBuildInputs = [ zig ];
 
           dontConfigure = true;
-          dontFixup = true;
 
           buildPhase = ''
             export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
