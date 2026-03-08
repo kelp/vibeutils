@@ -98,7 +98,23 @@ The project includes a pre-commit hook that automatically:
 - Adds any formatting changes to the commit
 - Runs tests to ensure code integrity
 
-The hook is located at `.git/hooks/pre-commit` and is automatically set up for this repository.
+The hook is located at `.git/hooks/pre-commit` and is
+automatically set up for this repository.
+
+## Releases
+
+**Always use `make release VERSION=x.y.z`** to cut a
+release. Never manually edit `build.zig.zon` and tag.
+
+The release script (`scripts/release.sh`) gates on:
+1. Must be on `main` with clean working tree
+2. Runs `zig build test` (unit tests must pass)
+3. Runs `make it` (integration tests must pass)
+4. Updates version in `build.zig.zon` and `flake.nix`
+5. Commits, tags, and pushes
+
+CI then builds binaries, creates the GitHub release,
+updates the Homebrew tap, and pushes to Cachix.
 
 
 ## Architecture Overview
