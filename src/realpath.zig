@@ -200,14 +200,14 @@ fn processPath(
     const resolved = if (opts.no_symlinks) blk: {
         break :blk resolveLogical(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
             }
             return false;
         };
     } else if (opts.canonicalize_missing) blk: {
         break :blk resolveMissing(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
             }
             return false;
         };
@@ -215,7 +215,7 @@ fn processPath(
         // Default: canonicalize-existing (all components must exist)
         break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
             }
             return false;
         };
@@ -230,21 +230,21 @@ fn processPath(
         const resolved_base = if (opts.no_symlinks)
             resolveLogical(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ base_dir, @errorName(err) });
                 }
                 return false;
             }
         else if (opts.canonicalize_missing)
             resolveMissing(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ base_dir, @errorName(err) });
                 }
                 return false;
             }
         else
             std.fs.cwd().realpathAlloc(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ base_dir, @errorName(err) });
                 }
                 return false;
             };
@@ -309,15 +309,15 @@ pub fn runRealpath(allocator: Allocator, args: []const []const u8, stdout_writer
     const parsed_args = common.argparse.ArgParser.parse(RealpathArgs, allocator, processed_args.items) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -336,7 +336,7 @@ pub fn runRealpath(allocator: Allocator, args: []const []const u8, stdout_writer
     }
 
     if (parsed_args.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "realpath", "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 

@@ -81,15 +81,15 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
     const parsed_args = common.argparse.ArgParser.parse(UniqArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid option\nTry 'uniq --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "invalid option\nTry 'uniq --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "option requires an argument\nTry 'uniq --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "option requires an argument\nTry 'uniq --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument value\nTry 'uniq --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "invalid argument value\nTry 'uniq --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -109,7 +109,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // Validate positional count: at most 2 (INPUT, OUTPUT)
     if (parsed_args.positionals.len > 2) {
-        common.printErrorWithProgram(allocator, stderr_writer, "uniq", "extra operand '{s}'\nTry 'uniq --help' for more information.", .{parsed_args.positionals[2]});
+        common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "extra operand '{s}'\nTry 'uniq --help' for more information.", .{parsed_args.positionals[2]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -121,7 +121,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     const input_file = if (input_path) |path|
         std.fs.cwd().openFile(path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
             return @intFromEnum(common.ExitCode.general_error);
         }
     else
@@ -137,7 +137,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     if (output_path) |path| {
         const output_file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer output_file.close();

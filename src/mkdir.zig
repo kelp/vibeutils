@@ -72,7 +72,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         switch (err) {
             // Handle argument parsing errors with appropriate error messages
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -95,7 +95,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     // Check if we have directories to create
     const dirs = parsed_args.positionals;
     if (dirs.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -108,7 +108,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     // Parse mode if provided
     if (parsed_args.mode) |mode_str| {
         options.mode = parseMode(mode_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid mode '{s}'", .{mode_str});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid mode '{s}'", .{mode_str});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
@@ -155,20 +155,20 @@ fn printVersion(writer: anytype) !void {
 fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const u8, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
-        common.printWarningWithProgram(allocator, stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
+        common.printWarningWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "mode flag (-m) is not supported on Windows", .{});
         return;
     }
 
     // Use C chmod function for directories on POSIX systems
     const path_z = std.posix.toPosixPath(path) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "path too long: '{s}'", .{path});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "path too long: '{s}'", .{path});
         return error.ChmodFailed;
     };
 
     const result = std.c.chmod(&path_z, mode);
     if (result != 0) {
         const err = std.posix.errno(result); // Pass the result to errno
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
         return error.ChmodFailed;
     }
 }
@@ -199,7 +199,7 @@ fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u
         try createPathComponents(path, options, prog_name, stdout_writer, stderr_writer, allocator);
     } else {
         std.fs.cwd().makeDir(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
             return err;
         };
 
@@ -249,7 +249,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         std.fs.cwd().makeDir(current_path) catch |err| switch (err) {
             error.PathAlreadyExists => continue, // -p: silently skip existing
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ current_path, @errorName(err) });
                 return err;
             },
         };

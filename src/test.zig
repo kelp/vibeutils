@@ -505,7 +505,7 @@ fn evaluateTestArgs(allocator: Allocator, test_args: []const []const u8, stderr_
     const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid expression", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid expression", .{});
             return @intFromEnum(ExitCode.@"error");
         },
     };
@@ -521,7 +521,7 @@ pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_wri
 
     // Bracket form requires closing ']'
     if (args.len == 0 or !std.mem.eql(u8, args[args.len - 1], "]")) {
-        common.printErrorWithProgram(allocator, stderr_writer, "[", "missing closing ']'", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "[", std.fs.File.stderr().isTty(), "missing closing ']'", .{});
         return @intFromEnum(ExitCode.@"error");
     }
 
@@ -540,7 +540,7 @@ pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Handle bracket form embedded in test command arguments
     if (args.len > 0 and std.mem.eql(u8, args[0], "[")) {
         if (args.len < 2 or !std.mem.eql(u8, args[args.len - 1], "]")) {
-            common.printErrorWithProgram(allocator, stderr_writer, "test", "missing closing ']'", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "test", std.fs.File.stderr().isTty(), "missing closing ']'", .{});
             return @intFromEnum(ExitCode.@"error");
         }
         // Remove '[' and ']' from arguments

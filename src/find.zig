@@ -509,21 +509,21 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     while (i < args.len) {
         if (std.mem.eql(u8, args[i], "-maxdepth")) {
             if (i + 1 >= args.len) {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-maxdepth'", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "missing argument to '-maxdepth'", .{});
                 return error.MissingArgument;
             }
             maxdepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-maxdepth'", .{args[i + 1]});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' to '-maxdepth'", .{args[i + 1]});
                 return error.InvalidExpression;
             };
             i += 2;
         } else if (std.mem.eql(u8, args[i], "-mindepth")) {
             if (i + 1 >= args.len) {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-mindepth'", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "missing argument to '-mindepth'", .{});
                 return error.MissingArgument;
             }
             mindepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-mindepth'", .{args[i + 1]});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' to '-mindepth'", .{args[i + 1]});
                 return error.InvalidExpression;
             };
             i += 2;
@@ -541,7 +541,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     var pctx = ParseContext{ .allocator = allocator };
     const expr = parseOr(allocator, args, &pos, &has_action, &pctx) catch |err| {
         if (pctx.error_msg) |msg| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
+            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "{s}", .{msg});
         }
         return err;
     };
@@ -1001,13 +1001,13 @@ fn matchGroup(name_str: []const u8, gid: c.gid_t) bool {
 fn doDelete(allocator: Allocator, path: []const u8, kind: FileType, stderr: anytype, had_error: *bool) bool {
     if (kind == .directory) {
         std.fs.cwd().deleteDir(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot delete '{s}': {s}", .{ path, @errorName(err) });
             had_error.* = true;
             return false;
         };
     } else {
         std.fs.cwd().deleteFile(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot delete '{s}': {s}", .{ path, @errorName(err) });
             had_error.* = true;
             return false;
         };
@@ -1067,16 +1067,16 @@ fn walkPath(
     const stat_buf = doStat(path, follow) catch |err| {
         switch (err) {
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': Permission denied", .{path});
             },
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': No such file or directory", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': No such file or directory", .{path});
             },
             error.SymLinkLoop => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Too many levels of symbolic links", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': Too many levels of symbolic links", .{path});
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': {s}", .{ path, @errorName(err) });
             },
         }
         had_error.* = true;
@@ -1114,10 +1114,10 @@ fn walkPath(
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
         switch (err) {
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': Permission denied", .{path});
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': {s}", .{ path, @errorName(err) });
             },
         }
         had_error.* = true;
@@ -1131,7 +1131,7 @@ fn walkPath(
     var iterator = dir.iterate();
     while (true) {
         const maybe_entry = iterator.next() catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': {s}", .{ path, @errorName(err) });
             had_error.* = true;
             break;
         };

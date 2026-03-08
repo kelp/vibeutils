@@ -74,15 +74,15 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const parsed_args = common.argparse.ArgParser.parse(HeadArgs, allocator, expanded_args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "head", std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "head", std.fs.File.stderr().isTty(), "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "head", std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -135,7 +135,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "head", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, errorToMessage(err) });
                     had_error = true;
                     continue;
                 };

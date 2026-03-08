@@ -136,7 +136,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const parsed_args = common.argparse.ArgParser.parse(TailArgs, allocator, expanded_args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -169,7 +169,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             options.from_beginning = true;
         }
         options.line_count = parseNumericArg(lines_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of lines: '{s}'", .{lines_str});
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "invalid number of lines: '{s}'", .{lines_str});
             return @intFromEnum(common.ExitCode.misuse);
         };
     } else {
@@ -182,7 +182,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             options.from_beginning_bytes = true;
         }
         options.byte_count = parseNumericArg(bytes_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of bytes: '{s}'", .{bytes_str});
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "invalid number of bytes: '{s}'", .{bytes_str});
             return @intFromEnum(common.ExitCode.misuse);
         };
         options.line_count = null; // byte mode overrides line mode
@@ -207,7 +207,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, errorToMessage(err) });
                     had_error = true;
                     continue;
                 };

@@ -24,15 +24,15 @@ pub fn runYes(
     const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "yes", std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "yes", std.fs.File.stderr().isTty(), "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "yes", std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,

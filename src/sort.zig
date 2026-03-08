@@ -125,21 +125,21 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "key=")) {
                 const keydef_str = flag[4..];
                 const key = parseKeyDef(keydef_str) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid key definition: '{s}'", .{keydef_str});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid key definition: '{s}'", .{keydef_str});
                     return null;
                 };
                 try opts.keys.append(allocator, key);
             } else if (std.mem.startsWith(u8, flag, "field-separator=")) {
                 const sep_str = flag["field-separator=".len..];
                 if (sep_str.len != 1) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "multi-character field separator", .{});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "multi-character field separator", .{});
                     return null;
                 }
                 opts.field_separator = sep_str[0];
             } else if (std.mem.startsWith(u8, flag, "output=")) {
                 opts.output_file = flag["output=".len..];
             } else {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'\nTry 'sort --help' for more information.", .{flag});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option '--{s}'\nTry 'sort --help' for more information.", .{flag});
                 return null;
             }
         } else if (arg.len > 1 and arg[0] == '-') {
@@ -170,11 +170,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'k'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'k'", .{});
                             return null;
                         };
                         const key = parseKeyDef(value) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid key definition: '{s}'", .{value});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid key definition: '{s}'", .{value});
                             return null;
                         };
                         try opts.keys.append(allocator, key);
@@ -187,11 +187,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 't'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 't'", .{});
                             return null;
                         };
                         if (value.len != 1) {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "multi-character tab '{s}'", .{value});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "multi-character tab '{s}'", .{value});
                             return null;
                         }
                         opts.field_separator = value[0];
@@ -204,14 +204,14 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'o'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'o'", .{});
                             return null;
                         };
                         opts.output_file = value;
                         break;
                     },
                     else => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option -- '{c}'\nTry 'sort --help' for more information.", .{c});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option -- '{c}'\nTry 'sort --help' for more information.", .{c});
                         return null;
                     },
                 }
@@ -373,7 +373,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 try readLines(allocator, stdin_file, &lines, delimiter);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
@@ -397,7 +397,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Determine output target
     if (opts.output_file) |out_path| {
         const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "open failed: {s}: {s}", .{ out_path, @errorName(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
         defer out_file.close();
@@ -878,7 +878,7 @@ fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const Sor
             if (opts.check == .diagnose_first) {
                 // Get the first file name for the message
                 const file_name = if (opts.files.items.len > 0) opts.files.items[0] else "-";
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}:{d}: disorder: {s}", .{ file_name, idx + 2, line });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}:{d}: disorder: {s}", .{ file_name, idx + 2, line });
             }
             return @intFromEnum(common.ExitCode.general_error);
         }

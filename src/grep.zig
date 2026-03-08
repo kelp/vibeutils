@@ -178,25 +178,25 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "max-count=")) {
                 const val_str = flag["max-count=".len..];
                 opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{val_str});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid max count '{s}'", .{val_str});
                     return null;
                 };
             } else if (std.mem.startsWith(u8, flag, "after-context=")) {
                 const val_str = flag["after-context=".len..];
                 opts.after_context = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid context length argument", .{});
                     return null;
                 };
             } else if (std.mem.startsWith(u8, flag, "before-context=")) {
                 const val_str = flag["before-context=".len..];
                 opts.before_context = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid context length argument", .{});
                     return null;
                 };
             } else if (std.mem.startsWith(u8, flag, "context=")) {
                 const val_str = flag["context=".len..];
                 const ctx = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid context length argument", .{});
                     return null;
                 };
                 opts.before_context = ctx;
@@ -213,7 +213,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 } else if (std.mem.eql(u8, when, "never")) {
                     opts.color = .never;
                 } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--color'", .{when});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--color'", .{when});
                     return null;
                 }
             } else if (std.mem.startsWith(u8, flag, "include=")) {
@@ -223,7 +223,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "exclude-dir=")) {
                 try opts.exclude_dirs.append(allocator, flag["exclude-dir=".len..]);
             } else {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'", .{flag});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option '--{s}'", .{flag});
                 return null;
             }
         } else if (arg.len > 1 and arg[0] == '-') {
@@ -260,7 +260,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'e'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'e'", .{});
                             return null;
                         };
                         try opts.patterns.append(allocator, value);
@@ -273,7 +273,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'f'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'f'", .{});
                             return null;
                         };
                         try loadPatternsFromFile(allocator, &opts.patterns, value, stderr_writer);
@@ -286,11 +286,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'm'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'm'", .{});
                             return null;
                         };
                         opts.max_count = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{value});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid max count '{s}'", .{value});
                             return null;
                         };
                         break;
@@ -302,11 +302,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'A'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'A'", .{});
                             return null;
                         };
                         opts.after_context = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid context length argument", .{});
                             return null;
                         };
                         break;
@@ -318,11 +318,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'B'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'B'", .{});
                             return null;
                         };
                         opts.before_context = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid context length argument", .{});
                             return null;
                         };
                         break;
@@ -334,11 +334,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'C'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'C'", .{});
                             return null;
                         };
                         const ctx = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid context length argument", .{});
                             return null;
                         };
                         opts.before_context = ctx;
@@ -346,7 +346,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                         break;
                     },
                     else => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option -- '{c}'", .{ch});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option -- '{c}'", .{ch});
                         return null;
                     },
                 }
@@ -368,7 +368,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
 /// Load patterns from a file, one per line
 fn loadPatternsFromFile(allocator: Allocator, patterns: *std.ArrayListUnmanaged([]const u8), path: []const u8, stderr_writer: anytype) !void {
     const content = std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: No such file or directory", .{path});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}: No such file or directory", .{path});
         return;
     };
 
@@ -430,7 +430,7 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
         var errbuf: [256]u8 = undefined;
         const err_len = c.regerror(@intCast(result), regex, &errbuf, errbuf.len);
         const err_msg = errbuf[0..err_len];
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid regular expression: {s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid regular expression: {s}", .{err_msg});
         if (comptime is_linux) {
             regex_c.regex_heap_free(regex);
         } else {
@@ -823,7 +823,7 @@ fn searchDirectory(
 ) void {
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         if (!opts.no_messages) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}: {s}", .{ dir_path, @errorName(err) });
         }
         return;
     };
@@ -844,7 +844,7 @@ fn searchDirectory(
                 if (shouldIncludeFile(entry.name, opts)) {
                     const file = std.fs.cwd().openFile(full_path, .{}) catch |err| {
                         if (!opts.no_messages) {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}: {s}", .{ full_path, @errorName(err) });
                         }
                         continue;
                     };
@@ -982,7 +982,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // Must have at least one pattern
     if (opts.patterns.items.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "no pattern specified\nTry 'grep --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "no pattern specified\nTry 'grep --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -1042,7 +1042,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 // Check if it's a directory
                 const stat = std.fs.cwd().statFile(file_path) catch |err| {
                     if (!opts.no_messages) {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, @errorName(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
                     }
                     had_error = true;
                     continue;
@@ -1055,7 +1055,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
             const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                 if (!opts.no_messages) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
                 }
                 had_error = true;
                 continue;

@@ -876,7 +876,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     defer allocator.free(opts.positionals);
 
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}\nTry 'stat --help' for more information.", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}\nTry 'stat --help' for more information.", .{err_msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -891,7 +891,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     if (opts.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand\nTry 'stat --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand\nTry 'stat --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -900,7 +900,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     for (opts.positionals) |path| {
         if (opts.file_system) {
             printFileSystemInfo(path, stdout_writer) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot statfs '{s}': No such file or directory", .{path});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot statfs '{s}': No such file or directory", .{path});
                 has_error = true;
                 continue;
             };
@@ -908,7 +908,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
         }
 
         const stat_buf = doStat(path, opts.dereference) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot stat '{s}': No such file or directory", .{path});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot stat '{s}': No such file or directory", .{path});
             has_error = true;
             continue;
         };

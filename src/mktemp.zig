@@ -82,15 +82,15 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     const parsed = common.argparse.ArgParser.parse(MktempArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option\nTry 'mktemp --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option\nTry 'mktemp --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry 'mktemp --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument\nTry 'mktemp --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument value\nTry 'mktemp --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument value\nTry 'mktemp --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -110,7 +110,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
 
     // Too many positional arguments
     if (parsed.positionals.len > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "too many templates\nTry 'mktemp --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "too many templates\nTry 'mktemp --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -121,7 +121,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     const suffix = parsed.suffix orelse "";
     if (std.mem.indexOfScalar(u8, suffix, '/') != null) {
         if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid suffix '{s}': contains directory separator", .{suffix});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid suffix '{s}': contains directory separator", .{suffix});
         }
         return @intFromEnum(common.ExitCode.general_error);
     }
@@ -130,7 +130,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     const x_count = countTrailingXs(raw_template);
     if (x_count < 3) {
         if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "too few X's in template '{s}'", .{raw_template});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "too few X's in template '{s}'", .{raw_template});
         }
         return @intFromEnum(common.ExitCode.general_error);
     }
@@ -138,7 +138,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // Determine the directory to use
     const tmpdir = resolveTmpdir(allocator, parsed.tmpdir, parsed.t, raw_template) catch {
         if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to resolve temporary directory", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to resolve temporary directory", .{});
         }
         return @intFromEnum(common.ExitCode.general_error);
     };
@@ -150,7 +150,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     const filename = if (suffix.len > 0)
         std.fmt.allocPrint(allocator, "{s}{s}", .{ template_basename, suffix }) catch {
             if (!parsed.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to allocate memory", .{});
             }
             return @intFromEnum(common.ExitCode.general_error);
         }
@@ -160,7 +160,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // Build the full path: tmpdir/filename
     const full_template = std.fs.path.join(allocator, &.{ tmpdir, filename }) catch {
         if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to allocate memory", .{});
         }
         return @intFromEnum(common.ExitCode.general_error);
     };
@@ -169,7 +169,7 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // x_count refers to X's in the template portion (before suffix)
     const result_path = generateTemp(allocator, full_template, x_count, suffix.len, parsed.directory, parsed.@"dry-run") catch {
         if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to create {s} via template '{s}'", .{
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to create {s} via template '{s}'", .{
                 if (parsed.directory) "directory" else "file",
                 full_template,
             });

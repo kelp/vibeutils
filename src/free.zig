@@ -387,19 +387,19 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "argument parsing error", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "argument parsing error", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
         }
@@ -417,7 +417,7 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     if (parsed.positionals.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{parsed.positionals[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "extra operand '{s}'", .{parsed.positionals[0]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -457,7 +457,7 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
 fn displayOnce(stdout_writer: anytype, stderr_writer: anytype, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
     const info = getMemInfo() catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to read memory information", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to read memory information", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
 

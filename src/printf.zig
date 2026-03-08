@@ -44,7 +44,7 @@ pub fn main() !void {
 /// Only --help and --version are handled as special cases.
 pub fn runPrintf(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     if (args.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "printf", "usage: printf FORMAT [ARGUMENT...]", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "printf", std.fs.File.stderr().isTty(), "usage: printf FORMAT [ARGUMENT...]", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 

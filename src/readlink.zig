@@ -67,15 +67,15 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
     const parsed = common.argparse.ArgParser.parse(ReadlinkArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -97,7 +97,7 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
 
     // Validate: need at least one operand
     if (parsed.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "readlink", "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -126,7 +126,7 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
                     error.NotDir => "Not a directory",
                     else => "cannot read link",
                 };
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "{s}: {s}", .{ path, err_msg });
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, err_msg });
             }
         }
     }

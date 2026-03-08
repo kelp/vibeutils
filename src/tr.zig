@@ -390,15 +390,15 @@ pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const parsed = common.argparse.ArgParser.parse(TrArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry 'tr --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option\nTry 'tr --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -418,7 +418,7 @@ pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
     // Validate operand count
     if (parsed.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand\nTry 'tr --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand\nTry 'tr --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -427,12 +427,12 @@ pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     // translate mode requires SET1 and SET2
     // -s alone requires at least SET1
     if (!parsed.delete and !parsed.squeeze_repeats and parsed.positionals.len < 2) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'\nTwo strings must be given when translating.", .{parsed.positionals[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand after '{s}'\nTwo strings must be given when translating.", .{parsed.positionals[0]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     if (parsed.delete and parsed.squeeze_repeats and parsed.positionals.len < 2) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'\nTwo strings must be given when both deleting and squeezing.", .{parsed.positionals[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand after '{s}'\nTwo strings must be given when both deleting and squeezing.", .{parsed.positionals[0]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -451,7 +451,7 @@ fn runTrWithInput(
 ) !u8 {
     // Parse SET1
     const raw_set1 = parseSet(allocator, args.positionals[0]) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET1", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid SET1", .{});
         return @intFromEnum(common.ExitCode.misuse);
     };
     defer allocator.free(raw_set1);
@@ -461,7 +461,7 @@ fn runTrWithInput(
     var comp_set1: ?[]u8 = null;
     if (args.isComplement()) {
         comp_set1 = complementSet(allocator, raw_set1) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "out of memory", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "out of memory", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
         set1 = comp_set1.?;
@@ -473,7 +473,7 @@ fn runTrWithInput(
     var set2_allocated = false;
     if (args.positionals.len > 1) {
         set2 = parseSet(allocator, args.positionals[1]) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET2", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid SET2", .{});
             return @intFromEnum(common.ExitCode.misuse);
         };
         set2_allocated = true;

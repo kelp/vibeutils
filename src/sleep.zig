@@ -167,7 +167,7 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(SleepArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "sleep", std.fs.File.stderr().isTty(), "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -191,20 +191,20 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const total_nanos = parseTotalTime(parsed_args.positionals) catch |err| {
         switch (err) {
             error.MissingTimeArgument => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "missing operand", .{});
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "Try 'sleep --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "sleep", std.fs.File.stderr().isTty(), "missing operand", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "sleep", std.fs.File.stderr().isTty(), "Try 'sleep --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidTimeFormat => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "sleep", std.fs.File.stderr().isTty(), "invalid time interval", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.NegativeTime => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "sleep", std.fs.File.stderr().isTty(), "invalid time interval", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.TimeOverflow => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval: value too large", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "sleep", std.fs.File.stderr().isTty(), "invalid time interval: value too large", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
         }

@@ -495,7 +495,7 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Parse arguments
     const parsed = parseArgs(args);
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}", .{err_msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
     const opts = parsed.opts;
@@ -514,14 +514,14 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // Validate precision arguments
     if (validatePrecision(opts)) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}", .{err_msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Resolve the timestamp to format
     const ts = resolveTimestamp(opts);
     if (ts.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}", .{err_msg});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
@@ -530,12 +530,12 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
     var tm: c_tm = undefined;
     if (opts.utc) {
         if (gmtime_r(&time_secs, &tm) == null) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot convert time", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot convert time", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
     } else {
         if (localtime_r(&time_secs, &tm) == null) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot convert time", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot convert time", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
     }

@@ -192,15 +192,15 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
     const parsed = common.argparse.ArgParser.parse(CutArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "unrecognized option\nTry 'cut --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "unrecognized option\nTry 'cut --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "option requires an argument\nTry 'cut --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "option requires an argument\nTry 'cut --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "invalid argument value\nTry 'cut --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "invalid argument value\nTry 'cut --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -225,12 +225,12 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
     if (parsed.fields != null) mode_count += 1;
 
     if (mode_count == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "you must specify a list of bytes, characters, or fields\nTry 'cut --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "you must specify a list of bytes, characters, or fields\nTry 'cut --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     if (mode_count > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "only one type of list may be specified\nTry 'cut --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "only one type of list may be specified\nTry 'cut --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -238,20 +238,20 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // -s is only valid with -f
     if (parsed.only_delimited and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "suppressing non-delimited lines makes sense only when operating on fields\nTry 'cut --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "suppressing non-delimited lines makes sense only when operating on fields\nTry 'cut --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // -d is only valid with -f
     if (parsed.delimiter != null and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "an input delimiter may be specified only when operating on fields\nTry 'cut --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "an input delimiter may be specified only when operating on fields\nTry 'cut --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Parse the range list
     const list_str = parsed.bytes orelse parsed.characters orelse parsed.fields.?;
     const ranges = parseRangeList(allocator, list_str) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "invalid range: '{s}'", .{list_str});
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "invalid range: '{s}'", .{list_str});
         return @intFromEnum(common.ExitCode.misuse);
     };
     defer allocator.free(ranges);
@@ -259,11 +259,11 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
     // Determine delimiter
     const delimiter: u8 = if (parsed.delimiter) |d| blk: {
         if (d.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "the delimiter must be a single character", .{});
             return @intFromEnum(common.ExitCode.misuse);
         }
         if (d.len > 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "the delimiter must be a single character", .{});
             return @intFromEnum(common.ExitCode.misuse);
         }
         break :blk d[0];
@@ -317,7 +317,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
             if (result > 0) has_error = true;
         } else {
             const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
                 has_error = true;
                 continue;
             };

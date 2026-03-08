@@ -72,11 +72,11 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(TouchArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -117,7 +117,7 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const files = parsed_args.positionals;
 
     if (files.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -129,16 +129,16 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
             switch (err) {
                 error.InvalidTimestamp => {
                     if (options.timestamp_str) |ts| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format '{s}'", .{ts});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid date format '{s}'", .{ts});
                     } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid date format", .{});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid date format", .{});
                     }
                 },
                 error.InvalidTimeType => {
                     if (options.time_arg) |ta| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--time'", .{ta});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--time'", .{ta});
                     } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument for '--time'", .{});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument for '--time'", .{});
                     }
                 },
                 else => handleError(allocator, prog_name, file_path, err, stderr_writer),
@@ -474,19 +474,19 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
 fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: anytype) void {
     // GNU touch format: "touch: cannot touch 'filename': Error message"
     switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such file or directory", .{path}),
-        error.AccessDenied => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Permission denied", .{path}),
-        error.BadPathName => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad address", .{path}),
-        error.Interrupted => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Interrupted system call", .{path}),
-        error.SystemCallNotSupported => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Function not implemented", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Read-only file system", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': File name too long", .{path}),
-        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Too many levels of symbolic links", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Invalid argument", .{path}),
-        error.BadFileDescriptor => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad file descriptor", .{path}),
-        error.NoSuchProcess => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such process", .{path}),
-        else => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': No such file or directory", .{path}),
+        error.AccessDenied => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Permission denied", .{path}),
+        error.BadPathName => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Bad address", .{path}),
+        error.Interrupted => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Interrupted system call", .{path}),
+        error.SystemCallNotSupported => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Function not implemented", .{path}),
+        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Read-only file system", .{path}),
+        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': File name too long", .{path}),
+        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Too many levels of symbolic links", .{path}),
+        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Invalid argument", .{path}),
+        error.BadFileDescriptor => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': Bad file descriptor", .{path}),
+        error.NoSuchProcess => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': No such process", .{path}),
+        else => common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot touch '{s}': {s}", .{ path, @errorName(err) }),
     }
 }
 

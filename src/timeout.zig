@@ -280,7 +280,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     const parsed = common.argparse.ArgParser.parse(TimeoutArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument\nTry 'timeout --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument\nTry 'timeout --help' for more information.", .{});
                 return 125;
             },
             else => return err,
@@ -301,24 +301,24 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     // Need at least DURATION and COMMAND
     if (parsed.positionals.len < 2) {
         if (parsed.positionals.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand", .{});
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'", .{parsed.positionals[0]});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand after '{s}'", .{parsed.positionals[0]});
         }
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "Try 'timeout --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "Try 'timeout --help' for more information.", .{});
         return 125;
     }
 
     // Parse timeout duration
     const timeout_nanos = parseTimeString(parsed.positionals[0]) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid time interval '{s}'", .{parsed.positionals[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid time interval '{s}'", .{parsed.positionals[0]});
         return 125;
     };
 
     // Parse signal
     const timeout_signal: u8 = if (parsed.signal) |sig_str|
         parseSignal(sig_str) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid signal '{s}'", .{sig_str});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid signal '{s}'", .{sig_str});
             return 125;
         }
     else
@@ -327,7 +327,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     // Parse kill-after duration
     const kill_after_nanos: ?u64 = if (parsed.@"kill-after") |ka_str|
         parseTimeString(ka_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid time interval '{s}'", .{ka_str});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid time interval '{s}'", .{ka_str});
             return 125;
         }
     else
@@ -345,15 +345,15 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     child.spawn() catch |err| {
         switch (err) {
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': No such file or directory", .{cmd_args[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to run command '{s}': No such file or directory", .{cmd_args[0]});
                 return 127;
             },
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': Permission denied", .{cmd_args[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to run command '{s}': Permission denied", .{cmd_args[0]});
                 return 126;
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': {s}", .{ cmd_args[0], @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to run command '{s}': {s}", .{ cmd_args[0], @errorName(err) });
                 return 125;
             },
         }
@@ -391,7 +391,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
 
     // Timeout expired - send the signal
     if (parsed.verbose) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal {d} to command '{s}'", .{ timeout_signal, cmd_args[0] });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "sending signal {d} to command '{s}'", .{ timeout_signal, cmd_args[0] });
     }
 
     sendSignal(child_pid, @intCast(timeout_signal), !parsed.foreground);
@@ -416,7 +416,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
 
             // Still running - send KILL
             if (parsed.verbose) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal KILL to command '{s}'", .{cmd_args[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "sending signal KILL to command '{s}'", .{cmd_args[0]});
             }
 
             sendSignal(child_pid, 9, !parsed.foreground); // SIGKILL

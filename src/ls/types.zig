@@ -218,7 +218,7 @@ pub const GitContext = struct {
     pub fn reportInitializationIssues(self: *const GitContext, allocator: std.mem.Allocator, stderr_writer: anytype, prog_name: []const u8, git_features_requested: bool) void {
         if (git_features_requested and self.init_error != null) {
             if (self.init_error) |err| {
-                common.printWarningWithProgram(allocator, stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
+                common.printWarningWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "git status unavailable: {s}", .{err.getMessage()});
             }
         }
     }

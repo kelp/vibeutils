@@ -75,15 +75,15 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const options = common.argparse.ArgParser.parse(WcOptions, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid option\nTry 'wc --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "invalid option\nTry 'wc --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "wc", "option requires an argument\nTry 'wc --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "option requires an argument\nTry 'wc --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid argument value\nTry 'wc --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "invalid argument value\nTry 'wc --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -159,20 +159,20 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             } else {
                 // Check if it's a directory first
                 const stat = std.fs.cwd().statFile(file_path) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };
 
                 if (stat.kind == .directory) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: Is a directory", .{file_path});
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "{s}: Is a directory", .{file_path});
                     has_error = true;
                     continue;
                 }
 
                 // Regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };
@@ -181,7 +181,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 const stats = countReader(&file_reader.interface, opts) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };

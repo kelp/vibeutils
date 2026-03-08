@@ -94,7 +94,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(ChownArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid argument\nTry 'chown --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "invalid argument\nTry 'chown --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -133,14 +133,14 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const owner_spec: []const u8 = if (parsed_args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing file operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "missing file operand", .{});
             return @intFromEnum(common.ExitCode.misuse);
         }
         break :blk "";
     } else blk: {
         // Without --reference, we need owner spec + files
         if (positionals.len < 2) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "missing operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "missing operand", .{});
             return @intFromEnum(common.ExitCode.misuse);
         }
         break :blk positionals[0];
@@ -169,7 +169,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     // Warn if the owner spec looks like an octal permission mode
     if (ownership.warn_octal_confusion) {
-        common.printWarningWithProgram(allocator, stderr_writer, "chown", "'{s}' looks like a permission mode; did you mean 'chmod {s}'?", .{ owner_spec, owner_spec });
+        common.printWarningWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "'{s}' looks like a permission mode; did you mean 'chmod {s}'?", .{ owner_spec, owner_spec });
     }
 
     // Process each file with pre-parsed ownership
@@ -328,7 +328,7 @@ fn chownRecursive(
 ) !void {
     // Check if it's a directory to recurse into
     const stat_info = common.file.FileInfo.stat(path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot stat '{s}': {s}", .{ path, @errorName(err) });
         return;
     };
 
@@ -337,7 +337,7 @@ fn chownRecursive(
     if (stat_info.kind == .directory) {
         // Open directory and iterate — process children first
         var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot open directory '{s}': {s}", .{ path, @errorName(err) });
             return;
         };
         defer dir.close();
@@ -433,20 +433,20 @@ fn handleError(allocator: std.mem.Allocator, path: []const u8, err: anyerror, op
     if (options.silent) return; // Suppress errors in silent mode
 
     switch (err) {
-        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': No such file or directory", .{path}),
-        error.PermissionDenied => common.printErrorWithProgram(allocator, stderr_writer, "chown", "changing ownership of '{s}': Operation not permitted", .{path}),
-        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Not a directory", .{path}),
-        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Too many levels of symbolic links", .{path}),
-        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': File name too long", .{path}),
-        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, "chown", "changing ownership of '{s}': Read-only file system", .{path}),
-        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Invalid argument", .{path}),
-        error.InputOutputError => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Input/output error", .{path}),
-        error.UserNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid user", .{}),
-        error.GroupNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid group", .{}),
-        error.InvalidFormat => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid owner specification", .{}),
-        error.SystemResources => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
-        error.Unexpected => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Unexpected error", .{path}),
-        else => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
+        error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': No such file or directory", .{path}),
+        error.PermissionDenied => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "changing ownership of '{s}': Operation not permitted", .{path}),
+        error.NotDir => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': Not a directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': Too many levels of symbolic links", .{path}),
+        error.NameTooLong => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': File name too long", .{path}),
+        error.ReadOnlyFileSystem => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "changing ownership of '{s}': Read-only file system", .{path}),
+        error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': Invalid argument", .{path}),
+        error.InputOutputError => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': Input/output error", .{path}),
+        error.UserNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "invalid user", .{}),
+        error.GroupNotFound => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "invalid group", .{}),
+        error.InvalidFormat => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "invalid owner specification", .{}),
+        error.SystemResources => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': Cannot allocate memory", .{path}),
+        error.Unexpected => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': Unexpected error", .{path}),
+        else => common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ path, @errorName(err) }),
     }
 }
 

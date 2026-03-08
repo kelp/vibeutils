@@ -1211,7 +1211,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     const opts = parsed.opts;
 
     if (parsed.err) |msg| {
-        common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
+        common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "{s}", .{msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
     defer allocator.free(opts.positionals);
@@ -1229,6 +1229,8 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // Detect terminal color capability based on style mode
     const color_mode_int: u8 = blk: {
         if (opts.style_mode == .plain) break :blk 0;
+        const stdout_file = std.fs.File.stdout();
+        if (!stdout_file.isTty()) break :blk 0;
         const CM = common.style.Style(@TypeOf(stdout)).ColorMode;
         const detected = CM.detect(allocator) catch break :blk 0;
         break :blk @intFromEnum(detected);
@@ -1250,7 +1252,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 
         for (opts.positionals) |path| {
             const fs = getFilesystemForPath(allocator, path) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "cannot access '{s}': No such file or directory", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot access '{s}': No such file or directory", .{path});
                 exit_code = @intFromEnum(common.ExitCode.general_error);
                 continue;
             };
@@ -1268,7 +1270,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     } else {
         // Show all mounted filesystems
         const all_fs = getMountedFilesystems(allocator) catch {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read table of mounted file systems", .{});
+            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot read table of mounted file systems", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer freeFsInfoSlice(allocator, all_fs);
@@ -2236,4 +2238,57 @@ test "runDf - help mentions VIBEUTILS_STYLE" {
     const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "VIBEUTILS_STYLE") != null);
+}
+
+// C library functions for environment manipulation in tests
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn unsetenv(name: [*:0]const u8) c_int;
+
+test "runDf - non-tty output should not contain ANSI escapes" {
+    // Save original environment values
+    const orig_term = std.posix.getenv("TERM");
+    const orig_no_color = std.posix.getenv("NO_COLOR");
+    const orig_style = std.posix.getenv("VIBEUTILS_STYLE");
+
+    // Set TERM so ColorMode.detect returns a non-none color mode.
+    // Remove NO_COLOR and VIBEUTILS_STYLE so they don't suppress colors.
+    _ = setenv("TERM", "xterm-256color", 1);
+    _ = unsetenv("NO_COLOR");
+    _ = unsetenv("VIBEUTILS_STYLE");
+
+    defer {
+        // Restore original environment
+        if (orig_term) |t| {
+            _ = setenv("TERM", t.ptr, 1);
+        } else {
+            _ = unsetenv("TERM");
+        }
+        if (orig_no_color) |nc| {
+            _ = setenv("NO_COLOR", nc.ptr, 1);
+        } else {
+            _ = unsetenv("NO_COLOR");
+        }
+        if (orig_style) |vs| {
+            _ = setenv("VIBEUTILS_STYLE", vs.ptr, 1);
+        } else {
+            _ = unsetenv("VIBEUTILS_STYLE");
+        }
+    }
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // Run df on "/" which always exists. The output goes to an ArrayList
+    // buffer, not a terminal. No ANSI escapes should appear because
+    // the output destination is not a tty.
+    const args = [_][]const u8{"/"};
+    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // The isTty() gate on color_mode_int ensures ANSI codes do not
+    // leak into non-tty output even when TERM indicates color support.
+    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "\x1b[") == null);
 }

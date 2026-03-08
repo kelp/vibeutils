@@ -425,7 +425,7 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 
     // Get source stat to determine if it's a directory
     const source_stat = std.fs.cwd().statFile(source) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat '{s}': {}", .{ source, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot stat '{s}': {}", .{ source, err });
         return err;
     };
 
@@ -452,14 +452,14 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 
     if (source_stat.kind == .directory) {
         std.fs.cwd().deleteTree(source) catch |del_err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "failed to remove source directory '{s}': {}", .{ source, del_err });
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "copy completed successfully but source directory remains - please remove manually", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "failed to remove source directory '{s}': {}", .{ source, del_err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "copy completed successfully but source directory remains - please remove manually", .{});
             return del_err;
         };
     } else {
         std.fs.cwd().deleteFile(source) catch |del_err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "failed to remove source file '{s}': {}", .{ source, del_err });
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "copy completed successfully but source file remains - please remove manually", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "failed to remove source file '{s}': {}", .{ source, del_err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "copy completed successfully but source file remains - please remove manually", .{});
             return del_err;
         };
     }
@@ -477,14 +477,14 @@ fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []
 
     // Open source file
     const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source file '{s}': {}", .{ source_path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot open source file '{s}': {}", .{ source_path, err });
         return err;
     };
     defer source_file.close();
 
     // Create destination file with same permissions as source
     const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = source_stat.mode }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination file '{s}': {}", .{ dest_path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot create destination file '{s}': {}", .{ dest_path, err });
         return err;
     };
     defer dest_file.close();
@@ -495,14 +495,14 @@ fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []
 
     while (true) {
         const bytes_read = source_file.read(&buffer) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading from '{s}': {}", .{ source_path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "error reading from '{s}': {}", .{ source_path, err });
             return err;
         };
 
         if (bytes_read == 0) break;
 
         dest_file.writeAll(buffer[0..bytes_read]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "error writing to '{s}': {}", .{ dest_path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "error writing to '{s}': {}", .{ dest_path, err });
             return err;
         };
     }
@@ -524,7 +524,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 
     // Get source directory stat for permissions
     const source_stat = std.fs.cwd().statFile(source_path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat source directory '{s}': {}", .{ source_path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot stat source directory '{s}': {}", .{ source_path, err });
         return err;
     };
 
@@ -533,23 +533,23 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
         error.PathAlreadyExists => {
             // Directory already exists, check if it's actually a directory
             const dest_stat = std.fs.cwd().statFile(dest_path) catch |stat_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat existing destination '{s}': {}", .{ dest_path, stat_err });
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot stat existing destination '{s}': {}", .{ dest_path, stat_err });
                 return stat_err;
             };
             if (dest_stat.kind != .directory) {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "destination '{s}' exists but is not a directory", .{dest_path});
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "destination '{s}' exists but is not a directory", .{dest_path});
                 return error.NotDir;
             }
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination directory '{s}': {}", .{ dest_path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot create destination directory '{s}': {}", .{ dest_path, err });
             return err;
         },
     };
 
     // Set directory permissions
     var dest_dir = std.fs.cwd().openDir(dest_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open directory '{s}': {}", .{ dest_path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot open directory '{s}': {}", .{ dest_path, err });
         return err;
     };
     defer dest_dir.close();
@@ -562,7 +562,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 
     // Open source directory for iteration
     var source_dir = std.fs.cwd().openDir(source_path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source directory '{s}': {}", .{ source_path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot open source directory '{s}': {}", .{ source_path, err });
         return err;
     };
     defer source_dir.close();
@@ -570,7 +570,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
     // Iterate through directory entries
     var iterator = source_dir.iterate();
     while (iterator.next() catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading directory '{s}': {}", .{ source_path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "error reading directory '{s}': {}", .{ source_path, err });
         return err;
     }) |entry| {
         // Build full paths for source and destination
@@ -582,7 +582,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
         switch (entry.kind) {
             .file => {
                 const entry_stat = std.fs.cwd().statFile(entry_source) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat file '{s}': {}", .{ entry_source, err });
+                    common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot stat file '{s}': {}", .{ entry_source, err });
                     return err;
                 };
                 try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stderr_writer);
@@ -594,12 +594,12 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
                 // Copy symlink by reading target and creating new symlink
                 var target_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const target = std.fs.cwd().readLink(entry_source, &target_buf) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot read symlink '{s}': {}", .{ entry_source, err });
+                    common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot read symlink '{s}': {}", .{ entry_source, err });
                     return err;
                 };
 
                 std.fs.cwd().symLink(target, entry_dest, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create symlink '{s}': {}", .{ entry_dest, err });
+                    common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot create symlink '{s}': {}", .{ entry_dest, err });
                     return err;
                 };
             },
@@ -651,7 +651,7 @@ fn promptOverwrite(dest: []const u8, stderr_writer: anytype) !bool {
 fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype, hinted_overwrite: *bool) !void {
     // Check for same file using fstat to compare both inode and device
     if (isSameFile(source, dest)) {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "'{s}' and '{s}' are the same file", .{ source, dest });
         return error.SameFile;
     }
 
@@ -670,7 +670,7 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 // Destination doesn't exist, proceed with normal move
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "error checking destination '{s}': {}", .{ dest, err });
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "error checking destination '{s}': {}", .{ dest, err });
                 return err;
             },
         }
@@ -679,7 +679,7 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
     // Print one-time overwrite hint when destination exists with -f (overwrite succeeds, hint suggests -i)
     if (options.force and !options.interactive and !options.no_clobber and !hinted_overwrite.*) {
         if (std.fs.cwd().access(dest, .{})) |_| {
-            common.printHintWithProgram(allocator, stderr_writer, "mv", "use -i for interactive prompts before overwriting", .{});
+            common.printHintWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "use -i for interactive prompts before overwriting", .{});
             hinted_overwrite.* = true;
         } else |_| {}
     }
@@ -699,7 +699,7 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 }
             } else if (!options.force) {
                 // No force, no interactive - fail with clear error message
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot overwrite '{s}': File exists (use -f to force or -i for interactive)", .{dest});
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot overwrite '{s}': File exists (use -f to force or -i for interactive)", .{dest});
                 return error.PathAlreadyExists;
             }
 
@@ -709,12 +709,12 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
             };
             std.posix.rename(source, dest) catch |retry_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, retry_err });
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot rename '{s}' to '{s}': {}", .{ source, dest, retry_err });
                 return retry_err;
             };
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot rename '{s}' to '{s}': {}", .{ source, dest, err });
             return err;
         },
     };
@@ -773,11 +773,11 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const parsed_args = common.argparse.ArgParser.parse(MvArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -799,11 +799,11 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
     const files = parsed_args.positionals;
     if (files.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing file operand\nTry '{s} --help' for more information.", .{prog_name});
         return @intFromEnum(common.ExitCode.misuse);
     }
     if (files.len == 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'\nTry '{s} --help' for more information.", .{ files[0], prog_name });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing destination file operand after '{s}'\nTry '{s} --help' for more information.", .{ files[0], prog_name });
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -822,14 +822,14 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         const dest = files[files.len - 1];
         const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{dest});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         };
 
         if (dest_stat.kind != .directory) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{dest});
             return @intFromEnum(common.ExitCode.general_error);
         }
 

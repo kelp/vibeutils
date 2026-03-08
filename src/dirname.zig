@@ -32,15 +32,15 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
     const parsed_args = common.argparse.ArgParser.parse(DirnameArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "dirname", "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "dirname", std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "dirname", "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "dirname", std.fs.File.stderr().isTty(), "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "dirname", "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "dirname", std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -59,7 +59,7 @@ pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer:
     }
 
     if (parsed_args.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "dirname", "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "dirname", std.fs.File.stderr().isTty(), "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 

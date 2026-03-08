@@ -52,15 +52,15 @@ pub fn runBasename(allocator: Allocator, args: []const []const u8, stdout_writer
     const parsed_args = common.argparse.ArgParser.parse(BasenameArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "basename", "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "basename", std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "basename", "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "basename", std.fs.File.stderr().isTty(), "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "basename", "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "basename", std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -82,7 +82,7 @@ pub fn runBasename(allocator: Allocator, args: []const []const u8, stdout_writer
 
     // Validate arguments
     if (parsed_args.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "basename", "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "basename", std.fs.File.stderr().isTty(), "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -96,7 +96,7 @@ pub fn runBasename(allocator: Allocator, args: []const []const u8, stdout_writer
     } else {
         // Standard POSIX mode (single file with optional suffix)
         if (parsed_args.positionals.len > 2) {
-            common.printErrorWithProgram(allocator, stderr_writer, "basename", "extra operand '{s}'", .{parsed_args.positionals[2]});
+            common.printErrorWithProgram(allocator, stderr_writer, "basename", std.fs.File.stderr().isTty(), "extra operand '{s}'", .{parsed_args.positionals[2]});
             return @intFromEnum(common.ExitCode.misuse);
         }
 

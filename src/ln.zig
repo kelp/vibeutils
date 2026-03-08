@@ -154,15 +154,15 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     const parsed_args = common.argparse.ArgParser.parse(LnArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -197,7 +197,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     const files = parsed_args.positionals;
 
     if (files.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing file operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing file operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -275,7 +275,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         const stat = std.fs.cwd().statFile(target_dir) catch |err| {
             switch (err) {
                 error.FileNotFound => {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{target_dir});
                     return common.ExitCode.general_error;
                 },
                 else => return err,
@@ -283,7 +283,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         };
 
         if (stat.kind != .directory) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{target_dir});
             return common.ExitCode.general_error;
         }
 
@@ -323,7 +323,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
                 if (files.len == 2) {
                     return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
                 } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{directory});
                     return common.ExitCode.general_error;
                 }
             },
@@ -334,7 +334,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             if (files.len == 2) {
                 return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
             } else {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{directory});
                 return common.ExitCode.general_error;
             }
         }
@@ -352,7 +352,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         }
         if (had_error) return common.ExitCode.general_error;
     } else {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing destination file operand after '{s}'", .{files[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing destination file operand after '{s}'", .{files[0]});
         return common.ExitCode.misuse;
     }
 
@@ -370,7 +370,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         std.fs.cwd().access(link_name, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk false,
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ link_name, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ link_name, @errorName(err) });
                 return err;
             },
         };
@@ -406,7 +406,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 }
             }
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "'{s}': File exists", .{link_name});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "'{s}': File exists", .{link_name});
             return error.FileExists;
         }
     }
@@ -416,7 +416,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
             error.FileNotFound => {}, // Already removed
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
                 return err;
             },
         };
@@ -440,7 +440,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                     break :blk target;
                 } else {
                     break :blk std.fs.realpath(target, &target_abs_buf) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot resolve target path '{s}': {s}", .{ target, @errorName(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot resolve target path '{s}': {s}", .{ target, @errorName(err) });
                         return err;
                     };
                 }
@@ -458,35 +458,35 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
             // Calculate relative path
             target_path = makeRelativePath(temp_allocator, link_dir_abs, target_abs) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot compute relative path: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot compute relative path: {s}", .{@errorName(err)});
                 return err;
             };
         }
 
         std.fs.cwd().symLink(target_path, link_name, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
             return err;
         };
 
         // Warn if the symlink target does not exist (dangling symlink)
         if (isTargetMissing(target_path, link_name)) {
-            common.printWarningWithProgram(allocator, stderr_writer, prog_name, "creating dangling symlink: target '{s}' does not exist", .{target});
+            common.printWarningWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "creating dangling symlink: target '{s}' does not exist", .{target});
         }
     } else {
         // Create hard link - target must exist
         std.fs.cwd().access(target, .{}) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot link '{s}': No such file or directory", .{target});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot link '{s}': No such file or directory", .{target});
                 return error.FileNotFound;
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ target, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ target, @errorName(err) });
                 return err;
             },
         };
 
         std.posix.link(target, link_name) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
             return err;
         };
     }

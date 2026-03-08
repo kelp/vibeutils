@@ -21,9 +21,7 @@ trivial fixes:**
 - Fixing bugs requiring more than 5 lines of change
 - Adding new functions or modifying APIs
 - Performance improvements
-- Searching for code patterns across the codebase
-- Understanding existing implementations
-- Researching how something works
+- Researching or exploring the codebase
 
 ### Plan Mode Required For:
 - Architectural decisions
@@ -119,7 +117,11 @@ updates the Homebrew tap, and pushes to Cachix.
 
 ## Architecture Overview
 
-This is a Zig implementation of GNU coreutils with modern enhancements. The project follows OpenBSD engineering principles (correctness, simplicity, security) while adding modern UX features (colors, icons, progress bars).
+This is a Zig implementation of GNU coreutils with
+modern enhancements. The project follows OpenBSD
+engineering principles (correctness, simplicity,
+security) while adding modern UX features (colors,
+icons, progress bars).
 
 ### Key Design Decisions
 
@@ -147,6 +149,12 @@ The styling system (`src/common/style.zig`) automatically detects:
 - Terminal type (dumb, 16-color, 256-color, truecolor)
 - Unicode support via LANG/LC_ALL
 - Falls back gracefully when features aren't available
+
+**Color must be gated on `isTty()`**, not just
+`ColorMode.detect()`. The detect function only checks env
+vars (`TERM`, `NO_COLOR`). Without an isatty check, ANSI
+codes leak into pipes, files, and test buffers. Reference
+pattern: `du.zig` line ~552.
 
 ### Adding a New Utility
 - [ ] Create `src/<utility>.zig` with embedded tests
@@ -231,8 +239,9 @@ See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and
 - Use `testing.allocator` to detect memory leaks
 - Tests embedded in same file as implementation
 
-### Privileged Tests 
-**⚠️ MUST use `privilege_test.TestArena`, NOT `testing.allocator`** (fakeroot issue)
+### Privileged Tests
+**MUST use `privilege_test.TestArena`, NOT
+`testing.allocator`** (fakeroot issue)
 - Named with `"privileged: "` prefix
 - Run with `make test-privileged`
 
@@ -268,6 +277,13 @@ to ArrayList, args iterators, and takeDelimiterExclusive.
 
 ## Common Pitfalls You WILL Hit
 
+- **No `std.posix.setenv`/`unsetenv`**: Use C extern
+  functions: `extern fn setenv(name: [*:0]const u8,
+  value: [*:0]const u8, overwrite: c_int) c_int;` and
+  `extern fn unsetenv(name: [*:0]const u8) c_int;`
+  Read with `std.posix.getenv()`. See `src/df.zig` tests.
+- **`c_int` is a Zig primitive**: Don't alias it with
+  `const c_int = ...;` — use `c_int` directly.
 - **ArrayList forgot allocator**: Every method needs it now (append, deinit, writer, etc.)
 - **I/O buffer scoping**: Must flush before buffer goes out of scope or data is lost
 - **Privileged test hang**: Using `testing.allocator` instead of `privilege_test.TestArena`
@@ -302,8 +318,7 @@ Only validate for **correctness**:
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
 - `docs/INTEGRATION_TESTING.md` - Integration testing guide
 - `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
-- `docs/zig-0.15.1-release-notes.md` - Full 0.15.x release notes
-- `docs/zig-0.15.2-docs.md` - Full Zig 0.15.2 standard library documentation
+- `docs/zig-0.15.2-docs.md` - Zig 0.15.2 standard library documentation
 
 **⚠️ IMPORTANT: Use Grep tool to find examples in these docs**
 

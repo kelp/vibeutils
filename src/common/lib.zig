@@ -148,57 +148,66 @@ pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
 ///
 /// This version allows utilities to specify their program name explicitly,
 /// which is useful for consistent error messages across different contexts.
-pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
-    // Try to use color for errors
-    const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(allocator, writer) catch {
-        // Fallback to no color if style init fails
+pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, use_color: bool, comptime fmt: []const u8, fmt_args: anytype) void {
+    if (use_color) {
+        const StyleType = style.Style(@TypeOf(writer));
+        var s = StyleType.init(allocator, writer) catch {
+            writer.print("{s}: ", .{prog_name}) catch return;
+            writer.print(fmt ++ "\n", fmt_args) catch return;
+            return;
+        };
+        s.setColor(.bright_red) catch {};
+        writer.print("{s}: ", .{prog_name}) catch return;
+        s.reset() catch {};
+        writer.print(fmt ++ "\n", fmt_args) catch return;
+    } else {
         writer.print("{s}: ", .{prog_name}) catch return;
         writer.print(fmt ++ "\n", fmt_args) catch return;
-        return;
-    };
-    s.setColor(.bright_red) catch {};
-    writer.print("{s}: ", .{prog_name}) catch return;
-    s.reset() catch {};
-    writer.print(fmt ++ "\n", fmt_args) catch return;
+    }
 }
 
 /// Print hint message with custom program name to a specific writer
 ///
 /// Hints are informational suggestions for the user, displayed in cyan.
 /// Use for one-time suggestions like "use -i for interactive prompts".
-pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
-    // Try to use color for hints
-    const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(allocator, writer) catch {
-        // Fallback to no color if style init fails
+pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, use_color: bool, comptime fmt: []const u8, fmt_args: anytype) void {
+    if (use_color) {
+        const StyleType = style.Style(@TypeOf(writer));
+        var s = StyleType.init(allocator, writer) catch {
+            writer.print("{s}: hint: ", .{prog_name}) catch return;
+            writer.print(fmt ++ "\n", fmt_args) catch return;
+            return;
+        };
+        s.setColor(.bright_cyan) catch {};
+        writer.print("{s}: hint: ", .{prog_name}) catch return;
+        s.reset() catch {};
+        writer.print(fmt ++ "\n", fmt_args) catch return;
+    } else {
         writer.print("{s}: hint: ", .{prog_name}) catch return;
         writer.print(fmt ++ "\n", fmt_args) catch return;
-        return;
-    };
-    s.setColor(.bright_cyan) catch {};
-    writer.print("{s}: hint: ", .{prog_name}) catch return;
-    s.reset() catch {};
-    writer.print(fmt ++ "\n", fmt_args) catch return;
+    }
 }
 
 /// Print warning message with custom program name to a specific writer
 ///
 /// This version allows utilities to specify their program name explicitly,
 /// which is useful for consistent warning messages across different contexts.
-pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
-    // Try to use color for warnings
-    const StyleType = style.Style(@TypeOf(writer));
-    var s = StyleType.init(allocator, writer) catch {
-        // Fallback to no color if style init fails
+pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, use_color: bool, comptime fmt: []const u8, fmt_args: anytype) void {
+    if (use_color) {
+        const StyleType = style.Style(@TypeOf(writer));
+        var s = StyleType.init(allocator, writer) catch {
+            writer.print("{s}: warning: ", .{prog_name}) catch return;
+            writer.print(fmt ++ "\n", fmt_args) catch return;
+            return;
+        };
+        s.setColor(.bright_yellow) catch {};
+        writer.print("{s}: warning: ", .{prog_name}) catch return;
+        s.reset() catch {};
+        writer.print(fmt ++ "\n", fmt_args) catch return;
+    } else {
         writer.print("{s}: warning: ", .{prog_name}) catch return;
         writer.print(fmt ++ "\n", fmt_args) catch return;
-        return;
-    };
-    s.setColor(.bright_yellow) catch {};
-    writer.print("{s}: warning: ", .{prog_name}) catch return;
-    s.reset() catch {};
-    writer.print(fmt ++ "\n", fmt_args) catch return;
+    }
 }
 
 test "common library basics" {
@@ -268,6 +277,48 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
         std.debug.print("\nIssue #5 violation - these files use .writer() instead of .writerStreaming():\n{s}\n", .{violations.items});
         return error.TestExpectedEqual;
     }
+}
+
+test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {
+    const testing = std.testing;
+
+    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buf.deinit(testing.allocator);
+
+    printErrorWithProgram(testing.allocator, buf.writer(testing.allocator), "test", false, "something went wrong", .{});
+
+    const output = buf.items;
+    try testing.expect(output.len > 0);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expectEqualStrings("test: something went wrong\n", output);
+}
+
+test "printHintWithProgram - non-tty output must not contain ANSI escapes" {
+    const testing = std.testing;
+
+    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buf.deinit(testing.allocator);
+
+    printHintWithProgram(testing.allocator, buf.writer(testing.allocator), "test", false, "use -i for interactive", .{});
+
+    const output = buf.items;
+    try testing.expect(output.len > 0);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expectEqualStrings("test: hint: use -i for interactive\n", output);
+}
+
+test "printWarningWithProgram - non-tty output must not contain ANSI escapes" {
+    const testing = std.testing;
+
+    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buf.deinit(testing.allocator);
+
+    printWarningWithProgram(testing.allocator, buf.writer(testing.allocator), "test", false, "disk almost full", .{});
+
+    const output = buf.items;
+    try testing.expect(output.len > 0);
+    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expectEqualStrings("test: warning: disk almost full\n", output);
 }
 
 // Import tests to ensure they are run as part of the test suite

@@ -114,7 +114,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     const parsed_args = common.argparse.ArgParser.parse(RmdirArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -134,7 +134,7 @@ pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
     const directories = parsed_args.positionals;
     if (directories.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -241,7 +241,7 @@ fn handleError(allocator: std.mem.Allocator, err: anyerror, path: []const u8, st
     }
 
     const msg = formatError(err);
-    common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "failed to remove '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(allocator, stderr_writer, "rmdir", std.fs.File.stderr().isTty(), "failed to remove '{s}': {s}", .{ path, msg });
 }
 
 // ===== TESTS =====
