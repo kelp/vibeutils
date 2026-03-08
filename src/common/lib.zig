@@ -207,42 +207,66 @@ test "common library basics" {
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(ec));
 }
 
-test "writerStreaming respects O_APPEND" {
+test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)" {
     // Regression test for GitHub issue #5: File.writer() (positional mode)
-    // uses pwritev at offset 0, ignoring O_APPEND on macOS and Linux.
-    // All utilities must use writerStreaming() instead.
-    const posix = std.posix;
+    // uses pwritev at offset 0, ignoring O_APPEND on macOS. Utilities must
+    // use writerStreaming() which calls writev and respects O_APPEND.
+    //
+    // This test scans utility source files to ensure none use the buggy
+    // .stdout().writer( or .stderr().writer( pattern.
     const testing = std.testing;
 
-    // Step 1: Create temp file with existing content
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+    const src_dir = std.fs.cwd().openDir("src", .{ .iterate = true }) catch {
+        // Skip if src/ not available (e.g. installed package)
+        return;
+    };
 
-    const tmp_file = try tmp.dir.createFile("append_test.txt", .{});
-    try tmp_file.writeAll("existing\n");
-    tmp_file.close();
+    var walker = try src_dir.walk(testing.allocator);
+    defer walker.deinit();
 
-    // Step 2: Reopen with O_APPEND (simulates shell >> redirect)
-    const dir_fd = tmp.dir.fd;
-    const path_z = try posix.toPosixPath("append_test.txt");
-    const fd = try posix.openatZ(dir_fd, &path_z, .{
-        .ACCMODE = .WRONLY,
-        .APPEND = true,
-    }, 0);
-    const append_file = std.fs.File{ .handle = fd };
-    defer append_file.close();
+    var violations: std.ArrayListUnmanaged(u8) = .empty;
+    defer violations.deinit(testing.allocator);
 
-    // Step 3: Write via writerStreaming (streaming mode respects O_APPEND)
-    var buf: [4096]u8 = undefined;
-    var w = append_file.writerStreaming(&buf);
-    w.interface.print("new\n", .{}) catch {};
-    w.interface.flush() catch {};
+    while (try walker.next()) |entry| {
+        if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
+        // Skip test/integration files
+        if (std.mem.indexOf(u8, entry.path, "integration_tests") != null) continue;
 
-    // Step 4: Verify content was appended, not overwritten
-    // Bug produces "new\nting\n" instead of "existing\nnew\n"
-    const content = try tmp.dir.readFileAlloc(testing.allocator, "append_test.txt", 1024);
-    defer testing.allocator.free(content);
-    try testing.expectEqualStrings("existing\nnew\n", content);
+        const content = src_dir.readFileAlloc(testing.allocator, entry.path, 1024 * 1024) catch continue;
+        defer testing.allocator.free(content);
+
+        // Search for buggy pattern: .stdout().writer( or .stderr().writer(
+        // Correct pattern is: .stdout().writerStreaming( or .stderr().writerStreaming(
+        const patterns = [_][]const u8{
+            ".stdout().writer(",
+            ".stderr().writer(",
+        };
+        for (patterns) |pattern| {
+            var pos: usize = 0;
+            while (std.mem.indexOfPos(u8, content, pos, pattern)) |idx| {
+                // Check it's not writerStreaming (which contains ".writer(" as substring)
+                // writerStreaming( would appear as .writerStreaming( so check preceding chars
+                const before_writer = idx + std.mem.indexOf(u8, pattern, ".writer(").?;
+                if (before_writer >= "Streaming".len) {
+                    const prefix_start = before_writer - "Streaming".len;
+                    if (std.mem.eql(u8, content[prefix_start..before_writer], "Streaming")) {
+                        pos = idx + pattern.len;
+                        continue;
+                    }
+                }
+                try violations.appendSlice(testing.allocator, entry.path);
+                try violations.appendSlice(testing.allocator, ": uses positional ");
+                try violations.appendSlice(testing.allocator, pattern);
+                try violations.append(testing.allocator, '\n');
+                pos = idx + pattern.len;
+            }
+        }
+    }
+
+    if (violations.items.len > 0) {
+        std.debug.print("\nIssue #5 violation - these files use .writer() instead of .writerStreaming():\n{s}\n", .{violations.items});
+        return error.TestExpectedEqual;
+    }
 }
 
 // Import tests to ensure they are run as part of the test suite
