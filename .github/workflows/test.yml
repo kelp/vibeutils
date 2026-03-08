@@ -25,6 +25,12 @@ jobs:
         run: brew install bash
       - run: make build
       - run: make it
+      - name: Cache apt packages
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives/*.deb
+          key: apt-${{ runner.os }}-fakeroot
       - name: Run privileged tests
         if: runner.os == 'Linux'
         run: |
@@ -39,10 +45,31 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
-      - name: Install kcov
+      - name: Cache kcov
+        id: cache-kcov
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/kcov
+          key: kcov-${{ runner.os }}-${{ runner.arch }}
+      - name: Install kcov build deps
+        if: steps.cache-kcov.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y kcov
+          sudo apt-get install -y cmake pkg-config libdw-dev libcurl4-openssl-dev zlib1g-dev libiberty-dev binutils-dev
+      - name: Build kcov
+        if: steps.cache-kcov.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/SimonKagstrom/kcov.git /tmp/kcov
+          cd /tmp/kcov && mkdir build && cd build && cmake .. && make -j$(nproc) && sudo make install
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives/*.deb
+          key: apt-${{ runner.os }}-kcov-runtime
+      - name: Install kcov runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdw1 libcurl4
       - run: make coverage
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
