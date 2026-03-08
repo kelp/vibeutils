@@ -227,6 +227,56 @@ test "touch: create file" {
     file.close();
 }
 
+test "stdout append redirect preserves existing content" {
+    // Regression test for GitHub issue #5: O_APPEND stdout bug.
+    // File.writer() (positional mode) uses pwritev at offset=0,
+    // which ignores O_APPEND on both macOS and Linux. Utilities
+    // must use writerStreaming() which calls writev and respects
+    // O_APPEND.
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Step 1: Create file with existing content
+    const file = try tmp_dir.dir.createFile("append_test.txt", .{});
+    try file.writeAll("existing\n");
+    file.close();
+
+    // Step 2: Get absolute paths for the shell command
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const file_path = try std.fmt.allocPrint(testing.allocator, "{s}/append_test.txt", .{tmp_path});
+    defer testing.allocator.free(file_path);
+
+    const echo_bin = try fs.cwd().realpathAlloc(testing.allocator, "zig-out/bin/echo");
+    defer testing.allocator.free(echo_bin);
+
+    // Step 3: Run echo via shell append redirect (>> opens with O_APPEND)
+    const shell_cmd = try std.fmt.allocPrint(testing.allocator, "{s} new >> {s}", .{ echo_bin, file_path });
+    defer testing.allocator.free(shell_cmd);
+
+    const result = try std.process.Child.run(.{
+        .allocator = testing.allocator,
+        .argv = &.{ "/bin/sh", "-c", shell_cmd },
+    });
+    defer testing.allocator.free(result.stdout);
+    defer testing.allocator.free(result.stderr);
+
+    try testing.expectEqual(@as(u8, 0), result.term.Exited);
+
+    // Step 4: Read back and verify content was appended, not overwritten
+    const verify_file = try tmp_dir.dir.openFile("append_test.txt", .{});
+    defer verify_file.close();
+    var buffer: [256]u8 = undefined;
+    const bytes_read = try verify_file.read(&buffer);
+    const content = buffer[0..bytes_read];
+
+    // If the bug is present, content will be "new\nting\n" (overwritten
+    // from offset 0) instead of "existing\nnew\n" (properly appended).
+    try testing.expectEqualStrings("existing\nnew\n", content);
+}
+
 // Performance benchmarks
 const BenchmarkResult = struct {
     utility: []const u8,
