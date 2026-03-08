@@ -44,6 +44,10 @@
           {
             "type": "command",
             "command": "echo \"$TOOL_INPUT_file_path\" | grep -qE '(zig-out|zig-cache|\\.zig-cache|docs/html)/' && echo 'BLOCK: Do not edit build artifacts' && exit 1; exit 0"
+          },
+          {
+            "type": "command",
+            "command": "echo \"$TOOL_INPUT_file_path\" | grep -q 'build.zig.zon' && echo 'BLOCK: Use make release VERSION=x.y.z to change versions. Do not edit build.zig.zon directly.' && exit 1; exit 0"
           }
         ]
       }
