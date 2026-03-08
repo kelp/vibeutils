@@ -229,8 +229,9 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
 
     while (try walker.next()) |entry| {
         if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
-        // Skip test/integration files
+        // Skip test/integration files and this file (contains patterns in strings)
         if (std.mem.indexOf(u8, entry.path, "integration_tests") != null) continue;
+        if (std.mem.eql(u8, entry.basename, "lib.zig")) continue;
 
         const content = src_dir.readFileAlloc(testing.allocator, entry.path, 1024 * 1024) catch continue;
         defer testing.allocator.free(content);

@@ -60,11 +60,11 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     const exit_code = try runMktemp(allocator, args[1..], stdout, stderr);
