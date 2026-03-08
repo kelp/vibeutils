@@ -170,6 +170,36 @@ diagnose and fix the root cause. If the root cause is an upstream
 bug, document it explicitly and create a proper workaround — do not
 just comment out the test.
 
+### MANDATORY: Red-Green TDD for All Code Changes
+
+**Every bug fix and feature MUST follow strict red-green TDD.
+No exceptions. No shortcuts. No parallel test+fix agents.**
+
+#### Bug Fixes
+1. **Write the failing test FIRST** — commit it alone
+2. **Verify RED** — run locally on macOS AND Linux (via
+   `orb -m ubuntu`), push to CI, confirm failure
+3. **ONLY THEN write the fix** — apply minimal change
+4. **Verify GREEN** — same platforms, same CI
+5. **Never write tests and fixes in the same commit**
+
+#### New Features
+1. Write tests that define expected behavior
+2. Verify they fail (RED)
+3. Implement until tests pass (GREEN)
+4. Refactor if needed (keep GREEN)
+
+#### Rules
+- **Never run test-writing and fix-writing agents in
+  parallel.** The fix contaminates the test verification.
+- Tests must fail for the RIGHT reason — verify the error
+  message matches the bug, not a compile error or skip.
+- Integration tests must actually RUN in CI — verify the
+  test runner picks them up (check for binary name
+  matching, bash version requirements, etc.).
+- Always validate on both macOS and Linux before pushing.
+  Use `orb -m ubuntu` for Linux validation.
+
 ### ⚠️ CRITICAL: Filter Utilities Testing
 **Before implementing any utility, read `docs/TESTING_STRATEGY.md` section "Filter Utilities and Stdin-Dependent Testing"**
 
