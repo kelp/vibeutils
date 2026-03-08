@@ -20,6 +20,8 @@ jobs:
         with:
           version: 0.15.2
       - run: make test
+      - run: make build
+      - run: make it
       - name: Run privileged tests
         if: runner.os == 'Linux'
         run: |

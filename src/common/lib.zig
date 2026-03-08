@@ -120,7 +120,7 @@ pub fn fatalWithWriter(_: anytype, comptime fmt: []const u8, fmt_args: anytype) 
     // output is flushed before exit. The passed writer may be buffered
     // with no way to flush through the interface pointer.
     var buf: [4096]u8 = undefined;
-    var w = std.fs.File.stderr().writer(&buf);
+    var w = std.fs.File.stderr().writerStreaming(&buf);
     const stderr = &w.interface;
     const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
     stderr.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
@@ -205,6 +205,44 @@ test "common library basics" {
     // Test that we can import and use basic functionality
     const ec = ExitCode.success;
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(ec));
+}
+
+test "writerStreaming respects O_APPEND" {
+    // Regression test for GitHub issue #5: File.writer() (positional mode)
+    // uses pwritev at offset 0, ignoring O_APPEND on macOS and Linux.
+    // All utilities must use writerStreaming() instead.
+    const posix = std.posix;
+    const testing = std.testing;
+
+    // Step 1: Create temp file with existing content
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const tmp_file = try tmp.dir.createFile("append_test.txt", .{});
+    try tmp_file.writeAll("existing\n");
+    tmp_file.close();
+
+    // Step 2: Reopen with O_APPEND (simulates shell >> redirect)
+    const dir_fd = tmp.dir.fd;
+    const path_z = try posix.toPosixPath("append_test.txt");
+    const fd = try posix.openatZ(dir_fd, &path_z, .{
+        .ACCMODE = .WRONLY,
+        .APPEND = true,
+    }, 0);
+    const append_file = std.fs.File{ .handle = fd };
+    defer append_file.close();
+
+    // Step 3: Write via writerStreaming (streaming mode respects O_APPEND)
+    var buf: [4096]u8 = undefined;
+    var w = append_file.writerStreaming(&buf);
+    w.interface.print("new\n", .{}) catch {};
+    w.interface.flush() catch {};
+
+    // Step 4: Verify content was appended, not overwritten
+    // Bug produces "new\nting\n" instead of "existing\nnew\n"
+    const content = try tmp.dir.readFileAlloc(testing.allocator, "append_test.txt", 1024);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("existing\nnew\n", content);
 }
 
 // Import tests to ensure they are run as part of the test suite
