@@ -106,4 +106,19 @@ test_echo() {
     else
         print_test_result "POSIX multiple args" "FAIL" "Expected 'hello world', got '$output'"
     fi
+
+    echo -e "${CYAN}Testing >> append redirect (issue #5)...${NC}"
+
+    # Regression test: stdout must not seek to offset 0 (issue #5)
+    local append_file="$TEMP_DIR/append_echo"
+    printf 'existing\n' > "$append_file"
+    "$binary" "new" >> "$append_file"
+    local actual
+    actual=$(<"$append_file")
+    if [[ "$actual" == "existing"$'\n'"new" ]]; then
+        print_test_result "echo >> file appends (issue #5)" "PASS"
+    else
+        print_test_result "echo >> file appends (issue #5)" "FAIL" \
+            "Expected 'existing\\nnew', got '$actual'"
+    fi
 }

@@ -20,6 +20,9 @@ jobs:
         with:
           version: 0.15.2
       - run: make test
+      - name: Install bash 4+ (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bash
       - run: make build
       - run: make it
       - name: Run privileged tests
