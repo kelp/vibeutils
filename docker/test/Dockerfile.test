@@ -1,7 +1,7 @@
 # Multi-stage optimized Dockerfile for vibeutils testing
 # Implements security hardening, layer caching, and eliminates code duplication
 
-ARG ZIG_VERSION=0.14.1
+ARG ZIG_VERSION=0.15.2
 
 # =============================================================================
 # BASE IMAGES

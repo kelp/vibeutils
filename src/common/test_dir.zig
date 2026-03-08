@@ -10,10 +10,13 @@
 //! ```zig
 //! var test_dir = TestDir.init(testing.allocator);
 //! defer test_dir.deinit();
-//! try test_dir.setup();
 //!
 //! try test_dir.createFile("test.txt", "content", null);
 //! try test_dir.expectFileContent("test.txt", "content");
+//!
+//! // Get absolute paths for passing to utilities under test
+//! const path = try test_dir.getPath("test.txt");
+//! defer testing.allocator.free(path);
 //! ```
 //!
 //! # Features
@@ -22,7 +25,7 @@
 //! - File and directory creation with optional mode settings
 //! - Symbolic link creation and target verification
 //! - Content verification helpers
-//! - Working directory management for tests
+//! - Absolute path resolution via getPath/getBasePath (parallel-test safe)
 
 const std = @import("std");
 const testing = std.testing;
@@ -31,33 +34,28 @@ const testing = std.testing;
 pub const TestDir = struct {
     tmp_dir: testing.TmpDir,
     allocator: std.mem.Allocator,
-    original_cwd: ?std.fs.Dir,
 
     /// Initialize a test directory
     pub fn init(allocator: std.mem.Allocator) TestDir {
         return TestDir{
             .tmp_dir = testing.tmpDir(.{}),
             .allocator = allocator,
-            .original_cwd = null,
         };
     }
 
-    /// Clean up test directory and restore original working directory
+    /// Clean up test directory
     pub fn deinit(self: *TestDir) void {
-        // Restore original directory
-        if (self.original_cwd) |*cwd| {
-            std.posix.fchdir(cwd.fd) catch {};
-            cwd.close();
-        }
         self.tmp_dir.cleanup();
     }
 
-    /// Set up test directory as current working directory
-    pub fn setup(self: *TestDir) !void {
-        // Save current directory
-        self.original_cwd = std.fs.cwd().openDir(".", .{}) catch null;
-        // Change to test directory
-        try std.posix.fchdir(self.tmp_dir.dir.fd);
+    /// Get the absolute path of a file in the temp directory
+    pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
+        return try self.tmp_dir.dir.realpathAlloc(self.allocator, name);
+    }
+
+    /// Get the absolute path of the temp directory itself
+    pub fn getBasePath(self: *TestDir) ![]u8 {
+        return try self.tmp_dir.dir.realpathAlloc(self.allocator, ".");
     }
 
     /// Create a file with specified content and optional mode
@@ -129,7 +127,6 @@ pub const TestDir = struct {
 test "TestDir: basic file operations" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("test.txt", "Hello, World!", null);
     try testing.expect(test_dir.fileExists("test.txt"));
@@ -139,7 +136,6 @@ test "TestDir: basic file operations" {
 test "TestDir: directory operations" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createDir("test_dir");
     try testing.expect(test_dir.fileExists("test_dir"));
@@ -151,7 +147,6 @@ test "TestDir: directory operations" {
 test "TestDir: symbolic link operations" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("target.txt", "Target content", null);
     try test_dir.createSymlink("target.txt", "link.txt");
@@ -167,7 +162,6 @@ test "TestDir: symbolic link operations" {
 test "TestDir: file with mode" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("mode_test.txt", "Content", 0o644);
     const stat = try test_dir.getFileStat("mode_test.txt");

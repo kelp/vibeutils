@@ -59,6 +59,7 @@ pub fn build(b: *std.Build) void {
     addCleanStep(b);
     addCIValidateStep(b, ci);
     addDocsStep(b, target, optimize, common, build_options_module);
+    addCoverageStep(b, target, common, build_options_module);
 }
 
 /// Build a single utility with proper error handling
@@ -401,4 +402,63 @@ fn addDocsStep(
 
     // Add a completion message (without circular dependency)
     // This is just informational and doesn't need to be part of the step chain
+}
+
+/// Add coverage step - builds test binaries with LLVM backend for kcov
+/// Binaries are installed to zig-out/bin/tests/ but NOT run.
+/// Use scripts/coverage.sh to run them under kcov.
+fn addCoverageStep(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    common: *std.Build.Module,
+    build_options_module: *std.Build.Module,
+) void {
+    const coverage_step = b.step("coverage", "Build test binaries with LLVM backend for coverage analysis");
+
+    // Build test binary for each utility
+    for (utils.utilities) |util| {
+        const util_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(util.path),
+                .target = target,
+                .optimize = .Debug,
+            }),
+            .use_llvm = true,
+            .name = b.fmt("{s}_test", .{util.name}),
+        });
+
+        util_tests.root_module.addImport("common", common);
+        util_tests.root_module.addImport("build_options", build_options_module);
+
+        if (util.needs_libc) {
+            util_tests.linkLibC();
+        }
+
+        for (util.c_sources) |c_src| {
+            util_tests.addCSourceFile(.{ .file = b.path(c_src) });
+        }
+
+        // Install binary to zig-out/bin/tests/ without running
+        const install = b.addInstallArtifact(util_tests, .{
+            .dest_dir = .{ .override = .{ .custom = "bin/tests" } },
+        });
+        coverage_step.dependOn(&install.step);
+    }
+
+    // Build test binary for common library
+    const common_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/common/lib.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+        .use_llvm = true,
+        .name = "common_test",
+    });
+    common_tests.root_module.addImport("build_options", build_options_module);
+
+    const install_common = b.addInstallArtifact(common_tests, .{
+        .dest_dir = .{ .override = .{ .custom = "bin/tests" } },
+    });
+    coverage_step.dependOn(&install_common.step);
 }

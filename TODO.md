@@ -1378,6 +1378,67 @@ full design.
 - [ ] `--color=auto/always/never`
 - [ ] Man page
 
+## Testing Improvements (Post-Issue #5 Analysis)
+
+The O_APPEND bug (issue #5) exposed gaps in our testing
+strategy. These items address the categories of testing
+that would have caught it — and similar bugs — earlier.
+
+### 1. File Descriptor Mode Tests
+- [ ] Generic test harness that runs each binary under
+      different fd configurations
+- [ ] Test `>> file` append mode for every utility
+- [ ] Test pipe mode (`| cat`) for every utility
+- [ ] Test truncate mode (`> file`) for every utility
+- [ ] Test dup'd descriptors (`2>&1 >> file`)
+
+### 2. POSIX Behavioral Conformance Suite
+- [ ] `>>` must append, not overwrite
+- [ ] Stdout to a closed pipe must produce SIGPIPE/EPIPE
+- [ ] Stderr must be unbuffered
+- [ ] Exit codes conform to POSIX spec
+- [ ] Utility-agnostic: same I/O contract tests run
+      against every binary
+
+### 3. Cross-Platform Behavioral Comparison Tests
+- [ ] Run identical operations on macOS and Linux
+- [ ] Diff results between platforms
+- [ ] Flag divergences as test failures (the divergence
+      itself is the signal)
+
+### 4. Real-World Pipeline Tests
+- [ ] Log accumulation: repeated `>> logfile` appends
+- [ ] Pipeline composition: `cat | sort | uniq >> output`
+- [ ] Interleaved stdout/stderr with redirects
+- [ ] Simulate actual usage patterns that exercise
+      binaries in realistic scenarios
+
+### 5. Adopt Shared TestDir Across All Utilities
+- [ ] Replace ad-hoc `testing.tmpDir(.{})` usage with
+      shared `common.test_dir.TestDir` in all utility tests
+- [ ] Ensure all tests use absolute paths (no fchdir)
+- [ ] Utilities to migrate: cat, chmod, chown, cut, dd,
+      du, find, grep, head, ln, ls, mkdir, mktemp, nl,
+      pwd, readlink, realpath, rm, rmdir, stat, tac,
+      tail, tee, test, touch, tr, uniq, wc
+- [ ] Consolidate mv.zig's local TestDir into the shared
+      one
+
+### 6. Fix LLVM Backend Test Failures
+- [ ] cp overwrite hint test fails under `.use_llvm = true`
+      but passes with self-hosted backend
+- [ ] mv overwrite hint test has the same issue
+- [ ] Root cause: likely Style/writer generic instantiation
+      differs between backends
+- [ ] Blocking accurate coverage numbers (2 of 49 binaries
+      fail)
+
+### 7. main() Function Coverage
+- [ ] Test the writer setup code path in main(), not just
+      runUtil() with test-provided writers
+- [ ] Integration tests that exercise the compiled binary's
+      actual I/O initialization
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation

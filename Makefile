@@ -10,7 +10,7 @@ HAS_DOCKER := $(shell command -v docker >/dev/null 2>&1 && echo "true")
 HAS_FAKEROOT := $(shell command -v fakeroot >/dev/null 2>&1 && echo "true")
 
 # All .PHONY targets in one line
-.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage coverage-kcov fmt fmt-check lint-man lint-man-strict lint-man-verbose lint-actions ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open run debug build-release release it test-integration-validate it-list
+.PHONY: all build test test-privileged test-privileged-local test-all clean install coverage fmt fmt-check lint-man lint-man-strict lint-man-verbose lint-actions ci-validate docs help test-linux test-linux-all test-linux-privileged test-linux-coverage docker-build docker-shell docker-shell-debian docker-clean docs-html docs-serve docs-open run debug build-release release it test-integration-validate it-list
 
 # Core Targets
 all: build
@@ -76,10 +76,7 @@ else
 endif
 
 coverage:
-	zig build coverage
-
-coverage-kcov:
-	zig build coverage -Dcoverage-backend=kcov
+	@scripts/coverage.sh
 
 clean:
 	zig build clean

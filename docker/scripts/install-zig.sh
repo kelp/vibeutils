@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # Default values
-ZIG_VERSION="${1:-0.14.1}"
+ZIG_VERSION="${1:-0.15.2}"
 ZIG_ARCH="${2:-}"
 
 # Auto-detect architecture if not provided

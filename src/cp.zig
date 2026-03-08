@@ -572,14 +572,20 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 test "cp: single file copy" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "Hello, World!", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
 
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "source.txt", "dest.txt" };
+    const args = [_][]const u8{ source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -589,15 +595,19 @@ test "cp: single file copy" {
 test "cp: copy to existing directory" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "Test content", null);
     try test_dir.createDir("dest_dir");
 
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_dir_path = try test_dir.getPath("dest_dir");
+    defer testing.allocator.free(dest_dir_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "source.txt", "dest_dir" };
+    const args = [_][]const u8{ source_path, dest_dir_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -607,14 +617,20 @@ test "cp: copy to existing directory" {
 test "cp: error on directory without recursive flag" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createDir("source_dir");
+
+    const source_path = try test_dir.getPath("source_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
 
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "source_dir", "dest_dir" };
+    const args = [_][]const u8{ source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -623,7 +639,6 @@ test "cp: error on directory without recursive flag" {
 test "cp: recursive directory copy" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     // Create source directory structure
     try test_dir.createDir("source_dir");
@@ -631,10 +646,17 @@ test "cp: recursive directory copy" {
     try test_dir.createFile("source_dir/file1.txt", "File 1 content", null);
     try test_dir.createFile("source_dir/subdir/file2.txt", "File 2 content", null);
 
+    const source_path = try test_dir.getPath("source_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-r", "source_dir", "dest_dir" };
+    const args = [_][]const u8{ "-r", source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -645,14 +667,20 @@ test "cp: recursive directory copy" {
 test "cp: preserve attributes" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "Test content", 0o644);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
 
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
+    const args = [_][]const u8{ "-p", source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -669,15 +697,22 @@ test "cp: preserve attributes" {
 test "cp: symbolic link handling - follow by default" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("original.txt", "Original content", null);
     try test_dir.createSymlink("original.txt", "link.txt");
 
+    // Use getBasePath + fmt instead of getPath to avoid resolving the symlink
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{base_path});
+    defer testing.allocator.free(link_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/copied.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "link.txt", "copied.txt" };
+    const args = [_][]const u8{ link_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -688,15 +723,22 @@ test "cp: symbolic link handling - follow by default" {
 test "cp: symbolic link handling - no dereference (-d)" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("original.txt", "Original content", null);
     try test_dir.createSymlink("original.txt", "link.txt");
 
+    // Use getBasePath + fmt instead of getPath to avoid resolving the symlink
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{base_path});
+    defer testing.allocator.free(link_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/copied_link.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-d", "link.txt", "copied_link.txt" };
+    const args = [_][]const u8{ "-d", link_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -709,16 +751,22 @@ test "cp: symbolic link handling - no dereference (-d)" {
 test "cp: multiple sources to directory" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("file1.txt", "Content 1", null);
     try test_dir.createFile("file2.txt", "Content 2", null);
     try test_dir.createDir("dest_dir");
 
+    const file1_path = try test_dir.getPath("file1.txt");
+    defer testing.allocator.free(file1_path);
+    const file2_path = try test_dir.getPath("file2.txt");
+    defer testing.allocator.free(file2_path);
+    const dest_dir_path = try test_dir.getPath("dest_dir");
+    defer testing.allocator.free(dest_dir_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "file1.txt", "file2.txt", "dest_dir" };
+    const args = [_][]const u8{ file1_path, file2_path, dest_dir_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -729,7 +777,6 @@ test "cp: multiple sources to directory" {
 test "cp: large file copy" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     // Create a file larger than the copy buffer
     const large_size = COPY_BUFFER_SIZE + 1024;
@@ -743,10 +790,17 @@ test "cp: large file copy" {
 
     try test_dir.createFile("large_source.bin", content, null);
 
+    const source_path = try test_dir.getPath("large_source.bin");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/large_dest.bin", .{base_path});
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "large_source.bin", "large_dest.bin" };
+    const args = [_][]const u8{ source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -768,15 +822,21 @@ test "privileged: permission preservation with mode bits" {
 
     var test_dir = TestDir.init(allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     // Create source file with specific permissions
     try test_dir.createFile("source.txt", "Test content", 0o755);
 
+    const source_path = try test_dir.getPath("source.txt");
+    defer allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dest.txt", .{base_path});
+    defer allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer stderr_buffer.deinit(allocator);
 
-    const args = [_][]const u8{ "-p", "source.txt", "dest.txt" };
+    const args = [_][]const u8{ "-p", source_path, dest_path };
     const exit_code = try runUtility(allocator, &args, common.null_writer, stderr_buffer.writer(allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -791,30 +851,40 @@ test "privileged: permission preservation with mode bits" {
 test "cp: same file detection across devices via hardlink" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("original.txt", "test content", null);
 
+    const original_path = try test_dir.getPath("original.txt");
+    defer testing.allocator.free(original_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const hardlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{base_path});
+    defer testing.allocator.free(hardlink_path);
+
     // Create hardlink (same inode+device)
-    std.posix.link("original.txt", "hardlink.txt") catch {
+    std.posix.link(original_path, hardlink_path) catch {
         return error.SkipZigTest;
     };
 
     // Hardlinks share inode+device, so isSameFile must return true
-    try testing.expect(isSameFile("original.txt", "hardlink.txt"));
+    try testing.expect(isSameFile(original_path, hardlink_path));
 
     // Different files must return false
     try test_dir.createFile("different.txt", "other content", null);
-    try testing.expect(!isSameFile("original.txt", "different.txt"));
+    const different_path = try test_dir.getPath("different.txt");
+    defer testing.allocator.free(different_path);
+    try testing.expect(!isSameFile(original_path, different_path));
 
     // Nonexistent file must return false (not crash)
-    try testing.expect(!isSameFile("original.txt", "nonexistent.txt"));
+    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent.txt", .{base_path});
+    defer testing.allocator.free(nonexistent_path);
+    try testing.expect(!isSameFile(original_path, nonexistent_path));
 
     // cp should refuse to copy same file (via hardlink) to itself
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "original.txt", "hardlink.txt" };
+    const args = [_][]const u8{ original_path, hardlink_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -824,15 +894,19 @@ test "cp: same file detection across devices via hardlink" {
 test "cp: overwrite hint printed when destination exists without -i or -f" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "new content", null);
     try test_dir.createFile("dest.txt", "old content", null);
 
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "source.txt", "dest.txt" };
+    const args = [_][]const u8{ source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -842,15 +916,19 @@ test "cp: overwrite hint printed when destination exists without -i or -f" {
 test "cp: overwrite hint NOT printed with -i flag" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "new content", null);
     try test_dir.createFile("dest.txt", "old content", null);
 
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-i", "source.txt", "dest.txt" };
+    const args = [_][]const u8{ "-i", source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -860,15 +938,19 @@ test "cp: overwrite hint NOT printed with -i flag" {
 test "cp: overwrite hint NOT printed with -f flag" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "new content", null);
     try test_dir.createFile("dest.txt", "old content", null);
 
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-f", "source.txt", "dest.txt" };
+    const args = [_][]const u8{ "-f", source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -878,7 +960,6 @@ test "cp: overwrite hint NOT printed with -f flag" {
 test "cp: overwrite hint printed only once for multiple files" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("src1.txt", "content 1", null);
     try test_dir.createFile("src2.txt", "content 2", null);
@@ -886,10 +967,17 @@ test "cp: overwrite hint printed only once for multiple files" {
     try test_dir.createFile("dest_dir/src1.txt", "old 1", null);
     try test_dir.createFile("dest_dir/src2.txt", "old 2", null);
 
+    const src1_path = try test_dir.getPath("src1.txt");
+    defer testing.allocator.free(src1_path);
+    const src2_path = try test_dir.getPath("src2.txt");
+    defer testing.allocator.free(src2_path);
+    const dest_dir_path = try test_dir.getPath("dest_dir");
+    defer testing.allocator.free(dest_dir_path);
+
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "src1.txt", "src2.txt", "dest_dir" };
+    const args = [_][]const u8{ src1_path, src2_path, dest_dir_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -907,14 +995,20 @@ test "cp: overwrite hint printed only once for multiple files" {
 test "cp: no hint when destination does not exist" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
-    try test_dir.setup();
 
     try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/new_dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
 
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "source.txt", "new_dest.txt" };
+    const args = [_][]const u8{ source_path, dest_path };
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
