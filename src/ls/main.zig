@@ -166,23 +166,21 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         return;
     }
 
-    // Parse color and icon modes.
-    // Priority: explicit flags > LS_ICONS env > VIBEUTILS_STYLE env > auto
-    var color_mode = ColorMode.auto;
-    var icon_mode = common.icons.getIconModeFromEnv(allocator);
+    // Resolve display config from environment and terminal state
+    const display_config = common.display_config.DisplayConfig.resolve(allocator);
 
-    // VIBEUTILS_STYLE sets defaults when no explicit flags are given
-    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
-        if (std.mem.eql(u8, vibe_style, "plain")) {
-            color_mode = .never;
-            icon_mode = .never;
-        } else if (std.mem.eql(u8, vibe_style, "color")) {
-            icon_mode = .never;
-        }
-        // "full" keeps defaults (auto/auto)
-    }
+    // Map resolved display config to ls-specific color/icon modes.
+    // DisplayConfig already handled VIBEUTILS_STYLE, individual env
+    // vars, NO_COLOR, and TTY detection.
+    var color_mode: ColorMode = if (display_config.color == .on) .always else .never;
+    var icon_mode: common.icons.IconMode = blk: {
+        // LS_ICONS env var can override if set
+        const env_mode = common.icons.getIconModeFromEnv(allocator);
+        if (env_mode != .auto) break :blk env_mode;
+        break :blk if (display_config.icons == .on) .always else .never;
+    };
 
-    // Explicit flags override everything
+    // Explicit CLI flags override everything
     if (args.color) |color_arg| {
         color_mode = types.parseColorMode(color_arg) catch {
             common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
@@ -444,7 +442,7 @@ fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_
 }
 
 /// Determine whether to show git status indicators.
-/// Priority: explicit --git=WHEN > VIBEUTILS_STYLE > auto-detect .git dir
+/// Priority: explicit --git=WHEN > DisplayConfig > auto-detect .git dir
 fn resolveGitMode(git_arg: ?[]const u8) bool {
     if (git_arg) |value| {
         if (std.mem.eql(u8, value, "always")) return true;
@@ -452,15 +450,10 @@ fn resolveGitMode(git_arg: ?[]const u8) bool {
         // "auto" falls through to auto-detect
     }
 
-    // No flag or --git=auto: check VIBEUTILS_STYLE
-    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
-        if (std.mem.eql(u8, vibe_style, "plain") or
-            std.mem.eql(u8, vibe_style, "color"))
-        {
-            return false;
-        }
-        // "full" falls through to auto-detect
-    }
+    // No flag or --git=auto: check display config
+    // Git status is a visual enhancement, disabled when icons are off
+    const display_config = common.display_config.DisplayConfig.resolve(std.heap.c_allocator);
+    if (display_config.icons == .off) return false;
 
     // Auto-detect: enable if we're inside a git repo
     return isInGitRepo();

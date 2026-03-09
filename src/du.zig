@@ -16,12 +16,6 @@ const c = std.c;
 
 const prog_name = "du";
 
-const ColorMode = enum {
-    never,
-    auto,
-    always,
-};
-
 // ============================================================================
 // Options
 // ============================================================================
@@ -94,7 +88,7 @@ const DuConfig = struct {
     one_file_system: bool,
     apparent_size: bool,
     block_size: u64,
-    color_mode: ColorMode,
+    display: common.display_config.DisplayConfig,
 };
 
 fn resolveConfig(opts: DuOptions) !DuConfig {
@@ -109,7 +103,7 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         .one_file_system = opts.one_file_system,
         .apparent_size = opts.apparent_size,
         .block_size = 1024, // default
-        .color_mode = .auto,
+        .display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator),
     };
 
     // -b implies --apparent-size --block-size=1
@@ -138,21 +132,14 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         config.max_depth = std.fmt.parseInt(u64, depth_str, 10) catch return error.InvalidMaxDepth;
     }
 
-    // VIBEUTILS_STYLE sets default color mode (explicit --color overrides)
-    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
-        if (std.mem.eql(u8, vibe_style, "plain")) {
-            config.color_mode = .never;
-        }
-    }
-
-    // Parse explicit color mode (overrides VIBEUTILS_STYLE)
+    // Parse explicit --color mode (overrides DisplayConfig)
     if (opts.color) |when| {
         if (std.mem.eql(u8, when, "always")) {
-            config.color_mode = .always;
+            config.display.color = .on;
         } else if (std.mem.eql(u8, when, "auto")) {
-            config.color_mode = .auto;
+            // Keep resolved value (TTY-dependent)
         } else if (std.mem.eql(u8, when, "never")) {
-            config.color_mode = .never;
+            config.display.color = .off;
         } else {
             return error.InvalidColorMode;
         }
@@ -536,23 +523,12 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         }
     };
 
-    // Initialize styling for color output
+    // Initialize styling based on resolved display config
     const StyleType = common.style.Style(@TypeOf(stdout));
     var style = StyleType{ .color_mode = .none, .writer = stdout };
-    switch (config.color_mode) {
-        .never => style.color_mode = .none,
-        .always => {
-            // --color=always overrides NO_COLOR; fall back to basic
-            // (16-color) if terminal capability cannot be detected.
-            const detected = StyleType.ColorMode.detect(allocator) catch .basic;
-            style.color_mode = if (detected == .none) .basic else detected;
-        },
-        .auto => {
-            const stdout_file = std.fs.File.stdout();
-            if (stdout_file.isTty()) {
-                style.color_mode = StyleType.ColorMode.detect(allocator) catch .none;
-            }
-        },
+    if (config.display.color == .on) {
+        const detected = StyleType.ColorMode.detect(allocator) catch .basic;
+        style.color_mode = if (detected == .none) .basic else detected;
     }
 
     const paths = if (opts.positionals.len == 0)
@@ -1015,7 +991,7 @@ test "du shouldPrintAtDepth" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1024,
-        .color_mode = .auto,
+        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
     };
     try testing.expect(shouldPrintAtDepth(0, config_no_limit));
     try testing.expect(shouldPrintAtDepth(100, config_no_limit));
@@ -1056,20 +1032,20 @@ test "resolveConfig - color mode always" {
     var opts = DuOptions{};
     opts.color = "always";
     const config = try resolveConfig(opts);
-    try testing.expectEqual(ColorMode.always, config.color_mode);
+    try testing.expectEqual(common.display_config.ResolvedMode.on, config.display.color);
 }
 
 test "resolveConfig - color mode never" {
     var opts = DuOptions{};
     opts.color = "never";
     const config = try resolveConfig(opts);
-    try testing.expectEqual(ColorMode.never, config.color_mode);
+    try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig - color mode default" {
     const opts = DuOptions{};
     const config = try resolveConfig(opts);
-    try testing.expectEqual(ColorMode.auto, config.color_mode);
+    try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig - invalid color mode" {

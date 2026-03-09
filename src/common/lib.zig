@@ -12,6 +12,9 @@ const build_options = @import("build_options");
 /// Terminal styling and color detection functionality
 pub const style = @import("style.zig");
 
+/// Unified display configuration (color, icons, highlight, theme)
+pub const display_config = @import("display_config.zig");
+
 /// File operation helpers with enhanced error handling
 pub const file = @import("file.zig");
 

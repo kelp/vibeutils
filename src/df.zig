@@ -83,24 +83,10 @@ const BlockSize = enum {
     custom,
 };
 
-const StyleMode = enum {
-    full,
-    color,
-    plain,
-};
-
-fn parseStyleMode(env_val: ?[]const u8) StyleMode {
-    const val = env_val orelse return .full;
-    if (std.mem.eql(u8, val, "plain")) return .plain;
-    if (std.mem.eql(u8, val, "color")) return .color;
-    if (std.mem.eql(u8, val, "full")) return .full;
-    return .full; // unknown values default to full
-}
-
 const DfOptions = struct {
     all: bool = false,
     human_readable: bool = true,
-    style_mode: StyleMode = .full,
+    display: common.display_config.DisplayConfig = .{ .color = .on, .icons = .on, .highlight = .on, .theme = .default },
     si: bool = false,
     inodes: bool = false,
     block_1k: bool = false,
@@ -141,7 +127,7 @@ const FsInfo = struct {
 
 fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOptions, err: ?[]const u8 } {
     var opts = DfOptions{};
-    opts.style_mode = parseStyleMode(std.posix.getenv("VIBEUTILS_STYLE"));
+    opts.display = common.display_config.DisplayConfig.resolve(allocator);
     var err_msg: ?[]const u8 = null;
     var positionals = std.ArrayListUnmanaged([]const u8){};
     var i: usize = 0;
@@ -190,7 +176,10 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
             } else if (std.mem.eql(u8, arg, "--portability")) {
                 opts.portability = true;
                 opts.human_readable = false;
-                opts.style_mode = .plain;
+                opts.display.color = .off;
+                opts.display.icons = .off;
+                opts.display.highlight = .off;
+                opts.display.theme = .none;
             } else if (std.mem.eql(u8, arg, "--print-type")) {
                 opts.print_type = true;
             } else if (std.mem.eql(u8, arg, "--total")) {
@@ -262,7 +251,10 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                 'P' => {
                     opts.portability = true;
                     opts.human_readable = false;
-                    opts.style_mode = .plain;
+                    opts.display.color = .off;
+                    opts.display.icons = .off;
+                    opts.display.highlight = .off;
+                    opts.display.theme = .none;
                 },
                 'T' => opts.print_type = true,
                 't' => {
@@ -925,7 +917,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
         break :blk "1K-blocks";
     };
 
-    if (opts.style_mode == .full) {
+    if (opts.display.icons == .on) {
         if (opts.print_type) {
             try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
                 "Filesystem",
@@ -1011,7 +1003,7 @@ fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions, color_mode_int: u8) 
     const use_total = fs.used_blocks + fs.avail_blocks;
     const pct_str = formatPercent(&pct_buf, fs.used_blocks, use_total);
 
-    if (opts.style_mode == .plain) {
+    if (opts.display.color == .off) {
         // Plain mode: no color, no bar
         if (opts.print_type) {
             try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
@@ -1030,7 +1022,7 @@ fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions, color_mode_int: u8) 
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
 
-    if (opts.style_mode == .full) {
+    if (opts.display.icons == .on) {
         // Full mode: color + bar + truncated path
         var bar_buf: [48]u8 = undefined;
         const bar_str = formatUsageBar(&bar_buf, percent);
@@ -1145,7 +1137,7 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, col
         break :blk std.fmt.bufPrint(&pct_buf, "{d}%", .{pct}) catch "?";
     };
 
-    if (opts.style_mode == .plain) {
+    if (opts.display.color == .off) {
         if (opts.print_type) {
             try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
                 "total", "-", total_str, used_str, avail_str, pct_str, "-",
@@ -1167,7 +1159,7 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, col
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
 
-    if (opts.style_mode == .full) {
+    if (opts.display.icons == .on) {
         var bar_buf: [48]u8 = undefined;
         const bar_str = formatUsageBar(&bar_buf, percent);
 
@@ -1226,14 +1218,11 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Detect terminal color capability based on style mode
-    const color_mode_int: u8 = blk: {
-        if (opts.style_mode == .plain) break :blk 0;
-        const stdout_file = std.fs.File.stdout();
-        if (!stdout_file.isTty()) break :blk 0;
+    // Detect terminal color capability based on display config
+    const color_mode_int: u8 = if (opts.display.color == .off) 0 else blk: {
         const CM = common.style.Style(@TypeOf(stdout)).ColorMode;
-        const detected = CM.detect(allocator) catch break :blk 0;
-        break :blk @intFromEnum(detected);
+        const detected = CM.detect(allocator) catch break :blk @intFromEnum(CM.basic);
+        break :blk if (detected == .none) @intFromEnum(CM.basic) else @intFromEnum(detected);
     };
 
     var exit_code: u8 = @intFromEnum(common.ExitCode.success);
@@ -1278,7 +1267,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         // Smart volume grouping on macOS (non-plain mode)
         const display_fs = blk: {
             if (comptime is_darwin) {
-                if (opts.style_mode != .plain) {
+                if (opts.display.icons == .on) {
                     break :blk groupDarwinVolumes(allocator, all_fs) catch all_fs;
                 }
             }
@@ -1371,6 +1360,10 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  full    colored output with usage bars (default)
         \\  color   colored percentage only, no bars
         \\  plain   no colors or visual enhancements
+        \\
+        \\Per-feature overrides (always/never):
+        \\  VIBEUTILS_COLOR      enable/disable colored output
+        \\  VIBEUTILS_ICONS      enable/disable usage bars
         \\
     );
 }
@@ -1499,7 +1492,7 @@ test "parseArgs - short flags" {
     try testing.expect(parsed.opts.print_type);
     try testing.expect(parsed.opts.local);
     try testing.expect(parsed.opts.portability);
-    try testing.expectEqual(StyleMode.plain, parsed.opts.style_mode);
+    try testing.expectEqual(common.display_config.ResolvedMode.off, parsed.opts.display.color);
 }
 
 test "parseArgs - long flags" {
@@ -1887,14 +1880,6 @@ test "formatSize - human readable" {
     try testing.expectEqualStrings("3.9M", result);
 }
 
-test "parseStyleMode - values" {
-    try testing.expectEqual(StyleMode.full, parseStyleMode(null));
-    try testing.expectEqual(StyleMode.plain, parseStyleMode("plain"));
-    try testing.expectEqual(StyleMode.color, parseStyleMode("color"));
-    try testing.expectEqual(StyleMode.full, parseStyleMode("full"));
-    try testing.expectEqual(StyleMode.full, parseStyleMode("garbage"));
-}
-
 test "parseArgs - human readable is default" {
     const args = [_][]const u8{};
     const parsed = parseArgs(testing.allocator, &args);
@@ -1914,7 +1899,7 @@ test "parseArgs - P flag disables human readable and sets plain" {
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
     try testing.expect(!parsed.opts.human_readable);
-    try testing.expectEqual(StyleMode.plain, parsed.opts.style_mode);
+    try testing.expectEqual(common.display_config.ResolvedMode.off, parsed.opts.display.color);
 }
 
 test "parseArgs - block-size disables human readable" {
@@ -2143,7 +2128,8 @@ test "printFsRow - plain mode has no ANSI" {
     defer buf.deinit(testing.allocator);
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
-    opts.style_mode = .plain;
+    opts.display.color = .off;
+    opts.display.icons = .off;
     try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
     // No ANSI escape sequences in plain mode
     try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") == null);
@@ -2154,7 +2140,8 @@ test "printFsRow - color mode applies ANSI" {
     defer buf.deinit(testing.allocator);
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
-    opts.style_mode = .color;
+    opts.display.color = .on;
+    opts.display.icons = .off;
     // Use basic color mode (1) so ANSI codes are emitted
     try printFsRow(buf.writer(testing.allocator), fs, opts, 1);
     try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") != null);
@@ -2168,7 +2155,7 @@ test "printFsRow - full mode includes bar" {
     defer buf.deinit(testing.allocator);
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
-    opts.style_mode = .full;
+    opts.display.icons = .on;
     try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
     // Full mode with color_mode_int=0 (none) still shows the bar
     try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
@@ -2179,7 +2166,7 @@ test "printHeader - full mode shows Usage column" {
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(testing.allocator);
     var opts = DfOptions{};
-    opts.style_mode = .full;
+    opts.display.icons = .on;
     try printHeader(buf.writer(testing.allocator), opts);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Size") != null);
@@ -2189,7 +2176,7 @@ test "printHeader - plain mode no Usage column" {
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(testing.allocator);
     var opts = DfOptions{};
-    opts.style_mode = .plain;
+    opts.display.icons = .off;
     try printHeader(buf.writer(testing.allocator), opts);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") == null);
 }
@@ -2198,7 +2185,7 @@ test "printHeader - color mode no Usage column" {
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(testing.allocator);
     var opts = DfOptions{};
-    opts.style_mode = .color;
+    opts.display.icons = .off;
     try printHeader(buf.writer(testing.allocator), opts);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") == null);
 }
@@ -2210,7 +2197,8 @@ test "printTotal - plain mode has no ANSI" {
     const fs2 = makeFsInfo("/dev/disk2s1", "/home", 2000, 4096);
     const items = [_]FsInfo{ fs1, fs2 };
     var opts = DfOptions{};
-    opts.style_mode = .plain;
+    opts.display.color = .off;
+    opts.display.icons = .off;
     try printTotal(buf.writer(testing.allocator), &items, opts, 0);
     try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") == null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "total") != null);
@@ -2222,7 +2210,7 @@ test "printTotal - full mode includes bar" {
     const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     const items = [_]FsInfo{fs1};
     var opts = DfOptions{};
-    opts.style_mode = .full;
+    opts.display.icons = .on;
     try printTotal(buf.writer(testing.allocator), &items, opts, 0);
     try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
         std.mem.indexOf(u8, buf.items, "\xe2\x96\x91") != null);
