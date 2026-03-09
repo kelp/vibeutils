@@ -36,12 +36,6 @@ const RegexMode = enum {
     fixed,
 };
 
-const ColorMode = enum {
-    never,
-    auto,
-    always,
-};
-
 /// Parsed command-line options for grep
 const GrepOptions = struct {
     regex_mode: RegexMode = .basic,
@@ -63,7 +57,7 @@ const GrepOptions = struct {
     max_count: ?usize = null,
     after_context: usize = 0,
     before_context: usize = 0,
-    color: ColorMode = .auto,
+    color: common.display_config.ResolvedMode = .off,
     include_globs: std.ArrayListUnmanaged([]const u8) = .{},
     exclude_globs: std.ArrayListUnmanaged([]const u8) = .{},
     exclude_dirs: std.ArrayListUnmanaged([]const u8) = .{},
@@ -102,12 +96,9 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
     var opts = GrepOptions{};
     errdefer opts.deinit(allocator);
 
-    // VIBEUTILS_STYLE sets default color mode (explicit --color overrides)
-    if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
-        if (std.mem.eql(u8, vibe_style, "plain")) {
-            opts.color = .never;
-        }
-    }
+    // Resolve color from DisplayConfig (handles VIBEUTILS_STYLE, NO_COLOR, TTY)
+    const display = common.display_config.DisplayConfig.resolve(allocator);
+    opts.color = display.color;
 
     var i: usize = 0;
     var saw_double_dash = false;
@@ -202,16 +193,16 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 opts.before_context = ctx;
                 opts.after_context = ctx;
             } else if (std.mem.eql(u8, flag, "color") or std.mem.eql(u8, flag, "colour")) {
-                opts.color = .always;
+                opts.color = .on;
             } else if (std.mem.startsWith(u8, flag, "color=") or std.mem.startsWith(u8, flag, "colour=")) {
                 const eq_pos = std.mem.indexOfScalar(u8, flag, '=').?;
                 const when = flag[eq_pos + 1 ..];
                 if (std.mem.eql(u8, when, "auto")) {
-                    opts.color = .auto;
+                    // Keep resolved value (TTY-dependent)
                 } else if (std.mem.eql(u8, when, "always")) {
-                    opts.color = .always;
+                    opts.color = .on;
                 } else if (std.mem.eql(u8, when, "never")) {
-                    opts.color = .never;
+                    opts.color = .off;
                 } else {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--color'", .{when});
                     return null;
@@ -417,7 +408,7 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
     if (opts.regex_mode == .extended) cflags |= c.REG_EXTENDED;
     if (opts.ignore_case) cflags |= c.REG_ICASE;
     // Use REG_NOSUB only if we don't need match positions
-    if (!opts.only_matching and !opts.word_regexp and opts.color == .never) cflags |= c.REG_NOSUB;
+    if (!opts.only_matching and !opts.word_regexp and opts.color == .off) cflags |= c.REG_NOSUB;
 
     const pattern_z = allocator.dupeZ(u8, actual_pattern) catch return null;
 
@@ -522,24 +513,6 @@ const Color = struct {
     const match_highlight = "\x1b[01;31m";
     const reset = "\x1b[0m";
 };
-
-/// Determine if color should be used
-fn shouldUseColor(color_mode: ColorMode) bool {
-    switch (color_mode) {
-        .always => return true,
-        .never => return false,
-        .auto => {
-            // Check NO_COLOR first
-            if (std.process.getEnvVarOwned(std.heap.page_allocator, "NO_COLOR")) |val| {
-                std.heap.page_allocator.free(val);
-                return false;
-            } else |_| {}
-            // Check if stdout is a terminal
-            const stdout_file = std.fs.File.stdout();
-            return stdout_file.isTty();
-        },
-    }
-}
 
 /// Print a filename prefix
 fn printFilename(writer: anytype, filename: []const u8, use_color: bool) void {
@@ -1001,7 +974,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     // Determine color usage
-    const use_color = shouldUseColor(opts.color);
+    const use_color = opts.color == .on;
 
     // Determine filename display:
     //   --no-filename (-h) always suppresses
@@ -1212,19 +1185,20 @@ test "parseArgs color modes" {
         const args = [_][]const u8{ "--color=always", "pattern" };
         var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
-        try testing.expectEqual(ColorMode.always, opts.color);
+        try testing.expectEqual(common.display_config.ResolvedMode.on, opts.color);
     }
     {
         const args = [_][]const u8{ "--color=never", "pattern" };
         var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
-        try testing.expectEqual(ColorMode.never, opts.color);
+        try testing.expectEqual(common.display_config.ResolvedMode.off, opts.color);
     }
     {
         const args = [_][]const u8{ "--color=auto", "pattern" };
         var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
-        try testing.expectEqual(ColorMode.auto, opts.color);
+        // --color=auto keeps the resolved value; in tests stdout is not a TTY, so .off
+        try testing.expectEqual(common.display_config.ResolvedMode.off, opts.color);
     }
 }
 
