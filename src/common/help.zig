@@ -1,5 +1,5 @@
 const std = @import("std");
-const style = @import("style.zig");
+const display_config = @import("display_config.zig");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
@@ -35,71 +35,12 @@ pub fn printColorized(
     writer: anytype,
     help_text: []const u8,
 ) !void {
-    const help_style = detectHelpStyle(allocator);
-    try colorizeHelp(writer, help_text, help_style);
-}
-
-/// Detect terminal capabilities for help rendering.
-///
-/// Checks VIBEUTILS_STYLE env var first (plain/color/full), then
-/// falls back to terminal and locale detection. NO_COLOR always
-/// disables color regardless of VIBEUTILS_STYLE.
-pub fn detectHelpStyle(allocator: Allocator) HelpStyle {
-    const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
-    const DummyWriter = @TypeOf(std.io.null_writer);
-    const ColorMode = style.Style(DummyWriter).ColorMode;
-    const mode = ColorMode.detect(allocator) catch .none;
-    const has_color = mode != .none;
-    const has_unicode = hasUnicodeSupport(allocator);
-
-    const vibe_style: ?[]const u8 = std.posix.getenv("VIBEUTILS_STYLE");
-
-    return parseVibeStyle(vibe_style, is_tty, has_color, has_unicode);
-}
-
-/// Determine help style from VIBEUTILS_STYLE value and terminal state.
-///
-/// Pure function for testability. Parameters:
-/// - vibe_style: value of VIBEUTILS_STYLE env var, or null if unset
-/// - is_tty: whether stdout is a terminal
-/// - has_color: whether the terminal supports color (NO_COLOR not set, TERM not dumb)
-/// - has_unicode: whether the locale indicates unicode support
-fn parseVibeStyle(
-    vibe_style: ?[]const u8,
-    is_tty: bool,
-    has_color: bool,
-    has_unicode: bool,
-) HelpStyle {
-    // Explicit VIBEUTILS_STYLE overrides TTY detection
-    // (NO_COLOR still respected via has_color)
-    if (vibe_style) |val| {
-        if (std.mem.eql(u8, val, "plain")) {
-            return .{};
-        } else if (std.mem.eql(u8, val, "color")) {
-            return .{ .use_color = has_color };
-        } else if (std.mem.eql(u8, val, "full")) {
-            return .{ .use_color = has_color, .use_glyphs = has_unicode };
-        }
-        // Invalid values fall through to default detection
-    }
-
-    // Non-TTY gets plain output by default
-    if (!is_tty) return .{};
-
-    // Default: color if supported, glyphs if unicode available
-    if (!has_color) return .{};
-    return .{
-        .use_color = true,
-        .use_glyphs = has_unicode,
+    const config = display_config.DisplayConfig.resolve(allocator);
+    const help_style = HelpStyle{
+        .use_color = config.color == .on,
+        .use_glyphs = config.icons == .on and hasUnicodeSupport(allocator),
     };
-}
-
-/// Determine whether color output is appropriate.
-///
-/// Returns true only when stdout is a TTY and the terminal supports
-/// at least basic color (NO_COLOR is not set, TERM is not "dumb").
-pub fn shouldColorize(allocator: Allocator) bool {
-    return detectHelpStyle(allocator).use_color;
+    try colorizeHelp(writer, help_text, help_style);
 }
 
 /// Check whether the locale indicates UTF-8 / unicode support.
@@ -742,12 +683,6 @@ test "roundtrip with real echo help text" {
     try testing.expectEqualStrings(text, buffer.items);
 }
 
-test "shouldColorize returns false in test" {
-    // Test stdout is not a TTY, so this should always return false
-    const result = shouldColorize(testing.allocator);
-    try testing.expect(!result);
-}
-
 test "isUppercasePlaceholder" {
     // Valid placeholders
     try testing.expect(isUppercasePlaceholder("FILE"));
@@ -850,66 +785,4 @@ test "HelpStyle no color passthrough" {
 
     try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = false, .use_glyphs = false });
     try testing.expectEqualStrings(text, buffer.items);
-}
-
-test "parseVibeStyle: plain returns both false" {
-    const result = parseVibeStyle("plain", true, true, true);
-    try testing.expect(!result.use_color);
-    try testing.expect(!result.use_glyphs);
-}
-
-test "parseVibeStyle: color returns use_color true, use_glyphs false" {
-    const result = parseVibeStyle("color", true, true, true);
-    try testing.expect(result.use_color);
-    try testing.expect(!result.use_glyphs);
-}
-
-test "parseVibeStyle: full returns both true when conditions met" {
-    const result = parseVibeStyle("full", true, true, true);
-    try testing.expect(result.use_color);
-    try testing.expect(result.use_glyphs);
-}
-
-test "parseVibeStyle: full without unicode returns color only" {
-    const result = parseVibeStyle("full", true, true, false);
-    try testing.expect(result.use_color);
-    try testing.expect(!result.use_glyphs);
-}
-
-test "parseVibeStyle: invalid value falls through to default detection" {
-    // With has_color and has_unicode, default detection returns both true
-    const result = parseVibeStyle("invalid", true, true, true);
-    try testing.expect(result.use_color);
-    try testing.expect(result.use_glyphs);
-}
-
-test "parseVibeStyle: null falls through to default detection" {
-    const result = parseVibeStyle(null, true, true, true);
-    try testing.expect(result.use_color);
-    try testing.expect(result.use_glyphs);
-}
-
-test "parseVibeStyle: explicit style overrides non-TTY" {
-    const result = parseVibeStyle("full", false, true, true);
-    try testing.expect(result.use_color);
-    try testing.expect(result.use_glyphs);
-}
-
-test "parseVibeStyle: non-TTY without explicit style returns plain" {
-    const result = parseVibeStyle(null, false, true, true);
-    try testing.expect(!result.use_color);
-    try testing.expect(!result.use_glyphs);
-}
-
-test "parseVibeStyle: no_color overrides VIBEUTILS_STYLE color" {
-    // VIBEUTILS_STYLE=full but no_color is set (has_color=false)
-    const result = parseVibeStyle("full", true, false, true);
-    try testing.expect(!result.use_color);
-    try testing.expect(result.use_glyphs);
-}
-
-test "parseVibeStyle: no_color with color style disables color" {
-    const result = parseVibeStyle("color", true, false, true);
-    try testing.expect(!result.use_color);
-    try testing.expect(!result.use_glyphs);
 }
