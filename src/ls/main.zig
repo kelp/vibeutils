@@ -237,7 +237,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .comma_format = args.comma_format,
         .icon_mode = icon_mode,
         .time_style = time_style,
-        .show_git_status = resolveGitMode(args.git),
+        .show_git_status = resolveGitMode(args.git, display_config),
         .is_terminal = is_terminal,
     };
 
@@ -443,17 +443,16 @@ fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_
 
 /// Determine whether to show git status indicators.
 /// Priority: explicit --git=WHEN > DisplayConfig > auto-detect .git dir
-fn resolveGitMode(git_arg: ?[]const u8) bool {
+fn resolveGitMode(git_arg: ?[]const u8, disp: common.display_config.DisplayConfig) bool {
     if (git_arg) |value| {
         if (std.mem.eql(u8, value, "always")) return true;
         if (std.mem.eql(u8, value, "never")) return false;
         // "auto" falls through to auto-detect
     }
 
-    // No flag or --git=auto: check display config
-    // Git status is a visual enhancement, disabled when icons are off
-    const display_config = common.display_config.DisplayConfig.resolve(std.heap.c_allocator);
-    if (display_config.icons == .off) return false;
+    // No flag or --git=auto: git status is a visual enhancement,
+    // disabled when icons are off
+    if (disp.icons == .off) return false;
 
     // Auto-detect: enable if we're inside a git repo
     return isInGitRepo();

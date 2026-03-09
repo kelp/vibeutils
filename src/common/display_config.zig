@@ -234,6 +234,19 @@ test "resolve: NO_COLOR overrides everything for color" {
     try std.testing.expectEqual(ResolvedMode.on, cfg.highlight);
 }
 
+test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
+    const saved = EnvState.save();
+    defer saved.restore();
+    EnvState.clearAll();
+
+    _ = setenv("VIBEUTILS_COLOR", "always", 1);
+    _ = setenv("NO_COLOR", "1", 1);
+    _ = setenv("TERM", "xterm-256color", 1);
+
+    const cfg = DisplayConfig.resolve(std.testing.allocator);
+    try std.testing.expectEqual(ResolvedMode.off, cfg.color);
+}
+
 test "resolve: VIBEUTILS_ICONS=always forces icons on" {
     const saved = EnvState.save();
     defer saved.restore();
