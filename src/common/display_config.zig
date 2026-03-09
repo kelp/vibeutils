@@ -30,6 +30,9 @@ pub const DisplayConfig = struct {
     ///      VIBEUTILS_HIGHLIGHT, VIBEUTILS_THEME
     ///   3. VIBEUTILS_STYLE master preset (plain, color, full)
     ///   4. TTY auto-detection
+    ///
+    /// The allocator parameter is reserved for future use (e.g.,
+    /// heap-allocated env var copies when needed).
     pub fn resolve(allocator: Allocator) DisplayConfig {
         _ = allocator;
 

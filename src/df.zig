@@ -86,7 +86,7 @@ const BlockSize = enum {
 const DfOptions = struct {
     all: bool = false,
     human_readable: bool = true,
-    display: common.display_config.DisplayConfig = .{ .color = .on, .icons = .on, .highlight = .on, .theme = .default },
+    display: common.display_config.DisplayConfig = .{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
     si: bool = false,
     inodes: bool = false,
     block_1k: bool = false,
@@ -1218,7 +1218,10 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Detect terminal color capability based on display config
+    // Detect terminal color capability level. When display.color is on,
+    // the TTY/NO_COLOR/TERM checks have already passed, so we fall back
+    // to basic (16-color) if capability detection fails rather than
+    // disabling color entirely.
     const color_mode_int: u8 = if (opts.display.color == .off) 0 else blk: {
         const CM = common.style.Style(@TypeOf(stdout)).ColorMode;
         const detected = CM.detect(allocator) catch break :blk @intFromEnum(CM.basic);
@@ -1267,7 +1270,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         // Smart volume grouping on macOS (non-plain mode)
         const display_fs = blk: {
             if (comptime is_darwin) {
-                if (opts.display.icons == .on) {
+                if (opts.display.color == .on) {
                     break :blk groupDarwinVolumes(allocator, all_fs) catch all_fs;
                 }
             }
@@ -1361,9 +1364,11 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  color   colored percentage only, no bars
         \\  plain   no colors or visual enhancements
         \\
-        \\Per-feature overrides (always/never):
+        \\Per-feature overrides (auto/always/never):
         \\  VIBEUTILS_COLOR      enable/disable colored output
         \\  VIBEUTILS_ICONS      enable/disable usage bars
+        \\  VIBEUTILS_HIGHLIGHT  enable/disable syntax highlighting
+        \\  VIBEUTILS_THEME      theme selection (default/none)
         \\
     );
 }
@@ -2155,6 +2160,7 @@ test "printFsRow - full mode includes bar" {
     defer buf.deinit(testing.allocator);
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
+    opts.display.color = .on;
     opts.display.icons = .on;
     try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
     // Full mode with color_mode_int=0 (none) still shows the bar
@@ -2166,6 +2172,7 @@ test "printHeader - full mode shows Usage column" {
     var buf = std.ArrayListUnmanaged(u8){};
     defer buf.deinit(testing.allocator);
     var opts = DfOptions{};
+    opts.display.color = .on;
     opts.display.icons = .on;
     try printHeader(buf.writer(testing.allocator), opts);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") != null);
@@ -2210,6 +2217,7 @@ test "printTotal - full mode includes bar" {
     const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     const items = [_]FsInfo{fs1};
     var opts = DfOptions{};
+    opts.display.color = .on;
     opts.display.icons = .on;
     try printTotal(buf.writer(testing.allocator), &items, opts, 0);
     try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
