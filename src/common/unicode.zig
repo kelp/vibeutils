@@ -105,8 +105,27 @@ fn codepointWidth(codepoint: u21) usize {
         return 2;
     }
 
+    // Nerd Font Private Use Area glyphs render as 2 columns wide
+    if (isNerdFontWide(codepoint)) {
+        return 2;
+    }
+
     // Default width is 1
     return 1;
+}
+
+/// Check if a codepoint is a Nerd Font icon that renders as 2 columns.
+/// These are Private Use Area codepoints used by Nerd Fonts for file
+/// type icons, devicons, and other glyphs. Terminals with Nerd Fonts
+/// installed render these as double-width characters.
+fn isNerdFontWide(codepoint: u21) bool {
+    // BMP Private Use Area (Nerd Font icons: devicons, file icons, etc.)
+    if (codepoint >= 0xE000 and codepoint <= 0xF8FF) return true;
+    // Supplementary PUA-A (Symbols Nerd Font)
+    if (codepoint >= 0xF0000 and codepoint <= 0xFFFFD) return true;
+    // Supplementary PUA-B
+    if (codepoint >= 0x100000 and codepoint <= 0x10FFFD) return true;
+    return false;
 }
 
 /// Check if a codepoint is a combining character (zero width)

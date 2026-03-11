@@ -20,6 +20,8 @@ const WcOptions = struct {
     help: bool = false,
     /// Show version
     version: bool = false,
+    /// Colorize the output
+    color: ?[]const u8 = null,
     /// Positional arguments (files)
     positionals: []const []const u8 = &.{},
 
@@ -31,6 +33,7 @@ const WcOptions = struct {
         .bytes = .{ .short = 'c', .desc = "Print the byte counts" },
         .chars = .{ .short = 'm', .desc = "Print the character counts" },
         .max_line_length = .{ .short = 'L', .desc = "Print the maximum line length" },
+        .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
     };
 };
 
@@ -42,6 +45,71 @@ const FileStats = struct {
     chars: u64 = 0,
     max_line_length: u64 = 0,
 };
+
+// ============================================================================
+// Resolved configuration after processing option interactions
+// ============================================================================
+
+const WcConfig = struct {
+    display: common.display_config.DisplayConfig,
+};
+
+fn resolveConfig(opts: WcOptions) !WcConfig {
+    var config = WcConfig{
+        .display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator),
+    };
+
+    // Parse explicit --color mode (overrides DisplayConfig)
+    if (opts.color) |when| {
+        if (std.mem.eql(u8, when, "always")) {
+            config.display.color = .on;
+        } else if (std.mem.eql(u8, when, "auto")) {
+            // Keep resolved value (TTY-dependent)
+        } else if (std.mem.eql(u8, when, "never")) {
+            config.display.color = .off;
+        } else {
+            return error.InvalidColorMode;
+        }
+    }
+
+    return config;
+}
+
+// ============================================================================
+// Semantic column colors
+// ============================================================================
+
+const WcColumn = enum { lines, words, bytes_chars, max_line_length };
+
+fn applyWcColumnColor(style_inst: anytype, column: WcColumn) !void {
+    switch (style_inst.color_mode) {
+        .truecolor => {
+            switch (column) {
+                .lines => try style_inst.setRgb(100, 200, 210),
+                .words => try style_inst.setRgb(115, 195, 120),
+                .bytes_chars => try style_inst.setRgb(210, 195, 100),
+                .max_line_length => try style_inst.setRgb(180, 140, 200),
+            }
+        },
+        .extended => {
+            switch (column) {
+                .lines => try style_inst.set256(116),
+                .words => try style_inst.set256(114),
+                .bytes_chars => try style_inst.set256(185),
+                .max_line_length => try style_inst.set256(176),
+            }
+        },
+        .basic => {
+            switch (column) {
+                .lines => try style_inst.setColor(.cyan),
+                .words => try style_inst.setColor(.green),
+                .bytes_chars => try style_inst.setColor(.yellow),
+                .max_line_length => try style_inst.setColor(.magenta),
+            }
+        },
+        .none => return,
+    }
+}
 
 /// Main entry point
 pub fn main() !void {
@@ -137,6 +205,22 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         opts.bytes = true;
     }
 
+    // Resolve display configuration
+    const config = resolveConfig(opts) catch |err| switch (err) {
+        error.InvalidColorMode => {
+            common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+    };
+
+    // Initialize styling based on resolved display config
+    const StyleType = common.style.Style(@TypeOf(stdout_writer));
+    var style_inst = StyleType{ .color_mode = .none, .writer = stdout_writer };
+    if (config.display.color == .on) {
+        const detected = StyleType.ColorMode.detect(allocator) catch .basic;
+        style_inst.color_mode = if (detected == .none) .basic else detected;
+    }
+
     var total_stats = FileStats{};
     var has_error = false;
 
@@ -145,7 +229,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         var stdin_buffer: [8192]u8 = undefined;
         var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
         const stats = try countReader(&stdin_reader.interface, opts);
-        try printStats(stdout_writer, stats, null, opts);
+        try printStats(stdout_writer, stats, null, opts, style_inst);
     } else {
         // Process each file
         for (options.positionals) |file_path| {
@@ -154,7 +238,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var stdin_buffer: [8192]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
                 const stats = try countReader(&stdin_reader.interface, opts);
-                try printStats(stdout_writer, stats, file_path, opts);
+                try printStats(stdout_writer, stats, file_path, opts, style_inst);
                 addStats(&total_stats, stats);
             } else {
                 // Check if it's a directory first
@@ -185,14 +269,14 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                     has_error = true;
                     continue;
                 };
-                try printStats(stdout_writer, stats, file_path, opts);
+                try printStats(stdout_writer, stats, file_path, opts, style_inst);
                 addStats(&total_stats, stats);
             }
         }
 
         // Print total if multiple files were requested (not just successful ones)
         if (options.positionals.len > 1) {
-            try printStats(stdout_writer, total_stats, "total", opts);
+            try printStats(stdout_writer, total_stats, "total", opts, style_inst);
         }
     }
 
@@ -279,26 +363,43 @@ fn addStats(total: *FileStats, stats: FileStats) void {
 }
 
 /// Print statistics for a file
-fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options: WcOptions) !void {
+fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options: WcOptions, style_inst: anytype) !void {
     // Print counts in the order: lines words bytes/chars max_line_length filename
     // Mutual exclusion between -c and -m is handled during argument processing
     if (options.lines) {
+        try applyWcColumnColor(style_inst, .lines);
         try writer.print("{d: >8}", .{stats.lines});
+        try style_inst.reset();
     }
     if (options.words) {
+        try applyWcColumnColor(style_inst, .words);
         try writer.print("{d: >8}", .{stats.words});
+        try style_inst.reset();
     }
     if (options.bytes) {
+        try applyWcColumnColor(style_inst, .bytes_chars);
         try writer.print("{d: >8}", .{stats.bytes});
+        try style_inst.reset();
     }
     if (options.chars) {
+        try applyWcColumnColor(style_inst, .bytes_chars);
         try writer.print("{d: >8}", .{stats.chars});
+        try style_inst.reset();
     }
     if (options.max_line_length) {
+        try applyWcColumnColor(style_inst, .max_line_length);
         try writer.print("{d: >8}", .{stats.max_line_length});
+        try style_inst.reset();
     }
     if (filename) |name| {
-        try writer.print(" {s}", .{name});
+        // Bold for "total" label
+        if (std.mem.eql(u8, name, "total")) {
+            try style_inst.setBold();
+            try writer.print(" {s}", .{name});
+            try style_inst.reset();
+        } else {
+            try writer.print(" {s}", .{name});
+        }
     }
     try writer.print("\n", .{});
 }
@@ -320,6 +421,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -w, --words            print the word counts
         \\      --help             display this help and exit
         \\      --version          output version information and exit
+        \\      --color=WHEN      colorize columns; WHEN is 'always', 'auto' (default),
+        \\                          or 'never'
         \\
         \\The options -c and -m are mutually exclusive.
         \\
@@ -516,11 +619,17 @@ test "wc output formatting" {
         .max_line_length = 80,
     };
 
+    // Create a no-op style (color_mode = .none)
+    var style_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer style_buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const test_style = TestStyle{ .color_mode = .none, .writer = style_buffer.writer(testing.allocator) };
+
     try printStats(buffer.writer(testing.allocator), stats, "test.txt", .{
         .lines = true,
         .words = true,
         .bytes = true,
-    });
+    }, test_style);
 
     try testing.expectEqualStrings("      10      50     250 test.txt\n", buffer.items);
 }
@@ -630,4 +739,125 @@ test "wc reports error for directory" {
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+}
+
+// ========== COLOR TESTS ==========
+
+// C library functions for environment manipulation in tests
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn unsetenv(name: [*:0]const u8) c_int;
+
+test "resolveConfig defaults: color off in test (no TTY)" {
+    const config = try resolveConfig(.{});
+    // In test environment (no TTY), color should default to off
+    try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
+}
+
+test "resolveConfig --color=always sets display.color on" {
+    const config = try resolveConfig(.{ .color = "always" });
+    try testing.expectEqual(common.display_config.ResolvedMode.on, config.display.color);
+}
+
+test "resolveConfig --color=never sets display.color off" {
+    const config = try resolveConfig(.{ .color = "never" });
+    try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
+}
+
+test "resolveConfig --color=invalid returns error" {
+    const result = resolveConfig(.{ .color = "invalid" });
+    try testing.expectError(error.InvalidColorMode, result);
+}
+
+test "applyWcColumnColor truecolor: lines" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .lines);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;100;200;210m", buffer.items);
+}
+
+test "applyWcColumnColor truecolor: words" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .words);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", buffer.items);
+}
+
+test "applyWcColumnColor truecolor: bytes_chars" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .bytes_chars);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;210;195;100m", buffer.items);
+}
+
+test "applyWcColumnColor truecolor: max_line_length" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .max_line_length);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;180;140;200m", buffer.items);
+}
+
+test "applyWcColumnColor basic: lines uses cyan" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .lines);
+    try testing.expectEqualSlices(u8, "\x1b[36m", buffer.items);
+}
+
+test "applyWcColumnColor basic: words uses green" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .words);
+    try testing.expectEqualSlices(u8, "\x1b[32m", buffer.items);
+}
+
+test "applyWcColumnColor basic: bytes_chars uses yellow" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .bytes_chars);
+    try testing.expectEqualSlices(u8, "\x1b[33m", buffer.items);
+}
+
+test "applyWcColumnColor basic: max_line_length uses magenta" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .max_line_length);
+    try testing.expectEqualSlices(u8, "\x1b[35m", buffer.items);
+}
+
+test "applyWcColumnColor none: no output" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const s = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+    try applyWcColumnColor(s, .lines);
+    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+}
+
+test "wc --color=invalid exits with code 2" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--color=invalid"};
+    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
 }

@@ -51,6 +51,8 @@ const DuOptions = struct {
     version: bool = false,
     /// Colorize the output
     color: ?[]const u8 = null,
+    /// Display file type icons before names
+    icons: bool = false,
     /// Positional arguments (paths)
     positionals: []const []const u8 = &.{},
 
@@ -70,6 +72,7 @@ const DuOptions = struct {
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
+        .icons = .{ .short = 0, .desc = "Display file type icons before names" },
     };
 };
 
@@ -88,10 +91,12 @@ const DuConfig = struct {
     one_file_system: bool,
     apparent_size: bool,
     block_size: u64,
+    show_icons: bool,
     display: common.display_config.DisplayConfig,
 };
 
 fn resolveConfig(opts: DuOptions) !DuConfig {
+    const display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator);
     var config = DuConfig{
         .all = opts.all,
         .total = opts.total,
@@ -103,7 +108,8 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         .one_file_system = opts.one_file_system,
         .apparent_size = opts.apparent_size,
         .block_size = 1024, // default
-        .display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator),
+        .show_icons = display.icons == .on,
+        .display = display,
     };
 
     // -b implies --apparent-size --block-size=1
@@ -143,6 +149,11 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         } else {
             return error.InvalidColorMode;
         }
+    }
+
+    // --icons flag overrides DisplayConfig
+    if (opts.icons) {
+        config.show_icons = true;
     }
 
     return config;
@@ -293,7 +304,7 @@ fn calculateDu(
         // Report symlink itself if -a
         const link_size = getFileSize(stat_buf, config.apparent_size);
         if (config.all and shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, style, link_size, config, path);
+            printEntry(stdout, style, link_size, config, path, false, true);
         }
         return link_size;
     }
@@ -322,7 +333,7 @@ fn calculateDu(
         const file_size = getFileSize(stat_buf, config.apparent_size);
         // Always print top-level arguments (depth == 0); print children only with -a
         if ((depth == 0 or config.all) and shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, style, file_size, config, path);
+            printEntry(stdout, style, file_size, config, path, false, false);
         }
         return file_size;
     }
@@ -338,7 +349,7 @@ fn calculateDu(
         has_error.* = true;
         // Still report the directory entry size itself
         if (shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, style, dir_own_size, config, path);
+            printEntry(stdout, style, dir_own_size, config, path, true, false);
         }
         return dir_own_size;
     };
@@ -377,7 +388,7 @@ fn calculateDu(
     const total_size = if (config.separate_dirs) dir_own_size else dir_own_size + subtree_size;
 
     if (shouldPrintAtDepth(depth, config)) {
-        printEntry(stdout, style, total_size, config, path);
+        printEntry(stdout, style, total_size, config, path, true, false);
     }
 
     return dir_own_size + subtree_size;
@@ -390,14 +401,13 @@ fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
     return true;
 }
 
-fn printEntry(writer: anytype, style: anytype, size_bytes: u64, config: DuConfig, path: []const u8) void {
+fn printEntry(writer: anytype, style: anytype, size_bytes: u64, config: DuConfig, path: []const u8, is_dir: bool, is_link: bool) void {
     if (config.human_readable) {
         var hr_buf: [32]u8 = undefined;
         const formatted = formatHumanReadable(&hr_buf, size_bytes);
         common.colors.applySizeColor(style, size_bytes) catch {};
         writer.print("{s}", .{formatted}) catch {};
         style.reset() catch {};
-        writer.print("\t{s}\n", .{path}) catch {};
     } else {
         // Scale by block_size
         const blocks = if (config.block_size <= 1)
@@ -407,6 +417,25 @@ fn printEntry(writer: anytype, style: anytype, size_bytes: u64, config: DuConfig
         common.colors.applySizeColor(style, size_bytes) catch {};
         writer.print("{d}", .{blocks}) catch {};
         style.reset() catch {};
+    }
+
+    if (config.show_icons and !std.mem.eql(u8, path, "total")) {
+        const basename = std.fs.path.basename(path);
+        const theme = common.icons.IconTheme{};
+        const icon = common.icons.getIcon(&theme, basename, is_dir, is_link, false);
+        const icon_color = common.icons.getIconColorInfo(icon);
+        if (icon_color) |ic| {
+            switch (style.color_mode) {
+                .truecolor => style.setRgb(ic.r, ic.g, ic.b) catch {},
+                .extended => style.set256(ic.c256) catch {},
+                .basic => style.setColor(ic.basic) catch {},
+                .none => {},
+            }
+        }
+        writer.print("\t{s} ", .{icon}) catch {};
+        if (icon_color != null and style.color_mode != .none) style.reset() catch {};
+        writer.print("{s}\n", .{path}) catch {};
+    } else {
         writer.print("\t{s}\n", .{path}) catch {};
     }
 }
@@ -559,7 +588,7 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     }
 
     if (config.total) {
-        printEntry(stdout, style, grand_total, config, "total");
+        printEntry(stdout, style, grand_total, config, "total", false, false);
     }
 
     return if (has_error) @as(u8, 1) else 0;
@@ -589,6 +618,7 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\      --apparent-size   print apparent sizes rather than disk usage
         \\      --color=WHEN      colorize sizes; WHEN is 'always', 'auto' (default),
         \\                          or 'never'
+        \\      --icons           display file type icons before names
         \\      --help            display this help and exit
         \\      --version         output version information and exit
         \\
@@ -991,6 +1021,7 @@ test "du shouldPrintAtDepth" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1024,
+        .show_icons = false,
         .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
     };
     try testing.expect(shouldPrintAtDepth(0, config_no_limit));
@@ -1063,4 +1094,132 @@ test "du --color=invalid exits with code 2" {
 
     try testing.expectEqual(@as(u8, 2), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
+}
+
+// C library functions for environment manipulation in tests
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn unsetenv(name: [*:0]const u8) c_int;
+
+test "resolveConfig - show_icons defaults to false" {
+    // Save and clear env vars that affect icon resolution
+    const saved_style = std.posix.getenv("VIBEUTILS_STYLE");
+    const saved_icons = std.posix.getenv("VIBEUTILS_ICONS");
+    _ = unsetenv("VIBEUTILS_STYLE");
+    _ = unsetenv("VIBEUTILS_ICONS");
+    defer {
+        if (saved_style) |v| _ = setenv("VIBEUTILS_STYLE", v.ptr, 1);
+        if (saved_icons) |v| _ = setenv("VIBEUTILS_ICONS", v.ptr, 1);
+    }
+
+    const opts = DuOptions{};
+    const config = try resolveConfig(opts);
+    // With no env overrides and no TTY, display.icons resolves to .off
+    try testing.expect(!config.show_icons);
+}
+
+test "resolveConfig - icons flag enables show_icons" {
+    var opts = DuOptions{};
+    opts.icons = true;
+    const config = try resolveConfig(opts);
+    try testing.expect(config.show_icons);
+}
+
+test "printEntry without icons shows clean output" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const style = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+
+    const config = DuConfig{
+        .all = false,
+        .total = false,
+        .max_depth = null,
+        .human_readable = false,
+        .dereference = false,
+        .summarize = false,
+        .separate_dirs = false,
+        .one_file_system = false,
+        .apparent_size = false,
+        .block_size = 1,
+        .show_icons = false,
+        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
+    };
+
+    printEntry(buffer.writer(testing.allocator), style, 1024, config, "/tmp/test.txt", false, false);
+
+    // Should be "1024\t/tmp/test.txt\n" with no icon
+    try testing.expectEqualStrings("1024\t/tmp/test.txt\n", buffer.items);
+}
+
+test "printEntry with icons shows icon glyph" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const style = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+
+    const config = DuConfig{
+        .all = false,
+        .total = false,
+        .max_depth = null,
+        .human_readable = false,
+        .dereference = false,
+        .summarize = false,
+        .separate_dirs = false,
+        .one_file_system = false,
+        .apparent_size = false,
+        .block_size = 1,
+        .show_icons = true,
+        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .on, .highlight = .off, .theme = .none },
+    };
+
+    printEntry(buffer.writer(testing.allocator), style, 1024, config, "/tmp/test.txt", false, false);
+
+    // Should contain the text file icon followed by a space and the path
+    const theme = common.icons.IconTheme{};
+    const expected_icon = common.icons.getIcon(&theme, "test.txt", false, false, false);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, expected_icon) != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "/tmp/test.txt") != null);
+}
+
+test "printEntry with directory icon" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
+    const style = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+
+    const config = DuConfig{
+        .all = false,
+        .total = false,
+        .max_depth = null,
+        .human_readable = false,
+        .dereference = false,
+        .summarize = false,
+        .separate_dirs = false,
+        .one_file_system = false,
+        .apparent_size = false,
+        .block_size = 1,
+        .show_icons = true,
+        .display = common.display_config.DisplayConfig{ .color = .off, .icons = .on, .highlight = .off, .theme = .none },
+    };
+
+    printEntry(buffer.writer(testing.allocator), style, 4096, config, "/tmp/mydir", true, false);
+
+    // Should contain the directory icon
+    const theme = common.icons.IconTheme{};
+    try testing.expect(std.mem.indexOf(u8, buffer.items, theme.directory) != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "/tmp/mydir") != null);
+}
+
+test "du --help shows icons option" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--help"};
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--icons") != null);
 }

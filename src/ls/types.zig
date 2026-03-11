@@ -57,9 +57,11 @@ pub const Entry = struct {
         // Calculate display width based on entry properties
         var width: usize = 0;
 
-        // Add icon width if enabled
+        // Add icon width if enabled (varies by icon glyph)
         if (show_icons) {
-            width += 2; // Icon + space
+            const theme = common.icons.IconTheme{};
+            const icon = common.icons.getIcon(&theme, self.name, self.kind == .directory, self.kind == .sym_link, computeIsExecutable(self));
+            width += common.unicode.displayWidth(icon) + 1; // icon glyph + space
         }
 
         // Add Git status indicator width if enabled
@@ -105,6 +107,12 @@ pub const Entry = struct {
         // Cache the calculated indicator
         self.file_type_indicator = indicator;
         return indicator;
+    }
+
+    fn computeIsExecutable(self: *const Entry) bool {
+        if (self.kind != .file) return false;
+        if (self.stat) |stat| return (stat.mode & common.constants.EXECUTE_BIT) != 0;
+        return false;
     }
 
     /// Compute file type indicator without mutation (safe for const access)
