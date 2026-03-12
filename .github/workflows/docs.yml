@@ -32,7 +32,8 @@ jobs:
           key: apt-${{ runner.os }}-mandoc
       - name: Install mandoc
         run: sudo apt-get update && sudo apt-get install -y mandoc
-      - run: make docs
+      - uses: extractions/setup-just@v2
+      - run: just docs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
