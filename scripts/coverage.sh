@@ -21,7 +21,7 @@ if ! command -v kcov &>/dev/null; then
     echo "Error: kcov not found."
     echo ""
     echo "Install kcov or run coverage in Docker:"
-    echo "  make test-linux-coverage"
+    echo "  just test-linux-coverage"
     exit 1
 fi
 

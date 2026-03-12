@@ -67,20 +67,20 @@ brew install bash
 # Ensure /usr/local/bin or /opt/homebrew/bin is in PATH before /bin
 ```
 
-Run `make help` for all available commands. Key commands:
+Run `just` for all available commands. Key commands:
 
 ```bash
 # Essential
-make build          # Build all utilities
-make test           # Run tests
-make coverage       # Generate coverage report
-make fmt            # Format code
+just build               # Build all utilities
+just test                # Run tests
+just coverage            # Generate coverage report
+just fmt                 # Format code
 
 # Single Utility Development
-make build UTIL=chown      # Build only chown
-make test UTIL=chown       # Test only chown (smoke test + binary check)
-make run UTIL=chown ARGS="-h"  # Run chown with arguments
-make fuzz UTIL=wc          # Fuzz a specific utility (Linux only)
+just build-util chown        # Build only chown
+just test-util chown         # Test only chown (smoke test + binary check)
+just run chown -- -h         # Run chown with arguments
+just fuzz wc                 # Fuzz a specific utility (Linux only)
 
 # Zig-specific
 zig build test --summary all     # Test summary
@@ -92,7 +92,7 @@ zig test src/echo.zig            # Test single file (requires module setup)
 ## Git Hooks
 
 The project includes a pre-commit hook that automatically:
-- Runs `make fmt` to format code before every commit
+- Runs `just fmt` to format code before every commit
 - Adds any formatting changes to the commit
 - Runs tests to ensure code integrity
 
@@ -101,13 +101,13 @@ automatically set up for this repository.
 
 ## Releases
 
-**Always use `make release VERSION=x.y.z`** to cut a
-release. Never manually edit `build.zig.zon` and tag.
+**Always use `just release x.y.z`** to cut a release.
+Never manually edit `build.zig.zon` and tag.
 
 The release script (`scripts/release.sh`) gates on:
 1. Must be on `main` with clean working tree
 2. Runs `zig build test` (unit tests must pass)
-3. Runs `make it` (integration tests must pass)
+3. Runs `just it` (integration tests must pass)
 4. Updates version in `build.zig.zon` and `flake.nix`
 5. Commits, tags, and pushes
 
@@ -161,7 +161,7 @@ pattern: `du.zig` line ~552.
 - [ ] Add to `build.zig`
 - [ ] Write tests first (TDD)
 - [ ] Create man page `man/man1/<utility>.1`
-- [ ] **Run FULL test suite**: `zig build test` (not just `make test UTIL=name`)
+- [ ] **Run FULL test suite**: `zig build test` (not just `just test-util name`)
 - [ ] Verify no test hangs: `timeout 60 zig build test`
 - [ ] Update TODO.md only AFTER full test suite passes
 
@@ -187,7 +187,7 @@ extensions, then OpenBSD safety features.
 
 ## Testing
 
-**Target: 90%+ coverage** (`make coverage`)
+**Target: 90%+ coverage** (`just coverage`)
 
 Never disable or skip failing tests to make the suite pass. Always
 diagnose and fix the root cause. If the root cause is an upstream
@@ -243,10 +243,10 @@ See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and
 **MUST use `privilege_test.TestArena`, NOT
 `testing.allocator`** (fakeroot issue)
 - Named with `"privileged: "` prefix
-- Run with `make test-privileged`
+- Run with `just test-privileged`
 
 ### Fuzzing
-- Linux-only: `make fuzz UTIL=<name>`
+- Linux-only: `just fuzz <name>`
 - Tests at end of utility files
 
 
@@ -370,4 +370,4 @@ pub fn runUtil(allocator: Allocator, args: []const []const u8,
 
 ## Cross-Platform Testing
 - **OrbStack**: `orb -m ubuntu zig build test` (ubuntu, debian, arch available)
-- **Docker**: `make test-linux`, `make shell-linux`, `make ci-linux`
+- **Docker**: `just test-linux`, `just docker-shell`

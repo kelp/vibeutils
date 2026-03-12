@@ -20,7 +20,7 @@ if zig fmt --check src/ build.zig build/ > /dev/null 2>&1; then
     echo -e "${GREEN}✓${NC}"
 else
     echo -e "${RED}✗${NC}"
-    echo -e "${RED}Error: Code is not properly formatted. Run 'make fmt' to fix.${NC}"
+    echo -e "${RED}Error: Code is not properly formatted. Run 'just fmt' to fix.${NC}"
     VALIDATION_FAILED=1
 fi
 

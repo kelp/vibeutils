@@ -60,7 +60,7 @@ zig build test
 echo "  Unit tests passed"
 
 echo "Running integration tests..."
-make it
+just it
 echo "  Integration tests passed"
 echo ""
 

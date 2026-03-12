@@ -47,13 +47,13 @@ OPTIONS:
     -h, --help               Show this help message
 
 COMMANDS:
-    If no command is specified, runs 'make test'
-    
+    If no command is specified, runs 'just test'
+
     Examples of commands:
-    make test                Run all tests (default)
-    make test-privileged     Run privileged tests
-    make coverage            Run tests with coverage
-    make build               Build the project
+    just test                Run all tests (default)
+    just test-privileged     Run privileged tests
+    just coverage            Run tests with coverage
+    just build               Build the project
     zig build test           Run tests directly with zig
     bash                     Start an interactive shell
 
@@ -64,8 +64,8 @@ EXAMPLES:
     $0 --shell                   # Interactive Ubuntu 24.04 shell
     $0 --shell --distro alpine   # Interactive Alpine shell
     $0 --privileged              # Run privileged tests
-    $0 make coverage             # Run coverage tests
-    $0 --all make build          # Build on all distributions
+    $0 just coverage             # Run coverage tests
+    $0 --all just build          # Build on all distributions
 
 EOF
 }
@@ -115,11 +115,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --privileged)
-            COMMAND="make test-privileged"
+            COMMAND="just test-privileged"
             shift
             ;;
         --coverage)
-            COMMAND="make coverage"
+            COMMAND="just coverage"
             shift
             ;;
         -h|--help)
@@ -229,7 +229,7 @@ test_single_distro() {
     log_info "Testing on $distro..."
     
     # Default command if none specified
-    local cmd="${COMMAND:-make test}"
+    local cmd="${COMMAND:-just test}"
     
     # Special handling for Alpine (no fakeroot)
     if [[ "$distro" == "alpine" && "$cmd" == *"privileged"* ]]; then
