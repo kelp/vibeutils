@@ -96,6 +96,13 @@ pub const IconTheme = struct {
     object_file: []const u8 = "\u{eb98}", //
     binary: []const u8 = "\u{eae8}", //
 
+    // Filesystem types (for df)
+    disk: []const u8 = "\u{f12ea}", // 󰋊
+    network_fs: []const u8 = "\u{f048d}", // 󰒍
+    optical: []const u8 = "\u{f05ee}", // 󰗮
+    cloud: []const u8 = "\u{f0163}", // 󰅣
+    virtual_fs: []const u8 = "\u{eae8}", //  (same glyph as binary)
+
     // Web frameworks
     svelte: []const u8 = "\u{e697}", //
     wasm: []const u8 = "\u{e6a1}", //
@@ -1015,6 +1022,13 @@ pub fn getIconColorInfo(icon: []const u8) ?IconColorInfo {
     if (eql(u8, icon, theme.library)) return .{ .r = 155, .g = 155, .b = 155, .c256 = 249, .basic = Color.white };
     if (eql(u8, icon, theme.object_file)) return .{ .r = 155, .g = 155, .b = 155, .c256 = 249, .basic = Color.white };
     if (eql(u8, icon, theme.binary)) return .{ .r = 155, .g = 155, .b = 155, .c256 = 249, .basic = Color.white };
+
+    // Filesystem types (for df)
+    if (eql(u8, icon, theme.disk)) return .{ .r = 110, .g = 160, .b = 220, .c256 = 110, .basic = Color.bright_blue };
+    if (eql(u8, icon, theme.network_fs)) return .{ .r = 180, .g = 130, .b = 210, .c256 = 140, .basic = Color.bright_magenta };
+    if (eql(u8, icon, theme.optical)) return .{ .r = 200, .g = 200, .b = 200, .c256 = 249, .basic = Color.white };
+    if (eql(u8, icon, theme.cloud)) return .{ .r = 120, .g = 180, .b = 220, .c256 = 117, .basic = Color.bright_cyan };
+    if (eql(u8, icon, theme.virtual_fs)) return .{ .r = 155, .g = 155, .b = 155, .c256 = 249, .basic = Color.white };
 
     // File system entries
     if (eql(u8, icon, theme.directory)) return .{ .r = 110, .g = 160, .b = 220, .c256 = 110, .basic = Color.bright_blue };
