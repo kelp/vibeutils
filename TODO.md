@@ -1317,12 +1317,14 @@ full design.
 - [x] Match GNU grep color conventions
 
 ### 3. `VIBEUTILS_STYLE` Environment Variable ✓
-- [x] `VIBEUTILS_STYLE=full` (default): color, icons, git status
-- [x] `VIBEUTILS_STYLE=color`: color only, no icons or glyphs
+- [x] `VIBEUTILS_STYLE=full`: color, icons, git status (TTY only)
+- [x] `VIBEUTILS_STYLE=color`: color only, no icons (TTY only)
 - [x] `VIBEUTILS_STYLE=plain`: no color, no icons, no glyphs
-- [x] Overrides TTY detection when explicitly set
+- [x] `VIBEUTILS_STYLE=always`: force all features through pipes
+- [x] Presets respect TTY detection (no ANSI leaking into pipes)
 - [x] NO_COLOR still respected
 - [x] Integrated in ls, grep, du, and help output
+- [x] `--color=auto` checks isatty(stdout) in ls
 - [ ] `df`, `du`, `ls -l`: human-readable by default
 - [ ] Explicit flags always override
 
@@ -1342,11 +1344,13 @@ full design.
 - [x] Fix: flush stderr in `fatalWithWriter` before exit
 
 ### 4. Color-Coded Numeric Output
-- [ ] `df`: green/yellow/red by usage percentage
-- [ ] `df`: optional inline usage bar
+- [x] `df`: green/yellow/red by usage percentage
+- [x] `df`: optional inline usage bar
 - [ ] `du`: color size relative to largest entry
-- [ ] `du`: file-type icons before paths
-- [ ] `wc`: color line/word/byte counts
+- [x] `du`: file-type icons before paths (`--icons=WHEN`)
+- [x] `wc`: semantic column colors (`--color=WHEN`)
+- [x] Icon coverage: 59 extensions, brand colors, dark-bg
+  visibility
 
 ### 5. `tree` Utility
 - [ ] Recursive directory listing with box-drawing lines
