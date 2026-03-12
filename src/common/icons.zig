@@ -97,11 +97,13 @@ pub const IconTheme = struct {
     binary: []const u8 = "\u{eae8}", //
 
     // Filesystem types (for df)
-    disk: []const u8 = "\u{f12ea}", // 󰋊
+    disk: []const u8 = "\u{f02ca}", // 󰋊
     network_fs: []const u8 = "\u{f048d}", // 󰒍
     optical: []const u8 = "\u{f05ee}", // 󰗮
     cloud: []const u8 = "\u{f0163}", // 󰅣
     virtual_fs: []const u8 = "\u{eae8}", //  (same glyph as binary)
+    backup: []const u8 = "\u{f0954}", // 󰥔 (clock-outline, Time Machine)
+    snapshot: []const u8 = "\u{f0100}", // 󰄀 (camera, snapshot)
 
     // Web frameworks
     svelte: []const u8 = "\u{e697}", //
@@ -1029,6 +1031,8 @@ pub fn getIconColorInfo(icon: []const u8) ?IconColorInfo {
     if (eql(u8, icon, theme.optical)) return .{ .r = 200, .g = 200, .b = 200, .c256 = 249, .basic = Color.white };
     if (eql(u8, icon, theme.cloud)) return .{ .r = 120, .g = 180, .b = 220, .c256 = 117, .basic = Color.bright_cyan };
     if (eql(u8, icon, theme.virtual_fs)) return .{ .r = 155, .g = 155, .b = 155, .c256 = 249, .basic = Color.white };
+    if (eql(u8, icon, theme.backup)) return .{ .r = 200, .g = 170, .b = 80, .c256 = 178, .basic = Color.yellow };
+    if (eql(u8, icon, theme.snapshot)) return .{ .r = 180, .g = 160, .b = 120, .c256 = 144, .basic = Color.yellow };
 
     // File system entries
     if (eql(u8, icon, theme.directory)) return .{ .r = 110, .g = 160, .b = 220, .c256 = 110, .basic = Color.bright_blue };

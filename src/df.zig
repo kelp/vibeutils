@@ -655,13 +655,54 @@ const FsClass = enum {
     network,
     cloud,
     virtual,
+    backup,
+    snapshot,
 };
 
-fn classifyFs(source: []const u8, fstype: []const u8) FsClass {
+fn classifyFs(source: []const u8, fstype: []const u8, mount_point: []const u8) FsClass {
+    // Time Machine checks first — snapshots and backups may sit on
+    // network or local filesystems, but the TM role takes priority.
+    if (isTimeMachineSnapshot(source)) return .snapshot;
+    if (isTimeMachineBackup(source, mount_point)) return .backup;
     if (isNetworkFs(fstype)) return .network;
     if (isCloudFs(source, fstype)) return .cloud;
     if (isPseudoFs(fstype)) return .virtual;
     return .local;
+}
+
+fn isTimeMachineSnapshot(source: []const u8) bool {
+    return std.mem.startsWith(u8, source, "com.apple.TimeMachine");
+}
+
+fn isTimeMachineBackup(source: []const u8, mount_point: []const u8) bool {
+    // Check mount point for backup-related patterns
+    if (containsCaseInsensitive(mount_point, "Backups")) return true;
+    if (containsCaseInsensitive(mount_point, "Time Machine")) return true;
+    if (containsCaseInsensitive(mount_point, "timemachine")) return true;
+    // Check source for TM-related patterns
+    if (containsCaseInsensitive(source, "Time")) {
+        if (containsCaseInsensitive(source, "Machine")) return true;
+    }
+    return false;
+}
+
+/// Case-insensitive substring search (ASCII only).
+fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var match = true;
+        for (0..needle.len) |j| {
+            const h = if (haystack[i + j] >= 'A' and haystack[i + j] <= 'Z') haystack[i + j] + 32 else haystack[i + j];
+            const n = if (needle[j] >= 'A' and needle[j] <= 'Z') needle[j] + 32 else needle[j];
+            if (h != n) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
 }
 
 fn isCloudFs(source: []const u8, fstype: []const u8) bool {
@@ -1164,6 +1205,8 @@ fn getFsIcon(fs_class: FsClass) []const u8 {
         .network => theme.network_fs,
         .cloud => theme.cloud,
         .virtual => theme.virtual_fs,
+        .backup => theme.backup,
+        .snapshot => theme.snapshot,
     };
 }
 
@@ -1175,18 +1218,24 @@ fn applySourceColor(s: anytype, fs_class: FsClass) !void {
             .network => try s.setRgb(180, 130, 210),
             .cloud => try s.setRgb(120, 180, 220),
             .virtual => try s.setRgb(120, 120, 120),
+            .backup => try s.setRgb(200, 170, 80),
+            .snapshot => try s.setRgb(160, 145, 110),
         },
         .extended => switch (fs_class) {
             .local => try s.set256(152),
             .network => try s.set256(140),
             .cloud => try s.set256(117),
             .virtual => try s.set256(245),
+            .backup => try s.set256(178),
+            .snapshot => try s.set256(144),
         },
         .basic => switch (fs_class) {
             .local => try s.setColor(.bright_white),
             .network => try s.setColor(.bright_magenta),
             .cloud => try s.setColor(.bright_cyan),
             .virtual => try s.setColor(.bright_black),
+            .backup => try s.setColor(.yellow),
+            .snapshot => try s.setColor(.yellow),
         },
         .none => {},
     }
@@ -1200,18 +1249,24 @@ fn applyMountColor(s: anytype, fs_class: FsClass) !void {
             .network => try s.setRgb(180, 130, 210),
             .cloud => try s.setRgb(120, 180, 220),
             .virtual => try s.setRgb(120, 120, 120),
+            .backup => try s.setRgb(180, 150, 70),
+            .snapshot => try s.setRgb(145, 130, 100),
         },
         .extended => switch (fs_class) {
             .local => try s.set256(110),
             .network => try s.set256(140),
             .cloud => try s.set256(117),
             .virtual => try s.set256(245),
+            .backup => try s.set256(178),
+            .snapshot => try s.set256(137),
         },
         .basic => switch (fs_class) {
             .local => try s.setColor(.bright_blue),
             .network => try s.setColor(.bright_magenta),
             .cloud => try s.setColor(.bright_cyan),
             .virtual => try s.setColor(.bright_black),
+            .backup => try s.setColor(.yellow),
+            .snapshot => try s.setColor(.yellow),
         },
         .none => {},
     }
@@ -1601,7 +1656,7 @@ fn printHeaderDynamic(stdout: anytype, opts: DfOptions, widths: ColumnWidths, s:
 }
 
 fn printFsRowDynamic(stdout: anytype, fs: FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
-    const fs_class = classifyFs(fs.source, fs.fstype);
+    const fs_class = classifyFs(fs.source, fs.fstype, fs.mount_point);
 
     var total_buf: [32]u8 = undefined;
     var used_buf: [32]u8 = undefined;
@@ -2997,23 +3052,46 @@ test "smartFormatMount - needs abbreviation" {
 }
 
 test "classifyFs - local" {
-    try testing.expectEqual(FsClass.local, classifyFs("/dev/disk1", "apfs"));
-    try testing.expectEqual(FsClass.local, classifyFs("/dev/sda1", "ext4"));
+    try testing.expectEqual(FsClass.local, classifyFs("/dev/disk1", "apfs", "/"));
+    try testing.expectEqual(FsClass.local, classifyFs("/dev/sda1", "ext4", "/home"));
 }
 
 test "classifyFs - network" {
-    try testing.expectEqual(FsClass.network, classifyFs("server:/share", "nfs"));
-    try testing.expectEqual(FsClass.network, classifyFs("//server/share", "cifs"));
+    try testing.expectEqual(FsClass.network, classifyFs("server:/share", "nfs", "/mnt"));
+    try testing.expectEqual(FsClass.network, classifyFs("//server/share", "cifs", "/mnt"));
 }
 
 test "classifyFs - cloud" {
-    try testing.expectEqual(FsClass.cloud, classifyFs("OrbStack:/data", "virtiofs"));
-    try testing.expectEqual(FsClass.cloud, classifyFs("rclone:remote", "fuse.rclone"));
+    try testing.expectEqual(FsClass.cloud, classifyFs("OrbStack:/data", "virtiofs", "/OrbStack"));
+    try testing.expectEqual(FsClass.cloud, classifyFs("rclone:remote", "fuse.rclone", "/mnt"));
 }
 
 test "classifyFs - virtual" {
-    try testing.expectEqual(FsClass.virtual, classifyFs("tmpfs", "tmpfs"));
-    try testing.expectEqual(FsClass.virtual, classifyFs("proc", "proc"));
+    try testing.expectEqual(FsClass.virtual, classifyFs("tmpfs", "tmpfs", "/tmp"));
+    try testing.expectEqual(FsClass.virtual, classifyFs("proc", "proc", "/proc"));
+}
+
+test "classifyFs - backup" {
+    try testing.expectEqual(FsClass.backup, classifyFs("/dev/disk9s1", "apfs", "/Volumes/Backups of tcole-mbpro"));
+    try testing.expectEqual(FsClass.backup, classifyFs("//user@nas/share", "smbfs", "/Volumes/Time Machine Backups"));
+}
+
+test "classifyFs - snapshot" {
+    try testing.expectEqual(FsClass.snapshot, classifyFs("com.apple.TimeMachine.2026-03-11-203149.local@/dev/disk3s5", "apfs", "/Volumes/.timemachine/data"));
+}
+
+test "isTimeMachineSnapshot - detection" {
+    try testing.expect(isTimeMachineSnapshot("com.apple.TimeMachine.2026-03-11-203149.local@/dev/disk3s5"));
+    try testing.expect(isTimeMachineSnapshot("com.apple.TimeMachine.2026-03-06-214229.backup@/dev/disk9s1"));
+    try testing.expect(!isTimeMachineSnapshot("/dev/disk1s1"));
+    try testing.expect(!isTimeMachineSnapshot("OrbStack:/data"));
+}
+
+test "isTimeMachineBackup - detection" {
+    try testing.expect(isTimeMachineBackup("/dev/disk9s1", "/Volumes/Backups of tcole-mbpro"));
+    try testing.expect(isTimeMachineBackup("//user@nas/share", "/Volumes/Time Machine Backups"));
+    try testing.expect(!isTimeMachineBackup("/dev/disk1s1", "/"));
+    try testing.expect(!isTimeMachineBackup("/dev/disk1s1", "/System/Volumes/Data"));
 }
 
 test "computeColumnWidths - minimum widths" {
@@ -3044,6 +3122,8 @@ test "getFsIcon - returns correct icons" {
     try testing.expectEqualStrings(theme.network_fs, getFsIcon(.network));
     try testing.expectEqualStrings(theme.cloud, getFsIcon(.cloud));
     try testing.expectEqualStrings(theme.virtual_fs, getFsIcon(.virtual));
+    try testing.expectEqualStrings(theme.backup, getFsIcon(.backup));
+    try testing.expectEqualStrings(theme.snapshot, getFsIcon(.snapshot));
 }
 
 test "isCloudFs - FUSE types" {
