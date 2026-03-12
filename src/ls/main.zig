@@ -182,9 +182,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
 
     // Explicit CLI flags override everything
     if (args.color) |color_arg| {
-        color_mode = types.parseColorMode(color_arg) catch {
+        const parsed = types.parseColorMode(color_arg) catch {
             common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
         };
+        color_mode = parsed;
     }
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
@@ -552,4 +553,44 @@ test "runLs function works with separate writers" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
     // stderr should be empty for help
     try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+}
+
+// C library functions for environment manipulation in tests
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn unsetenv(name: [*:0]const u8) c_int;
+
+test "initStyle with auto color mode disables colors when stdout is not a TTY" {
+    // When --color=auto is passed and stdout is not a TTY (as in tests and
+    // pipes), the style's color_mode must be .none so ANSI codes don't leak.
+    // This test exercises the production code path through display.initStyle.
+
+    // Save original env state and ensure TERM is set so ColorMode.detect()
+    // returns a non-.none value.  Without this, detect() may return .none
+    // if TERM happens to be unset, masking the bug.
+    const saved_term = std.posix.getenv("TERM");
+    const saved_no_color = std.posix.getenv("NO_COLOR");
+    _ = setenv("TERM", "xterm-256color", 1);
+    _ = unsetenv("NO_COLOR");
+    defer {
+        if (saved_term) |v| {
+            _ = setenv("TERM", v.ptr, 1);
+        } else {
+            _ = unsetenv("TERM");
+        }
+        if (saved_no_color) |v| {
+            _ = setenv("NO_COLOR", v.ptr, 1);
+        }
+    }
+
+    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buf.deinit(testing.allocator);
+
+    const style = try display.initStyle(testing.allocator, buf.writer(testing.allocator), .auto);
+
+    // In a test runner, stdout is never a TTY.  Correct behavior: .auto
+    // should resolve to .none so no escape codes are emitted.
+    try testing.expectEqual(
+        common.style.Style(std.ArrayList(u8).Writer).ColorMode.none,
+        style.color_mode,
+    );
 }

@@ -52,7 +52,7 @@ const DuOptions = struct {
     /// Colorize the output
     color: ?[]const u8 = null,
     /// Display file type icons before names
-    icons: bool = false,
+    icons: ?[]const u8 = null,
     /// Positional arguments (paths)
     positionals: []const []const u8 = &.{},
 
@@ -72,7 +72,7 @@ const DuOptions = struct {
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
-        .icons = .{ .short = 0, .desc = "Display file type icons before names" },
+        .icons = .{ .short = 0, .desc = "When to show file type icons (valid: always, auto, never)", .value_name = "WHEN" },
     };
 };
 
@@ -151,9 +151,17 @@ fn resolveConfig(opts: DuOptions) !DuConfig {
         }
     }
 
-    // --icons flag overrides DisplayConfig
-    if (opts.icons) {
-        config.show_icons = true;
+    // Parse explicit --icons mode (overrides DisplayConfig)
+    if (opts.icons) |when| {
+        if (std.mem.eql(u8, when, "always")) {
+            config.show_icons = true;
+        } else if (std.mem.eql(u8, when, "auto")) {
+            // Keep resolved value (TTY-dependent)
+        } else if (std.mem.eql(u8, when, "never")) {
+            config.show_icons = false;
+        } else {
+            return error.InvalidIconMode;
+        }
     }
 
     return config;
@@ -549,6 +557,10 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
+            error.InvalidIconMode => {
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--icons'\nValid arguments are: 'always', 'auto', 'never'", .{opts.icons orelse ""});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
         }
     };
 
@@ -618,7 +630,7 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\      --apparent-size   print apparent sizes rather than disk usage
         \\      --color=WHEN      colorize sizes; WHEN is 'always', 'auto' (default),
         \\                          or 'never'
-        \\      --icons           display file type icons before names
+        \\      --icons=WHEN      when to show icons (valid: always, auto, never)
         \\      --help            display this help and exit
         \\      --version         output version information and exit
         \\
@@ -1117,11 +1129,24 @@ test "resolveConfig - show_icons defaults to false" {
     try testing.expect(!config.show_icons);
 }
 
-test "resolveConfig - icons flag enables show_icons" {
+test "resolveConfig - icons=always enables show_icons" {
     var opts = DuOptions{};
-    opts.icons = true;
+    opts.icons = "always";
     const config = try resolveConfig(opts);
     try testing.expect(config.show_icons);
+}
+
+test "resolveConfig - icons=never disables show_icons" {
+    var opts = DuOptions{};
+    opts.icons = "never";
+    const config = try resolveConfig(opts);
+    try testing.expect(!config.show_icons);
+}
+
+test "resolveConfig - invalid icon mode" {
+    var opts = DuOptions{};
+    opts.icons = "invalid";
+    try testing.expectError(error.InvalidIconMode, resolveConfig(opts));
 }
 
 test "printEntry without icons shows clean output" {

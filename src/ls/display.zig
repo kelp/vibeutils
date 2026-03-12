@@ -17,7 +17,10 @@ pub fn initStyle(allocator: std.mem.Allocator, writer: anytype, color_mode: Colo
             style.color_mode = .basic;
         }
     }
-    // For .auto, use the detected mode (which checks isatty)
+    // For .auto, disable colors when stdout is not a TTY
+    if (color_mode == .auto and !std.posix.isatty(std.fs.File.stdout().handle)) {
+        style.color_mode = .none;
+    }
     return style;
 }
 

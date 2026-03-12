@@ -45,6 +45,8 @@ pub const DisplayConfig = struct {
         var theme: Theme = if (is_tty) .default else .none;
 
         // Step 2: Apply VIBEUTILS_STYLE shortcut
+        // Presets set preferences but respect TTY detection.
+        // Only "always" forces features on through pipes.
         if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
             if (std.mem.eql(u8, vibe_style, "plain")) {
                 color = .off;
@@ -52,10 +54,17 @@ pub const DisplayConfig = struct {
                 highlight = .off;
                 theme = .none;
             } else if (std.mem.eql(u8, vibe_style, "color")) {
-                color = .on;
+                if (is_tty) color = .on;
                 icons = .off;
                 highlight = .off;
             } else if (std.mem.eql(u8, vibe_style, "full")) {
+                if (is_tty) {
+                    color = .on;
+                    icons = .on;
+                    highlight = .on;
+                    theme = .default;
+                }
+            } else if (std.mem.eql(u8, vibe_style, "always")) {
                 color = .on;
                 icons = .on;
                 highlight = .on;
@@ -165,12 +174,28 @@ test "resolve: VIBEUTILS_STYLE=plain sets all off" {
     try std.testing.expectEqual(Theme.none, cfg.theme);
 }
 
-test "resolve: VIBEUTILS_STYLE=full sets all on" {
+test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
 
     _ = setenv("VIBEUTILS_STYLE", "full", 1);
+    _ = setenv("TERM", "xterm-256color", 1);
+
+    const cfg = DisplayConfig.resolve(std.testing.allocator);
+    // Tests run without a TTY, so full is a no-op
+    try std.testing.expectEqual(ResolvedMode.off, cfg.color);
+    try std.testing.expectEqual(ResolvedMode.off, cfg.icons);
+    try std.testing.expectEqual(ResolvedMode.off, cfg.highlight);
+    try std.testing.expectEqual(Theme.none, cfg.theme);
+}
+
+test "resolve: VIBEUTILS_STYLE=always forces all on" {
+    const saved = EnvState.save();
+    defer saved.restore();
+    EnvState.clearAll();
+
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
     _ = setenv("TERM", "xterm-256color", 1);
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
@@ -180,7 +205,7 @@ test "resolve: VIBEUTILS_STYLE=full sets all on" {
     try std.testing.expectEqual(Theme.default, cfg.theme);
 }
 
-test "resolve: VIBEUTILS_STYLE=color sets color on only" {
+test "resolve: VIBEUTILS_STYLE=color respects TTY" {
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -189,7 +214,8 @@ test "resolve: VIBEUTILS_STYLE=color sets color on only" {
     _ = setenv("TERM", "xterm-256color", 1);
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
-    try std.testing.expectEqual(ResolvedMode.on, cfg.color);
+    // Tests run without a TTY, so color stays off
+    try std.testing.expectEqual(ResolvedMode.off, cfg.color);
     try std.testing.expectEqual(ResolvedMode.off, cfg.icons);
     try std.testing.expectEqual(ResolvedMode.off, cfg.highlight);
 }
@@ -208,12 +234,12 @@ test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
     try std.testing.expectEqual(ResolvedMode.off, cfg.icons);
 }
 
-test "resolve: VIBEUTILS_COLOR=never overrides style=full" {
+test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
 
-    _ = setenv("VIBEUTILS_STYLE", "full", 1);
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
     _ = setenv("VIBEUTILS_COLOR", "never", 1);
     _ = setenv("TERM", "xterm-256color", 1);
 
@@ -227,7 +253,7 @@ test "resolve: NO_COLOR overrides everything for color" {
     defer saved.restore();
     EnvState.clearAll();
 
-    _ = setenv("VIBEUTILS_STYLE", "full", 1);
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
     _ = setenv("NO_COLOR", "1", 1);
     _ = setenv("TERM", "xterm-256color", 1);
 
@@ -250,6 +276,19 @@ test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
 }
 
+test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
+    const saved = EnvState.save();
+    defer saved.restore();
+    EnvState.clearAll();
+
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
+    _ = setenv("NO_COLOR", "1", 1);
+
+    const cfg = DisplayConfig.resolve(std.testing.allocator);
+    try std.testing.expectEqual(ResolvedMode.off, cfg.color);
+    try std.testing.expectEqual(ResolvedMode.on, cfg.icons);
+}
+
 test "resolve: VIBEUTILS_ICONS=always forces icons on" {
     const saved = EnvState.save();
     defer saved.restore();
@@ -268,7 +307,7 @@ test "resolve: TERM=dumb forces color off" {
     EnvState.clearAll();
 
     _ = setenv("TERM", "dumb", 1);
-    _ = setenv("VIBEUTILS_STYLE", "full", 1);
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
 
     const cfg = DisplayConfig.resolve(std.testing.allocator);
     try std.testing.expectEqual(ResolvedMode.off, cfg.color);
@@ -293,7 +332,7 @@ test "resolve: VIBEUTILS_THEME=none sets theme none" {
     defer saved.restore();
     EnvState.clearAll();
 
-    _ = setenv("VIBEUTILS_STYLE", "full", 1);
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
     _ = setenv("VIBEUTILS_THEME", "none", 1);
     _ = setenv("TERM", "xterm-256color", 1);
 
@@ -301,12 +340,12 @@ test "resolve: VIBEUTILS_THEME=none sets theme none" {
     try std.testing.expectEqual(Theme.none, cfg.theme);
 }
 
-test "resolve: VIBEUTILS_HIGHLIGHT=never overrides style=full" {
+test "resolve: VIBEUTILS_HIGHLIGHT=never overrides style=always" {
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
 
-    _ = setenv("VIBEUTILS_STYLE", "full", 1);
+    _ = setenv("VIBEUTILS_STYLE", "always", 1);
     _ = setenv("VIBEUTILS_HIGHLIGHT", "never", 1);
     _ = setenv("TERM", "xterm-256color", 1);
 
