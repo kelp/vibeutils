@@ -371,3 +371,30 @@ pub fn runUtil(allocator: Allocator, args: []const []const u8,
 ## Cross-Platform Testing
 - **OrbStack**: `orb -m ubuntu zig build test` (ubuntu, debian, arch available)
 - **Docker**: `just test-linux`, `just docker-shell`
+
+## TDD Pipeline Configuration
+
+### Test Command
+`zig build test --summary all`
+
+### Source Layout
+- Source: `src/{module}.zig`
+- Tests: `src/{module}.zig` (embedded in same file)
+
+### Build Integration
+- After approval: update `build.zig` if adding new utility
+- Full test: `zig build test --summary all`
+- Lint: `just fmt`
+
+### Verify Gate Checks
+- Tests pass: `zig build test --summary all`
+- No stubs: source file > 30 lines
+- Lint clean: `just fmt`
+- Language checks: `grep "usingnamespace\|std.io.getStdOut" src/{module}.zig` (should find nothing)
+
+### Language-Specific Agent Context
+Read `docs/ZIG_BREAKING_CHANGES.md` before writing any Zig
+code. Use `zig-patterns` skill for correct 0.15.x patterns.
+Tests use `testing.allocator` (privileged tests use
+`privilege_test.TestArena`). I/O uses explicit buffers per
+Writergate pattern.

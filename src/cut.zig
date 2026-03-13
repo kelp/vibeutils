@@ -35,6 +35,7 @@ const CutArgs = struct {
     only_delimited: bool = false,
     complement: bool = false,
     output_delimiter: ?[]const u8 = null,
+    no_split: bool = false,
     zero_terminated: bool = false,
     positionals: []const []const u8 = &.{},
 
@@ -48,6 +49,7 @@ const CutArgs = struct {
         .only_delimited = .{ .short = 's', .desc = "print only lines containing delimiters" },
         .complement = .{ .short = 0, .desc = "Complement the set of selected bytes/chars/fields" },
         .output_delimiter = .{ .short = 0, .desc = "Use STRING as output delimiter", .value_name = "STRING" },
+        .no_split = .{ .short = 'n', .desc = "Do not split multi-byte characters (with -b)" },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
     };
 };
@@ -134,21 +136,59 @@ fn isSelected(ranges: []const Range, pos: usize, do_complement: bool) bool {
     return if (do_complement) !selected else selected;
 }
 
+/// Return the number of bytes in the UTF-8 character starting at the given byte.
+/// If the byte is a continuation byte or invalid, returns 1.
+fn utf8CharLen(byte: u8) usize {
+    if (byte < 0x80) return 1; // ASCII
+    if (byte & 0xE0 == 0xC0) return 2; // 110xxxxx
+    if (byte & 0xF0 == 0xE0) return 3; // 1110xxxx
+    if (byte & 0xF8 == 0xF0) return 4; // 11110xxx
+    return 1; // continuation byte or invalid
+}
+
 /// Cut bytes or characters from a line
 fn cutBytesOrChars(
     line: []const u8,
     ranges: []const Range,
     do_complement: bool,
+    no_split: bool,
     writer: anytype,
 ) !void {
-    // For bytes/characters mode (we treat them identically since
-    // we don't do multi-byte character splitting)
-    var pos: usize = 1;
-    for (line) |byte| {
-        if (isSelected(ranges, pos, do_complement)) {
-            try writer.writeAll(&.{byte});
+    if (!no_split) {
+        // Simple byte-by-byte selection
+        var pos: usize = 1;
+        for (line) |byte| {
+            if (isSelected(ranges, pos, do_complement)) {
+                try writer.writeAll(&.{byte});
+            }
+            pos += 1;
         }
-        pos += 1;
+        return;
+    }
+
+    // With -n: don't split multi-byte characters.
+    // For each UTF-8 character, output it only if ALL its bytes are selected.
+    var i: usize = 0;
+    while (i < line.len) {
+        const char_len = utf8CharLen(line[i]);
+        // Clamp to remaining bytes
+        const actual_len = @min(char_len, line.len - i);
+
+        // Check if all bytes of this character are selected
+        var all_selected = true;
+        for (0..actual_len) |offset| {
+            const pos = i + offset + 1; // 1-indexed
+            if (!isSelected(ranges, pos, do_complement)) {
+                all_selected = false;
+                break;
+            }
+        }
+
+        if (all_selected) {
+            try writer.writeAll(line[i .. i + actual_len]);
+        }
+
+        i += actual_len;
     }
 }
 
@@ -291,6 +331,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
             output_delim,
             parsed.only_delimited,
             parsed.complement,
+            parsed.no_split,
             line_terminator,
             stdout_writer,
             stderr_writer,
@@ -310,6 +351,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
                 output_delim,
                 parsed.only_delimited,
                 parsed.complement,
+                parsed.no_split,
                 line_terminator,
                 stdout_writer,
                 stderr_writer,
@@ -332,6 +374,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
                 output_delim,
                 parsed.only_delimited,
                 parsed.complement,
+                parsed.no_split,
                 line_terminator,
                 stdout_writer,
                 stderr_writer,
@@ -353,6 +396,7 @@ fn processFile(
     output_delim: []const u8,
     only_delimited: bool,
     do_complement: bool,
+    no_split: bool,
     line_terminator: u8,
     stdout_writer: anytype,
     stderr_writer: anytype,
@@ -378,7 +422,7 @@ fn processFile(
         // Process the line
         switch (mode) {
             .bytes, .characters => {
-                cutBytesOrChars(line_buf.items, ranges, do_complement, stdout_writer) catch {
+                cutBytesOrChars(line_buf.items, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch {
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 stdout_writer.writeAll(&.{line_terminator}) catch {
@@ -727,7 +771,7 @@ test "cutBytesOrChars single byte" {
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, false, buffer.writer(testing.allocator));
+    try cutBytesOrChars("abcde", ranges, false, false, buffer.writer(testing.allocator));
     try testing.expectEqualStrings("a", buffer.items);
 }
 
@@ -738,7 +782,7 @@ test "cutBytesOrChars range" {
     const ranges = try parseRangeList(testing.allocator, "2-4");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, false, buffer.writer(testing.allocator));
+    try cutBytesOrChars("abcde", ranges, false, false, buffer.writer(testing.allocator));
     try testing.expectEqualStrings("bcd", buffer.items);
 }
 
@@ -749,7 +793,7 @@ test "cutBytesOrChars multiple selections" {
     const ranges = try parseRangeList(testing.allocator, "1,3,5");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, false, buffer.writer(testing.allocator));
+    try cutBytesOrChars("abcde", ranges, false, false, buffer.writer(testing.allocator));
     try testing.expectEqualStrings("ace", buffer.items);
 }
 
@@ -760,7 +804,7 @@ test "cutBytesOrChars complement" {
     const ranges = try parseRangeList(testing.allocator, "2,4");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, true, buffer.writer(testing.allocator));
+    try cutBytesOrChars("abcde", ranges, true, false, buffer.writer(testing.allocator));
     try testing.expectEqualStrings("ace", buffer.items);
 }
 
@@ -903,4 +947,84 @@ test "cut nonexistent file returns error" {
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "nonexistent_test_file") != null);
+}
+
+// ============================================================================
+//                          -n FLAG TESTS (RED PHASE)
+// ============================================================================
+
+test "cut: -n flag is accepted with -b" {
+    // The -n flag should be accepted without error when used with -b.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("hello\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", "-b", "1-3", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("hel\n", stdout_buffer.items);
+}
+
+test "cut: -n -b preserves multi-byte characters" {
+    // Input "caf\xc3\xa9" is "cafe" with e-acute (2 bytes: 0xC3 0xA9).
+    // "cafe" is 4 characters but 5 bytes.
+    // With -b1-4 alone, bytes 1-4 are "caf\xc3" which splits the e-acute.
+    // With -n -b1-4, the partial multi-byte character at byte 4 should be
+    // excluded, producing "caf" (3 bytes).
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    // "cafe" with e-acute: c(0x63) a(0x61) f(0x66) e-acute(0xC3 0xA9)
+    try test_file.writeAll("caf\xc3\xa9\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", "-b", "1-4", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // With -n, partial multi-byte chars should be excluded.
+    // Byte 4 is 0xC3 (first byte of 2-byte sequence), byte 5 is 0xA9.
+    // Since only byte 4 is selected (not 5), the character is partial
+    // and should be excluded entirely, giving "caf".
+    try testing.expectEqualStrings("caf\n", stdout_buffer.items);
+}
+
+test "cut: -n without -b has no effect on field mode" {
+    // -n only affects -b mode. When used with -f, it should have no
+    // effect and the command should work normally.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("a,b,c\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", "-f", "1", "-d", ",", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("a\n", stdout_buffer.items);
 }

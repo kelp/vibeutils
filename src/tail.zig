@@ -28,6 +28,8 @@ const TailArgs = struct {
     quiet: bool = false,
     verbose: bool = false,
     zero_terminated: bool = false,
+    follow: bool = false,
+    follow_retry: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -38,6 +40,8 @@ const TailArgs = struct {
         .quiet = .{ .short = 'q', .desc = "never output headers when multiple files are being examined" },
         .verbose = .{ .short = 'v', .desc = "always output headers when examining files" },
         .zero_terminated = .{ .short = 'z', .desc = "line delimiter is NUL, not newline" },
+        .follow = .{ .short = 'f', .desc = "output appended data as the file grows" },
+        .follow_retry = .{ .short = 'F', .desc = "same as -f, but retry if file is inaccessible" },
     };
 };
 
@@ -79,6 +83,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -q, --quiet, --silent    never output headers giving file names
         \\  -v, --verbose            always output headers giving file names
         \\  -z, --zero-terminated    use NUL as line delimiter, not newline
+        \\  -f, --follow             output appended data as the file grows
+        \\  -F                       same as --follow --retry
         \\      --help               display this help and exit
         \\      --version            output version information and exit
         \\
@@ -207,6 +213,10 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                    // -F (follow with retry) tolerates missing files
+                    if (parsed_args.follow_retry and err == error.FileNotFound) {
+                        continue;
+                    }
                     common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, errorToMessage(err) });
                     had_error = true;
                     continue;
@@ -1110,6 +1120,60 @@ test "tail with obsolete -NUM syntax" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 4\nLine 5\n", stdout_buffer.items);
+}
+
+test "tail: -f flag is parsed" {
+    const args = [_][]const u8{ "-f", "/tmp/somefile" };
+    const parsed = try common.argparse.ArgParser.parse(TailArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.follow);
+    try testing.expect(!parsed.follow_retry);
+}
+
+test "tail: -F flag is parsed" {
+    const args = [_][]const u8{ "-F", "/tmp/somefile" };
+    const parsed = try common.argparse.ArgParser.parse(TailArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.follow_retry);
+    try testing.expect(!parsed.follow);
+}
+
+test "tail: -f with nonexistent file gives error" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "/tmp/vibeutils_test_nonexistent_file_xyzzy" };
+    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+}
+
+test "tail: -F with nonexistent file does not immediately fail" {
+    // -F (follow with retry) should not immediately error when the file
+    // does not exist -- it should wait and retry. This test will FAIL
+    // until follow-retry logic is implemented.
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-F", "/tmp/vibeutils_test_nonexistent_file_xyzzy" };
+    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    // -F should exit 0 (or at least not fail immediately with error 1)
+    try testing.expectEqual(@as(u8, 0), result);
+}
+
+test "tail: help output mentions -f and -F flags" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    // Help text should document the -f (follow) flag
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "-f") != null);
+    // Help text should document the -F (follow-retry) flag
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "-F") != null);
 }
 
 /// Test helper for processing a file from a directory

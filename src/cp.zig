@@ -25,15 +25,44 @@ const CpConfig = struct {
     no_dereference: bool = false,
     preserve: bool = false,
     recursive: bool = false,
+    R: bool = false,
+    H: bool = false,
+    L: bool = false,
+    P: bool = false,
+    archive: bool = false,
+    no_clobber: bool = false,
+    verbose: bool = false,
 
     /// Extract runtime-only configuration
     pub fn runtime(self: CpConfig) RuntimeOptions {
+        const is_archive = self.archive;
+        const is_recursive = self.recursive or self.R or is_archive;
+        const is_preserve = self.preserve or is_archive;
+
+        // Resolve symlink mode from flags:
+        // -L → follow_all, -H → follow_cmdline, -P or -d → follow_none
+        // -a implies -P (follow_none)
+        // Default: follow_all without -R, follow_none with -R
+        // Priority: -L > -H > -P/-d > default (resolveConflicts ensures last-wins)
+        const symlink_mode: SymlinkMode = if (self.L)
+            .follow_all
+        else if (self.H)
+            .follow_cmdline
+        else if (self.P or self.no_dereference or is_archive)
+            .follow_none
+        else if (is_recursive)
+            .follow_none
+        else
+            .follow_all;
+
         return RuntimeOptions{
             .force = self.force,
             .interactive = self.interactive,
-            .no_dereference = self.no_dereference,
-            .preserve = self.preserve,
-            .recursive = self.recursive,
+            .preserve = is_preserve,
+            .recursive = is_recursive,
+            .symlink_mode = symlink_mode,
+            .no_clobber = self.no_clobber,
+            .verbose = self.verbose,
         };
     }
 
@@ -44,6 +73,13 @@ const CpConfig = struct {
         .no_dereference = .{ .short = 'd', .desc = "Never follow symbolic links in SOURCE" },
         .preserve = .{ .short = 'p', .desc = "Preserve mode, ownership, timestamps" },
         .recursive = .{ .short = 'r', .desc = "Copy directories recursively" },
+        .R = .{ .short = 'R', .desc = "Copy directories recursively" },
+        .H = .{ .short = 'H', .desc = "Follow symbolic links on the command line" },
+        .L = .{ .short = 'L', .desc = "Follow all symbolic links" },
+        .P = .{ .short = 'P', .desc = "Do not follow symbolic links" },
+        .archive = .{ .short = 'a', .desc = "Archive mode (same as -RpP)" },
+        .no_clobber = .{ .short = 'n', .desc = "Do not overwrite existing files" },
+        .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
     };
 };
@@ -52,9 +88,11 @@ const CpConfig = struct {
 const RuntimeOptions = struct {
     force: bool = false,
     interactive: bool = false,
-    no_dereference: bool = false,
     preserve: bool = false,
     recursive: bool = false,
+    symlink_mode: SymlinkMode = .follow_all,
+    no_clobber: bool = false,
+    verbose: bool = false,
 };
 
 /// File type enumeration for copy operations
@@ -63,6 +101,16 @@ const FileType = enum {
     regular_file,
     special,
     symlink,
+};
+
+/// Symlink handling mode for copy operations
+const SymlinkMode = enum {
+    /// Follow all symbolic links (default without -R)
+    follow_all,
+    /// Follow only command-line symbolic links (with -H)
+    follow_cmdline,
+    /// Never follow symbolic links (with -P, default with -R)
+    follow_none,
 };
 
 /// Main entry point for the cp command
@@ -97,7 +145,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const prog_name = "cp";
 
     // Parse command line arguments
-    const config = common.argparse.ArgParser.parse(CpConfig, allocator, args) catch |err| {
+    var config = common.argparse.ArgParser.parse(CpConfig, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
@@ -111,6 +159,8 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         }
     };
     defer allocator.free(config.positionals);
+
+    resolveConflicts(&config, args);
 
     if (config.help) {
         try printHelp(allocator, stdout_writer);
@@ -139,6 +189,63 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
 }
 
+/// Resolve POSIX "last flag wins" for mutually exclusive options.
+/// Scans raw args to determine which flag was specified last.
+fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
+    for (args) |arg| {
+        if (arg.len < 2 or arg[0] != '-') continue;
+        if (arg[1] == '-') {
+            // Long flags
+            if (std.mem.eql(u8, arg, "--no-clobber")) {
+                config.no_clobber = true;
+                config.interactive = false;
+            } else if (std.mem.eql(u8, arg, "--interactive")) {
+                config.interactive = true;
+                config.no_clobber = false;
+            } else if (std.mem.eql(u8, arg, "--no-dereference")) {
+                config.no_dereference = true;
+                config.H = false;
+                config.L = false;
+            }
+            continue;
+        }
+        // Short flags — process each character in the cluster
+        for (arg[1..]) |c| {
+            switch (c) {
+                'H' => {
+                    config.H = true;
+                    config.L = false;
+                    config.P = false;
+                },
+                'L' => {
+                    config.L = true;
+                    config.H = false;
+                    config.P = false;
+                },
+                'P' => {
+                    config.P = true;
+                    config.H = false;
+                    config.L = false;
+                },
+                'd' => {
+                    config.no_dereference = true;
+                    config.H = false;
+                    config.L = false;
+                },
+                'n' => {
+                    config.no_clobber = true;
+                    config.interactive = false;
+                },
+                'i' => {
+                    config.interactive = true;
+                    config.no_clobber = false;
+                },
+                else => {},
+            }
+        }
+    }
+}
+
 /// Execute all copy operations
 fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
     const dest = args[args.len - 1];
@@ -160,7 +267,7 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 
     // Process each source
     for (args[0 .. args.len - 1]) |source| {
-        const result = copySingleFile(allocator, stderr_writer, source, dest, options, hinted_overwrite) catch false;
+        const result = copySingleFile(allocator, stderr_writer, source, dest, options, hinted_overwrite, true) catch false;
         if (!result) success = false;
     }
 
@@ -168,9 +275,16 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 }
 
 /// Copy a single file or directory
-fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
+fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool, is_toplevel: bool) !bool {
+    // Determine whether to follow symlinks based on mode and position
+    const follow_symlinks = switch (options.symlink_mode) {
+        .follow_all => true,
+        .follow_cmdline => is_toplevel,
+        .follow_none => false,
+    };
+
     // Get source file type
-    const source_type = getFileTypeAtomic(source, options.no_dereference) catch |err| {
+    const source_type = getFileTypeAtomic(source, !follow_symlinks) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot stat '{s}': {s}", .{ source, getStandardErrorName(err) });
         return false;
     };
@@ -190,6 +304,11 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
 
     // Check if destination exists
     const dest_exists = fileExists(final_dest_path);
+
+    // Handle no-clobber mode: skip if destination exists
+    if (options.no_clobber and dest_exists) {
+        return true; // Not an error, just skip
+    }
 
     // Validate operation
     if (source_type == .directory and !options.recursive) {
@@ -211,10 +330,15 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
         hinted_overwrite.* = true;
     }
 
+    // Print verbose message if requested
+    if (options.verbose) {
+        stderr_writer.print("'{s}' -> '{s}'\n", .{ source, final_dest_path }) catch {};
+    }
+
     // Execute the copy based on source type
     return switch (source_type) {
         .regular_file => copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
-        .symlink => if (options.no_dereference)
+        .symlink => if (!follow_symlinks)
             copySymlink(allocator, stderr_writer, source, final_dest_path, options)
         else
             copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
@@ -342,7 +466,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
         defer allocator.free(dest_child_path);
 
         // Recursively copy child
-        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options, hinted_overwrite) catch false;
+        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options, hinted_overwrite, false) catch false;
         if (!result) success = false;
     }
 
@@ -551,17 +675,24 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\   or: cp [OPTION]... SOURCE... DIRECTORY
         \\Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
         \\
+        \\  -a, --archive            same as -RpP
         \\  -d, --no-dereference     never follow symbolic links in SOURCE
         \\  -f, --force              force overwrite without prompting
         \\  -h, --help               display this help and exit
+        \\  -H                       follow symlinks on the command line
         \\  -i, --interactive        prompt before overwrite
+        \\  -L                       follow all symbolic links
+        \\  -n, --no-clobber         do not overwrite existing files
         \\  -p, --preserve           preserve mode, ownership, timestamps
-        \\  -r, --recursive          copy directories recursively
+        \\  -P                       do not follow symbolic links
+        \\  -r, -R, --recursive      copy directories recursively
+        \\  -v, --verbose            explain what is being done
         \\  -V, --version            output version information and exit
         \\
         \\Examples:
         \\  cp foo.txt bar.txt    Copy foo.txt to bar.txt
-        \\  cp -r dir1 dir2       Copy dir1 and its contents to dir2
+        \\  cp -R dir1 dir2       Copy dir1 and its contents to dir2
+        \\  cp -a dir1 dir2       Archive copy (preserve all attributes)
         \\  cp file1 file2 dir/   Copy multiple files into dir/
         \\
     );
@@ -1013,4 +1144,380 @@ test "cp: no hint when destination does not exist" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
+}
+
+test "cp: -R flag triggers recursive copy" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("source_dir");
+    try test_dir.createFile("source_dir/file1.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-R", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest_dir/file1.txt", "content");
+}
+
+test "cp: default symlink mode without -R is follow_all" {
+    const args = [_][]const u8{ "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+
+    const rt = config.runtime();
+    try testing.expectEqual(SymlinkMode.follow_all, rt.symlink_mode);
+}
+
+test "cp: default symlink mode with -R is follow_none" {
+    const args = [_][]const u8{ "-R", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+
+    const rt = config.runtime();
+    try testing.expectEqual(SymlinkMode.follow_none, rt.symlink_mode);
+}
+
+test "cp: -P flag sets symlink mode to follow_none" {
+    const args = [_][]const u8{ "-P", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+
+    const rt = config.runtime();
+    try testing.expectEqual(SymlinkMode.follow_none, rt.symlink_mode);
+}
+
+test "cp: -L flag sets symlink mode to follow_all" {
+    const args = [_][]const u8{ "-R", "-L", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+
+    const rt = config.runtime();
+    try testing.expectEqual(SymlinkMode.follow_all, rt.symlink_mode);
+}
+
+test "cp: -H flag sets symlink mode to follow_cmdline" {
+    const args = [_][]const u8{ "-R", "-H", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+
+    const rt = config.runtime();
+    try testing.expectEqual(SymlinkMode.follow_cmdline, rt.symlink_mode);
+}
+
+test "cp: -R -P preserves symlinks in directory tree" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create source directory with a file and a symlink to that file
+    try test_dir.createDir("src_dir");
+    try test_dir.createFile("src_dir/file.txt", "hello", null);
+    try test_dir.createSymlink("file.txt", "src_dir/link.txt");
+
+    const source_path = try test_dir.getPath("src_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-R", "-P", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // With -P, symlinks must be preserved as symlinks
+    try testing.expect(try test_dir.isSymlink("dest_dir/link.txt"));
+    const target = try test_dir.getSymlinkTarget("dest_dir/link.txt");
+    defer testing.allocator.free(target);
+    try testing.expectEqualStrings("file.txt", target);
+}
+
+test "cp: -R -L follows all symlinks and copies as regular files" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create source directory with a file and a symlink to that file
+    try test_dir.createDir("src_dir");
+    try test_dir.createFile("src_dir/file.txt", "hello from file", null);
+    try test_dir.createSymlink("file.txt", "src_dir/link.txt");
+
+    const source_path = try test_dir.getPath("src_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-R", "-L", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // With -L, symlinks must be followed: dest should be a regular file
+    try testing.expect(!(try test_dir.isSymlink("dest_dir/link.txt")));
+    try test_dir.expectFileContent("dest_dir/link.txt", "hello from file");
+}
+
+test "cp: -R -H follows command-line symlinks but preserves inner symlinks" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create a real directory with a file and an inner symlink
+    try test_dir.createFile("target_file.txt", "target content", null);
+    try test_dir.createDir("real_dir");
+    try test_dir.createFile("real_dir/file.txt", "hello", null);
+    try test_dir.createSymlink("../target_file.txt", "real_dir/inner_link.txt");
+
+    // Create a top-level symlink pointing to the real directory
+    try test_dir.createSymlink("real_dir", "dir_link");
+
+    // Use getBasePath to construct the symlink path without resolution
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dir_link", .{base_path});
+    defer testing.allocator.free(link_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -H: follow the command-line symlink (dir_link -> real_dir),
+    // but preserve symlinks encountered during traversal
+    const args = [_][]const u8{ "-R", "-H", link_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The top-level symlink was followed, so dest_dir should have
+    // the contents of real_dir
+    try test_dir.expectFileContent("dest_dir/file.txt", "hello");
+
+    // Inner symlinks must be preserved (not followed) with -H
+    try testing.expect(try test_dir.isSymlink("dest_dir/inner_link.txt"));
+    const inner_target = try test_dir.getSymlinkTarget("dest_dir/inner_link.txt");
+    defer testing.allocator.free(inner_target);
+    try testing.expectEqualStrings("../target_file.txt", inner_target);
+}
+
+test "cp: -R alone defaults to -P behavior (preserve symlinks)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create source directory with a file and a symlink
+    try test_dir.createDir("src_dir");
+    try test_dir.createFile("src_dir/file.txt", "content", null);
+    try test_dir.createSymlink("file.txt", "src_dir/link.txt");
+
+    const source_path = try test_dir.getPath("src_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -R without -H/-L/-P should default to -P (preserve symlinks)
+    const args = [_][]const u8{ "-R", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Symlink must be preserved since -R defaults to -P behavior
+    try testing.expect(try test_dir.isSymlink("dest_dir/link.txt"));
+    const target = try test_dir.getSymlinkTarget("dest_dir/link.txt");
+    defer testing.allocator.free(target);
+    try testing.expectEqualStrings("file.txt", target);
+}
+
+test "cp: without -R, symlinks are always followed" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create a file and a symlink to it
+    try test_dir.createFile("file.txt", "original content", null);
+    try test_dir.createSymlink("file.txt", "link.txt");
+
+    // Use getBasePath to construct the symlink path without resolution
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{base_path});
+    defer testing.allocator.free(link_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // No -R flag: symlinks should always be followed
+    const args = [_][]const u8{ link_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Destination must be a regular file, not a symlink
+    try testing.expect(!(try test_dir.isSymlink("dest.txt")));
+    try test_dir.expectFileContent("dest.txt", "original content");
+}
+
+test "cp: -a flag enables recursive, preserve, and follow_none" {
+    const args = [_][]const u8{ "-a", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    const rt = config.runtime();
+    try testing.expect(rt.recursive);
+    try testing.expect(rt.preserve);
+    try testing.expectEqual(SymlinkMode.follow_none, rt.symlink_mode);
+}
+
+test "cp: -n flag skips existing files" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Original content should be unchanged
+    try test_dir.expectFileContent("dest.txt", "old content");
+}
+
+test "cp: -n flag creates file when destination does not exist" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/new_dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("new_dest.txt", "content");
+}
+
+test "cp: -v flag prints verbose output to stderr" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Should contain 'source' -> 'dest' pattern
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "->") != null);
+}
+
+test "cp: -v flag with recursive prints each copied file" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("src_dir");
+    try test_dir.createFile("src_dir/file1.txt", "content1", null);
+    try test_dir.createFile("src_dir/file2.txt", "content2", null);
+
+    const source_path = try test_dir.getPath("src_dir");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-Rv", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Should have multiple -> entries (one per file)
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, stderr_buffer.items, pos, "->")) |idx| {
+        count += 1;
+        pos = idx + 2;
+    }
+    try testing.expect(count >= 2);
+}
+
+test "cp: -L -P last flag wins (POSIX)" {
+    const args = [_][]const u8{ "-L", "-P", "/tmp/src", "/tmp/dst" };
+    var config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    resolveConflicts(&config, &args);
+    const rt = config.runtime();
+    // -P came last, so follow_none
+    try testing.expectEqual(SymlinkMode.follow_none, rt.symlink_mode);
+}
+
+test "cp: -P -L last flag wins (POSIX)" {
+    const args = [_][]const u8{ "-P", "-L", "/tmp/src", "/tmp/dst" };
+    var config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    resolveConflicts(&config, &args);
+    const rt = config.runtime();
+    // -L came last, so follow_all
+    try testing.expectEqual(SymlinkMode.follow_all, rt.symlink_mode);
+}
+
+test "cp: -n -i last flag wins" {
+    const args = [_][]const u8{ "-n", "-i", "/tmp/src", "/tmp/dst" };
+    var config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    resolveConflicts(&config, &args);
+    const rt = config.runtime();
+    // -i came last, should override -n
+    try testing.expect(rt.interactive);
+    try testing.expect(!rt.no_clobber);
 }

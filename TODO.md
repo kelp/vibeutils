@@ -14,6 +14,38 @@
 - **OpenBSD-inspired**: Clear options, concise man pages with examples
 - **Practical compatibility**: Features people actually use
 
+## POSIX Compliance & Flag Coverage
+
+### Step 1: Build per-utility flag reference
+For each of our 47 utilities, create `docs/specs/<util>.md`
+with a flags table extracted from the POSIX spec at
+`pubs.opengroup.org/onlinepubs/9699919799/utilities/<util>.html`.
+Only utilities we implement; markdown format; OPTIONS section
+only.
+
+### Step 2: Capture macOS system flags
+For each utility, parse the flags section from
+`MANPATH=/usr/share/man man <util>` on macOS. Store alongside
+the POSIX table in the same `docs/specs/<util>.md` file under
+a "macOS" section. Also capture GNU coreutils flags via
+`g<util> --help` (Nix coreutils package) under a "GNU"
+section and our own flags from `./zig-out/bin/<util> --help`
+under a "vibeutils" section.
+
+### Step 3: Coverage decisions (tiered)
+Add a coverage column to each flag in the spec files:
+- **MUST**: All POSIX-required flags (target 100%)
+- **SHOULD**: Top GNU coreutils flags that users expect
+- **WONT**: Rare, macOS-only, or legacy flags we choose to
+  skip (with documented rationale)
+
+### Step 4: Integration / regression tests
+Write bash shell scripts in `tests/posix/`, one per utility.
+Each script validates that every MUST and SHOULD flag is
+accepted and produces correct behavior. Compare output
+against expected results, not against GNU coreutils directly.
+Run via `just test-posix`.
+
 ## TDD Development Cycle
 For each utility:
 1. **Red**: Write failing tests for basic functionality

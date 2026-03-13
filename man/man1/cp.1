@@ -7,10 +7,10 @@
 .Nd copy files and directories
 .Sh SYNOPSIS
 .Nm cp
-.Op Fl dfipRr
+.Op Fl adfHiLnpPRrv
 .Ar source target
 .Nm cp
-.Op Fl dfipRr
+.Op Fl adfHiLnpPRrv
 .Ar source ... directory
 .Sh DESCRIPTION
 The
@@ -26,25 +26,70 @@ is a directory, then the
 is copied into
 .Ar target
 with its original filename.
-If multiple sources are provided, they are copied into the target directory.
+If multiple sources are provided, they are copied into
+the target directory.
 .Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl a
+Archive mode.
+Same as
+.Fl RpP .
+Preserves structure, attributes, and symbolic links.
 .It Fl d
 Do not follow symbolic links in the source.
-When this option is specified, symbolic links are copied as symbolic links,
-not the files they reference.
+When this option is specified, symbolic links are copied
+as symbolic links, not the files they reference.
+Equivalent to
+.Fl P .
 .It Fl f
-Force copy by removing the destination if it cannot be opened for writing.
+Force copy by removing the destination if it cannot be
+opened for writing.
+.It Fl H
+When
+.Fl R
+is specified, follow symbolic links given on the command
+line but do not follow symbolic links encountered during
+directory traversal.
 .It Fl i
 Prompt for confirmation before overwriting existing files.
+.It Fl L
+When
+.Fl R
+is specified, follow all symbolic links encountered.
+Symbolic links are copied as regular files.
+.It Fl n
+Do not overwrite existing files.
 .It Fl p
 Preserve file mode, ownership, and timestamps.
+.It Fl P
+Do not follow symbolic links.
+When
+.Fl R
+is specified, symbolic links in the source tree are
+copied as symbolic links.
+This is the default when
+.Fl R
+is specified.
 .It Fl R , Fl r
 Copy directories recursively.
 If this option is not specified,
 .Nm
 will not copy directories.
+When
+.Fl R
+is specified and no
+.Fl H , L ,
+or
+.Fl P
+option is given,
+.Fl P
+is implied.
+.It Fl v
+Explain what is being done.
+Each file copied produces a line on standard error of
+the form
+.Sq source -> dest .
 .It Fl h , Fl Fl help
 Display help and exit.
 .It Fl V , Fl Fl version
@@ -63,20 +108,21 @@ $ cp file1 file2
 .Pp
 Copy a directory recursively:
 .Bd -literal -offset indent
-$ cp -r source_dir target_dir
+$ cp -R source_dir target_dir
 .Ed
 .Pp
-Copy a symbolic link without following it:
+Archive copy preserving all attributes and symlinks:
 .Bd -literal -offset indent
-$ cp -d symlink new_symlink
+$ cp -a source_dir target_dir
 .Ed
 .Pp
-Copy with preserved attributes:
+Copy without overwriting existing files:
 .Bd -literal -offset indent
-$ cp -p file1 file2
+$ cp -n file1 file2
 .Ed
 .Sh SEE ALSO
 .Xr chmod 1 ,
+.Xr mv 1 ,
 .Xr rsync 1
 .Sh STANDARDS
 The

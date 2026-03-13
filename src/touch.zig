@@ -17,6 +17,7 @@ const TouchArgs = struct {
     no_dereference: bool = false,
     m: bool = false,
     reference: ?[]const u8 = null,
+    date: ?[]const u8 = null,
     t: ?[]const u8 = null,
     time: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
@@ -32,6 +33,7 @@ const TouchArgs = struct {
         .no_dereference = .{ .short = 0, .desc = "Affect symbolic link instead of any referenced file" },
         .m = .{ .desc = "Change only the modification time" },
         .reference = .{ .short = 'r', .desc = "Use this file's times instead of current time", .value_name = "FILE" },
+        .date = .{ .short = 'd', .desc = "parse DATE and use it instead of current time", .value_name = "DATE" },
         .t = .{ .desc = "Use [[CC]YY]MMDDhhmm[.ss] instead of current time", .value_name = "STAMP" },
         .time = .{ .short = 0, .desc = "Change the specified time: \"access\", \"atime\", \"use\", \"modify\", \"mtime\"", .value_name = "WORD" },
     };
@@ -108,6 +110,7 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         .modify_only = modify_only,
         .no_create = no_create,
         .no_dereference = no_dereference,
+        .date_str = parsed_args.date,
         .reference_file = parsed_args.reference,
         .timestamp_str = parsed_args.t,
         .time_arg = parsed_args.time,
@@ -130,6 +133,13 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
                 error.InvalidTimestamp => {
                     if (options.timestamp_str) |ts| {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid date format '{s}'", .{ts});
+                    } else {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid date format", .{});
+                    }
+                },
+                error.InvalidDateFormat => {
+                    if (options.date_str) |ds| {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid date format '{s}'", .{ds});
                     } else {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid date format", .{});
                     }
@@ -161,6 +171,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\  -a                   change only the access time
         \\  -c, --no-create      do not create any files
+        \\  -d, --date=DATE      parse DATE and use it instead of current time
         \\  -f                   (ignored)
         \\  -h, --no-dereference affect symbolic link instead of any referenced file
         \\  -m                   change only the modification time
@@ -181,6 +192,7 @@ const TouchOptions = struct {
     modify_only: bool = false,
     no_create: bool = false,
     no_dereference: bool = false,
+    date_str: ?[]const u8 = null,
     reference_file: ?[]const u8 = null,
     timestamp_str: ?[]const u8 = null,
     time_arg: ?[]const u8 = null,
@@ -196,6 +208,11 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
         const ref_info = try common.file.FileInfo.stat(ref_path);
         times[0] = nsToTimespec(ref_info.atime);
         times[1] = nsToTimespec(ref_info.mtime);
+    } else if (options.date_str) |date| {
+        // Parse -d format (ISO 8601)
+        const parsed_time = try parseIso8601(date);
+        times[0] = parsed_time;
+        times[1] = parsed_time;
     } else if (options.timestamp_str) |timestamp| {
         // Parse -t format
         const parsed_time = try parseTimestamp(timestamp);
@@ -413,6 +430,61 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     // Check for overflow in final addition
     if (day_seconds > std.math.maxInt(i64) - time_seconds) return error.InvalidTimestamp;
 
+    const total_seconds = day_seconds + time_seconds;
+
+    return c.timespec{
+        .sec = @intCast(total_seconds),
+        .nsec = 0,
+    };
+}
+
+/// Parse ISO 8601 date/datetime string to a timespec.
+/// Supported formats:
+///   YYYY-MM-DD
+///   YYYY-MM-DDTHH:MM:SS
+///   YYYY-MM-DD HH:MM:SS
+fn parseIso8601(date_str: []const u8) !c.timespec {
+    // Minimum valid: YYYY-MM-DD (10 chars)
+    if (date_str.len < 10) return error.InvalidDateFormat;
+
+    // Parse year, month, day
+    if (date_str.len < 4) return error.InvalidDateFormat;
+    const year = std.fmt.parseInt(u32, date_str[0..4], 10) catch return error.InvalidDateFormat;
+    if (date_str[4] != '-') return error.InvalidDateFormat;
+    if (date_str.len < 7) return error.InvalidDateFormat;
+    const month = std.fmt.parseInt(u32, date_str[5..7], 10) catch return error.InvalidDateFormat;
+    if (date_str[7] != '-') return error.InvalidDateFormat;
+    if (date_str.len < 10) return error.InvalidDateFormat;
+    const day = std.fmt.parseInt(u32, date_str[8..10], 10) catch return error.InvalidDateFormat;
+
+    var hour: u32 = 0;
+    var minute: u32 = 0;
+    var second: u32 = 0;
+
+    // Check for time component (T or space separator)
+    if (date_str.len > 10) {
+        if (date_str[10] != 'T' and date_str[10] != ' ') return error.InvalidDateFormat;
+        // Expect HH:MM:SS (8 chars after separator)
+        if (date_str.len < 19) return error.InvalidDateFormat;
+        hour = std.fmt.parseInt(u32, date_str[11..13], 10) catch return error.InvalidDateFormat;
+        if (date_str[13] != ':') return error.InvalidDateFormat;
+        minute = std.fmt.parseInt(u32, date_str[14..16], 10) catch return error.InvalidDateFormat;
+        if (date_str[16] != ':') return error.InvalidDateFormat;
+        second = std.fmt.parseInt(u32, date_str[17..19], 10) catch return error.InvalidDateFormat;
+    }
+
+    // Validate ranges
+    if (month < 1 or month > 12) return error.InvalidDateFormat;
+    if (day < 1 or day > getDaysInMonth(year, month)) return error.InvalidDateFormat;
+    if (hour > 23) return error.InvalidDateFormat;
+    if (minute > 59) return error.InvalidDateFormat;
+    if (second > 59) return error.InvalidDateFormat;
+    if (year < 1970) return error.InvalidDateFormat;
+
+    // Convert to seconds since epoch
+    const days_since_epoch = daysFromYMD(year, month, day) - daysFromYMD(1970, 1, 1);
+    const day_seconds = @as(i64, days_since_epoch) * 86400;
+    const time_seconds = @as(i64, hour) * 3600 + @as(i64, minute) * 60 + @as(i64, second);
     const total_seconds = day_seconds + time_seconds;
 
     return c.timespec{
@@ -796,4 +868,117 @@ test "touch with -t timestamp" {
     // but the file should exist and have been touched
     const stat = try common.file.FileInfo.stat(test_file);
     try testing.expect(stat.mtime > 0);
+}
+
+// ==================== -d (date string) tests ====================
+
+test "touch: -d flag is parsed by argparser" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/parse_test.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -d should be accepted without error
+    const args = [_][]const u8{ "-d", "2024-01-15", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "touch: -d with ISO date sets timestamp" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/dated.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", "2024-01-15", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify the modification time is 2024-01-15 00:00:00 UTC
+    const stat = try common.file.FileInfo.stat(test_file);
+    // 2024-01-15 00:00:00 UTC = 1705276800 seconds since epoch
+    const expected_ns: i128 = 1705276800 * std.time.ns_per_s;
+    try testing.expectEqual(expected_ns, stat.mtime);
+}
+
+test "touch: -d with date and time sets timestamp" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/datetime.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", "2024-01-15T10:30:00", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify the modification time is 2024-01-15 10:30:00 UTC
+    const stat = try common.file.FileInfo.stat(test_file);
+    // 2024-01-15 10:30:00 UTC = 1705314600 seconds since epoch
+    const expected_ns: i128 = 1705314600 * std.time.ns_per_s;
+    try testing.expectEqual(expected_ns, stat.mtime);
+}
+
+test "touch: -d with invalid date gives error" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/invalid_date.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", "not-a-date", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    // Should return error exit code for invalid date
+    try testing.expectEqual(@as(u8, 1), exit_code);
+}
+
+test "touch: -d with space-separated datetime" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/space_datetime.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Space-separated date and time (ISO 8601 allows space instead of T)
+    const args = [_][]const u8{ "-d", "2024-06-15 14:30:00", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify the modification time is 2024-06-15 14:30:00 UTC
+    const stat = try common.file.FileInfo.stat(test_file);
+    // 2024-06-15 14:30:00 UTC = 1718461800 seconds since epoch
+    const expected_ns: i128 = 1718461800 * std.time.ns_per_s;
+    try testing.expectEqual(expected_ns, stat.mtime);
 }

@@ -30,6 +30,18 @@ extern "c" fn getgrnam(name: [*:0]const u8) ?*const extern struct {
     gr_gid: c.gid_t,
     gr_mem: [*][*:0]u8,
 };
+extern "c" fn getpwuid(uid: c.uid_t) ?*const extern struct {
+    pw_name: [*:0]u8,
+    pw_passwd: [*:0]u8,
+    pw_uid: c.uid_t,
+    pw_gid: c.gid_t,
+};
+extern "c" fn getgrgid(gid: c.gid_t) ?*const extern struct {
+    gr_name: [*:0]u8,
+    gr_passwd: [*:0]u8,
+    gr_gid: c.gid_t,
+    gr_mem: [*][*:0]u8,
+};
 
 const prog_name = "find";
 
@@ -101,6 +113,13 @@ const ExprTag = enum {
     user,
     group,
     path_match,
+    atime,
+    ctime,
+    links,
+    ok,
+    xdev,
+    nouser,
+    nogroup,
     print,
     print0,
     delete,
@@ -109,6 +128,7 @@ const ExprTag = enum {
     or_expr,
     not_expr,
     true_expr,
+    prune,
 };
 
 const Expression = struct {
@@ -433,6 +453,22 @@ fn getMtime(stat_buf: c.Stat) i64 {
         return stat_buf.mtimespec.sec;
     } else {
         return stat_buf.mtim.sec;
+    }
+}
+
+fn getAtime(stat_buf: c.Stat) i64 {
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        return stat_buf.atimespec.sec;
+    } else {
+        return stat_buf.atim.sec;
+    }
+}
+
+fn getCtime(stat_buf: c.Stat) i64 {
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        return stat_buf.ctimespec.sec;
+    } else {
+        return stat_buf.ctim.sec;
     }
 }
 
@@ -859,6 +895,95 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .exec_cmd, .{ .exec_data = .{ .argv = argv } });
     }
 
+    if (std.mem.eql(u8, arg, "-prune")) {
+        pos.* += 1;
+        return allocExpr(allocator, .prune, .{ .none = {} });
+    }
+
+    if (std.mem.eql(u8, arg, "-atime")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-atime'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-atime'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .atime, .{ .time = te });
+    }
+
+    if (std.mem.eql(u8, arg, "-ctime")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-ctime'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-ctime'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .ctime, .{ .time = te });
+    }
+
+    if (std.mem.eql(u8, arg, "-links")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-links'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-links'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .links, .{ .time = te });
+    }
+
+    if (std.mem.eql(u8, arg, "-ok")) {
+        pos.* += 1;
+        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        defer exec_args.deinit(allocator);
+
+        while (pos.* < args.len) {
+            if (std.mem.eql(u8, args[pos.*], ";")) {
+                pos.* += 1;
+                break;
+            }
+            try exec_args.append(allocator, args[pos.*]);
+            pos.* += 1;
+        } else {
+            pctx.setError("missing argument to '-ok'", .{});
+            return error.MissingArgument;
+        }
+
+        if (exec_args.items.len == 0) {
+            pctx.setError("missing argument to '-ok'", .{});
+            return error.MissingArgument;
+        }
+
+        has_action.* = true;
+        const argv = try allocator.dupe([]const u8, exec_args.items);
+        return allocExpr(allocator, .ok, .{ .exec_data = .{ .argv = argv } });
+    }
+
+    if (std.mem.eql(u8, arg, "-xdev") or std.mem.eql(u8, arg, "-mount")) {
+        pos.* += 1;
+        return allocExpr(allocator, .xdev, .{ .none = {} });
+    }
+
+    if (std.mem.eql(u8, arg, "-nouser")) {
+        pos.* += 1;
+        return allocExpr(allocator, .nouser, .{ .none = {} });
+    }
+
+    if (std.mem.eql(u8, arg, "-nogroup")) {
+        pos.* += 1;
+        return allocExpr(allocator, .nogroup, .{ .none = {} });
+    }
+
     pctx.setError("unknown predicate '{s}'", .{arg});
     return error.InvalidExpression;
 }
@@ -878,6 +1003,7 @@ fn evaluate(
     stdout: anytype,
     stderr: anytype,
     had_error: *bool,
+    pruned: *bool,
 ) bool {
     switch (expr.tag) {
         .true_expr => return true,
@@ -921,6 +1047,46 @@ fn evaluate(
         },
         .user => return matchUser(expr.data.name_str, stat_buf.uid),
         .group => return matchGroup(expr.data.name_str, stat_buf.gid),
+        .atime => {
+            const te = expr.data.time;
+            const file_atime = getAtime(stat_buf);
+            const age_secs = now - file_atime;
+            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
+            return switch (te.cmp) {
+                .exactly => age_days == te.days,
+                .greater_than => age_days > te.days,
+                .less_than => age_days < te.days,
+            };
+        },
+        .ctime => {
+            const te = expr.data.time;
+            const file_ctime = getCtime(stat_buf);
+            const age_secs = now - file_ctime;
+            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
+            return switch (te.cmp) {
+                .exactly => age_days == te.days,
+                .greater_than => age_days > te.days,
+                .less_than => age_days < te.days,
+            };
+        },
+        .links => {
+            const te = expr.data.time;
+            const nlink: u64 = @intCast(stat_buf.nlink);
+            return switch (te.cmp) {
+                .exactly => nlink == te.days,
+                .greater_than => nlink > te.days,
+                .less_than => nlink < te.days,
+            };
+        },
+        // Stubs for primaries not yet fully implemented
+        .ok => return true,
+        .xdev => return true,
+        .nouser => {
+            return getpwuid(stat_buf.uid) == null;
+        },
+        .nogroup => {
+            return getgrgid(stat_buf.gid) == null;
+        },
         .print => {
             stdout.print("{s}\n", .{path}) catch {
                 had_error.* = true;
@@ -939,17 +1105,21 @@ fn evaluate(
         .delete => return doDelete(allocator, path, kind, stderr, had_error),
         .exec_cmd => return doExec(allocator, path, expr.data.exec_data),
         .and_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
             if (!left_result) return false;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
         },
         .or_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
             if (left_result) return true;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
         },
         .not_expr => {
-            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
+        },
+        .prune => {
+            pruned.* = true;
+            return true;
         },
     }
 }
@@ -1090,21 +1260,27 @@ fn walkPath(
     // Non-directory: evaluate and return
     if (kind != .directory) {
         if (depth >= config.mindepth) {
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            var dummy_pruned = false;
+            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
         }
         return;
     }
 
     // Directory: evaluate before traversal (breadth-first)
+    var was_pruned = false;
     if (!is_depth_first and depth >= config.mindepth) {
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &was_pruned);
     }
+
+    // If -prune was triggered, do not descend into this directory
+    if (was_pruned) return;
 
     // Check maxdepth before descending
     if (config.maxdepth) |max| {
         if (depth >= max) {
             if (is_depth_first and depth >= config.mindepth) {
-                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+                var dummy_pruned = false;
+                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
             }
             return;
         }
@@ -1122,7 +1298,8 @@ fn walkPath(
         }
         had_error.* = true;
         if (is_depth_first and depth >= config.mindepth) {
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+            var dummy_pruned = false;
+            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
         }
         return;
     };
@@ -1148,7 +1325,8 @@ fn walkPath(
 
     // Depth-first: evaluate directory after children
     if (is_depth_first and depth >= config.mindepth) {
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error);
+        var dummy_pruned = false;
+        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
     }
 }
 
@@ -1821,4 +1999,256 @@ test "find: -perm filter" {
 
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rwx.txt") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rw.txt") == null);
+}
+
+// ============================================================================
+// Tests for -path, -prune, -depth primaries
+// ============================================================================
+
+test "find: -path matches full path pattern" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("subdir");
+    var sub = try tmp.dir.openDir("subdir", .{});
+    const f1 = try sub.createFile("file.txt", .{});
+    f1.close();
+    sub.close();
+    const f2 = try tmp.dir.createFile("other.txt", .{});
+    f2.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -path matches against the full path, not just basename
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-path", "*/subdir/*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should match subdir/file.txt (full path contains /subdir/)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    // Should NOT match other.txt (not under subdir)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "other.txt") == null);
+}
+
+test "find: -prune prevents descending into directory" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a directory to skip and one to keep
+    try tmp.dir.makeDir("skip_me");
+    var skip_dir = try tmp.dir.openDir("skip_me", .{});
+    const f1 = try skip_dir.createFile("hidden.txt", .{});
+    f1.close();
+    skip_dir.close();
+
+    try tmp.dir.makeDir("keep_me");
+    var keep_dir = try tmp.dir.openDir("keep_me", .{});
+    const f2 = try keep_dir.createFile("visible.txt", .{});
+    f2.close();
+    keep_dir.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Classic prune pattern: -name skip_me -prune -o -type f -print
+    // This should skip descending into skip_me and only print files
+    // from keep_me.
+    const exit_code = runFind(allocator, &[_][]const u8{
+        dir_path, "-name",  "skip_me",
+        "-prune", "-o",     "-type",
+        "f",      "-print",
+    }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // visible.txt should appear (keep_me was not pruned)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "visible.txt") != null);
+    // hidden.txt must NOT appear (skip_me was pruned)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hidden.txt") == null);
+}
+
+test "find: -depth lists directory contents before directory" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("adir");
+    var sub = try tmp.dir.openDir("adir", .{});
+    const f1 = try sub.createFile("file.txt", .{});
+    f1.close();
+    sub.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // With -depth, file.txt should appear before its parent adir
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-depth" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const output = stdout_buf.items;
+    const file_pos = std.mem.indexOf(u8, output, "file.txt");
+    const dir_pos = std.mem.indexOf(u8, output, "adir\n");
+
+    // Both must appear
+    try testing.expect(file_pos != null);
+    try testing.expect(dir_pos != null);
+    // file.txt must appear BEFORE its parent directory adir
+    try testing.expect(file_pos.? < dir_pos.?);
+}
+
+test "find: -path with non-matching pattern returns no results" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile("hello.txt", .{});
+    f1.close();
+    const f2 = try tmp.dir.createFile("world.md", .{});
+    f2.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Pattern that matches nothing in this tree
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-path", "*/nonexistent/*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // No files should match
+    try testing.expect(stdout_buf.items.len == 0);
+}
+
+// ============================================================================
+// Tests for new POSIX primaries (RED phase - stubs only)
+// ============================================================================
+
+test "find: -atime +9999 matches nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("recent.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // No file was accessed more than 9999 days ago; should match nothing
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-atime", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -ctime +9999 matches nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("recent.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // No file had its status changed more than 9999 days ago
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-ctime", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -links 99 matches nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("single.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // A freshly created file has 1 hard link, not 99
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-links", "99" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -nouser matches nothing for normal files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("owned.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Files created by this user have a valid owner; -nouser should
+    // match nothing.
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-nouser" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -xdev is accepted without error" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -xdev should parse without error and not prevent finding files
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-xdev", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
 }

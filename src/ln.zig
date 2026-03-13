@@ -2,15 +2,22 @@
 //! Implements POSIX ln command
 
 const std = @import("std");
+const c = std.c;
 const common = @import("common");
 const testing = std.testing;
+
+/// AT_SYMLINK_FOLLOW flag for linkat: follow symlinks when creating hard links.
+/// Value is platform-dependent: 0x0040 on macOS, 0x0400 on Linux.
+const AT_SYMLINK_FOLLOW: c_int = if (@import("builtin").os.tag == .macos) 0x0040 else 0x0400;
 
 const LnArgs = struct {
     help: bool = false,
     version: bool = false,
     force: bool = false,
     interactive: bool = false,
+    L: bool = false,
     no_dereference: bool = false,
+    P: bool = false,
     relative: bool = false,
     symbolic: bool = false,
     target_directory: ?[]const u8 = null,
@@ -23,7 +30,9 @@ const LnArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .force = .{ .short = 'f', .desc = "Remove existing destination files" },
         .interactive = .{ .short = 'i', .desc = "Prompt whether to remove destinations" },
+        .L = .{ .short = 'L', .desc = "Follow symbolic links when creating hard links" },
         .no_dereference = .{ .short = 'n', .desc = "Treat LINK_NAME as a normal file if it is a symbolic link to a directory" },
+        .P = .{ .short = 'P', .desc = "Create hard link to symbolic link itself" },
         .relative = .{ .short = 'r', .desc = "With -s, create links relative to link location" },
         .symbolic = .{ .short = 's', .desc = "Make symbolic links instead of hard links" },
         .target_directory = .{ .short = 't', .desc = "Specify the DIRECTORY in which to create the links", .value_name = "DIRECTORY" },
@@ -187,6 +196,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
         .force = parsed_args.force,
         .interactive = parsed_args.interactive,
         .no_dereference = parsed_args.no_dereference,
+        .physical = parsed_args.P,
         .relative = parsed_args.relative,
         .symbolic = parsed_args.symbolic,
         .target_directory = parsed_args.target_directory,
@@ -247,6 +257,7 @@ const LinkOptions = struct {
     force: bool = false,
     interactive: bool = false,
     no_dereference: bool = false,
+    physical: bool = false,
     relative: bool = false,
     symbolic: bool = false,
     target_directory: ?[]const u8 = null,
@@ -485,10 +496,20 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
             },
         };
 
-        std.posix.link(target, link_name) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
-            return err;
-        };
+        // Use linkat to control symlink following behavior:
+        // -P (physical): flags=0, creates hard link to symlink itself
+        // default/-L: AT_SYMLINK_FOLLOW, creates hard link to symlink target
+        const flags: c_int = if (options.physical) 0 else AT_SYMLINK_FOLLOW;
+        const target_z = try allocator.dupeZ(u8, target);
+        defer allocator.free(target_z);
+        const link_name_z = try allocator.dupeZ(u8, link_name);
+        defer allocator.free(link_name_z);
+
+        const result = c.linkat(c.AT.FDCWD, target_z, c.AT.FDCWD, link_name_z, flags);
+        if (result == -1) {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @tagName(std.posix.errno(result)) });
+            return error.LinkFailed;
+        }
     }
 
     if (options.verbose) {
@@ -761,4 +782,113 @@ test "dangling symlink produces warning via createSingleLink" {
 
     // Should contain a dangling symlink warning
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+}
+
+test "ln: -L flag is parsed" {
+    const args = [_][]const u8{"-L"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.L);
+    try testing.expect(!parsed.P);
+}
+
+test "ln: -P flag is parsed" {
+    const args = [_][]const u8{"-P"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.P);
+    try testing.expect(!parsed.L);
+}
+
+test "ln: -L creates hard link to symlink target" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create original file
+    try createTestFile(tmp_dir.dir, "original.txt", "original content");
+
+    // Create symlink to original file
+    try tmp_dir.dir.symLink("original.txt", "symlink.txt", .{});
+
+    // Get the real path of the tmp dir for absolute path construction
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const symlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "symlink.txt" });
+    defer testing.allocator.free(symlink_abs);
+    const hardlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "hardlink.txt" });
+    defer testing.allocator.free(hardlink_abs);
+    const original_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "original.txt" });
+    defer testing.allocator.free(original_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -L symlink.txt hardlink.txt
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-L", symlink_abs, hardlink_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify hardlink points to same inode as the original file (not the symlink)
+    const original_file = try std.fs.cwd().openFile(original_abs, .{});
+    defer original_file.close();
+    const hardlink_file = try std.fs.cwd().openFile(hardlink_abs, .{});
+    defer hardlink_file.close();
+
+    const original_stat = std.posix.fstat(original_file.handle) catch unreachable;
+    const hardlink_stat = std.posix.fstat(hardlink_file.handle) catch unreachable;
+
+    // -L should create hard link to the target of the symlink (original.txt)
+    try testing.expectEqual(original_stat.ino, hardlink_stat.ino);
+}
+
+test "ln: -P creates hard link to symlink itself" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create original file
+    try createTestFile(tmp_dir.dir, "original.txt", "original content");
+
+    // Create symlink to original file
+    try tmp_dir.dir.symLink("original.txt", "symlink.txt", .{});
+
+    // Get the real path of the tmp dir for absolute path construction
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const symlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "symlink.txt" });
+    defer testing.allocator.free(symlink_abs);
+    const hardlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "hardlink_p.txt" });
+    defer testing.allocator.free(hardlink_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -P symlink.txt hardlink_p.txt
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-P", symlink_abs, hardlink_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Use lstat (via common.file.FileInfo) to get inode of symlink itself
+    const symlink_info = try common.file.FileInfo.lstat(symlink_abs);
+    const hardlink_info = try common.file.FileInfo.lstat(hardlink_abs);
+
+    // -P should create hard link to the symlink itself,
+    // so the hardlink should be a symlink with the same inode as symlink.txt.
+    // This test should FAIL because -P is not implemented yet --
+    // the current code follows the symlink (like -L) and creates a
+    // hard link to the target file instead.
+    try testing.expectEqual(symlink_info.inode, hardlink_info.inode);
 }

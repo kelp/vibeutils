@@ -56,6 +56,7 @@
             zig
             pkgs.actionlint
             pkgs.bash
+            pkgs.coreutils
             pkgs.gnumake
             pkgs.mandoc
           ];
