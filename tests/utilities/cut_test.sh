@@ -154,6 +154,69 @@ test_cut() {
     # Stdin with dash
     test_command_output "cut stdin dash" "abc" bash -c "echo 'abcde' | '$binary' -b 1-3 -"
 
+    echo -e "${CYAN}Testing -n multi-byte protection...${NC}"
+
+    # -n flag prevents splitting multi-byte characters when used with -b
+    # The euro sign € is 3 bytes in UTF-8: 0xE2 0x82 0xAC
+
+    # -n -b 1 on a multi-byte character: should output nothing
+    # (byte 1 is part of a multi-byte char, -n suppresses partial chars)
+    local n_out="" n_err="" n_exit=""
+    run_command n_cmd n_out n_err n_exit bash -c "printf '€abc' | '$binary' -n -b 1"
+    if [[ $n_exit -eq 0 && -z "$n_out" ]]; then
+        print_test_result "cut -n -b 1 suppresses partial multi-byte" "PASS"
+    else
+        print_test_result "cut -n -b 1 suppresses partial multi-byte" "FAIL" "Exit: $n_exit, output: '$n_out' (expected empty)"
+    fi
+
+    # -n -b 1-2 on 3-byte char: should not output partial character
+    run_command n_cmd n_out n_err n_exit bash -c "printf '€abc' | '$binary' -n -b 1-2"
+    if [[ $n_exit -eq 0 && -z "$n_out" ]]; then
+        print_test_result "cut -n -b 1-2 suppresses partial 3-byte char" "PASS"
+    else
+        print_test_result "cut -n -b 1-2 suppresses partial 3-byte char" "FAIL" "Exit: $n_exit, output: '$n_out' (expected empty)"
+    fi
+
+    # -n -b 1-3 on 3-byte char: should output the full character
+    run_command n_cmd n_out n_err n_exit bash -c "printf '€abc' | '$binary' -n -b 1-3"
+    if [[ $n_exit -eq 0 && "$n_out" == "€" ]]; then
+        print_test_result "cut -n -b 1-3 outputs full multi-byte char" "PASS"
+    else
+        print_test_result "cut -n -b 1-3 outputs full multi-byte char" "FAIL" "Got: '$n_out'"
+    fi
+
+    # Without -n, -b 1 should output the raw first byte
+    run_command n_cmd n_out n_err n_exit bash -c "printf '€abc' | '$binary' -b 1"
+    local n_out_bytes
+    n_out_bytes=$(printf '%s' "$n_out" | wc -c)
+    n_out_bytes=$(echo "$n_out_bytes" | tr -d ' ')
+    if [[ $n_exit -eq 0 && "$n_out_bytes" -eq 1 ]]; then
+        print_test_result "cut -b 1 without -n outputs single raw byte" "PASS"
+    else
+        print_test_result "cut -b 1 without -n outputs single raw byte" "FAIL" "Exit: $n_exit, output bytes: $n_out_bytes (expected 1)"
+    fi
+
+    # -n with ASCII content should work normally (no multi-byte to protect)
+    test_command_output "cut -n -b 1-3 ASCII" "abc" bash -c "echo 'abcde' | '$binary' -n -b 1-3"
+
+    # -n -b 4-6 should get 'abc' from '€abc' (bytes 4-6 are 'a','b','c')
+    run_command n_cmd n_out n_err n_exit bash -c "printf '€abc' | '$binary' -n -b 4-6"
+    if [[ $n_exit -eq 0 && "$n_out" == "abc" ]]; then
+        print_test_result "cut -n -b 4-6 after multi-byte char" "PASS"
+    else
+        print_test_result "cut -n -b 4-6 after multi-byte char" "FAIL" "Got: '$n_out'"
+    fi
+
+    # Contrast test: -n vs no-n should produce different output for partial multi-byte
+    local contrast_with_n="" contrast_without_n=""
+    contrast_with_n=$(printf '€abc' | "$binary" -n -b 1 2>/dev/null) || true
+    contrast_without_n=$(printf '€abc' | "$binary" -b 1 2>/dev/null) || true
+    if [[ -z "$contrast_with_n" && -n "$contrast_without_n" ]]; then
+        print_test_result "cut -n suppresses partial char, no -n outputs raw byte" "PASS"
+    else
+        print_test_result "cut -n suppresses partial char, no -n outputs raw byte" "FAIL" "with -n: '$contrast_with_n', without -n: '$contrast_without_n'"
+    fi
+
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # No mode specified

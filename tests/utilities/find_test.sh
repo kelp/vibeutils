@@ -37,6 +37,7 @@ test_find() {
     create_temp_file "content" "$name_dir/hello.txt"
     create_temp_file "content" "$name_dir/world.md"
     create_temp_file "content" "$name_dir/data.txt"
+    create_temp_file "content" "$name_dir/a.md"
 
     run_command cmd out err exit_code "$binary" "$name_dir" "-name" "*.txt"
     if [[ "$out" =~ hello.txt && "$out" =~ data.txt && ! "$out" =~ world.md ]]; then
@@ -53,7 +54,7 @@ test_find() {
     fi
 
     run_command cmd out err exit_code "$binary" "$name_dir" "-name" "?.md"
-    if [[ ! "$out" =~ world.md ]]; then
+    if [[ "$out" =~ a.md && ! "$out" =~ world.md ]]; then
         print_test_result "find -name ? single char" "PASS"
     else
         print_test_result "find -name ? single char" "FAIL" "Got: $out"
@@ -298,7 +299,7 @@ test_find() {
     if [[ -n "$sub_pos" && -n "$dir_pos" ]] && [[ "$sub_pos" -lt "$dir_pos" ]]; then
         print_test_result "find -depth order" "PASS"
     else
-        print_test_result "find -depth order" "PASS" "(depth ordering verified)"
+        print_test_result "find -depth order" "FAIL" "depth ordering not verified"
     fi
     rm -rf "$depth_opt_dir"
 
@@ -316,6 +317,139 @@ test_find() {
         print_test_result "find -L follows symlinks" "FAIL" "Got: $out"
     fi
     rm -rf "$link_dir"
+
+    echo -e "${CYAN}Testing -prune predicate...${NC}"
+
+    local prune_dir=$(create_temp_dir)
+    create_temp_file "content" "$prune_dir/top.txt"
+    mkdir -p "$prune_dir/skip_me"
+    create_temp_file "content" "$prune_dir/skip_me/hidden.txt"
+    mkdir -p "$prune_dir/keep_me"
+    create_temp_file "content" "$prune_dir/keep_me/visible.txt"
+
+    run_command cmd out err exit_code "$binary" "$prune_dir" "-name" "skip_me" "-prune" "-o" "-type" "f" "-print"
+    if [[ "$out" =~ top.txt && "$out" =~ visible.txt && ! "$out" =~ hidden.txt ]]; then
+        print_test_result "find -prune skips directory contents" "PASS"
+    else
+        print_test_result "find -prune skips directory contents" "FAIL" "Got: $out"
+    fi
+    rm -rf "$prune_dir"
+
+    echo -e "${CYAN}Testing -atime/-ctime predicates...${NC}"
+
+    local time_dir=$(create_temp_dir)
+    create_temp_file "recent content" "$time_dir/recent.txt"
+
+    # -atime 0 should match files accessed today
+    run_command cmd out err exit_code "$binary" "$time_dir" "-type" "f" "-atime" "0"
+    if [[ $exit_code -eq 0 && "$out" =~ recent.txt ]]; then
+        print_test_result "find -atime 0 matches recent file" "PASS"
+    else
+        print_test_result "find -atime 0 matches recent file" "FAIL" "Got: $out"
+    fi
+
+    # -ctime 0 should match files changed today
+    run_command cmd out err exit_code "$binary" "$time_dir" "-type" "f" "-ctime" "0"
+    if [[ $exit_code -eq 0 && "$out" =~ recent.txt ]]; then
+        print_test_result "find -ctime 0 matches recent file" "PASS"
+    else
+        print_test_result "find -ctime 0 matches recent file" "FAIL" "Got: $out"
+    fi
+
+    # -atime +1000 should not match recent files
+    run_command cmd out err exit_code "$binary" "$time_dir" "-type" "f" "-atime" "+1000"
+    if [[ $exit_code -eq 0 && ! "$out" =~ recent.txt ]]; then
+        print_test_result "find -atime +1000 excludes recent file" "PASS"
+    else
+        print_test_result "find -atime +1000 excludes recent file" "FAIL" "Exit: $exit_code, got: $out"
+    fi
+    rm -rf "$time_dir"
+
+    echo -e "${CYAN}Testing -links predicate...${NC}"
+
+    local links_dir=$(create_temp_dir)
+    create_temp_file "link test" "$links_dir/original.txt"
+    ln "$links_dir/original.txt" "$links_dir/hardlink.txt"
+    # Create a single-link file before the -links 2 test so we can assert it's excluded
+    create_temp_file "single" "$links_dir/single.txt"
+
+    # original.txt now has 2 hard links
+    run_command cmd out err exit_code "$binary" "$links_dir" "-type" "f" "-links" "2"
+    if [[ "$out" =~ original.txt && "$out" =~ hardlink.txt && ! "$out" =~ single.txt ]]; then
+        print_test_result "find -links 2 matches hard-linked files" "PASS"
+    else
+        print_test_result "find -links 2 matches hard-linked files" "FAIL" "Got: $out"
+    fi
+
+    run_command cmd out err exit_code "$binary" "$links_dir" "-type" "f" "-links" "1"
+    if [[ "$out" =~ single.txt && ! "$out" =~ original.txt ]]; then
+        print_test_result "find -links 1 matches single-link files" "PASS"
+    else
+        print_test_result "find -links 1 matches single-link files" "FAIL" "Got: $out"
+    fi
+    rm -rf "$links_dir"
+
+    echo -e "${CYAN}Testing -nouser/-nogroup predicates...${NC}"
+
+    # Acceptance test: flag is parsed without error
+    local nouser_dir=$(create_temp_dir)
+    create_temp_file "content" "$nouser_dir/file.txt"
+
+    # Acceptance test: -nouser should not match files owned by current user
+    # Note: positive-match testing requires root to create orphaned-owner files
+    run_command cmd out err exit_code "$binary" "$nouser_dir" "-nouser"
+    if [[ $exit_code -eq 0 && -z "$out" ]]; then
+        print_test_result "find -nouser flag accepted" "PASS"
+    else
+        print_test_result "find -nouser flag accepted" "FAIL" "Exit: $exit_code, out: $out, err: $err"
+    fi
+
+    run_command cmd out err exit_code "$binary" "$nouser_dir" "-nogroup"
+    if [[ $exit_code -eq 0 && -z "$out" ]]; then
+        print_test_result "find -nogroup flag accepted" "PASS"
+    else
+        print_test_result "find -nogroup flag accepted" "FAIL" "Exit: $exit_code, out: $out, err: $err"
+    fi
+    rm -rf "$nouser_dir"
+
+    echo -e "${CYAN}Testing -xdev/-mount predicates...${NC}"
+
+    # Acceptance test: flags are parsed and produce valid output
+    local xdev_dir=$(create_temp_dir)
+    create_temp_file "content" "$xdev_dir/file.txt"
+
+    run_command cmd out err exit_code "$binary" "$xdev_dir" "-xdev"
+    if [[ $exit_code -eq 0 && "$out" =~ file.txt ]]; then
+        print_test_result "find -xdev flag accepted" "PASS"
+    else
+        print_test_result "find -xdev flag accepted" "FAIL" "Exit code: $exit_code, err: $err"
+    fi
+
+    run_command cmd out err exit_code "$binary" "$xdev_dir" "-mount"
+    if [[ $exit_code -eq 0 && "$out" =~ file.txt ]]; then
+        print_test_result "find -mount flag accepted" "PASS"
+    else
+        print_test_result "find -mount flag accepted" "FAIL" "Exit code: $exit_code, err: $err"
+    fi
+    rm -rf "$xdev_dir"
+
+    echo -e "${CYAN}Testing -ok action...${NC}"
+
+    # Acceptance test: -ok is parsed without error (feed /dev/null as stdin for no confirmation)
+    local ok_dir=$(create_temp_dir)
+    create_temp_file "content" "$ok_dir/okfile.txt"
+
+    local ok_out="" ok_err=""
+    ok_out=$("$binary" "$ok_dir" "-type" "f" "-ok" "echo" "{}" ";" </dev/null 2>"$TEMP_DIR/ok_stderr")
+    local ok_exit=$?
+    if [[ $ok_exit -eq 0 ]]; then
+        print_test_result "find -ok flag accepted" "PASS"
+    else
+        ok_err=$(cat "$TEMP_DIR/ok_stderr" 2>/dev/null)
+        print_test_result "find -ok flag accepted" "FAIL" "Exit code: $ok_exit, err: $ok_err"
+    fi
+    rm -f "$TEMP_DIR/ok_stderr"
+    rm -rf "$ok_dir"
 
     echo -e "${CYAN}Testing error handling...${NC}"
 

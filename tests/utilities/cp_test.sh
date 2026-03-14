@@ -295,6 +295,196 @@ test_cp() {
         print_test_result "cp recursive preserve symlinks" "FAIL" "Symlink copied as unknown file type"
     fi
 
+    echo -e "${CYAN}Testing POSIX compliance flags...${NC}"
+
+    # -R flag (recursive, POSIX alias for -r)
+    local r_upper_src=$(create_temp_dir)
+    create_temp_file "R flag content" "$r_upper_src/rfile.txt"
+    mkdir -p "$r_upper_src/rsub"
+    create_temp_file "R sub content" "$r_upper_src/rsub/rsubfile.txt"
+    local r_upper_dest="$TEMP_DIR/r_upper_dest"
+    test_command_exit_code "cp -R copies directory" 0 "$binary" -R "$r_upper_src" "$r_upper_dest"
+    test_command_output "cp -R root file" "R flag content" cat "$r_upper_dest/rfile.txt"
+    test_command_output "cp -R sub file" "R sub content" cat "$r_upper_dest/rsub/rsubfile.txt"
+
+    # -n / --no-clobber flag
+    local noclobber_src=$(create_temp_file "new content for clobber test")
+    local noclobber_dst=$(create_temp_file "original content")
+    test_command_exit_code "cp -n does not overwrite" 0 "$binary" -n "$noclobber_src" "$noclobber_dst"
+    test_command_output "cp -n preserves original" "original content" cat "$noclobber_dst"
+
+    local noclobber_long_dst=$(create_temp_file "long original content")
+    test_command_exit_code "cp --no-clobber" 0 "$binary" --no-clobber "$noclobber_src" "$noclobber_long_dst"
+    test_command_output "cp --no-clobber preserves original" "long original content" cat "$noclobber_long_dst"
+
+    # -n with new file (should copy normally)
+    local noclobber_new_dst="$TEMP_DIR/noclobber_new.txt"
+    test_command_exit_code "cp -n to new file" 0 "$binary" -n "$noclobber_src" "$noclobber_new_dst"
+    test_command_output "cp -n new file content" "new content for clobber test" cat "$noclobber_new_dst"
+
+    # -v / --verbose flag
+    local verbose_src=$(create_temp_file "verbose content")
+    local verbose_dst="$TEMP_DIR/verbose_copy.txt"
+    local verb_out="" verb_err="" verb_exit=""
+    run_command verb_cmd verb_out verb_err verb_exit "$binary" -v "$verbose_src" "$verbose_dst"
+    local verb_src_base
+    verb_src_base=$(basename "$verbose_src")
+    if [[ $verb_exit -eq 0 && -f "$verbose_dst" \
+          && ("$verb_out" =~ "$verb_src_base" || "$verb_err" =~ "$verb_src_base") \
+          && ("$verb_out" =~ "->" || "$verb_err" =~ "->") ]]; then
+        print_test_result "cp -v shows copy operation" "PASS"
+    else
+        print_test_result "cp -v shows copy operation" "FAIL" "Expected '->' and source filename in output, got stdout: $verb_out, stderr: $verb_err"
+    fi
+
+    local verbose_long_dst="$TEMP_DIR/verbose_long_copy.txt"
+    local verb_long_out="" verb_long_err="" verb_long_exit=""
+    run_command verb_long_cmd verb_long_out verb_long_err verb_long_exit "$binary" --verbose "$verbose_src" "$verbose_long_dst"
+    local verb_long_src_base
+    verb_long_src_base=$(basename "$verbose_src")
+    if [[ $verb_long_exit -eq 0 && -f "$verbose_long_dst" \
+          && ("$verb_long_out" =~ "$verb_long_src_base" || "$verb_long_err" =~ "$verb_long_src_base") \
+          && ("$verb_long_out" =~ "->" || "$verb_long_err" =~ "->") ]]; then
+        print_test_result "cp --verbose shows copy operation" "PASS"
+    else
+        print_test_result "cp --verbose shows copy operation" "FAIL" "Expected '->' and source filename in output"
+    fi
+
+    # -a / --archive flag (equivalent to -RpP)
+    local archive_src=$(create_temp_dir)
+    create_temp_file "Archive file" "$archive_src/afile.txt"
+    chmod 644 "$archive_src/afile.txt"
+    mkdir -p "$archive_src/asub"
+    create_temp_file "Archive sub" "$archive_src/asub/asubfile.txt"
+    # Create a symlink inside the archive source
+    local archive_link_target=$(create_temp_file "Archive link target")
+    ln -s "$archive_link_target" "$archive_src/alink"
+
+    local archive_dest="$TEMP_DIR/archive_dest"
+    test_command_exit_code "cp -a copies directory" 0 "$binary" -a "$archive_src" "$archive_dest"
+    test_command_output "cp -a root file" "Archive file" cat "$archive_dest/afile.txt"
+    test_command_output "cp -a sub file" "Archive sub" cat "$archive_dest/asub/asubfile.txt"
+
+    local archive_src_perms=$(get_file_permissions "$archive_src/afile.txt")
+    local archive_dst_perms=$(get_file_permissions "$archive_dest/afile.txt")
+    if [[ "$archive_src_perms" == "$archive_dst_perms" ]]; then
+        print_test_result "cp -a preserves permissions" "PASS"
+    else
+        print_test_result "cp -a preserves permissions" "FAIL" "Source: $archive_src_perms, Dest: $archive_dst_perms"
+    fi
+
+    # Verify -a preserves timestamps
+    # Set an old timestamp on the source so matching mtimes proves preservation
+    touch -t 202301010000 "$archive_src/afile.txt"
+    # Re-copy with the known-old timestamp
+    rm -rf "$archive_dest"
+    "$binary" -a "$archive_src" "$archive_dest" >/dev/null 2>&1
+    local archive_src_mtime archive_dst_mtime
+    archive_src_mtime=$(stat -c %Y "$archive_src/afile.txt" 2>/dev/null || stat -f %m "$archive_src/afile.txt" 2>/dev/null)
+    archive_dst_mtime=$(stat -c %Y "$archive_dest/afile.txt" 2>/dev/null || stat -f %m "$archive_dest/afile.txt" 2>/dev/null)
+    if [[ -n "$archive_src_mtime" && "$archive_src_mtime" == "$archive_dst_mtime" ]]; then
+        print_test_result "cp -a preserves timestamps" "PASS"
+    else
+        print_test_result "cp -a preserves timestamps" "FAIL" "Source mtime: $archive_src_mtime, Dest mtime: $archive_dst_mtime"
+    fi
+
+    # -a should preserve symlinks (the -P part)
+    if [[ -L "$archive_dest/alink" ]]; then
+        print_test_result "cp -a preserves symlinks" "PASS"
+    else
+        print_test_result "cp -a preserves symlinks" "FAIL" "Symlink was followed instead of preserved"
+    fi
+
+    # --archive long option
+    local archive_long_dest="$TEMP_DIR/archive_long_dest"
+    test_command_exit_code "cp --archive copies directory" 0 "$binary" --archive "$archive_src" "$archive_long_dest"
+    test_command_output "cp --archive root file" "Archive file" cat "$archive_long_dest/afile.txt"
+
+    if [[ -L "$archive_long_dest/alink" ]]; then
+        print_test_result "cp --archive preserves symlinks" "PASS"
+    else
+        print_test_result "cp --archive preserves symlinks" "FAIL" "Symlink was followed instead of preserved"
+    fi
+
+    local archive_long_src_mtime archive_long_dst_mtime
+    archive_long_src_mtime=$(stat -c %Y "$archive_src/afile.txt" 2>/dev/null || stat -f %m "$archive_src/afile.txt" 2>/dev/null)
+    archive_long_dst_mtime=$(stat -c %Y "$archive_long_dest/afile.txt" 2>/dev/null || stat -f %m "$archive_long_dest/afile.txt" 2>/dev/null)
+    if [[ -n "$archive_long_src_mtime" && "$archive_long_src_mtime" == "$archive_long_dst_mtime" ]]; then
+        print_test_result "cp --archive preserves timestamps" "PASS"
+    else
+        print_test_result "cp --archive preserves timestamps" "FAIL" "Source mtime: $archive_long_src_mtime, Dest mtime: $archive_long_dst_mtime"
+    fi
+
+    # -H flag (follow command-line symlinks only)
+    local h_target_dir=$(create_temp_dir)
+    create_temp_file "H content" "$h_target_dir/hfile.txt"
+    # Create an inner symlink
+    local h_inner_target=$(create_temp_file "H inner target")
+    ln -s "$h_inner_target" "$h_target_dir/inner_link"
+    # Create a command-line symlink pointing to the directory
+    local h_cmdline_link="$TEMP_DIR/h_cmdline_link"
+    ln -s "$h_target_dir" "$h_cmdline_link"
+
+    local h_dest="$TEMP_DIR/h_dest"
+    test_command_exit_code "cp -R -H follows cmdline symlinks" 0 "$binary" -R -H "$h_cmdline_link" "$h_dest"
+
+    # Command-line symlink should have been followed (dest is a directory with contents)
+    if [[ -f "$h_dest/hfile.txt" ]]; then
+        print_test_result "cp -H follows command-line symlink" "PASS"
+    else
+        print_test_result "cp -H follows command-line symlink" "FAIL" "Command-line symlink not followed"
+    fi
+
+    # Inner symlink should NOT be followed (should remain a symlink)
+    if [[ -L "$h_dest/inner_link" ]]; then
+        print_test_result "cp -H preserves inner symlinks" "PASS"
+    elif [[ -f "$h_dest/inner_link" ]]; then
+        print_test_result "cp -H preserves inner symlinks" "FAIL" "Inner symlink was followed (regular file)"
+    else
+        print_test_result "cp -H preserves inner symlinks" "FAIL" "Inner symlink not copied"
+    fi
+
+    # -L flag (follow all symlinks)
+    local l_src=$(create_temp_dir)
+    create_temp_file "L content" "$l_src/lfile.txt"
+    local l_link_target=$(create_temp_file "L link target content")
+    ln -s "$l_link_target" "$l_src/l_link"
+
+    local l_dest="$TEMP_DIR/l_dest"
+    test_command_exit_code "cp -R -L follows all symlinks" 0 "$binary" -R -L "$l_src" "$l_dest"
+
+    # All symlinks should be followed (copies are regular files)
+    if [[ -f "$l_dest/l_link" && ! -L "$l_dest/l_link" ]]; then
+        print_test_result "cp -L converts symlinks to files" "PASS"
+    else
+        print_test_result "cp -L converts symlinks to files" "FAIL" "Symlink was not followed"
+    fi
+    test_command_output "cp -L followed symlink content" "L link target content" cat "$l_dest/l_link"
+
+    # -P flag (never follow symlinks)
+    local p_src=$(create_temp_dir)
+    create_temp_file "P content" "$p_src/pfile.txt"
+    local p_link_target=$(create_temp_file "P link target")
+    ln -s "$p_link_target" "$p_src/p_link"
+
+    local p_dest="$TEMP_DIR/p_dest"
+    test_command_exit_code "cp -R -P preserves symlinks" 0 "$binary" -R -P "$p_src" "$p_dest"
+
+    # Symlinks should be preserved
+    if [[ -L "$p_dest/p_link" ]]; then
+        print_test_result "cp -P preserves symlinks" "PASS"
+    else
+        print_test_result "cp -P preserves symlinks" "FAIL" "Symlink was followed"
+    fi
+
+    local p_src_target=$(readlink "$p_src/p_link")
+    local p_dst_target=$(readlink "$p_dest/p_link")
+    if [[ "$p_src_target" == "$p_dst_target" ]]; then
+        print_test_result "cp -P preserves symlink target" "PASS"
+    else
+        print_test_result "cp -P preserves symlink target" "FAIL" "Source target: $p_src_target, Dest target: $p_dst_target"
+    fi
+
     echo -e "${CYAN}Testing error conditions...${NC}"
 
     # Invalid arguments

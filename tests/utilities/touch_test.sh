@@ -344,6 +344,171 @@ test_touch() {
         print_test_result "symlink test setup" "SKIP" "Cannot create symlinks on this system"
     fi
 
+    echo -e "${CYAN}Testing -d date string...${NC}"
+
+    # -d with date only (ISO 8601)
+    local d_file1="$TEMP_DIR/d_date_only.txt"
+    test_command_succeeds "touch -d date only" "$binary" -d "2023-06-15" "$d_file1"
+
+    # Verify the timestamp was set (should be June 15, 2023)
+    local d_mtime1
+    d_mtime1=$(get_mtime "$d_file1")
+    # June 15, 2023 00:00:00 UTC is approximately 1686787200
+    # Allow generous range for timezone differences
+    if [[ "$d_mtime1" -ge 1686700000 && "$d_mtime1" -le 1686900000 ]]; then
+        print_test_result "touch -d date only timestamp" "PASS"
+    else
+        print_test_result "touch -d date only timestamp" "FAIL" "Timestamp $d_mtime1 not in expected range for 2023-06-15"
+    fi
+
+    # -d with datetime using T separator
+    local d_file2="$TEMP_DIR/d_datetime_T.txt"
+    test_command_succeeds "touch -d datetime with T" "$binary" -d "2023-06-15T14:30:00" "$d_file2"
+
+    local d_mtime2
+    d_mtime2=$(get_mtime "$d_file2")
+    if [[ "$d_mtime2" -ge 1686700000 && "$d_mtime2" -le 1686900000 ]]; then
+        print_test_result "touch -d datetime T timestamp" "PASS"
+    else
+        print_test_result "touch -d datetime T timestamp" "FAIL" "Timestamp $d_mtime2 not in expected range"
+    fi
+
+    # Verify time component: datetime (14:30) should differ from date-only (midnight)
+    # Guard against false positive if both produce the same wrong timestamp
+    if [[ "$d_mtime1" -ge 1686700000 && "$d_mtime1" -le 1686900000 &&
+          "$d_mtime2" -ge 1686700000 && "$d_mtime2" -le 1686900000 &&
+          "$d_mtime2" -ne "$d_mtime1" ]]; then
+        print_test_result "touch -d datetime differs from date-only" "PASS"
+    elif [[ "$d_mtime2" -eq "$d_mtime1" ]]; then
+        print_test_result "touch -d datetime differs from date-only" "FAIL" "Both produced same timestamp $d_mtime2"
+    else
+        print_test_result "touch -d datetime differs from date-only" "FAIL" "Timestamps not in 2023-06-15 range (date=$d_mtime1 datetime=$d_mtime2)"
+    fi
+
+    # -d with datetime using space separator
+    local d_file3="$TEMP_DIR/d_datetime_space.txt"
+    test_command_succeeds "touch -d datetime with space" "$binary" -d "2023-06-15 14:30:00" "$d_file3"
+
+    local d_mtime3
+    d_mtime3=$(get_mtime "$d_file3")
+    if [[ "$d_mtime3" -ge 1686700000 && "$d_mtime3" -le 1686900000 ]]; then
+        print_test_result "touch -d datetime space timestamp" "PASS"
+    else
+        print_test_result "touch -d datetime space timestamp" "FAIL" "Timestamp $d_mtime3 not in expected range"
+    fi
+
+    # Verify T and space separators produce the same timestamp
+    # Guard against false positive if both produce the same wrong timestamp
+    if [[ "$d_mtime2" -ge 1686700000 && "$d_mtime2" -le 1686900000 &&
+          "$d_mtime3" -ge 1686700000 && "$d_mtime3" -le 1686900000 &&
+          "$d_mtime3" -eq "$d_mtime2" ]]; then
+        print_test_result "touch -d T and space formats match" "PASS"
+    elif [[ "$d_mtime3" -eq "$d_mtime2" ]]; then
+        print_test_result "touch -d T and space formats match" "FAIL" "Both agree on wrong timestamp $d_mtime2 (not in 2023-06-15 range)"
+    else
+        print_test_result "touch -d T and space formats match" "FAIL" "T=$d_mtime2 space=$d_mtime3"
+    fi
+
+    # --date= long option
+    local d_file4="$TEMP_DIR/d_long_option.txt"
+    test_command_succeeds "touch --date long option" "$binary" --date="2023-06-15" "$d_file4"
+
+    local d_mtime4
+    d_mtime4=$(get_mtime "$d_file4")
+    if [[ "$d_mtime4" -ge 1686700000 && "$d_mtime4" -le 1686900000 ]]; then
+        print_test_result "touch --date long option timestamp" "PASS"
+    else
+        print_test_result "touch --date long option timestamp" "FAIL" "Timestamp $d_mtime4 not in expected range"
+    fi
+
+    # Verify --date= produces same result as -d
+    # Guard against false positive if both produce the same wrong timestamp
+    if [[ "$d_mtime1" -ge 1686700000 && "$d_mtime1" -le 1686900000 &&
+          "$d_mtime4" -ge 1686700000 && "$d_mtime4" -le 1686900000 &&
+          "$d_mtime4" -eq "$d_mtime1" ]]; then
+        print_test_result "touch --date matches -d" "PASS"
+    elif [[ "$d_mtime4" -eq "$d_mtime1" ]]; then
+        print_test_result "touch --date matches -d" "FAIL" "Both agree on wrong timestamp $d_mtime4 (not in 2023-06-15 range)"
+    else
+        print_test_result "touch --date matches -d" "FAIL" "--date=$d_mtime4 -d=$d_mtime1"
+    fi
+
+    # --date= with datetime (T separator) to verify long option handles time component
+    local d_file5="$TEMP_DIR/d_long_option_datetime.txt"
+    test_command_succeeds "touch --date datetime with T" "$binary" --date="2023-06-15T14:30:00" "$d_file5"
+
+    local d_mtime5
+    d_mtime5=$(get_mtime "$d_file5")
+    if [[ "$d_mtime5" -ge 1686700000 && "$d_mtime5" -le 1686900000 ]]; then
+        print_test_result "touch --date datetime T timestamp" "PASS"
+    else
+        print_test_result "touch --date datetime T timestamp" "FAIL" "Timestamp $d_mtime5 not in expected range for 2023-06-15"
+    fi
+
+    # Verify --date= datetime matches -d datetime (both use 2023-06-15T14:30:00)
+    if [[ "$d_mtime2" -ge 1686700000 && "$d_mtime2" -le 1686900000 &&
+          "$d_mtime5" -ge 1686700000 && "$d_mtime5" -le 1686900000 &&
+          "$d_mtime5" -eq "$d_mtime2" ]]; then
+        print_test_result "touch --date datetime matches -d datetime" "PASS"
+    elif [[ "$d_mtime5" -eq "$d_mtime2" ]]; then
+        print_test_result "touch --date datetime matches -d datetime" "FAIL" "Both agree on wrong timestamp $d_mtime5 (not in 2023-06-15 range)"
+    else
+        print_test_result "touch --date datetime matches -d datetime" "FAIL" "--date=$d_mtime5 -d=$d_mtime2"
+    fi
+
+    # Invalid date string should fail
+    test_command_exit_code "touch -d invalid date" 1 "$binary" -d "not-a-date" "$TEMP_DIR/d_invalid.txt" 2>/dev/null
+
+    # -d combined with -a (access time only)
+    local d_a_file="$TEMP_DIR/d_a_test.txt"
+    echo "test" > "$d_a_file"
+    local d_a_mtime_before
+    d_a_mtime_before=$(get_mtime "$d_a_file")
+    sleep 2
+    test_command_succeeds "touch -d -a combination" "$binary" -d "2023-06-15" -a "$d_a_file"
+
+    # Modification time should be unchanged
+    local d_a_mtime_after
+    d_a_mtime_after=$(get_mtime "$d_a_file")
+    if [[ "$d_a_mtime_after" -eq "$d_a_mtime_before" ]]; then
+        print_test_result "touch -d -a preserves mtime" "PASS"
+    else
+        print_test_result "touch -d -a preserves mtime" "FAIL" "mtime changed from $d_a_mtime_before to $d_a_mtime_after"
+    fi
+
+    local d_a_atime_after
+    d_a_atime_after=$(get_atime "$d_a_file")
+    if [[ "$d_a_atime_after" -ge 1686700000 && "$d_a_atime_after" -le 1686900000 ]]; then
+        print_test_result "touch -d -a sets atime to date" "PASS"
+    else
+        print_test_result "touch -d -a sets atime to date" "FAIL" "atime $d_a_atime_after not in expected range for 2023-06-15"
+    fi
+
+    # -d combined with -m (modification time only)
+    local d_m_file="$TEMP_DIR/d_m_test.txt"
+    echo "test" > "$d_m_file"
+    local d_m_atime_before
+    d_m_atime_before=$(get_atime "$d_m_file")
+    sleep 2
+    test_command_succeeds "touch -d -m combination" "$binary" -d "2023-06-15" -m "$d_m_file"
+
+    # Access time should be unchanged
+    local d_m_atime_after
+    d_m_atime_after=$(get_atime "$d_m_file")
+    if [[ "$d_m_atime_after" -eq "$d_m_atime_before" ]]; then
+        print_test_result "touch -d -m preserves atime" "PASS"
+    else
+        print_test_result "touch -d -m preserves atime" "FAIL" "atime changed from $d_m_atime_before to $d_m_atime_after"
+    fi
+
+    local d_m_mtime_after
+    d_m_mtime_after=$(get_mtime "$d_m_file")
+    if [[ "$d_m_mtime_after" -ge 1686700000 && "$d_m_mtime_after" -le 1686900000 ]]; then
+        print_test_result "touch -d -m sets mtime to date" "PASS"
+    else
+        print_test_result "touch -d -m sets mtime to date" "FAIL" "mtime $d_m_mtime_after not in expected range for 2023-06-15"
+    fi
+
     echo -e "${CYAN}Testing Error Conditions & Edge Cases...${NC}"
 
     # Test with no arguments (exit code 2 = misuse/argument error)

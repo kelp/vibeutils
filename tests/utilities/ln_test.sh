@@ -30,6 +30,28 @@ get_inode() {
     echo "0"
 }
 
+# Get inode WITHOUT following symlinks (lstat semantics)
+get_inode_no_follow() {
+    local file="$1"
+    local inode=""
+
+    # Try GNU stat with --no-dereference first
+    inode=$(stat --no-dereference -c %i "$file" 2>/dev/null)
+    if [[ -n "$inode" && "$inode" =~ ^[0-9]+$ ]]; then
+        echo "$inode"
+        return 0
+    fi
+
+    # BSD stat -f already uses lstat by default
+    inode=$(/usr/bin/stat -f %i "$file" 2>/dev/null)
+    if [[ -n "$inode" && "$inode" =~ ^[0-9]+$ ]]; then
+        echo "$inode"
+        return 0
+    fi
+
+    echo "0"
+}
+
 test_ln() {
     local util="ln"
     local binary="$BIN_DIR/$util"
@@ -409,6 +431,104 @@ test_ln() {
     else
         print_test_result "ln --no-dereference creates symlink" "FAIL" \
             "Symlink not created"
+    fi
+
+    echo -e "${CYAN}Testing POSIX symlink flags (-L, -P)...${NC}"
+
+    # -L flag: when creating a hard link to a symlink, follow the
+    # symlink and hard link to the target instead
+    local l_target_file=$(create_temp_file "L target content")
+    local l_symlink="$TEMP_DIR/l_symlink"
+    ln -s "$l_target_file" "$l_symlink"
+
+    local l_hardlink="$TEMP_DIR/l_hardlink"
+    test_command_exit_code "ln -L follows symlink" 0 \
+        "$binary" -L "$l_symlink" "$l_hardlink"
+
+    # Verify the hard link points to the target file (same inode as target)
+    local l_target_inode
+    local l_link_inode
+    l_target_inode=$(get_inode "$l_target_file")
+    l_link_inode=$(get_inode "$l_hardlink")
+    if [[ -n "$l_target_inode" && -n "$l_link_inode" \
+          && "$l_target_inode" == "$l_link_inode" ]]; then
+        print_test_result "ln -L hard link matches target inode" "PASS"
+    else
+        print_test_result "ln -L hard link matches target inode" "FAIL" \
+            "Target inode: $l_target_inode, Link inode: $l_link_inode"
+    fi
+
+    # Verify the result is NOT a symlink (it's a hard link)
+    if [[ ! -L "$l_hardlink" ]]; then
+        print_test_result "ln -L creates hard link not symlink" "PASS"
+    else
+        print_test_result "ln -L creates hard link not symlink" "FAIL" \
+            "Result is a symlink instead of a hard link"
+    fi
+
+    # -P flag: hard link to the symlink itself (not its target)
+    # Note: hard-linking to symlinks works on macOS but fails on Linux (EPERM)
+    local p_target_file=$(create_temp_file "P target content")
+    local p_symlink="$TEMP_DIR/p_symlink"
+    ln -s "$p_target_file" "$p_symlink"
+
+    local p_hardlink="$TEMP_DIR/p_hardlink"
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        # macOS supports hard linking to symlinks
+        test_command_exit_code "ln -P links to symlink itself" 0 \
+            "$binary" -P "$p_symlink" "$p_hardlink"
+
+        # The hard link should have the same inode as the symlink
+        local p_sym_inode
+        local p_hard_inode
+        p_sym_inode=$(get_inode_no_follow "$p_symlink")
+        p_hard_inode=$(get_inode_no_follow "$p_hardlink")
+
+        if [[ -n "$p_sym_inode" && -n "$p_hard_inode" \
+              && "$p_sym_inode" == "$p_hard_inode" ]]; then
+            print_test_result "ln -P hard link matches symlink inode" "PASS"
+        else
+            print_test_result "ln -P hard link matches symlink inode" "FAIL" \
+                "Symlink inode: $p_sym_inode, Hard link inode: $p_hard_inode"
+        fi
+
+        # Verify the hard link to symlink is itself a symlink
+        if [[ -L "$p_hardlink" ]]; then
+            print_test_result "ln -P result is symlink" "PASS"
+        else
+            print_test_result "ln -P result is symlink" "FAIL" \
+                "Expected symlink, got regular file"
+        fi
+    else
+        # Linux: hard-linking to symlinks requires CAP_DAC_READ_SEARCH
+        # or root privileges. Try the command and branch on result.
+        "$binary" -P "$p_symlink" "$p_hardlink" >/dev/null 2>&1
+        local p_exit=$?
+        if [[ $p_exit -eq 0 ]]; then
+            # Succeeded (privileged environment) — verify behavior
+            local p_sym_inode
+            local p_hard_inode
+            p_sym_inode=$(get_inode_no_follow "$p_symlink")
+            p_hard_inode=$(get_inode_no_follow "$p_hardlink")
+
+            if [[ -n "$p_sym_inode" && -n "$p_hard_inode" \
+                  && "$p_sym_inode" == "$p_hard_inode" ]]; then
+                print_test_result "ln -P hard link matches symlink inode" "PASS"
+            else
+                print_test_result "ln -P hard link matches symlink inode" "FAIL" \
+                    "Symlink inode: $p_sym_inode, Hard link inode: $p_hard_inode"
+            fi
+
+            if [[ -L "$p_hardlink" ]]; then
+                print_test_result "ln -P result is symlink" "PASS"
+            else
+                print_test_result "ln -P result is symlink" "FAIL" \
+                    "Expected symlink, got regular file"
+            fi
+        else
+            print_test_result "ln -P on Linux (requires privileges)" "SKIP"
+        fi
     fi
 
     echo -e "${CYAN}Testing flag combinations...${NC}"
