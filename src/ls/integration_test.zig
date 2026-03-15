@@ -661,3 +661,105 @@ test "columns_across: -x first row contains first entries" {
     try testing.expect(std.mem.indexOf(u8, first_line, "aaa") != null);
     try testing.expect(std.mem.indexOf(u8, first_line, "bbb") != null);
 }
+
+// ============================================================================
+// -T flag: full time display
+// ============================================================================
+
+test "full_time: -T shows seconds in long format" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "content");
+
+    try env.runLs(.{ .long_format = true, .full_time = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    // Full time format should contain colons for HH:MM:SS
+    // Count colons in the time portion - should have at least 2
+    // (one for HH:MM, another for MM:SS)
+    var colon_count: usize = 0;
+    for (output) |ch| {
+        if (ch == ':') colon_count += 1;
+    }
+    // With full time, we expect at least 2 colons (HH:MM:SS)
+    try testing.expect(colon_count >= 2);
+}
+
+test "full_time: -T without -l has no effect" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "content");
+
+    // -T without -l should still work (just ignored)
+    try env.runLs(.{ .full_time = true, .one_per_line = true });
+
+    try LsAssertions.expectContainsFile(env.getStdout(), "test.txt");
+}
+
+// ============================================================================
+// -L flag: follow all symlinks
+// ============================================================================
+
+test "follow_symlinks: -L shows target file info instead of link info" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("target.txt", "Hello, World!");
+    try env.createSymlink("target.txt", "link.txt");
+
+    // Without -L: should show symlink info (kind = sym_link)
+    try env.runLs(.{ .long_format = true });
+    const without_L = try testing.allocator.dupe(u8, env.getStdout());
+    defer testing.allocator.free(without_L);
+
+    // With -L: should show target file info (kind = file)
+    env.stdout_buffer.clearRetainingCapacity();
+    try env.runLs(.{ .long_format = true, .follow_all_symlinks = true });
+    const with_L = env.getStdout();
+
+    // Without -L, the link should show "l" permission prefix
+    try testing.expect(std.mem.indexOf(u8, without_L, "lrwx") != null);
+    // With -L, the link should show "-" permission prefix (regular file)
+    // Find the line containing "link.txt"
+    var lines = std.mem.splitScalar(u8, with_L, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "link.txt") != null) {
+            // Should NOT start with 'l' (symlink) permission
+            try testing.expect(line.len > 0 and line[0] == '-');
+            break;
+        }
+    }
+}
+
+test "follow_symlinks: -L does not show symlink arrow" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("real.txt", "data");
+    try env.createSymlink("real.txt", "sym.txt");
+
+    try env.runLs(.{ .long_format = true, .follow_all_symlinks = true });
+
+    const output = env.getStdout();
+    // With -L, no "-> target" should appear
+    try LsAssertions.expectNotContainsFile(output, "->");
+}
+
+// ============================================================================
+// -H flag: follow command-line symlinks
+// ============================================================================
+
+test "follow_cmdline: -H flag is accepted" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "content");
+
+    // -H should work without error
+    try env.runLs(.{ .follow_cmdline_symlinks = true, .one_per_line = true });
+
+    try LsAssertions.expectContainsFile(env.getStdout(), "test.txt");
+}

@@ -45,6 +45,9 @@ const LsArgs = struct {
     use_atime: bool = false,
     multi_column: bool = false,
     columns_across: bool = false,
+    full_time: bool = false,
+    follow_all_symlinks: bool = false,
+    follow_cmdline_symlinks: bool = false,
     color: ?[]const u8 = null,
     group_directories_first: bool = false,
     icons: ?[]const u8 = null,
@@ -81,6 +84,9 @@ const LsArgs = struct {
         .use_atime = .{ .short = 'u', .desc = "Use access time instead of modification time" },
         .multi_column = .{ .short = 'C', .desc = "Force multi-column output sorted down columns" },
         .columns_across = .{ .short = 'x', .desc = "Multi-column output sorted across rows" },
+        .full_time = .{ .short = 'T', .desc = "With -l, show complete time including seconds" },
+        .follow_all_symlinks = .{ .short = 'L', .desc = "Follow all symbolic links" },
+        .follow_cmdline_symlinks = .{ .short = 'H', .desc = "Follow symbolic links on the command line" },
         .color = .{ .short = 0, .desc = "When to use colors (valid: always, auto, never)", .value_name = "WHEN" },
         .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
         .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
@@ -231,6 +237,11 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         time_style = .relative;
     }
 
+    // -T overrides time style to full (seconds + year)
+    if (args.full_time) {
+        time_style = .full;
+    }
+
     // Detect terminal status for icons and colors
     const stdout_file = std.fs.File.stdout();
     const is_terminal = stdout_file.isTty();
@@ -268,6 +279,9 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .show_blocks = args.show_blocks,
         .use_atime = args.use_atime,
         .columns_across = args.columns_across,
+        .full_time = args.full_time,
+        .follow_all_symlinks = args.follow_all_symlinks,
+        .follow_cmdline_symlinks = args.follow_cmdline_symlinks,
     };
 
     // Initialize GitContext once if git status is requested
@@ -316,6 +330,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -f, --no-sort              do not sort; list in directory order (implies -a)
         \\  -F, --file-type-indicators append indicator (one of */=>@|) to entries
         \\  -g, --omit-owner           like -l, but do not print the owner
+        \\  -H, --follow-cmdline-symlinks  follow symlinks on the command line
+        \\  -L, --follow-all-symlinks  follow all symbolic links
         \\      --git=WHEN             when to show git status (valid: always, auto, never)
         \\      --group-directories-first  group directories before files
         \\  -h, --human-readable       with -l, print sizes in human readable format
@@ -333,6 +349,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -i, --show-inodes          print the index number of each file
         \\  -S, --sort-by-size         sort by file size, largest first
         \\  -t, --sort-by-time         sort by modification time, newest first
+        \\  -T, --full-time            with -l, show complete time with seconds
         \\      --test-icons           test Nerd Font icon rendering
         \\      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
         \\  -u, --use-atime            use access time instead of modification time

@@ -11,11 +11,11 @@
 | -f   | yes   | yes   | yes     | yes | yes  | MUST |
 | -F   | yes   | yes   | yes     | yes | yes  | MUST |
 | -g   | yes   | yes   | yes     | yes | yes  | MUST |
-| -H   | yes   | yes   | yes     | yes | no   | MUST |
+| -H   | yes   | yes   | yes     | yes | yes  | MUST |
 | -i   | yes   | yes   | yes     | yes | yes  | MUST |
 | -k   | yes   | yes   | yes     | yes | yes  | MUST |
 | -l   | yes   | yes   | yes     | yes | yes  | MUST |
-| -L   | yes   | yes   | yes     | yes | no   | MUST |
+| -L   | yes   | yes   | yes     | yes | yes  | MUST |
 | -m   | yes   | yes   | yes     | yes | yes  | MUST |
 | -n   | yes   | yes   | yes     | yes | yes  | MUST |
 | -o   | yes   | yes   | yes     | yes | yes  | MUST |
@@ -29,7 +29,7 @@
 | -u   | yes   | yes   | yes     | yes | yes  | MUST |
 | -x   | yes   | yes   | yes     | yes | yes  | MUST |
 | -h   | no    | yes   | yes     | yes | yes  | MUST |
-| -T   | no    | yes   | yes     | yes | no   | MUST |
+| -T   | no    | yes   | yes     | yes | yes  | MUST |
 | -b   | no    | yes   | no      | yes | no   | SHOULD |
 | -B   | no    | yes   | no      | yes | no   | SHOULD |
 | -D   | no    | yes   | no      | yes | no   | SHOULD |

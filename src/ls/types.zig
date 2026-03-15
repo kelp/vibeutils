@@ -14,6 +14,7 @@ pub const TimeStyle = enum {
     relative, // Smart relative dates like "2 hours ago"
     iso, // ISO format: 2024-01-15 15:30
     @"long-iso", // Long ISO: 2024-01-15 15:30:45.123456789 +0000
+    full, // Full time with seconds and year: "Mar  1 14:30:45 2024"
 };
 
 /// Configuration options for ls command
@@ -48,6 +49,9 @@ pub const LsOptions = struct {
     show_blocks: bool = false, // -s: show filesystem blocks
     use_atime: bool = false, // -u: use access time instead of mtime
     columns_across: bool = false, // -x: sort across rows instead of down columns
+    full_time: bool = false, // -T: show full time with seconds and year
+    follow_all_symlinks: bool = false, // -L: follow all symlinks
+    follow_cmdline_symlinks: bool = false, // -H: follow symlinks on command line
 };
 
 /// Represents a directory entry with metadata

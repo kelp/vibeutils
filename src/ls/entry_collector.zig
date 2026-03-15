@@ -96,7 +96,7 @@ pub fn enhanceEntriesWithMetadata(
     const needs_stat = options.long_format or options.sort_by_time or options.sort_by_size or
         options.file_type_indicators or options.show_inodes or
         options.show_blocks or options.use_atime;
-    const needs_symlink = options.long_format;
+    const needs_symlink = options.long_format and !options.follow_all_symlinks;
     const needs_git = options.show_git_status and git_context != null;
 
     // Create batches of entries by operation type
@@ -120,7 +120,16 @@ pub fn enhanceEntriesWithMetadata(
     // Batch process stat operations
     if (stat_indices.items.len > 0) {
         for (stat_indices.items) |i| {
-            entries[i].stat = common.file.FileInfo.lstatDir(allocator, dir, entries[i].name) catch null;
+            if (options.follow_all_symlinks) {
+                // -L: follow symlinks, show target file info
+                entries[i].stat = common.file.FileInfo.statDir(allocator, dir, entries[i].name) catch null;
+                // Update entry kind to match the stat result
+                if (entries[i].stat) |stat| {
+                    entries[i].kind = stat.kind;
+                }
+            } else {
+                entries[i].stat = common.file.FileInfo.lstatDir(allocator, dir, entries[i].name) catch null;
+            }
         }
     }
 

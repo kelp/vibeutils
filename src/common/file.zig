@@ -142,6 +142,40 @@ pub const FileInfo = struct {
 
         return statToFileInfo(stat_buf);
     }
+
+    /// Get file info following symlinks, relative to a directory (like stat)
+    pub fn statDir(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !FileInfo {
+        // Stack buffer optimization for short names
+        var stack_buffer: [256]u8 = undefined;
+        var name_z: [:0]u8 = undefined;
+        var should_free = false;
+
+        if (name.len < stack_buffer.len - 1) {
+            @memcpy(stack_buffer[0..name.len], name);
+            stack_buffer[name.len] = 0;
+            name_z = stack_buffer[0..name.len :0];
+        } else {
+            name_z = try allocator.dupeZ(u8, name);
+            should_free = true;
+        }
+        defer if (should_free) allocator.free(name_z);
+
+        var stat_buf: std.c.Stat = undefined;
+        const result = std.c.fstatat(dir.fd, name_z, &stat_buf, 0);
+        if (result != 0) {
+            return switch (std.posix.errno(result)) {
+                .SUCCESS => unreachable,
+                .ACCES => error.AccessDenied,
+                .BADF => error.FileNotFound,
+                .NOTDIR => error.NotDir,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOENT => error.FileNotFound,
+                else => error.SystemResources,
+            };
+        }
+
+        return statToFileInfo(stat_buf);
+    }
 };
 
 /// Format file permissions as a string (e.g., -rw-r--r--)

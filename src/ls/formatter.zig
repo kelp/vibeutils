@@ -293,6 +293,28 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
                 @abs(nano_remainder),
             });
         },
+        .full => {
+            // Full time: "Mar  1 14:30:45 2024" (always shows seconds and year)
+            const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
+            const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = std.math.cast(u64, mtime_s) orelse return error.InvalidTimestamp };
+            const year_day = epoch_seconds.getEpochDay().calculateYearDay();
+            const month_day = year_day.calculateMonthDay();
+            const day_seconds = epoch_seconds.getDaySeconds();
+
+            const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+            const month_idx = @intFromEnum(month_day.month) - 1;
+            const month_name = month_names[month_idx];
+            const day = month_day.day_index + 1;
+
+            return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}:{d:0>2} {d}", .{
+                month_name,
+                day,
+                day_seconds.getHoursIntoDay(),
+                day_seconds.getMinutesIntoHour(),
+                day_seconds.getSecondsIntoMinute(),
+                year_day.year,
+            });
+        },
     }
 }
 
@@ -360,7 +382,8 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     if (entry.stat) |stat| {
         var time_buf: [128]u8 = undefined;
         const time_field = if (options.use_atime) stat.atime else stat.mtime;
-        const time_str = try formatTimeWithStyle(time_field, options.time_style, allocator, &time_buf);
+        const effective_time_style = if (options.full_time) TimeStyle.full else options.time_style;
+        const time_str = try formatTimeWithStyle(time_field, effective_time_style, allocator, &time_buf);
         try writeDateColored(style, writer, time_str, time_field, max_time_width);
     } else {
         try writer.writeAll("??? ?? ??:?? ");
@@ -599,7 +622,8 @@ pub fn printEntries(
             if (entry.stat) |stat| {
                 var tbuf: [128]u8 = undefined;
                 const time_field = if (options.use_atime) stat.atime else stat.mtime;
-                const ts = formatTimeWithStyle(time_field, options.time_style, allocator, &tbuf) catch continue;
+                const eff_ts = if (options.full_time) TimeStyle.full else options.time_style;
+                const ts = formatTimeWithStyle(time_field, eff_ts, allocator, &tbuf) catch continue;
                 max_time_width = @max(max_time_width, ts.len);
             }
         }
@@ -671,6 +695,44 @@ test "formatter - formatTimeWithStyle default old" {
     try testing.expect(std.mem.indexOf(u8, result, ":") == null);
     // Should be 12 characters: "Mon DD  YYYY"
     try testing.expectEqual(@as(usize, 12), result.len);
+}
+
+test "formatter - formatTimeWithStyle full" {
+    var buf: [128]u8 = undefined;
+
+    // Test specific timestamp: 2024-01-15 15:30:45 UTC
+    const test_time_ns: i128 = 1705332645 * std.time.ns_per_s;
+
+    const result = try formatTimeWithStyle(test_time_ns, .full, testing.allocator, &buf);
+
+    // Full format: "Mon DD HH:MM:SS YYYY" - should contain seconds and year
+    try testing.expect(std.mem.indexOf(u8, result, "2024") != null);
+    // Should have 2 colons (HH:MM:SS)
+    var colon_count: usize = 0;
+    for (result) |ch| {
+        if (ch == ':') colon_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), colon_count);
+    // Should contain month name
+    try testing.expect(std.mem.indexOf(u8, result, "Jan") != null);
+}
+
+test "formatter - formatTimeWithStyle full always shows year" {
+    var buf: [128]u8 = undefined;
+
+    // Test recent timestamp (should still show year, unlike default)
+    const now_ns = std.time.nanoTimestamp();
+    const one_hour_ago = now_ns - (3600 * std.time.ns_per_s);
+
+    const result = try formatTimeWithStyle(one_hour_ago, .full, testing.allocator, &buf);
+
+    // Full format always shows year, even for recent files
+    // Should have 2 colons (HH:MM:SS)
+    var colon_count: usize = 0;
+    for (result) |ch| {
+        if (ch == ':') colon_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), colon_count);
 }
 
 test "formatter - formatTimeWithStyle iso" {

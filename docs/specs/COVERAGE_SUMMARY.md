@@ -7,15 +7,15 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 223 | 65 |
+| MUST | 288 | 226 | 62 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **314** | **380** |
+| **Total** | **694** | **317** | **377** |
 
 ## MUST Flags — Not Yet Implemented
 
-**65 flags** across 10 utilities.
+**62 flags** across 10 utilities.
 
 ### chmod
 
@@ -89,9 +89,6 @@ assignments.
 ### ls
 
 - `-c`
-- `-H`
-- `-L`
-- `-T`
 
 ### sort
 
