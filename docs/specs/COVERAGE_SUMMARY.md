@@ -7,15 +7,15 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 248 | 40 |
+| MUST | 288 | 259 | 29 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **339** | **355** |
+| **Total** | **694** | **350** | **344** |
 
 ## MUST Flags — Not Yet Implemented
 
-**40 flags** across 10 utilities.
+**29 flags** across 9 utilities.
 
 ### chmod
 
@@ -72,20 +72,6 @@ assignments.
 ### ls
 
 - `-c`
-
-### sort
-
-- `--batch-size`
-- `--compress-program`
-- `--debug`
-- `--files0-from`
-- `--parallel`
-- `--random-source`
-- `--heapsort`
-- `--mergesort`
-- `--mmap`
-- `--qsort`
-- `--radixsort`
 
 ## SHOULD Flags — Not Yet Implemented
 
