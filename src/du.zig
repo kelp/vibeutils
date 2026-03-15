@@ -35,6 +35,12 @@ const DuOptions = struct {
     kilobytes: bool = false,
     /// Dereference all symbolic links
     dereference: bool = false,
+    /// Dereference only command-line symlink arguments
+    dereference_args: bool = false,
+    /// Do not follow any symbolic links (default)
+    no_dereference: bool = false,
+    /// Report errors (no-op, errors are always reported)
+    report_errors: bool = false,
     /// Display only a total for each argument
     summarize: bool = false,
     /// Do not include size of subdirectories
@@ -64,6 +70,9 @@ const DuOptions = struct {
         .human_readable = .{ .short = 'h', .desc = "Print sizes in human readable format (1K, 234M, 2G)" },
         .kilobytes = .{ .short = 'k', .desc = "Like --block-size=1K" },
         .dereference = .{ .short = 'L', .desc = "Dereference all symbolic links" },
+        .dereference_args = .{ .short = 'H', .desc = "Dereference only command-line symlink arguments" },
+        .no_dereference = .{ .short = 'P', .desc = "Do not follow symbolic links (default)" },
+        .report_errors = .{ .short = 'r', .desc = "Report errors (default behavior, XPG4 compatibility)" },
         .summarize = .{ .short = 's', .desc = "Display only a total for each argument" },
         .separate_dirs = .{ .short = 'S', .desc = "For directories do not include size of subdirectories" },
         .one_file_system = .{ .short = 'x', .desc = "Skip directories on different file systems" },
@@ -80,12 +89,21 @@ const DuOptions = struct {
 // Resolved configuration after processing option interactions
 // ============================================================================
 
+const DereferenceMode = enum {
+    /// Do not follow any symbolic links (-P, default)
+    none,
+    /// Dereference only command-line arguments (-H)
+    args_only,
+    /// Dereference all symbolic links (-L)
+    all,
+};
+
 const DuConfig = struct {
     all: bool,
     total: bool,
     max_depth: ?u64,
     human_readable: bool,
-    dereference: bool,
+    dereference_mode: DereferenceMode,
     summarize: bool,
     separate_dirs: bool,
     one_file_system: bool,
@@ -95,14 +113,45 @@ const DuConfig = struct {
     display: common.display_config.DisplayConfig,
 };
 
-fn resolveConfig(opts: DuOptions) !DuConfig {
+/// Scan raw args to determine which of -P/-H/-L appeared last.
+/// Returns the dereference mode based on last-wins semantics.
+fn resolveDerefMode(args: []const []const u8) DereferenceMode {
+    var mode: DereferenceMode = .none;
+    for (args) |arg| {
+        if (arg.len < 2 or arg[0] != '-') continue;
+        if (arg[1] == '-') {
+            // Long flags
+            const flag = arg[2..];
+            if (std.mem.eql(u8, flag, "dereference")) {
+                mode = .all;
+            } else if (std.mem.eql(u8, flag, "dereference-args")) {
+                mode = .args_only;
+            } else if (std.mem.eql(u8, flag, "no-dereference")) {
+                mode = .none;
+            }
+        } else {
+            // Short flags: scan each char for P/H/L
+            for (arg[1..]) |ch| {
+                switch (ch) {
+                    'L' => mode = .all,
+                    'H' => mode = .args_only,
+                    'P' => mode = .none,
+                    else => {},
+                }
+            }
+        }
+    }
+    return mode;
+}
+
+fn resolveConfig(opts: DuOptions, deref_mode: DereferenceMode) !DuConfig {
     const display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator);
     var config = DuConfig{
         .all = opts.all,
         .total = opts.total,
         .max_depth = null,
         .human_readable = opts.human_readable,
-        .dereference = opts.dereference,
+        .dereference_mode = deref_mode,
         .summarize = opts.summarize,
         .separate_dirs = opts.separate_dirs,
         .one_file_system = opts.one_file_system,
@@ -296,7 +345,14 @@ fn calculateDu(
     stderr: anytype,
     has_error: *bool,
 ) u64 {
-    const stat_buf = doStat(path, config.dereference) catch |err| {
+    // Determine whether to follow symlinks for this path based on mode and depth
+    const follow_symlinks = switch (config.dereference_mode) {
+        .all => true,
+        .args_only => depth == 0,
+        .none => false,
+    };
+
+    const stat_buf = doStat(path, follow_symlinks) catch |err| {
         printStatError(allocator, stderr, path, err);
         has_error.* = true;
         return 0;
@@ -306,9 +362,8 @@ fn calculateDu(
     const is_dir = (mode & c.S.IFMT) == c.S.IFDIR;
     const is_symlink = (mode & c.S.IFMT) == c.S.IFLNK;
 
-    // Skip symlinks in non-dereference mode (for recursive traversal only,
-    // not for top-level arguments)
-    if (is_symlink and !config.dereference and depth > 0) {
+    // Skip symlinks when not following them during recursive traversal
+    if (is_symlink and !follow_symlinks and depth > 0) {
         // Report symlink itself if -a
         const link_size = getFileSize(stat_buf, config.apparent_size);
         if (config.all and shouldPrintAtDepth(depth, config)) {
@@ -543,7 +598,8 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    const config = resolveConfig(opts) catch |err| {
+    const deref_mode = resolveDerefMode(args);
+    const config = resolveConfig(opts, deref_mode) catch |err| {
         switch (err) {
             error.InvalidBlockSize => {
                 common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid --block-size argument", .{});
@@ -622,8 +678,11 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -d, --max-depth=N     print the total for a directory only if it is N
         \\                          or fewer levels below the command line argument
         \\  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
+        \\  -H, --dereference-args  dereference only command-line symlink arguments
         \\  -k                    like --block-size=1K
         \\  -L, --dereference     dereference all symbolic links
+        \\  -P, --no-dereference  do not follow symbolic links (default)
+        \\  -r                    report errors (default behavior, XPG4 compatibility)
         \\  -s, --summarize       display only a total for each argument
         \\  -S, --separate-dirs   for directories do not include size of subdirectories
         \\  -x, --one-file-system skip directories on different file systems
@@ -715,7 +774,7 @@ test "formatHumanReadable - gigabytes" {
 
 test "resolveConfig - defaults" {
     const opts = DuOptions{};
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(@as(u64, 1024), config.block_size);
     try testing.expect(!config.apparent_size);
     try testing.expect(!config.human_readable);
@@ -726,7 +785,7 @@ test "resolveConfig - defaults" {
 test "resolveConfig - bytes flag" {
     var opts = DuOptions{};
     opts.bytes = true;
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(@as(u64, 1), config.block_size);
     try testing.expect(config.apparent_size);
 }
@@ -734,41 +793,41 @@ test "resolveConfig - bytes flag" {
 test "resolveConfig - kilobytes flag" {
     var opts = DuOptions{};
     opts.kilobytes = true;
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(@as(u64, 1024), config.block_size);
 }
 
 test "resolveConfig - summarize implies max-depth=0" {
     var opts = DuOptions{};
     opts.summarize = true;
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(@as(?u64, 0), config.max_depth);
 }
 
 test "resolveConfig - max-depth" {
     var opts = DuOptions{};
     opts.max_depth = "3";
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(@as(?u64, 3), config.max_depth);
 }
 
 test "resolveConfig - invalid max-depth" {
     var opts = DuOptions{};
     opts.max_depth = "abc";
-    try testing.expectError(error.InvalidMaxDepth, resolveConfig(opts));
+    try testing.expectError(error.InvalidMaxDepth, resolveConfig(opts, .none));
 }
 
 test "resolveConfig - block-size option" {
     var opts = DuOptions{};
     opts.block_size = "1M";
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(@as(u64, 1048576), config.block_size);
 }
 
 test "resolveConfig - invalid block-size" {
     var opts = DuOptions{};
     opts.block_size = "invalid";
-    try testing.expectError(error.InvalidBlockSize, resolveConfig(opts));
+    try testing.expectError(error.InvalidBlockSize, resolveConfig(opts, .none));
 }
 
 test "du --help shows usage" {
@@ -1027,7 +1086,7 @@ test "du shouldPrintAtDepth" {
         .total = false,
         .max_depth = null,
         .human_readable = false,
-        .dereference = false,
+        .dereference_mode = .none,
         .summarize = false,
         .separate_dirs = false,
         .one_file_system = false,
@@ -1074,27 +1133,27 @@ test "du getFileSize apparent vs disk" {
 test "resolveConfig - color mode always" {
     var opts = DuOptions{};
     opts.color = "always";
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(common.display_config.ResolvedMode.on, config.display.color);
 }
 
 test "resolveConfig - color mode never" {
     var opts = DuOptions{};
     opts.color = "never";
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig - color mode default" {
     const opts = DuOptions{};
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig - invalid color mode" {
     var opts = DuOptions{};
     opts.color = "invalid";
-    try testing.expectError(error.InvalidColorMode, resolveConfig(opts));
+    try testing.expectError(error.InvalidColorMode, resolveConfig(opts, .none));
 }
 
 test "du --color=invalid exits with code 2" {
@@ -1124,7 +1183,7 @@ test "resolveConfig - show_icons defaults to false" {
     }
 
     const opts = DuOptions{};
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     // With no env overrides and no TTY, display.icons resolves to .off
     try testing.expect(!config.show_icons);
 }
@@ -1132,21 +1191,21 @@ test "resolveConfig - show_icons defaults to false" {
 test "resolveConfig - icons=always enables show_icons" {
     var opts = DuOptions{};
     opts.icons = "always";
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expect(config.show_icons);
 }
 
 test "resolveConfig - icons=never disables show_icons" {
     var opts = DuOptions{};
     opts.icons = "never";
-    const config = try resolveConfig(opts);
+    const config = try resolveConfig(opts, .none);
     try testing.expect(!config.show_icons);
 }
 
 test "resolveConfig - invalid icon mode" {
     var opts = DuOptions{};
     opts.icons = "invalid";
-    try testing.expectError(error.InvalidIconMode, resolveConfig(opts));
+    try testing.expectError(error.InvalidIconMode, resolveConfig(opts, .none));
 }
 
 test "printEntry without icons shows clean output" {
@@ -1161,7 +1220,7 @@ test "printEntry without icons shows clean output" {
         .total = false,
         .max_depth = null,
         .human_readable = false,
-        .dereference = false,
+        .dereference_mode = .none,
         .summarize = false,
         .separate_dirs = false,
         .one_file_system = false,
@@ -1189,7 +1248,7 @@ test "printEntry with icons shows icon glyph" {
         .total = false,
         .max_depth = null,
         .human_readable = false,
-        .dereference = false,
+        .dereference_mode = .none,
         .summarize = false,
         .separate_dirs = false,
         .one_file_system = false,
@@ -1220,7 +1279,7 @@ test "printEntry with directory icon" {
         .total = false,
         .max_depth = null,
         .human_readable = false,
-        .dereference = false,
+        .dereference_mode = .none,
         .summarize = false,
         .separate_dirs = false,
         .one_file_system = false,
@@ -1247,4 +1306,242 @@ test "du --help shows icons option" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--icons") != null);
+}
+
+// ============================================================================
+// Tests for du -r (report errors — no-op compatibility flag)
+// ============================================================================
+
+test "du -r flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-r"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // Should not return misuse (2) — flag should be accepted
+    try testing.expect(exit_code != 2);
+}
+
+test "du -r produces same output as du" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f = try tmp_dir.dir.createFile("file.txt", .{});
+    try f.writeAll("test data\n");
+    f.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    // Run without -r
+    var stdout_without_r = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_without_r.deinit(testing.allocator);
+
+    const args_no_r = &[_][]const u8{ "-b", dir_path };
+    const exit_no_r = runDu(testing.allocator, args_no_r, stdout_without_r.writer(testing.allocator), common.null_writer);
+
+    // Run with -r
+    var stdout_with_r = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_with_r.deinit(testing.allocator);
+
+    const args_with_r = &[_][]const u8{ "-r", "-b", dir_path };
+    const exit_with_r = runDu(testing.allocator, args_with_r, stdout_with_r.writer(testing.allocator), common.null_writer);
+
+    // Both should succeed and produce identical output
+    try testing.expectEqual(@as(u8, 0), exit_no_r);
+    try testing.expectEqual(@as(u8, 0), exit_with_r);
+    try testing.expectEqualStrings(stdout_without_r.items, stdout_with_r.items);
+}
+
+// ============================================================================
+// Tests for du -H (dereference command-line symlink arguments only)
+// ============================================================================
+
+test "du -H flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-H"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // Should not return misuse (2) — flag should be accepted
+    try testing.expect(exit_code != 2);
+}
+
+test "du -H follows symlinks given as command-line arguments" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a directory with a file inside
+    try tmp_dir.dir.makeDir("target_dir");
+    const f = try tmp_dir.dir.createFile("target_dir/content.txt", .{});
+    try f.writeAll("hello world data\n");
+    f.close();
+
+    // Create a symlink to the directory
+    tmp_dir.dir.symLink("target_dir", "link_to_dir", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_dir", .{base_path});
+    defer testing.allocator.free(link_path);
+
+    // du -H on symlink_to_dir: should follow it (command-line arg)
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-H", "-a", "-b", link_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // The output should include content.txt path (proves we traversed into the dir)
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "content.txt") != null);
+}
+
+test "du -H does not follow symlinks found during traversal" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("parent_dir");
+    try tmp_dir.dir.makeDir("parent_dir/real_subdir");
+    const f = try tmp_dir.dir.createFile("parent_dir/real_subdir/data.txt", .{});
+    try f.writeAll("some data content\n");
+    f.close();
+
+    // Create a symlink inside parent_dir that points to real_subdir
+    tmp_dir.dir.symLink("real_subdir", "parent_dir/symlink_subdir", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const parent_path = try tmp_dir.dir.realpath("parent_dir", &path_buf);
+
+    // du -H on parent_dir: should NOT follow symlink_subdir during traversal
+    var stdout_h = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_h.deinit(testing.allocator);
+
+    const args_h = &[_][]const u8{ "-H", "-a", "-b", parent_path };
+    const exit_h = runDu(testing.allocator, args_h, stdout_h.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_h);
+
+    // du -L on parent_dir: should follow symlink_subdir (follows all symlinks)
+    var stdout_l = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_l.deinit(testing.allocator);
+
+    const args_l = &[_][]const u8{ "-L", "-a", "-b", parent_path };
+    const exit_l = runDu(testing.allocator, args_l, stdout_l.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_l);
+
+    // Count occurrences of "data.txt" — -H should have fewer than -L
+    var h_count: usize = 0;
+    var h_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, stdout_h.items, h_pos, "data.txt")) |idx| {
+        h_count += 1;
+        h_pos = idx + 1;
+    }
+
+    var l_count: usize = 0;
+    var l_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, stdout_l.items, l_pos, "data.txt")) |idx| {
+        l_count += 1;
+        l_pos = idx + 1;
+    }
+
+    // -L follows symlink_subdir so data.txt appears twice (real + symlink)
+    // -H doesn't follow it so data.txt appears once (real only)
+    try testing.expect(h_count < l_count);
+}
+
+// ============================================================================
+// Tests for du -P (do not follow symbolic links — explicit default)
+// ============================================================================
+
+test "du -P flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-P"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // Should not return misuse (2) — flag should be accepted
+    try testing.expect(exit_code != 2);
+}
+
+test "du -P does not follow symlinks" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("real_dir");
+    const f = try tmp_dir.dir.createFile("real_dir/file.txt", .{});
+    try f.writeAll("data\n");
+    f.close();
+
+    tmp_dir.dir.symLink("real_dir", "link_dir", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    // Use parent realpath + symlink name (realpath would resolve the symlink)
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_dir", .{base_path});
+    defer testing.allocator.free(link_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-P", "-a", "-b", link_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // -P should NOT follow the symlink, so file.txt should not appear
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "file.txt") == null);
+}
+
+test "du -P overrides -L when specified last" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("target");
+    const f = try tmp_dir.dir.createFile("target/marker.txt", .{});
+    try f.writeAll("marker\n");
+    f.close();
+
+    tmp_dir.dir.symLink("target", "sym", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    // Use parent realpath + symlink name (realpath would resolve the symlink)
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const sym_path = try std.fmt.allocPrint(testing.allocator, "{s}/sym", .{base_path});
+    defer testing.allocator.free(sym_path);
+
+    // -L -P: last is -P, should NOT follow
+    var stdout_lp = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_lp.deinit(testing.allocator);
+
+    const args_lp = &[_][]const u8{ "-L", "-P", "-a", "-b", sym_path };
+    const exit_lp = runDu(testing.allocator, args_lp, stdout_lp.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_lp);
+    try testing.expect(std.mem.indexOf(u8, stdout_lp.items, "marker.txt") == null);
+
+    // -P -L: last is -L, should follow
+    var stdout_pl = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_pl.deinit(testing.allocator);
+
+    const args_pl = &[_][]const u8{ "-P", "-L", "-a", "-b", sym_path };
+    const exit_pl = runDu(testing.allocator, args_pl, stdout_pl.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_pl);
+    try testing.expect(std.mem.indexOf(u8, stdout_pl.items, "marker.txt") != null);
 }
