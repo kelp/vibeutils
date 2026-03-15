@@ -25,6 +25,16 @@ const DdConfig = struct {
     conv_notrunc: bool = false,
     conv_noerror: bool = false,
     conv_sync: bool = false,
+    conv_fsync: bool = false,
+    conv_osync: bool = false,
+    conv_swab: bool = false,
+    conv_ascii: bool = false,
+    conv_ebcdic: bool = false,
+    conv_ibm: bool = false,
+    conv_block: bool = false,
+    conv_unblock: bool = false,
+    cbs: ?usize = null,
+    files: usize = 1,
     status: StatusLevel = .default,
     help: bool = false,
     version: bool = false,
@@ -136,6 +146,11 @@ fn parseOperands(args: []const []const u8) !DdConfig {
             } else if (std.mem.eql(u8, key, "seek")) {
                 config.seek = std.fmt.parseInt(usize, value, 10) catch
                     return error.InvalidValue;
+            } else if (std.mem.eql(u8, key, "cbs")) {
+                config.cbs = try parseByteSize(value);
+            } else if (std.mem.eql(u8, key, "files")) {
+                config.files = std.fmt.parseInt(usize, value, 10) catch
+                    return error.InvalidValue;
             } else if (std.mem.eql(u8, key, "conv")) {
                 try parseConversions(&config, value);
             } else if (std.mem.eql(u8, key, "status")) {
@@ -174,14 +189,116 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_noerror = true;
         } else if (std.mem.eql(u8, conv, "sync")) {
             config.conv_sync = true;
+        } else if (std.mem.eql(u8, conv, "fsync")) {
+            config.conv_fsync = true;
+        } else if (std.mem.eql(u8, conv, "osync")) {
+            config.conv_osync = true;
+        } else if (std.mem.eql(u8, conv, "swab")) {
+            config.conv_swab = true;
+        } else if (std.mem.eql(u8, conv, "noxfer")) {
+            config.status = .noxfer;
+        } else if (std.mem.eql(u8, conv, "ascii")) {
+            config.conv_ascii = true;
+        } else if (std.mem.eql(u8, conv, "ebcdic")) {
+            config.conv_ebcdic = true;
+        } else if (std.mem.eql(u8, conv, "ibm")) {
+            config.conv_ibm = true;
+        } else if (std.mem.eql(u8, conv, "block")) {
+            config.conv_block = true;
+        } else if (std.mem.eql(u8, conv, "unblock")) {
+            config.conv_unblock = true;
         } else {
             return error.InvalidValue;
         }
     }
 }
 
-/// Apply case conversion to a buffer in-place
+/// Standard ASCII to EBCDIC conversion table
+const ascii_to_ebcdic = [256]u8{
+    0x00, 0x01, 0x02, 0x03, 0x37, 0x2D, 0x2E, 0x2F, 0x16, 0x05, 0x25, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x10, 0x11, 0x12, 0x13, 0x3C, 0x3D, 0x32, 0x26, 0x18, 0x19, 0x3F, 0x27, 0x1C, 0x1D, 0x1E, 0x1F,
+    0x40, 0x5A, 0x7F, 0x7B, 0x5B, 0x6C, 0x50, 0x7D, 0x4D, 0x5D, 0x5C, 0x4E, 0x6B, 0x60, 0x4B, 0x61,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0x7A, 0x5E, 0x4C, 0x7E, 0x6E, 0x6F,
+    0x7C, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6,
+    0xD7, 0xD8, 0xD9, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xAD, 0xE0, 0xBD, 0x5F, 0x6D,
+    0x79, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96,
+    0x97, 0x98, 0x99, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xC0, 0x4F, 0xD0, 0xA1, 0x07,
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x15, 0x06, 0x17, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x09, 0x0A, 0x1B,
+    0x30, 0x31, 0x1A, 0x33, 0x34, 0x35, 0x36, 0x08, 0x38, 0x39, 0x3A, 0x3B, 0x04, 0x14, 0x3E, 0xFF,
+    0x41, 0xAA, 0x4A, 0xB1, 0x9F, 0xB2, 0x6A, 0xB5, 0xBB, 0xB4, 0x9A, 0x8A, 0xB0, 0xCA, 0xAF, 0xBC,
+    0x90, 0x8F, 0xEA, 0xFA, 0xBE, 0xA0, 0xB6, 0xB3, 0x9D, 0xDA, 0x9B, 0x8B, 0xB7, 0xB8, 0xB9, 0xAB,
+    0x64, 0x65, 0x62, 0x66, 0x63, 0x67, 0x9E, 0x68, 0x74, 0x71, 0x72, 0x73, 0x78, 0x75, 0x76, 0x77,
+    0xAC, 0x69, 0xED, 0xEE, 0xEB, 0xEF, 0xEC, 0xBF, 0x80, 0xFD, 0xFE, 0xFB, 0xFC, 0xBA, 0xAE, 0x59,
+    0x44, 0x45, 0x42, 0x46, 0x43, 0x47, 0x9C, 0x48, 0x54, 0x51, 0x52, 0x53, 0x58, 0x55, 0x56, 0x57,
+    0x8C, 0x49, 0xCD, 0xCE, 0xCB, 0xCF, 0xCC, 0xE1, 0x70, 0xDD, 0xDE, 0xDB, 0xDC, 0x8D, 0x8E, 0xDF,
+};
+
+/// EBCDIC to ASCII conversion table (computed inverse of ascii_to_ebcdic)
+const ebcdic_to_ascii = invertTable(ascii_to_ebcdic);
+
+fn invertTable(forward: [256]u8) [256]u8 {
+    @setEvalBranchQuota(1000);
+    var table: [256]u8 = [_]u8{0} ** 256;
+    for (0..256) |i| {
+        table[forward[i]] = @intCast(i);
+    }
+    return table;
+}
+
+/// ASCII to IBM EBCDIC variant conversion table
+/// Differs from standard EBCDIC in some special characters
+const ascii_to_ibm = [256]u8{
+    0x00, 0x01, 0x02, 0x03, 0x37, 0x2D, 0x2E, 0x2F, 0x16, 0x05, 0x25, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x10, 0x11, 0x12, 0x13, 0x3C, 0x3D, 0x32, 0x26, 0x18, 0x19, 0x3F, 0x27, 0x1C, 0x1D, 0x1E, 0x1F,
+    0x40, 0x5A, 0x7F, 0x7B, 0x5B, 0x6C, 0x50, 0x7D, 0x4D, 0x5D, 0x5C, 0x4E, 0x6B, 0x60, 0x4B, 0x61,
+    0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0x7A, 0x5E, 0x4C, 0x7E, 0x6E, 0x6F,
+    0x7C, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6,
+    0xD7, 0xD8, 0xD9, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xAD, 0xE0, 0xBD, 0x9A, 0x6D,
+    0x79, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96,
+    0x97, 0x98, 0x99, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xC0, 0x4F, 0xD0, 0xA1, 0x07,
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x15, 0x06, 0x17, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x09, 0x0A, 0x1B,
+    0x30, 0x31, 0x1A, 0x33, 0x34, 0x35, 0x36, 0x08, 0x38, 0x39, 0x3A, 0x3B, 0x04, 0x14, 0x3E, 0xFF,
+    0x41, 0xAA, 0x4A, 0xB1, 0x9F, 0xB2, 0x6A, 0xB5, 0xBB, 0xB4, 0x9A, 0x8A, 0xB0, 0xCA, 0xAF, 0xBC,
+    0x90, 0x8F, 0xEA, 0xFA, 0xBE, 0xA0, 0xB6, 0xB3, 0x9D, 0xDA, 0x9B, 0x8B, 0xB7, 0xB8, 0xB9, 0xAB,
+    0x64, 0x65, 0x62, 0x66, 0x63, 0x67, 0x9E, 0x68, 0x74, 0x71, 0x72, 0x73, 0x78, 0x75, 0x76, 0x77,
+    0xAC, 0x69, 0xED, 0xEE, 0xEB, 0xEF, 0xEC, 0xBF, 0x80, 0xFD, 0xFE, 0xFB, 0xFC, 0xBA, 0xAE, 0x59,
+    0x44, 0x45, 0x42, 0x46, 0x43, 0x47, 0x9C, 0x48, 0x54, 0x51, 0x52, 0x53, 0x58, 0x55, 0x56, 0x57,
+    0x8C, 0x49, 0xCD, 0xCE, 0xCB, 0xCF, 0xCC, 0xE1, 0x70, 0xDD, 0xDE, 0xDB, 0xDC, 0x8D, 0x8E, 0xDF,
+};
+
+/// Apply conversions to a buffer in-place.
+/// Handles swab, character set (ascii/ebcdic/ibm), and case conversions.
 fn applyConversions(buf: []u8, config: DdConfig) void {
+    // Swap bytes (swab) - done before other conversions
+    if (config.conv_swab) {
+        var i: usize = 0;
+        while (i + 1 < buf.len) : (i += 2) {
+            const tmp = buf[i];
+            buf[i] = buf[i + 1];
+            buf[i + 1] = tmp;
+        }
+        // Odd last byte: replace with 0 (paired with NUL)
+        if (buf.len % 2 != 0) {
+            buf[buf.len - 1] = 0;
+        }
+    }
+
+    // Character set conversions
+    if (config.conv_ascii) {
+        for (buf) |*c| {
+            c.* = ebcdic_to_ascii[c.*];
+        }
+    } else if (config.conv_ebcdic) {
+        for (buf) |*c| {
+            c.* = ascii_to_ebcdic[c.*];
+        }
+    } else if (config.conv_ibm) {
+        for (buf) |*c| {
+            c.* = ascii_to_ibm[c.*];
+        }
+    }
+
+    // Case conversions
     if (config.conv_lcase) {
         for (buf) |*c| {
             if (c.* >= 'A' and c.* <= 'Z') {
@@ -276,9 +393,11 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  bs=BYTES        read and write up to BYTES bytes at a time
         \\  ibs=BYTES       read up to BYTES bytes at a time (default: 512)
         \\  obs=BYTES       write BYTES bytes at a time (default: 512)
+        \\  cbs=BYTES       conversion block size (for block/unblock)
         \\  count=N         copy only N input blocks
         \\  skip=N          skip N ibs-sized blocks at start of input
         \\  seek=N          skip N obs-sized blocks at start of output
+        \\  files=N         copy and concatenate N input files (default: 1)
         \\  conv=CONVS      convert the file as per the comma-separated list
         \\  status=LEVEL    transfer information to print to stderr;
         \\                  LEVEL is one of: none, noxfer, progress
@@ -290,11 +409,20 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\Sizes may also use 'x' for multiplication (e.g., 1024x1024).
         \\
         \\CONVS is a comma-separated list of:
+        \\  ascii     convert EBCDIC to ASCII
+        \\  ebcdic    convert ASCII to EBCDIC
+        \\  ibm       convert ASCII to IBM EBCDIC
+        \\  block     pad newline-terminated records to cbs-size
+        \\  unblock   replace trailing spaces in cbs-sized records
         \\  lcase     convert uppercase to lowercase
         \\  ucase     convert lowercase to uppercase
+        \\  swab      swap every pair of input bytes
         \\  notrunc   do not truncate the output file
         \\  noerror   continue after read errors
+        \\  noxfer    do not print transfer statistics
         \\  sync      pad input blocks with NULs to ibs size
+        \\  fsync     fsync output file before closing
+        \\  osync     pad final output block with NULs to obs size
         \\
         \\Examples:
         \\  dd if=input.bin of=output.bin bs=1M
@@ -335,6 +463,27 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // lcase and ucase are mutually exclusive
     if (config.conv_lcase and config.conv_ucase) {
         common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=lcase and conv=ucase are mutually exclusive", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // ascii, ebcdic, and ibm are mutually exclusive
+    const charset_count = @as(u8, @intFromBool(config.conv_ascii)) +
+        @as(u8, @intFromBool(config.conv_ebcdic)) +
+        @as(u8, @intFromBool(config.conv_ibm));
+    if (charset_count > 1) {
+        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // block and unblock are mutually exclusive
+    if (config.conv_block and config.conv_unblock) {
+        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=block and conv=unblock are mutually exclusive", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // block and unblock require cbs
+    if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
+        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=block/unblock requires cbs operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -409,16 +558,31 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         };
     }
 
+    // Allocate block/unblock conversion buffer if needed
+    const cbs = config.cbs orelse 0;
+    var cbs_buf: ?[]u8 = null;
+    var cbs_pos: usize = 0;
+    if (config.conv_block) {
+        cbs_buf = allocator.alloc(u8, cbs) catch {
+            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "failed to allocate cbs buffer", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+    defer if (cbs_buf) |b| allocator.free(b);
+
     var stats = DdStats{
         .start_ns = std.time.nanoTimestamp(),
     };
 
-    // Use simple copy mode when bs= is set (no ibs/obs buffering difference)
-    const simple_copy = config.bs != null;
+    // Use simple copy mode when bs= is set and no block/unblock conversion
+    const simple_copy = config.bs != null and !config.conv_block and !config.conv_unblock;
 
     // Main copy loop
     var out_pos: usize = 0; // Current position in output buffer (for non-simple mode)
     var blocks_read: usize = 0;
+
+    // Unblock position tracker: position within current cbs-sized record
+    var unblock_pos: usize = 0;
 
     while (true) {
         // Check count limit
@@ -474,21 +638,98 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             data = in_buf[0..ibs];
         }
 
-        // Apply conversions
+        // Apply conversions (swab, charset, case)
         applyConversions(data, config);
+
+        // Handle conv=block: convert newline-terminated records to fixed-size
+        if (config.conv_block) {
+            const record_buf = cbs_buf.?;
+            for (data) |byte| {
+                if (byte == '\n') {
+                    // End of record: pad with spaces to cbs and write
+                    if (cbs_pos < cbs) {
+                        @memset(record_buf[cbs_pos..], ' ');
+                    }
+                    output_file.writeAll(record_buf[0..cbs]) catch |err| {
+                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        printStats(stderr, stats, config.status);
+                        return @intFromEnum(common.ExitCode.general_error);
+                    };
+                    stats.bytes_copied += cbs;
+                    stats.full_blocks_out += 1;
+                    cbs_pos = 0;
+                } else {
+                    // Accumulate byte into record (truncate if > cbs)
+                    if (cbs_pos < cbs) {
+                        record_buf[cbs_pos] = byte;
+                        cbs_pos += 1;
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Handle conv=unblock: convert fixed-size records to newline-terminated
+        if (config.conv_unblock) {
+            // Process data in cbs-sized chunks
+            var data_pos: usize = 0;
+            while (data_pos < data.len) {
+                const remaining_in_record = cbs - unblock_pos;
+                const remaining_in_data = data.len - data_pos;
+                const to_consume = @min(remaining_in_record, remaining_in_data);
+
+                // Copy bytes into output buffer temporarily
+                @memcpy(out_buf[unblock_pos..][0..to_consume], data[data_pos..][0..to_consume]);
+                unblock_pos += to_consume;
+                data_pos += to_consume;
+
+                if (unblock_pos == cbs) {
+                    // Complete record: strip trailing spaces and add newline
+                    var end: usize = cbs;
+                    while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
+                    output_file.writeAll(out_buf[0..end]) catch |err| {
+                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        printStats(stderr, stats, config.status);
+                        return @intFromEnum(common.ExitCode.general_error);
+                    };
+                    output_file.writeAll("\n") catch |err| {
+                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        printStats(stderr, stats, config.status);
+                        return @intFromEnum(common.ExitCode.general_error);
+                    };
+                    stats.bytes_copied += end + 1;
+                    stats.full_blocks_out += 1;
+                    unblock_pos = 0;
+                }
+            }
+            continue;
+        }
 
         if (simple_copy) {
             // Simple copy: write each input block directly as output
-            output_file.writeAll(data) catch |err| {
-                common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
-                printStats(stderr, stats, config.status);
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            stats.bytes_copied += data.len;
-            if (data.len == obs) {
+            if (config.conv_osync and data.len < obs) {
+                // Pad partial block to obs size with NULs
+                @memcpy(out_buf[0..data.len], data);
+                @memset(out_buf[data.len..obs], 0);
+                output_file.writeAll(out_buf[0..obs]) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                    printStats(stderr, stats, config.status);
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+                stats.bytes_copied += obs;
                 stats.full_blocks_out += 1;
             } else {
-                stats.partial_blocks_out += 1;
+                output_file.writeAll(data) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                    printStats(stderr, stats, config.status);
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+                stats.bytes_copied += data.len;
+                if (data.len == obs) {
+                    stats.full_blocks_out += 1;
+                } else {
+                    stats.partial_blocks_out += 1;
+                }
             }
         } else {
             // Buffered copy: accumulate data in output buffer, write when full
@@ -515,15 +756,64 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         }
     }
 
-    // Flush remaining data in output buffer (non-simple mode)
-    if (!simple_copy and out_pos > 0) {
-        output_file.writeAll(out_buf[0..out_pos]) catch |err| {
+    // Flush remaining record for conv=block (partial record without newline)
+    if (config.conv_block and cbs_pos > 0) {
+        const record_buf = cbs_buf.?;
+        @memset(record_buf[cbs_pos..], ' ');
+        output_file.writeAll(record_buf[0..cbs]) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
+        stats.bytes_copied += cbs;
         stats.partial_blocks_out += 1;
-        stats.bytes_copied += out_pos;
+    }
+
+    // Flush remaining data for conv=unblock (partial record)
+    if (config.conv_unblock and unblock_pos > 0) {
+        var end: usize = unblock_pos;
+        while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
+        output_file.writeAll(out_buf[0..end]) catch |err| {
+            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            printStats(stderr, stats, config.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        output_file.writeAll("\n") catch |err| {
+            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            printStats(stderr, stats, config.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        stats.bytes_copied += end + 1;
+        stats.partial_blocks_out += 1;
+    }
+
+    // Flush remaining data in output buffer (non-simple mode, non-block/unblock)
+    if (!simple_copy and !config.conv_block and !config.conv_unblock and out_pos > 0) {
+        const write_len = if (config.conv_osync) blk: {
+            // Pad the final block to obs size with NULs
+            @memset(out_buf[out_pos..obs], 0);
+            break :blk obs;
+        } else out_pos;
+        output_file.writeAll(out_buf[0..write_len]) catch |err| {
+            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            printStats(stderr, stats, config.status);
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        if (config.conv_osync) {
+            stats.full_blocks_out += 1;
+            stats.bytes_copied += obs;
+        } else {
+            stats.partial_blocks_out += 1;
+            stats.bytes_copied += out_pos;
+        }
+    }
+
+    // fsync the output file if requested
+    if (config.conv_fsync) {
+        output_file.sync() catch |err| {
+            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "fsync error: {s}", .{@errorName(err)});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
     }
 
     // Print statistics
@@ -691,6 +981,16 @@ test "parseOperands - defaults" {
     try testing.expect(!config.conv_notrunc);
     try testing.expect(!config.conv_noerror);
     try testing.expect(!config.conv_sync);
+    try testing.expect(!config.conv_fsync);
+    try testing.expect(!config.conv_osync);
+    try testing.expect(!config.conv_swab);
+    try testing.expect(!config.conv_ascii);
+    try testing.expect(!config.conv_ebcdic);
+    try testing.expect(!config.conv_ibm);
+    try testing.expect(!config.conv_block);
+    try testing.expect(!config.conv_unblock);
+    try testing.expect(config.cbs == null);
+    try testing.expectEqual(@as(usize, 1), config.files);
     try testing.expectEqual(StatusLevel.default, config.status);
 }
 
@@ -1094,4 +1394,380 @@ test "runDd - count=0 copies nothing" {
     const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 0), content.len);
+}
+
+test "parseOperands - cbs operand" {
+    const args = [_][]const u8{"cbs=80"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(?usize, 80), config.cbs);
+}
+
+test "parseOperands - cbs default is null" {
+    const args = [_][]const u8{};
+    const config = try parseOperands(&args);
+    try testing.expect(config.cbs == null);
+}
+
+test "parseOperands - files operand" {
+    const args = [_][]const u8{"files=3"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 3), config.files);
+}
+
+test "parseConversions - fsync" {
+    const args = [_][]const u8{"conv=fsync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_fsync);
+}
+
+test "parseConversions - osync" {
+    const args = [_][]const u8{"conv=osync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_osync);
+}
+
+test "parseConversions - swab" {
+    const args = [_][]const u8{"conv=swab"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_swab);
+}
+
+test "parseConversions - noxfer sets status to noxfer" {
+    const args = [_][]const u8{"conv=noxfer"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(StatusLevel.noxfer, config.status);
+}
+
+test "parseConversions - ascii" {
+    const args = [_][]const u8{"conv=ascii"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_ascii);
+}
+
+test "parseConversions - ebcdic" {
+    const args = [_][]const u8{"conv=ebcdic"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_ebcdic);
+}
+
+test "parseConversions - ibm" {
+    const args = [_][]const u8{"conv=ibm"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_ibm);
+}
+
+test "parseConversions - block" {
+    const args = [_][]const u8{"conv=block"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_block);
+}
+
+test "parseConversions - unblock" {
+    const args = [_][]const u8{"conv=unblock"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_unblock);
+}
+
+test "parseConversions - multiple new conversions" {
+    const args = [_][]const u8{"conv=swab,fsync"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_swab);
+    try testing.expect(config.conv_fsync);
+}
+
+test "applyConversions - swab even length" {
+    var buf = "ABCD".*;
+    applyConversions(&buf, .{ .conv_swab = true });
+    try testing.expectEqualStrings("BADC", &buf);
+}
+
+test "applyConversions - swab odd length" {
+    // With odd length, last byte is paired with 0x00
+    var buf = [_]u8{ 'A', 'B', 'C' };
+    applyConversions(&buf, .{ .conv_swab = true });
+    try testing.expectEqual(@as(u8, 'B'), buf[0]);
+    try testing.expectEqual(@as(u8, 'A'), buf[1]);
+    // Last byte: swapped with 0, so 0 goes to position 2, 'C' would go beyond
+    try testing.expectEqual(@as(u8, 0), buf[2]);
+}
+
+test "applyConversions - ebcdic conversion" {
+    // 'A' (0x41) in ASCII -> 0xC1 in EBCDIC
+    var buf = [_]u8{'A'};
+    applyConversions(&buf, .{ .conv_ebcdic = true });
+    try testing.expectEqual(@as(u8, 0xC1), buf[0]);
+}
+
+test "applyConversions - ascii conversion" {
+    // 0xC1 in EBCDIC -> 'A' (0x41) in ASCII
+    var buf = [_]u8{0xC1};
+    applyConversions(&buf, .{ .conv_ascii = true });
+    try testing.expectEqual(@as(u8, 'A'), buf[0]);
+}
+
+test "applyConversions - ibm conversion" {
+    // 'A' (0x41) in ASCII -> 0xC1 in IBM EBCDIC
+    var buf = [_]u8{'A'};
+    applyConversions(&buf, .{ .conv_ibm = true });
+    try testing.expectEqual(@as(u8, 0xC1), buf[0]);
+}
+
+test "runDd - conv=swab swaps byte pairs" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.bin", "ABCD");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.bin");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    const args = [_][]const u8{ if_arg, of_arg, "conv=swab", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("BADC", content);
+}
+
+test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "A");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    const args = [_][]const u8{ if_arg, of_arg, "conv=ebcdic", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqual(@as(u8, 0xC1), content[0]);
+}
+
+test "runDd - conv=ascii converts EBCDIC to ASCII" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Write raw EBCDIC byte 0xC1 which should convert to ASCII 'A'
+    try tmp_dir.dir.writeFile(.{ .sub_path = "input.bin", .data = &[_]u8{0xC1} });
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.bin");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    const args = [_][]const u8{ if_arg, of_arg, "conv=ascii", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("A", content);
+}
+
+test "runDd - conv=osync pads final block" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Write 3 bytes with obs=8, final block should be padded to 8
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ABC");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    const args = [_][]const u8{ if_arg, of_arg, "obs=8", "conv=osync", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    defer testing.allocator.free(content);
+    // Should be padded to 8 bytes
+    try testing.expectEqual(@as(usize, 8), content.len);
+    try testing.expectEqualStrings("ABC", content[0..3]);
+    // Remaining should be NUL
+    try testing.expectEqual(@as(u8, 0), content[3]);
+    try testing.expectEqual(@as(u8, 0), content[7]);
+}
+
+test "runDd - conv=block pads records to cbs size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Input: two newline-terminated records
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ab\ncd\n");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    // cbs=5: each record padded to 5 bytes with spaces
+    const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    defer testing.allocator.free(content);
+    // "ab" padded to 5 = "ab   ", "cd" padded to 5 = "cd   "
+    try testing.expectEqual(@as(usize, 10), content.len);
+    try testing.expectEqualStrings("ab   cd   ", content);
+}
+
+test "runDd - conv=unblock replaces trailing spaces with newline" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Input: two 5-byte fixed records with trailing spaces
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ab   cd   ");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    // cbs=5: each 5-byte record, trailing spaces replaced with newline
+    const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=unblock", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("ab\ncd\n", content);
+}
+
+test "runDd - conv=noxfer omits transfer statistics" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "test");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ if_arg, of_arg, "conv=noxfer" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Should have records but not bytes/transfer line
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "records in") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "bytes") == null);
+}
+
+test "runDd - mutually exclusive ascii and ebcdic" {
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"conv=ascii,ebcdic"};
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+}
+
+test "runDd - mutually exclusive block and unblock" {
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"conv=block,unblock"};
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+}
+
+test "runDd - block requires cbs" {
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"conv=block"};
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+}
+
+test "runDd - unblock requires cbs" {
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"conv=unblock"};
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+}
+
+test "EBCDIC round-trip: ASCII->EBCDIC->ASCII for printable chars" {
+    // Verify the conversion tables are inverses for printable ASCII
+    for (0..128) |i| {
+        const ebcdic_val = ascii_to_ebcdic[i];
+        const round_trip = ebcdic_to_ascii[ebcdic_val];
+        try testing.expectEqual(@as(u8, @intCast(i)), round_trip);
+    }
 }

@@ -7,15 +7,15 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 259 | 29 |
+| MUST | 288 | 268 | 20 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **350** | **344** |
+| **Total** | **694** | **359** | **335** |
 
 ## MUST Flags — Not Yet Implemented
 
-**29 flags** across 9 utilities.
+**20 flags** across 8 utilities.
 
 ### chmod
 
@@ -44,18 +44,6 @@ assignments.
 ### df
 
 - `-n`
-
-### find
-
-- `-ok (Primaries / Tests)`
-- `-execdir (Primaries / Tests)`
-- `-amin (Primaries / Tests)`
-- `-anewer (Primaries / Tests)`
-- `-cmin (Primaries / Tests)`
-- `-cnewer (Primaries / Tests)`
-- `-ls (Primaries / Tests)`
-- `-fstype (Primaries / Tests)`
-- `-flags (Primaries / Tests)`
 
 ### grep
 
