@@ -1,0 +1,18 @@
+POSIX ln - OPTIONS
+
+  -f    Force existing destination pathnames to be removed
+        to allow the link.
+
+  -L    For each source_file operand that names a symbolic
+        link, create a hard link to the file referenced by
+        the symbolic link.
+
+  -P    For each source_file operand that names a symbolic
+        link, create a hard link to the symbolic link
+        itself.
+
+  -s    Create symbolic links instead of hard links. If -s
+        is specified, -L and -P shall be silently ignored.
+
+Note: -L and -P are mutually exclusive; the last one
+specified determines behavior.

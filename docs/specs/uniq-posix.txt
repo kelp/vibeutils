@@ -1,0 +1,20 @@
+POSIX uniq - OPTIONS
+
+  -c    Precede each output line with a count of the
+        number of times the line occurred in the input.
+
+  -d    Suppress the writing of lines that are not
+        repeated in the input.
+
+  -f fields
+        Ignore the first fields fields on each input line
+        when doing comparisons. A field matches the
+        pattern [[:blank:]]*[^[:blank:]]*.
+
+  -s chars
+        Ignore the first chars characters when doing
+        comparisons. When combined with -f, characters are
+        skipped after the first fields fields.
+
+  -u    Suppress the writing of lines that are repeated in
+        the input.

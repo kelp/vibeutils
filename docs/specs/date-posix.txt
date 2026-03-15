@@ -1,0 +1,8 @@
+POSIX date - OPTIONS
+
+  -u    Perform operations as if the TZ environment
+        variable was set to the string "UTC0", or its
+        equivalent historical value of "GMT0". Otherwise,
+        date shall use the timezone indicated by the TZ
+        environment variable or the system default if that
+        variable is unset or null.

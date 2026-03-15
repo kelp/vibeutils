@@ -1,0 +1,4 @@
+realpath(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/realpath.1
+
+-q    Do not print errors.

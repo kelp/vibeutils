@@ -1,0 +1,100 @@
+POSIX find - OPTIONS
+
+  -H    Cause the file information and file type evaluated
+        for each symbolic link encountered as a path
+        operand on the command line to be those of the file
+        referenced by the link, and not the link itself.
+
+  -L    Cause the file information and file type evaluated
+        for each symbolic link encountered as a path
+        operand on the command line or encountered during
+        the traversal of a file hierarchy to be those of
+        the file referenced by the link.
+
+PRIMARIES:
+
+  -name pattern
+        True when basename matches the given pattern.
+
+  -path pattern
+        True when full current pathname matches pattern.
+
+  -nouser
+        True if the file's user ID has no corresponding
+        entry in the password database.
+
+  -nogroup
+        True if the file's group ID has no corresponding
+        entry in the group database.
+
+  -xdev
+        Always true; causes find not to continue
+        descending past directories with a different
+        device ID.
+
+  -prune
+        Always true; causes find not to descend the
+        current pathname if it is a directory.
+
+  -perm [-]mode
+        Tests file permissions against symbolic mode; with
+        hyphen prefix, checks if at least the specified
+        bits are set.
+
+  -perm [-]onum
+        Tests file permissions against octal notation;
+        with hyphen prefix, checks if all specified bits
+        are set.
+
+  -type c
+        True when file type matches c:
+        b=block, c=character, d=directory, l=symlink,
+        p=FIFO, f=regular, s=socket.
+
+  -links n
+        True when file has exactly n links.
+
+  -user uname
+        True when file belongs to the specified user or
+        user ID.
+
+  -group gname
+        True when file belongs to the specified group or
+        group ID.
+
+  -size n[c]
+        True when file size is n blocks (512 bytes);
+        'c' suffix measures in bytes.
+
+  -atime n
+        True when file access time difference (in
+        86400-second periods) equals n.
+
+  -ctime n
+        True when file status change time difference
+        (in 86400-second periods) equals n.
+
+  -mtime n
+        True when file modification time difference
+        (in 86400-second periods) equals n.
+
+  -exec utility [argument...] ;
+        Executes utility once per file.
+
+  -exec utility [argument...] {} +
+        Batches pathnames and executes utility.
+
+  -ok utility [argument...] ;
+        Like -exec but requests confirmation before
+        execution.
+
+  -print
+        Always true; writes current pathname to stdout.
+
+  -newer file
+        True when current file's modification time exceeds
+        that of the referenced file.
+
+  -depth
+        Always true; causes all entries in a directory to
+        be acted on before the directory itself.

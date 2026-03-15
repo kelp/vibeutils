@@ -1,0 +1,27 @@
+Usage: mkdir [OPTION]... DIRECTORY...
+Create the DIRECTORY(ies), if they do not already exist.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mkdir-m\[1m-m, --mode=MODE[0m]8;;\
+         set file mode (as in chmod), not a=rwx - umask
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mkdir-p\[1m-p, --parents[0m]8;;\
+         no error if existing, make parent directories as needed,
+         with their file modes unaffected by any -m option
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mkdir-v\[1m-v, --verbose[0m]8;;\
+         print a message for each created directory
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mkdir-Z\[1m-Z[0m]8;;\
+         set SELinux security context of each created directory
+         to the default type
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mkdir--context\[1m--context[=CTX][0m]8;;\
+         like -Z, or if CTX is specified then set the
+         SELinux or SMACK security context to CTX
+      ]8;;https://www.gnu.org/software/coreutils/mkdir#mkdir--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/mkdir#mkdir--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/mkdir>
+or available locally via: info '(coreutils) mkdir invocation'

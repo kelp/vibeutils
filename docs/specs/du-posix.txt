@@ -1,0 +1,27 @@
+POSIX du - OPTIONS
+
+  -a    In addition to the default output, report the size
+        of each file not of type directory in the file
+        hierarchy rooted in the specified file.
+
+  -H    If a symbolic link is specified on the command
+        line, du shall count the size of the file or file
+        hierarchy referenced by the link.
+
+  -k    Write the files sizes in units of 1024 bytes,
+        rather than the default 512-byte units.
+
+  -L    If a symbolic link is specified on the command line
+        or encountered during the traversal of a file
+        hierarchy, du shall count the size of the file or
+        file hierarchy referenced by the link.
+
+  -s    Instead of the default output, report only the
+        total sum for each of the specified files.
+
+  -x    When evaluating file sizes, evaluate only those
+        files that have the same device as the file
+        specified by the file operand.
+
+Note: -H and -L are mutually exclusive. The last one
+specified determines behavior.

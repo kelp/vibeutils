@@ -1,0 +1,62 @@
+ls(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/ls.1
+
+-1    Force one entry per line output.
+
+-A    List all entries except '.' and '..'.
+
+-a    Include entries beginning with a dot.
+
+-C    Force multi-column output.
+
+-c    Use file status change time for sorting/printing.
+
+-d    List directories as plain files, don't recurse.
+
+-F    Append symbols: '/' for directories, '*' for
+      executables, '@' for links, '=' for sockets,
+      '|' for FIFOs.
+
+-f    Disable sorting; implies -a.
+
+-g    Long format without owner information.
+
+-H    Follow symbolic links on command line.
+
+-h    Use unit suffixes (K, M, G, T, P, E) for sizes.
+
+-i    Print inode number for each file.
+
+-k    Report sizes in kilobytes.
+
+-L    Follow symbolic links and display target
+      information.
+
+-l    Long format listing with file details.
+
+-m    Stream format; comma-separated list across page.
+
+-n    Long format with numeric user/group IDs.
+
+-o    Include file flags in long format output.
+
+-p    Append '/' after each directory name.
+
+-q    Replace non-graphic characters with '?'.
+
+-R    Recursively list subdirectories.
+
+-r    Reverse sort order.
+
+-S    Sort by file size, largest first.
+
+-s    Display file system blocks used by each file.
+
+-T    Display complete time information (month, day,
+      hour, minute, second, year).
+
+-t    Sort by modification time, newest first.
+
+-u    Use last access time instead of modification time.
+
+-x    Multi-column output sorted across page.

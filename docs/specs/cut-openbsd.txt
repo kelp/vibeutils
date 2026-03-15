@@ -1,0 +1,25 @@
+cut(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/cut.1
+
+-b list
+      The list specifies byte positions.
+
+-c list
+      The list specifies character positions.
+
+-d delim
+      Use the first character of delim as the field
+      delimiter character. The default is the TAB
+      character.
+
+-f list
+      The list specifies fields, separated by the field
+      delimiter character.
+
+-n    Do not split multi-byte characters. A character is
+      written to standard output if and only if the byte
+      position holding its last byte is selected.
+
+-s    Suppresses lines with no field delimiter
+      characters. Unless specified, lines with no
+      delimiters are passed through unmodified.

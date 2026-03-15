@@ -1,0 +1,4 @@
+POSIX cat - OPTIONS
+
+  -u    Write bytes from the input file to the standard
+        output without delay as each is read.

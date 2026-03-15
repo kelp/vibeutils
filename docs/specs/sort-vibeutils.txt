@@ -1,0 +1,32 @@
+Usage: sort [OPTION]... [FILE]...
+Write sorted concatenation of all FILE(s) to standard output.
+
+With no FILE, or when FILE is -, read standard input.
+
+Ordering options:
+  -b, --ignore-leading-blanks  ignore leading blanks
+  -d, --dictionary-order       consider only blanks and alphanumeric characters
+  -f, --ignore-case            fold lower case to upper case characters
+  -g, --general-numeric-sort   compare according to general numeric value
+  -i, --ignore-nonprinting     consider only printable characters
+  -n, --numeric-sort           compare according to string numerical value
+  -r, --reverse                reverse the result of comparisons
+  -h, --human-numeric-sort     compare human readable numbers (e.g., 2K 1G)
+
+Other options:
+  -k KEYDEF, --key=KEYDEF      sort via a key; KEYDEF gives location and type
+  -t CHAR, --field-separator=CHAR  use CHAR as the field separator
+  -u, --unique                 with -c, check for strict ordering;
+                                 without -c, output only the first of an equal run
+  -s, --stable                 stabilize sort by disabling last-resort comparison
+  -c, --check, --check=diagnose-first  check for sorted input; do not sort
+  -C, --check=quiet, --check=silent  like -c, but do not report first bad line
+  -o FILE, --output=FILE       write result to FILE instead of standard output
+  -z, --zero-terminated        line delimiter is NUL, not newline
+      --help                   display this help and exit
+  -V, --version                output version information and exit
+
+KEYDEF is F[.C][OPTS][,F[.C][OPTS]] for start and stop position, where F is a
+field number and C a character position (numbered from 1); both are origin 1.
+OPTS is one or more single-letter ordering options [bdfginrh], which override
+global ordering options for that key.

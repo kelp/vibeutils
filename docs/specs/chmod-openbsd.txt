@@ -1,0 +1,18 @@
+chmod(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/chmod.1
+
+-H    If the -R option is also specified, symbolic links
+      on the command line are followed.
+
+-h    Treat symbolic links like other files: modify links
+      instead of following them.
+
+-L    If the -R option is also specified, all symbolic
+      links are followed.
+
+-P    If the -R option is also specified, no symbolic
+      links are followed.
+
+-R    Recurse. Where file is a directory, change the mode
+      of the directory and all the files and directories
+      in the file hierarchy below it.

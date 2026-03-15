@@ -1,0 +1,7 @@
+POSIX head - OPTIONS
+
+  -n number
+        The first number lines of each input file shall be
+        copied to standard output. The number option-
+        argument must be a positive decimal integer.
+        Default is 10 lines.

@@ -1,0 +1,38 @@
+Usage: timeout [OPTION] DURATION COMMAND [ARG]...
+  or:  timeout [OPTION]
+Start COMMAND, and kill it if still running after DURATION.
+
+DURATION is a number with an optional suffix: 's' for seconds (default),
+'m' for minutes, 'h' for hours, 'd' for days. A duration of 0 disables
+the timeout.
+
+  -s, --signal=SIGNAL      send this signal on timeout (default: TERM)
+  -k, --kill-after=DURATION
+                           send KILL signal if COMMAND still running
+                           after DURATION
+      --preserve-status    exit with the same status as COMMAND, even
+                           when the command times out
+      --foreground         run in the foreground process group
+  -v, --verbose            diagnose to stderr any signal sent
+  -h, --help               display this help and exit
+  -V, --version            output version information and exit
+
+If COMMAND is timed out and --preserve-status is not set, exit with
+status 124.  Otherwise, exit with the status of COMMAND.  If no signal
+is specified, send the TERM signal upon timeout.  The TERM signal kills
+any process that does not block or catch that signal.  It may be necessary
+to use the KILL (9) signal, since this signal cannot be caught.
+
+EXIT STATUS:
+  124  if COMMAND times out, and --preserve-status is not set
+  125  if the timeout command itself fails
+  126  if COMMAND is found but cannot be invoked
+  127  if COMMAND cannot be found
+  137  if COMMAND is sent the KILL (9) signal (128+9)
+    -  the exit status of COMMAND otherwise
+
+Examples:
+  timeout 10 sleep 60     # Limit sleep to 10 seconds
+  timeout 5m ./build.sh   # Limit script to 5 minutes
+  timeout -s KILL 30 cmd  # Send KILL instead of TERM
+  timeout -k 5 30 cmd     # TERM at 30s, KILL at 35s

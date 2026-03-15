@@ -1,0 +1,32 @@
+Usage: printf FORMAT [ARGUMENT...]
+Print ARGUMENT(s) according to FORMAT.
+
+FORMAT controls the output, with the following interpreted sequences:
+  \"      double quote
+  \\\\     backslash
+  \\a     alert (BEL)
+  \\b     backspace
+  \\f     form feed
+  \\n     new line
+  \\r     carriage return
+  \\t     horizontal tab
+  \\v     vertical tab
+  \\0NNN  byte with octal value NNN (1 to 3 digits)
+  \\xHH   byte with hexadecimal value HH (1 to 2 digits)
+  %%     a single %
+  %b     ARGUMENT as a string with '\\' escapes interpreted
+  %s     ARGUMENT as a string
+  %c     first character of ARGUMENT
+  %d,%i  ARGUMENT as a signed decimal integer
+  %u     ARGUMENT as an unsigned decimal integer
+  %o     ARGUMENT as an unsigned octal integer
+  %x,%X  ARGUMENT as an unsigned hexadecimal integer
+  %f     ARGUMENT as a floating-point number
+  %e,%E  ARGUMENT in scientific notation
+  %g,%G  ARGUMENT in shorter of %f or %e
+
+  --help     display this help and exit
+  --version  output version information and exit
+
+FORMAT is reused as necessary to consume all ARGUMENTs.
+Missing arguments are treated as empty strings or zero.

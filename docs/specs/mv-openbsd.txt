@@ -1,0 +1,14 @@
+mv(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/mv.1
+
+-f    Do not prompt for confirmation before overwriting
+      the destination path. Overrides any previous -i
+      options.
+
+-i    Causes mv to write a prompt to standard error
+      before moving a file that would overwrite an
+      existing file. If user input begins with "y", the
+      move proceeds. Overrides any previous -f options.
+
+-v    Display the source and destination after each move.
+      (Extension to POSIX.1 specification.)

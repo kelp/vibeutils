@@ -1,0 +1,21 @@
+POSIX echo - OPTIONS
+
+No options. Implementations shall not support any options.
+
+The utility does not recognize "--" as a special argument;
+it treats "--" as a string operand.
+
+OPERANDS:
+  string    String(s) to be written to standard output.
+
+On XSI-conformant systems, recognized escape sequences:
+  \a    alert (bell)
+  \b    backspace
+  \c    suppress trailing newline
+  \f    form-feed
+  \n    newline
+  \r    carriage-return
+  \t    tab
+  \v    vertical-tab
+  \\    backslash
+  \0num 8-bit octal value

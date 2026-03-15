@@ -1,0 +1,18 @@
+wc(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/wc.1
+
+-c    The number of bytes in each input file is written
+      to standard output.
+
+-h    Use unit suffixes: Byte, Kilobyte, Megabyte,
+      Gigabyte, Terabyte, Petabyte, and Exabyte to
+      reduce the number of digits to four or fewer.
+
+-l    The number of lines in each input file is written
+      to standard output.
+
+-m    Count characters instead of bytes, and use
+      iswspace(3) instead of isspace(3).
+
+-w    The number of words in each input file is written
+      to standard output.

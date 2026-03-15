@@ -1,0 +1,14 @@
+Usage: whoami [OPTION]...
+Print the user name associated with the current effective user ID.
+Same as id -un.
+
+      ]8;;https://www.gnu.org/software/coreutils/whoami#whoami--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/whoami#whoami--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/whoami>
+or available locally via: info '(coreutils) whoami invocation'

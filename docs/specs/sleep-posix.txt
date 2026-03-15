@@ -1,0 +1,8 @@
+POSIX sleep - OPTIONS and OPERANDS
+
+OPTIONS:
+None.
+
+OPERANDS:
+  time    A non-negative decimal integer specifying the
+          number of seconds for which to suspend execution.

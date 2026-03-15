@@ -1,0 +1,46 @@
+Usage: timeout [OPTION]... DURATION COMMAND [ARG]...
+Start COMMAND, and kill it if still running after DURATION.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#timeout-f\[1m-f, --foreground[0m]8;;\
+         when not running timeout directly from a shell prompt,
+         allow COMMAND to read from the TTY and get TTY signals;
+         in this mode, children of COMMAND will not be timed out
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#timeout-k\[1m-k, --kill-after=DURATION[0m]8;;\
+         also send a KILL signal if COMMAND is still running
+         this long after the initial signal was sent
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#timeout-p\[1m-p, --preserve-status[0m]8;;\
+         exit with the same status as COMMAND,
+         even when the command times out
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#timeout-s\[1m-s, --signal=SIGNAL[0m]8;;\
+         specify the signal to be sent on timeout;
+         SIGNAL may be a name like 'HUP' or a number;
+         see 'kill -l' for a list of signals
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#timeout-v\[1m-v, --verbose[0m]8;;\
+         diagnose to standard error any signal sent upon timeout
+      ]8;;https://www.gnu.org/software/coreutils/timeout#timeout--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/timeout#timeout--version\[1m--version[0m]8;;\
+         output version information and exit
+
+DURATION is a floating point number with an optional suffix:
+'s' for seconds (the default), 'm' for minutes, 'h' for hours or 'd' for days.
+A duration of 0 disables the associated timeout.
+
+Upon timeout, send the TERM signal to COMMAND, if no other SIGNAL specified.
+The TERM signal kills any process that does not block or catch that signal.
+It may be necessary to use the KILL signal, since this signal can't be caught.
+
+Exit status:
+  124  if COMMAND times out, and --preserve-status is not specified
+  125  if the timeout command itself fails
+  126  if COMMAND is found but cannot be invoked
+  127  if COMMAND cannot be found
+  137  if COMMAND (or timeout itself) is sent the KILL (9) signal (128+9)
+  -    the exit status of COMMAND otherwise
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/timeout>
+or available locally via: info '(coreutils) timeout invocation'

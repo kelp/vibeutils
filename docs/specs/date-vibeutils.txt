@@ -1,0 +1,32 @@
+Usage: date [OPTION]... [+FORMAT]
+Display the current time in the given FORMAT, or set the system date.
+
+  -d, --date=STRING       display time described by STRING, not 'now'
+  -r, --reference=FILE    display the last modification time of FILE
+  -R, --rfc-email         output date and time in RFC 5322 format
+      --rfc-3339=FMT      output date/time in RFC 3339 format
+                           FMT='date', 'seconds', or 'ns'
+  -I[FMT], --iso-8601[=FMT]  output date/time in ISO 8601 format
+                           FMT='date','hours','minutes','seconds','ns'
+                           (default: 'date')
+  -u, --utc, --universal  print or set Coordinated Universal Time (UTC)
+  -h, --help              display this help and exit
+  -V, --version           output version information and exit
+
+FORMAT controls the output, with interpreted sequences:
+  %%   a literal %              %n   a newline
+  %t   a tab                    %s   seconds since 1970-01-01 00:00:00 UTC
+  %N   nanoseconds (000000000..999999999)
+  %Y   year                     %m   month (01..12)
+  %d   day of month (01..31)    %H   hour (00..23)
+  %M   minute (00..59)          %S   second (00..60)
+  %Z   timezone abbreviation    %z   +hhmm numeric timezone
+  %a   abbreviated weekday      %b   abbreviated month
+  %e   day of month, space padded
+
+Examples:
+  date                     Display current date and time
+  date -u                  Display current UTC date and time
+  date '+%Y-%m-%d'         Display date in YYYY-MM-DD format
+  date -d @0 -u            Display the epoch (1970-01-01)
+  date -R                  Display in RFC 5322 format

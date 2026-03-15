@@ -1,0 +1,20 @@
+Usage: chmod [OPTION]... MODE[,MODE]... FILE...
+  or:  chmod [OPTION]... OCTAL-MODE FILE...
+  or:  chmod [OPTION]... --reference=RFILE FILE...
+Change the mode of each FILE to MODE.
+With --reference, change the mode of each FILE to that of RFILE.
+
+  -c, --changes          like verbose but report only when a change is made
+  -f, --silent           suppress most error messages
+  -v, --verbose          output a diagnostic for every file processed
+  -R, --recursive        change files and directories recursively
+      --reference=RFILE  use RFILE's mode instead of MODE values
+      --help             display this help and exit
+      --version          output version information and exit
+
+Each MODE is of the form '[ugoa]*[-+=]([rwxXst]*|[ugo])'.
+
+Examples:
+  chmod 755 file.txt               Set file permissions to rwxr-xr-x
+  chmod u+x script.sh              Add execute permission for owner
+  chmod -R go-w /path/to/dir       Recursively remove write for group/other

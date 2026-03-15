@@ -1,0 +1,47 @@
+Usage: uniq [OPTION]... [INPUT [OUTPUT]]
+Filter adjacent matching lines from INPUT (or standard input),
+writing to OUTPUT (or standard output).
+
+With no options, matching lines are merged to the first occurrence.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-c\[1m-c, --count[0m]8;;\
+         prefix lines by the number of occurrences
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-d\[1m-d, --repeated[0m]8;;\
+         only print duplicate lines, one for each group
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-D\[1m-D[0m]8;;\
+         print all duplicate lines
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq--all-repeated\[1m--all-repeated[=METHOD][0m]8;;\
+         like -D, but allow separating groups with an empty line;
+         METHOD={none(default),prepend,separate}
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-f\[1m-f, --skip-fields=N[0m]8;;\
+         avoid comparing the first N fields
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq--group\[1m--group[=METHOD][0m]8;;\
+         show all items, separating groups with an empty line;
+         METHOD={separate(default),prepend,append,both}
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-i\[1m-i, --ignore-case[0m]8;;\
+         ignore differences in case when comparing
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-s\[1m-s, --skip-chars=N[0m]8;;\
+         avoid comparing the first N characters
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-u\[1m-u, --unique[0m]8;;\
+         only print unique lines
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-z\[1m-z, --zero-terminated[0m]8;;\
+         line delimiter is NUL, not newline
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#uniq-w\[1m-w, --check-chars=N[0m]8;;\
+         compare no more than N characters in lines
+      ]8;;https://www.gnu.org/software/coreutils/uniq#uniq--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/uniq#uniq--version\[1m--version[0m]8;;\
+         output version information and exit
+
+A field is a run of blanks (usually spaces and/or TABs), then non-blank
+characters.  Fields are skipped before chars.
+
+'uniq' does not detect repeated lines unless they are adjacent.
+You may want to sort the input first, or use 'sort -u' without 'uniq'.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/uniq>
+or available locally via: info '(coreutils) uniq invocation'

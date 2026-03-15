@@ -1,0 +1,13 @@
+POSIX rm - OPTIONS
+
+  -f    Do not prompt for confirmation. Do not write
+        diagnostic messages or modify the exit status for
+        nonexistent operands. Any previous occurrences of
+        -i shall be ignored.
+
+  -i    Prompt for confirmation. Any previous occurrences
+        of -f shall be ignored.
+
+  -R    Remove file hierarchies.
+
+  -r    Equivalent to -R.

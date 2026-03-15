@@ -1,0 +1,9 @@
+POSIX df - OPTIONS
+
+  -k    Use 1024-byte units, instead of the default
+        512-byte units, when writing space figures.
+
+  -P    Produce output in the POSIX portable format.
+
+  -t    Include total allocated-space figures in the
+        output. (XSI extension)

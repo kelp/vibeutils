@@ -1,0 +1,35 @@
+stat(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/stat.1
+
+-F    Display a slash (/) after directories, asterisk (*)
+      after executables, at sign (@) after symbolic
+      links, equal sign (=) after sockets, and vertical
+      bar (|) after FIFOs. Implies -l.
+
+-f format
+      Display information using the specified format.
+
+-L    Use stat(2) instead of lstat(2). Information
+      reported will refer to the target of file if file
+      is a symbolic link, not to file itself.
+
+-l    Display output in ls -lT format.
+
+-n    Do not force a newline to appear at the end of
+      each piece of output.
+
+-q    Suppress failure messages if calls to stat(2) or
+      lstat(2) fail.
+
+-r    Display raw information. For all fields in the
+      stat-structure, display the raw numerical value
+      (e.g., times in seconds since the Epoch).
+
+-s    Format the output as a line of shell variable
+      assignments.
+
+-t timefmt
+      Display timestamps using the specified format.
+      This format is passed directly to strftime(3).
+
+-x    Display information in a more verbose way.

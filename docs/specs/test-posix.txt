@@ -1,0 +1,48 @@
+POSIX test - OPTIONS and PRIMARIES
+
+OPTIONS:
+No options. Does not recognize "--" as special.
+
+FILE TYPE TESTS:
+  -b pathname   Block special file exists
+  -c pathname   Character special file exists
+  -d pathname   Directory exists
+  -e pathname   File entry exists
+  -f pathname   Regular file exists
+  -h pathname   Symbolic link exists (not followed)
+  -L pathname   Symbolic link exists (not followed)
+  -p pathname   FIFO exists
+  -S pathname   Socket exists
+
+FILE PERMISSION/ATTRIBUTE TESTS:
+  -g pathname   Set-group-ID flag is set
+  -r pathname   File is readable
+  -s pathname   File size is greater than zero
+  -u pathname   Set-user-ID flag is set
+  -w pathname   File is writable
+  -x pathname   File is executable or searchable
+  -t fd         File descriptor is open and associated
+                with a terminal
+
+STRING TESTS:
+  -n string     String length is non-zero
+  -z string     String length is zero
+  string        String is not null
+
+STRING COMPARISONS:
+  s1 = s2       Strings are identical
+  s1 != s2      Strings are not identical
+
+INTEGER COMPARISONS:
+  n1 -eq n2     Equal
+  n1 -ne n2     Not equal
+  n1 -gt n2     Greater than
+  n1 -ge n2     Greater than or equal
+  n1 -lt n2     Less than
+  n1 -le n2     Less than or equal
+
+LOGICAL OPERATORS:
+  ! expression          Logical NOT
+  expr1 -a expr2        Logical AND (XSI)
+  expr1 -o expr2        Logical OR (XSI)
+  ( expression )        Grouping (XSI)

@@ -1,0 +1,8 @@
+Usage: tee [OPTION]... [FILE]...
+Copy standard input to each FILE, and also to standard output.
+
+  -a, --append      append to the given FILEs
+  -i, --ignore-interrupts  ignore interrupt signals
+  -p                diagnose errors writing to non pipes
+      --help        display this help and exit
+      --version     output version information and exit

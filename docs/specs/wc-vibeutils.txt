@@ -1,0 +1,18 @@
+Usage: wc [OPTION]... [FILE]...
+Print newline, word, and byte counts for each FILE, and a total line if
+more than one FILE is specified. A word is a non-zero-length sequence of
+characters delimited by white space.
+
+With no FILE, or when FILE is -, read standard input.
+
+  -c, --bytes            print the byte counts
+  -m, --chars            print the character counts
+  -l, --lines            print the newline counts
+  -L, --max-line-length  print the maximum line length
+  -w, --words            print the word counts
+      --help             display this help and exit
+      --version          output version information and exit
+      --color=WHEN      colorize columns; WHEN is 'always', 'auto' (default),
+                          or 'never'
+
+The options -c and -m are mutually exclusive.

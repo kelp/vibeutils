@@ -1,0 +1,5 @@
+POSIX tee - OPTIONS
+
+  -a    Append the output to the files.
+
+  -i    Ignore the SIGINT signal.

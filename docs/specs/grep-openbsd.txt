@@ -1,0 +1,93 @@
+grep(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/grep.1
+
+-A num
+      Print trailing context lines after each match.
+
+-a    Treat all files as ASCII text instead of printing
+      "Binary file" messages.
+
+-B num
+      Print leading context lines before each match.
+
+-b    Precede each output line with its byte position in
+      the file.
+
+-C [num], --context[=num]
+      Print leading and trailing context lines (default:
+      2 lines on each side).
+
+-c    Output only a count of matching lines.
+
+-E    Interpret pattern as an extended regular expression.
+
+-e pattern
+      Specify a search pattern; useful for multiple
+      patterns or patterns starting with dashes.
+
+-F    Interpret pattern as fixed strings instead of regex.
+
+-f file
+      Read newline-separated patterns from a file.
+
+-G    Interpret pattern as a basic regular expression
+      (traditional grep).
+
+-H    Always display filename headers with output.
+
+-h    Never display filename headers with output.
+
+-I    Ignore binary files.
+
+-i    Perform case-insensitive matching.
+
+-L    Output only filenames that do NOT contain matching
+      lines.
+
+-l    Output only filenames containing matching lines.
+
+-m num
+      Stop after finding matches on a specified number
+      of lines.
+
+-n    Precede output lines with their relative line
+      numbers.
+
+-o    Print only the matched portion, not the entire
+      line.
+
+-q    Suppress normal output (quiet mode).
+
+-R    Recursively search subdirectories.
+
+-s    Suppress error messages for nonexistent or
+      unreadable files.
+
+-U    Search binary files without attempting to print
+      them.
+
+-V    Display version information.
+
+-v    Select lines NOT matching the specified patterns.
+
+-w    Search for the expression as a complete word.
+
+-x    Match only complete lines matching the entire
+      pattern.
+
+-Z    Force grep to behave as zgrep.
+
+--binary-files=value
+      Control binary file handling: binary,
+      without-match, or text.
+
+--label=name
+      Print specified name instead of the actual
+      filename.
+
+--line-buffered
+      Force line-buffered output mode.
+
+--null
+      Output a zero byte after filenames instead of
+      standard characters.

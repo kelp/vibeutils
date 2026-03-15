@@ -1,0 +1,11 @@
+basename(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/basename.1
+
+No flags or options. The utility takes a string argument
+and an optional suffix argument.
+
+Synopsis: basename string [suffix]
+
+The utility deletes any prefix ending with the last slash
+('/') character present in string, and removes a suffix,
+if given.

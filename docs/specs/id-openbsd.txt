@@ -1,0 +1,28 @@
+id(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/id.1
+
+-c    Display the login class of the real user ID or the
+      specified user.
+
+-G    Display the different group IDs (effective, real
+      and supplementary) as whitespace separated numbers,
+      in no particular order.
+
+-g    Display the effective group ID as a number.
+
+-n    Display the name of the user or group ID for the
+      -G, -g and -u options instead of the number. If
+      any of the ID numbers cannot be mapped into names,
+      the number will be displayed as usual.
+
+-p    Make the output human-readable with labeled fields
+      for login name, user ID, effective user ID, real
+      group ID, groups, and login class (if applicable),
+      each on a separate line.
+
+-R    Display the routing table of the current process.
+
+-r    Display the real ID for the -g and -u options
+      instead of the effective ID.
+
+-u    Display the effective user ID as a number.

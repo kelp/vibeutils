@@ -1,0 +1,121 @@
+sort(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/sort.1
+
+-C, --check=silent|quiet
+      Verify input file is sorted; exit 0 if sorted,
+      1 if not, with no output.
+
+-c, --check
+      Like -C, but writes a message to stderr if the
+      file is unsorted.
+
+-m, --merge
+      Merge mode; assumes input files are pre-sorted.
+
+-o output, --output=output
+      Direct output to specified file instead of
+      standard output.
+
+-S size, --buffer-size=size
+      Restrict memory buffer to specified size (supports
+      %, b, K, M, G, T, P, E, Z, Y modifiers).
+
+-s    Stable sort preserving original order of records
+      with equal keys.
+
+-T dir, --temporary-directory=dir
+      Store temporary files in specified directory.
+
+-u, --unique
+      Suppress duplicate lines with equal keys; implies
+      -s.
+
+-d, --dictionary-order
+      Consider only blanks and alphanumeric characters
+      in comparisons.
+
+-f, --ignore-case
+      Treat lowercase letters as equivalent to
+      uppercase.
+
+-g, --general-numeric-sort
+      Sort by floating point numeric values.
+
+-h, --human-numeric-sort
+      Sort by numeric values with SI suffixes (k, M, G,
+      T, P, E, Z, Y).
+
+-i, --ignore-nonprinting
+      Exclude non-printable characters from comparisons.
+
+-M, --month-sort
+      Sort by month abbreviations.
+
+-n, --numeric-sort
+      Sort by initial numeric strings.
+
+-R, --random-sort
+      Randomize line order while keeping equal keys
+      together.
+
+-r, --reverse
+      Sort in descending order.
+
+-V, --version-sort
+      Sort version numbers and similar numeric strings
+      intelligently.
+
+-b, --ignore-leading-blanks
+      Ignore leading whitespace when determining key
+      boundaries.
+
+-k field1[,field2], --key=field1[,field2]
+      Define restricted sort key with start and optional
+      end positions.
+
+-t char, --field-separator=char
+      Use specified character as field delimiter.
+
+-z, --zero-terminated
+      Use NUL character instead of newline as record
+      separator.
+
+--batch-size=num
+      Set maximum files simultaneously opened (minimum
+      2, default 16).
+
+--compress-program=program
+      Use program to compress/decompress temporary
+      files.
+
+--debug
+      Output additional sorting process information.
+
+--files0-from=filename
+      Read input file list from file with NUL
+      separators.
+
+--heapsort
+      Attempt heap sort algorithm when applicable.
+
+--help
+      Display help text and exit.
+
+-H, --mergesort
+      Use mergesort algorithm.
+
+--mmap
+      Attempt memory-mapped file I/O for potential
+      performance gain.
+
+--qsort
+      Attempt quicksort algorithm when applicable.
+
+--radixsort
+      Attempt radix sort for C/POSIX locales.
+
+--random-source=filename
+      Provide seed data for random sort hash function.
+
+--version
+      Display version information and exit.

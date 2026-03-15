@@ -1,0 +1,45 @@
+Usage: grep [OPTION]... PATTERNS [FILE]...
+Search for PATTERNS in each FILE.
+Example: grep -i 'hello world' menu.h main.c
+PATTERNS can contain multiple patterns separated by newlines.
+
+Pattern selection and interpretation:
+  -E, --extended-regexp     interpret PATTERNS as extended regular expressions
+  -F, --fixed-strings       interpret PATTERNS as fixed strings
+  -G, --basic-regexp        interpret PATTERNS as basic regular expressions
+  -e, --regexp=PATTERNS     use PATTERNS for matching
+  -f, --file=FILE           take PATTERNS from FILE
+  -i, --ignore-case         ignore case distinctions in patterns and data
+  -w, --word-regexp         match only whole words
+  -x, --line-regexp         match only whole lines
+
+Miscellaneous:
+  -s, --no-messages         suppress error messages
+  -v, --invert-match        select non-matching lines
+      --help                display this help and exit
+      --version             output version information and exit
+
+Output control:
+  -m, --max-count=NUM       stop after NUM selected lines
+  -n, --line-number         print line number with output lines
+  -H, --with-filename       print file name with output lines
+  -h, --no-filename         suppress the file name prefix on output
+  -o, --only-matching       show only nonempty parts of lines that match
+  -q, --quiet, --silent     suppress all normal output
+  -c, --count               print only a count of selected lines per FILE
+  -l, --files-with-matches  print only names of FILEs with selected lines
+  -L, --files-without-match print only names of FILEs with no selected lines
+      --color[=WHEN]        use markers to highlight the matching strings;
+                            WHEN is 'always', 'never', or 'auto'
+
+Context control:
+  -B, --before-context=NUM  print NUM lines of leading context
+  -A, --after-context=NUM   print NUM lines of trailing context
+  -C, --context=NUM         print NUM lines of output context
+
+File and directory selection:
+  -r, --recursive           search directories recursively
+  -R, --dereference-recursive  likewise, but follow all symlinks
+      --include=GLOB        search only files that match GLOB (a file pattern)
+      --exclude=GLOB        skip files that match GLOB
+      --exclude-dir=GLOB    skip directories that match GLOB

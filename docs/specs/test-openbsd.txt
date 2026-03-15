@@ -1,0 +1,71 @@
+test(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/test.1
+
+test uses expressions rather than flags.
+
+File Test Primaries:
+  -b file       True if file exists and is a block
+                special file.
+  -c file       True if file exists and is a character
+                special file.
+  -d file       True if file exists and is a directory.
+  -e file       True if file exists (regardless of type).
+  -f file       True if file exists and is a regular
+                file.
+  -G file       True if file exists and its group matches
+                the effective group ID.
+  -g file       True if file exists and its set-group-ID
+                flag is set.
+  -h file       True if file exists and is a symbolic
+                link.
+  -k file       True if file exists and its sticky bit is
+                set.
+  -L file       True if file exists and is a symbolic
+                link.
+  -O file       True if file exists and its owner matches
+                the effective user ID.
+  -p file       True if file is a named pipe (FIFO).
+  -r file       True if file exists and is readable.
+  -S file       True if file exists and is a socket.
+  -s file       True if file exists and has a size
+                greater than zero.
+  -t fd         True if fd is open and associated with a
+                terminal.
+  -u file       True if file exists and its set-user-ID
+                flag is set.
+  -w file       True if file exists and is writable.
+  -x file       True if file exists and is executable.
+
+String Test Primaries:
+  -z string     True if the length of string is zero.
+  -n string     True if the length of string is nonzero.
+
+File Comparison Operators:
+  file1 -nt file2   True if file1 is newer than file2.
+  file1 -ot file2   True if file1 is older than file2.
+  file1 -ef file2   True if file1 and file2 refer to the
+                     same file.
+
+String Comparison Operators:
+  s1 = s2       True if strings are identical.
+  s1 != s2      True if strings are not identical.
+  s1 < s2       True if s1 comes before s2 (ASCII).
+  s1 > s2       True if s1 comes after s2 (ASCII).
+
+Numeric Comparison Operators:
+  n1 -eq n2     True if integers are equal.
+  n1 -ne n2     True if integers are not equal.
+  n1 -gt n2     True if n1 is greater than n2.
+  n1 -ge n2     True if n1 is greater than or equal
+                to n2.
+  n1 -lt n2     True if n1 is less than n2.
+  n1 -le n2     True if n1 is less than or equal to n2.
+
+Logical Operators:
+  ! expression  True if expression is false.
+  expr1 -a expr2
+                True if both expressions are true.
+  expr1 -o expr2
+                True if either expression is true.
+  ( expression )
+                Grouping/parentheses.

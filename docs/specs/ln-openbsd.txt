@@ -1,0 +1,20 @@
+ln(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/ln.1
+
+-f    Unlink any already existing file, permitting the
+      link to occur.
+
+-h    If the target is a symlink to a directory, do not
+      descend into it.
+
+-L    When creating a hard link and the source is a
+      symbolic link, link to the fully resolved target
+      of the symbolic link. This is the default.
+
+-n    An alias for -h for compatibility with other
+      operating systems.
+
+-P    When creating a hard link and the source is a
+      symbolic link, link to the symbolic link itself.
+
+-s    Create a symbolic link.

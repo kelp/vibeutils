@@ -1,0 +1,35 @@
+Usage: ls [OPTION]... [FILE]...
+List information about the FILEs (the current directory by default).
+Sort entries alphabetically by default.
+
+  -a, --all                  do not ignore entries starting with .
+  -A, --almost-all           do not list implied . and ..
+      --color=WHEN           when to use colors (valid: always, auto, never)
+  -m, --comma-format         fill width with a comma separated list of entries
+  -d, --directory            list directories themselves, not their contents
+  -F, --file-type-indicators append indicator (one of */=>@|) to entries
+      --git=WHEN             when to show git status (valid: always, auto, never)
+      --group-directories-first  group directories before files
+  -h, --human-readable       with -l, print sizes in human readable format
+      --icons=WHEN           when to show icons (valid: always, auto, never)
+  -k, --kilobytes            with -l, print sizes in kilobytes
+  -l, --long-format          use a long listing format
+  -n, --numeric-ids          with -l, show numeric user and group IDs
+  -1, --one-per-line         list one file per line
+  -R, --recursive            list subdirectories recursively
+  -r, --reverse-sort         reverse order while sorting
+  -i, --show-inodes          print the index number of each file
+  -S, --sort-by-size         sort by file size, largest first
+  -t, --sort-by-time         sort by modification time, newest first
+      --test-icons           test Nerd Font icon rendering
+      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
+  -V, --version              output version information and exit
+      --help                 display this help and exit
+
+Examples:
+  ls           List files in the current directory
+  ls -la       List all files in long format
+  ls -lh       List files with human-readable sizes
+  ls -t        List files sorted by modification time
+  ls --icons=always --color=always  List with colors and icons
+  ls --git=never  List without git status indicators

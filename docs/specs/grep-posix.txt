@@ -1,0 +1,38 @@
+POSIX grep - OPTIONS
+
+  -E    Match using extended regular expressions (ERE).
+
+  -F    Match using fixed strings instead of regular
+        expressions.
+
+  -c    Write only a count of selected lines to standard
+        output.
+
+  -e pattern_list
+        Specify one or more patterns to be used during the
+        search for input. Patterns separated by newline.
+
+  -f pattern_file
+        Read one or more patterns from the file named by
+        the pathname pattern_file.
+
+  -i    Perform pattern matching without regard to case.
+
+  -l    Write only the names of files containing selected
+        lines to standard output.
+
+  -n    Precede each output line by its relative line
+        number in the file, each file starting at line 1.
+
+  -q    Quiet. Nothing shall be written to standard
+        output, regardless of matching lines.
+
+  -s    Suppress error messages for nonexistent or
+        unreadable files.
+
+  -v    Select lines not matching any of the specified
+        patterns.
+
+  -x    Consider only input lines that use all characters
+        in the line (excluding terminating newline) to
+        match an entire fixed string or regular expression.

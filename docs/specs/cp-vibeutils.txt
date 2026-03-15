@@ -1,0 +1,23 @@
+Usage: cp [OPTION]... SOURCE DEST
+   or: cp [OPTION]... SOURCE... DIRECTORY
+Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
+
+  -a, --archive            same as -RpP
+  -d, --no-dereference     never follow symbolic links in SOURCE
+  -f, --force              force overwrite without prompting
+  -h, --help               display this help and exit
+  -H                       follow symlinks on the command line
+  -i, --interactive        prompt before overwrite
+  -L                       follow all symbolic links
+  -n, --no-clobber         do not overwrite existing files
+  -p, --preserve           preserve mode, ownership, timestamps
+  -P                       do not follow symbolic links
+  -r, -R, --recursive      copy directories recursively
+  -v, --verbose            explain what is being done
+  -V, --version            output version information and exit
+
+Examples:
+  cp foo.txt bar.txt    Copy foo.txt to bar.txt
+  cp -R dir1 dir2       Copy dir1 and its contents to dir2
+  cp -a dir1 dir2       Archive copy (preserve all attributes)
+  cp file1 file2 dir/   Copy multiple files into dir/

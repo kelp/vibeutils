@@ -1,0 +1,27 @@
+POSIX cut - OPTIONS
+
+  -b list   Cut based on a list of bytes. Each selected
+            byte shall be output unless the -n option is
+            also specified.
+
+  -c list   Cut based on a list of characters. Each
+            selected character shall be output.
+
+  -d delim  Set the field delimiter to the character delim.
+            The default is the <tab>.
+
+  -f list   Cut based on a list of fields, assumed to be
+            separated in the file by a delimiter character
+            (see -d). Each selected field shall be output.
+            Output fields shall be separated by a single
+            occurrence of the field delimiter character.
+
+  -n        Do not split characters. When specified with
+            the -b option, each element in list of the form
+            low-high shall be modified to handle multi-byte
+            character boundaries appropriately.
+
+  -s        Suppress lines with no delimiter characters,
+            when used with the -f option. Unless specified,
+            lines with no delimiters shall be passed through
+            untouched.

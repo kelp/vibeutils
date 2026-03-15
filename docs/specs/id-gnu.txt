@@ -1,0 +1,33 @@
+Usage: id [OPTION]... [USER]...
+Print user and group information for each specified USER,
+or (when USER omitted) for the current process.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-a\[1m-a[0m]8;;\
+         ignore, for compatibility with other versions
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-Z\[1m-Z, --context[0m]8;;\
+         print only the security context of the process
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-g\[1m-g, --group[0m]8;;\
+         print only the effective group ID
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-G\[1m-G, --groups[0m]8;;\
+         print all group IDs
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-n\[1m-n, --name[0m]8;;\
+         print a name instead of a number, for -u,-g,-G
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-r\[1m-r, --real[0m]8;;\
+         print the real ID instead of the effective ID, with -u,-g,-G
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-u\[1m-u, --user[0m]8;;\
+         print only the effective user ID
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#id-z\[1m-z, --zero[0m]8;;\
+         delimit entries with NUL characters, not whitespace;
+         not permitted in default format
+      ]8;;https://www.gnu.org/software/coreutils/id#id--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/id#id--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Without any OPTION, print some useful set of identified information.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/id>
+or available locally via: info '(coreutils) id invocation'

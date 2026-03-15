@@ -1,0 +1,5 @@
+true(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/true.1
+
+No flags or options. The utility takes no arguments and
+unconditionally returns exit code 0.

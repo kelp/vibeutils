@@ -1,0 +1,28 @@
+Usage: cat [OPTION]... [FILE]...
+Concatenate FILE(s) to standard output.
+
+With no FILE, or when FILE is -, read standard input.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-A\[1m-A, --show-all[0m]8;;\           equivalent to -vET
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-b\[1m-b, --number-nonblank[0m]8;;\    number nonempty output lines, overrides -n
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-e\[1m-e[0m]8;;\                       equivalent to -vE
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-E\[1m-E, --show-ends[0m]8;;\          display $ or ^M$ at end of each line
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-n\[1m-n, --number[0m]8;;\             number all output lines
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-s\[1m-s, --squeeze-blank[0m]8;;\      suppress repeated empty output lines
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-t\[1m-t[0m]8;;\                       equivalent to -vT
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-T\[1m-T, --show-tabs[0m]8;;\          display TAB characters as ^I
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-u\[1m-u[0m]8;;\                       (ignored)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#cat-v\[1m-v, --show-nonprinting[0m]8;;\   use ^ and M- notation, except for LFD and TAB
+      ]8;;https://www.gnu.org/software/coreutils/cat#cat--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/cat#cat--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Examples:
+  cat f - g  Output f's contents, then standard input, then g's contents.
+  cat        Copy standard input to standard output.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/cat>
+or available locally via: info '(coreutils) cat invocation'

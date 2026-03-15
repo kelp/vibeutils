@@ -1,0 +1,14 @@
+POSIX pwd - OPTIONS
+
+  -L    If the PWD environment variable contains an
+        absolute pathname of the current directory and the
+        pathname does not contain dot or dot-dot
+        components, pwd shall write this pathname to
+        standard output. Otherwise, behaves like -P.
+
+  -P    The pathname written to standard output shall not
+        contain any components that refer to files of type
+        symbolic link.
+
+Default behavior is -L. If both are provided, the last
+one takes precedence.

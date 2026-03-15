@@ -1,0 +1,12 @@
+Usage: yes [STRING]...
+   or: yes [OPTION]
+
+Repeatedly output a line with all specified STRING(s), or 'y'.
+
+  -h, --help     display this help and exit
+  -V, --version  output version information and exit
+
+Examples:
+  yes              # Output 'y' repeatedly
+  yes hello        # Output 'hello' repeatedly
+  yes hello world  # Output 'hello world' repeatedly

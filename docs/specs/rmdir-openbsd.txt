@@ -1,0 +1,7 @@
+rmdir(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/rmdir.1
+
+-p    Treat each directory argument as a pathname where
+      all empty components are removed, starting from
+      the innermost directory. Non-empty directories
+      stop the removal process.

@@ -1,0 +1,191 @@
+find(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/find.1
+
+OPTIONS:
+
+-d    Causes find to visit directories in post-order
+      (all entries acted on before the directory itself).
+
+-f path
+      Specifies a file hierarchy for find to traverse.
+
+-H    Return file information for the referenced file
+      when encountering symbolic links on the command
+      line, not the link itself.
+
+-h    An alias for the -L option. Exists for backwards
+      compatibility.
+
+-L    Return file information for the referenced file for
+      all symbolic links encountered, not the link
+      itself.
+
+-X    Permit find to be safely used with xargs(1). If a
+      file name contains delimiting characters used by
+      xargs, a diagnostic message is displayed.
+
+-x    Prevent find from descending into directories with
+      a different device number than the starting file.
+
+PRIMARIES:
+
+-amin n
+      True when file last access time difference from
+      start time, rounded up to next minute, equals n.
+
+-anewer file
+      True if current file has more recent last access
+      time than file.
+
+-atime n
+      True when file last access time difference from
+      start time, rounded to next 24-hour period,
+      equals n.
+
+-cmin n
+      True when file status change time difference from
+      start time, rounded up to next minute, equals n.
+
+-cnewer file
+      True if current file has more recent status change
+      time than file.
+
+-ctime n
+      True when file status change time difference from
+      start time, rounded to next 24-hour period,
+      equals n.
+
+-delete
+      Delete found files and directories. Always returns
+      true. Implies depth-first traversal.
+
+-depth
+      Always evaluates to true. Same as -d option.
+
+-empty
+      True if the current file or directory is empty.
+
+-exec utility [argument ...] ;
+      Execute utility once per path. True if utility
+      exits with zero status.
+
+-exec utility [argument ...] {} +
+      Aggregate pathnames and invoke utility once per
+      set. Always evaluates to true.
+
+-execdir utility [argument ...] ;
+      Like -exec but executes from the directory
+      containing the current file.
+
+-flags [-]flags
+      Comma-separated symbolic file flags. With dash
+      prefix, true if at least all specified flags set.
+
+-follow
+      Always evaluates to true. Same as -L option.
+
+-fstype type
+      True if file is in a file system of the specified
+      type.
+
+-group gname
+      True if file belongs to specified group name or
+      group ID.
+
+-iname pattern
+      Like -name but case insensitive matching.
+
+-inum n
+      True if file has specified inode number.
+
+-links n
+      True if file has exactly n hard links.
+
+-ls   Always evaluates to true. Writes file information
+      to stdout: inode, size, permissions, hard links,
+      owner, group, size in bytes, modification time,
+      pathname.
+
+-maxdepth n
+      True if current search depth <= n.
+
+-mindepth n
+      True if current search depth >= n.
+
+-mmin n
+      True when file last modification time difference
+      from start time, rounded up to next minute,
+      equals n.
+
+-mtime n
+      True when file last modification time difference
+      from start time, rounded to next 24-hour period,
+      equals n.
+
+-name pattern
+      True if last component of pathname matches
+      pattern (supports glob(7) special characters).
+
+-newer file
+      True if current file has more recent modification
+      time than file.
+
+-nogroup
+      True if file belongs to an unknown group.
+
+-nouser
+      True if file belongs to an unknown user.
+
+-ok utility [argument ...] ;
+      Like -exec but requests user confirmation before
+      executing.
+
+-path pattern
+      True if pathname matches pattern. Slashes treated
+      as normal characters.
+
+-perm [-]mode
+      True if file permissions match mode (symbolic or
+      octal form).
+
+-print
+      Always true. Print pathname followed by newline.
+
+-print0
+      Always true. Print pathname followed by null
+      character.
+
+-prune
+      Always true. Prevent find from descending into
+      current file.
+
+-size n[c]
+      True if file size in 512-byte blocks equals n.
+      Use 'c' suffix for bytes.
+
+-type t
+      True if file is of type: b (block special),
+      c (character special), d (directory),
+      f (regular file), l (symbolic link), p (FIFO),
+      s (socket).
+
+-user uname
+      True if file belongs to specified user name or
+      user ID.
+
+-xdev
+      Always true. Same as -x option.
+
+OPERATORS:
+
+( expression )
+      Group expressions for evaluation.
+
+! expression / -not expression
+      Unary NOT. True if expression is false.
+
+expression -a expression / -and expression
+      Logical AND. True if both expressions are true.
+
+expression -o expression / -or expression
+      Logical OR. True if either expression is true.

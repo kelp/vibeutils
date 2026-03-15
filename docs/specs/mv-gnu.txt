@@ -1,0 +1,69 @@
+Usage: mv [OPTION]... [-T] SOURCE DEST
+  or:  mv [OPTION]... SOURCE... DIRECTORY
+  or:  mv [OPTION]... -t DIRECTORY SOURCE...
+Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
+
+Mandatory arguments to long options are mandatory for short options too.
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv--backup\[1m--backup[=CONTROL][0m]8;;\
+         make a backup of each existing destination file
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-b\[1m-b[0m]8;;\
+         like --backup but does not accept an argument
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv--debug\[1m--debug[0m]8;;\
+         explain how a file is copied.  Implies -v
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv--exchange\[1m--exchange[0m]8;;\
+         exchange source and destination
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-f\[1m-f, --force[0m]8;;\
+         do not prompt before overwriting
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-i\[1m-i, --interactive[0m]8;;\
+         prompt before overwrite
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-n\[1m-n, --no-clobber[0m]8;;\
+         do not overwrite an existing file
+If you specify more than one of -i, -f, -n, only the final one takes effect.
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv--no-copy\[1m--no-copy[0m]8;;\
+         do not copy if renaming fails
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv--strip-trailing-slashes\[1m--strip-trailing-slashes[0m]8;;\
+         remove any trailing slashes from each SOURCE argument
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-S\[1m-S, --suffix=SUFFIX[0m]8;;\
+         override the usual backup suffix
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-t\[1m-t, --target-directory=DIRECTORY[0m]8;;\
+         move all SOURCE arguments into DIRECTORY
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-T\[1m-T, --no-target-directory[0m]8;;\
+         treat DEST as a normal file
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv--update\[1m--update[=UPDATE][0m]8;;\
+         control which existing files are updated;
+         UPDATE={all,none,none-fail,older(default)}
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-u\[1m-u[0m]8;;\
+         equivalent to --update[=older].  See below
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-v\[1m-v, --verbose[0m]8;;\
+         explain what is being done
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mv-Z\[1m-Z, --context[0m]8;;\
+         set SELinux security context of destination file to default type
+      ]8;;https://www.gnu.org/software/coreutils/mv#mv--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/mv#mv--version\[1m--version[0m]8;;\
+         output version information and exit
+
+UPDATE controls which existing files in the destination are replaced.
+'all' is the default operation when an --update option is not specified,
+and results in all existing files in the destination being replaced.
+'none' is like the --no-clobber option, in that no files in the
+destination are replaced, and skipped files do not induce a failure.
+'none-fail' also ensures no files are replaced in the destination,
+but any skipped files are diagnosed and induce a failure.
+'older' is the default operation when --update is specified, and results
+in files being replaced if they're older than the corresponding source file.
+
+The backup suffix is '~', unless set with --suffix or SIMPLE_BACKUP_SUFFIX.
+The version control method may be selected via the --backup option or through
+the VERSION_CONTROL environment variable.  Here are the values:
+
+  none, off       never make backups (even if --backup is given)
+  numbered, t     make numbered backups
+  existing, nil   numbered if numbered backups exist, simple otherwise
+  simple, never   always make simple backups
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/mv>
+or available locally via: info '(coreutils) mv invocation'

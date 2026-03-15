@@ -1,0 +1,28 @@
+printf(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/printf.1
+
+No command-line flags. printf uses a format string and
+arguments.
+
+Format flags (within format string):
+  #     Alternate form output (0 prefix for octal, 0x
+        for hex, decimal point always shown for floats).
+  -     Left-align output in the field.
+  +     Always display a sign before numbers in signed
+        formats.
+  ' '   Blank before positive numbers in signed formats.
+  0     Zero-padding instead of blank-padding.
+
+Format specifiers:
+  d, i  Signed decimal integer.
+  o     Unsigned octal integer.
+  u     Unsigned decimal integer.
+  x, X  Unsigned hexadecimal (lowercase/uppercase).
+  f, F  Decimal floating-point.
+  e, E  Scientific notation (lowercase/uppercase).
+  g, G  Auto-select f or e format (lowercase/uppercase).
+  a, A  Hexadecimal floating-point (lowercase/uppercase).
+  b     String with backslash-escape sequences expanded.
+  c     Single character.
+  s     String.
+  %     Literal percent character.

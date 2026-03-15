@@ -1,0 +1,62 @@
+Usage: chown [OPTION]... [OWNER][:[GROUP]] FILE...
+  or:  chown [OPTION]... --reference=RFILE FILE...
+Change the owner and/or group of each FILE to OWNER and/or GROUP.
+With --reference, change the owner and group of each FILE to those of RFILE.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-c\[1m-c, --changes[0m]8;;\
+         like verbose but report only when a change is made
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-f\[1m-f, --silent, --quiet[0m]8;;\
+         suppress most error messages
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-v\[1m-v, --verbose[0m]8;;\
+         output a diagnostic for every file processed
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown--dereference\[1m--dereference[0m]8;;\
+         affect the referent of each symbolic link (this is
+         the default), rather than the symbolic link itself
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-h\[1m-h, --no-dereference[0m]8;;\
+         affect symbolic links instead of any referenced file;
+         useful only on systems that can change the ownership of a symlink
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown--from\[1m--from=CURRENT_OWNER:CURRENT_GROUP[0m]8;;\
+         change the ownership of each file only if its
+         current owner and/or group match those specified here.
+         Either may be omitted, in which case a match
+         is not required for the omitted attribute
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown--no-preserve-root\[1m--no-preserve-root[0m]8;;\
+         do not treat '/' specially (the default)
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown--preserve-root\[1m--preserve-root[0m]8;;\
+         fail to operate recursively on '/'
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown--reference\[1m--reference=RFILE[0m]8;;\
+         use RFILE's ownership rather than specifying values.
+         RFILE is always dereferenced if a symbolic link.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-R\[1m-R, --recursive[0m]8;;\
+         operate on files and directories recursively
+
+The following options modify how a hierarchy is traversed when the -R
+option is also specified.  If more than one is specified, only the final
+one takes effect. -P is the default.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-H\[1m-H[0m]8;;\
+         if a command line argument is a symlink to a directory, traverse it
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-L\[1m-L[0m]8;;\
+         traverse every symbolic link to a directory encountered
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chown-P\[1m-P[0m]8;;\
+         do not traverse any symbolic links
+
+      ]8;;https://www.gnu.org/software/coreutils/chown#chown--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/chown#chown--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Owner is unchanged if missing.  Group is unchanged if missing, but changed
+to login group if implied by a ':' following a symbolic OWNER.
+OWNER and GROUP may be numeric as well as symbolic.
+
+Examples:
+  chown root /u        Change the owner of /u to "root".
+  chown root:staff /u  Likewise, but also change its group to "staff".
+  chown -hR root /u    Change the owner of /u and subfiles to "root".
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/chown>
+or available locally via: info '(coreutils) chown invocation'

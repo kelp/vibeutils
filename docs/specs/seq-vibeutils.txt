@@ -1,0 +1,26 @@
+Usage: seq [OPTION]... LAST
+   or: seq [OPTION]... FIRST LAST
+   or: seq [OPTION]... FIRST INCREMENT LAST
+Print numbers from FIRST to LAST, in steps of INCREMENT.
+
+  -f, --format=FORMAT  use printf style floating-point FORMAT
+  -s, --separator=STRING  use STRING to separate numbers (default: \n)
+  -w, --equal-width   equalize width by padding with leading zeroes
+  -h, --help          display this help and exit
+  -V, --version       output version information and exit
+
+If FIRST or INCREMENT is omitted, it defaults to 1. An omitted
+INCREMENT defaults to 1 even when LAST is smaller than FIRST.
+The sequence stops when adding INCREMENT would go past LAST.
+FIRST, INCREMENT, and LAST are interpreted as floating point values.
+
+FORMAT must be suitable for printing one argument of type 'double';
+it defaults to the auto-detected format based on input precision.
+Supported format specifiers: %f, %e, %g.
+
+Examples:
+  seq 5                 Print 1 through 5.
+  seq 3 7               Print 3 through 7.
+  seq 0 2 10            Print 0, 2, 4, 6, 8, 10.
+  seq -s ", " 3         Print "1, 2, 3".
+  seq -w 1 10           Print 01 through 10.

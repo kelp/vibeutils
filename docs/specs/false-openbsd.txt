@@ -1,0 +1,5 @@
+false(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/false.1
+
+No flags or options. The utility always exits with a
+non-zero exit code.

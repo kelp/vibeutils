@@ -1,0 +1,40 @@
+POSIX chown - OPTIONS
+
+  -h    For each file operand that names a file of type
+        symbolic link, chown shall attempt to set the user
+        ID of the symbolic link. If a group ID was
+        specified, for each file operand that names a file
+        of type symbolic link, chown shall attempt to set
+        the group ID of the symbolic link.
+
+  -H    If the -R option is specified and a symbolic link
+        referencing a file of type directory is specified
+        on the command line, chown shall change the user ID
+        (and group ID, if specified) of the directory
+        referenced by the symbolic link and all files in
+        the file hierarchy below it.
+
+  -L    If the -R option is specified and a symbolic link
+        referencing a file of type directory is specified
+        on the command line or encountered during the
+        traversal of a file hierarchy, chown shall change
+        the user ID (and group ID, if specified) of the
+        directory referenced by the symbolic link and all
+        files in the file hierarchy below it.
+
+  -P    If the -R option is specified and a symbolic link
+        is specified on the command line or encountered
+        during the traversal of a file hierarchy, chown
+        shall change the owner ID (and group ID, if
+        specified) of the symbolic link. The chown utility
+        shall not follow the symbolic link to any other
+        part of the file hierarchy.
+
+  -R    Recursively change file user and group IDs. For
+        each file operand that names a directory, chown
+        shall change the user ID (and group ID, if
+        specified) of the directory and all files in the
+        file hierarchy below it.
+
+When multiple mutually-exclusive options (-H, -L, -P) are
+specified, the last one determines behavior.

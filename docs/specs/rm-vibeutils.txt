@@ -1,0 +1,16 @@
+Usage: rm [OPTION]... [FILE]...
+Remove (unlink) the FILE(s).
+
+  -f, --force           ignore nonexistent files and arguments, never prompt
+  -i                    prompt before every removal
+  -I                    prompt once before removing more than three files,
+                          or when removing recursively
+  -r, -R, --recursive   remove directories and their contents recursively
+  -v, --verbose         explain what is being done
+      --preserve-root   do not remove '/' (default)
+      --no-preserve-root  do not treat '/' specially
+      --help            display this help and exit
+      --version         output version information and exit
+
+By default, rm does not remove directories. Use the --recursive (-r or -R)
+option to remove each listed directory, too, along with all of its contents.

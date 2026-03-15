@@ -1,0 +1,16 @@
+Usage: sleep NUMBER[SUFFIX]...
+  or:  sleep OPTION
+Pause for NUMBER seconds, where NUMBER is an integer or floating-point.
+SUFFIX may be 's','m','h', or 'd', for seconds, minutes, hours, days.
+With multiple arguments, pause for the sum of their values.
+
+      ]8;;https://www.gnu.org/software/coreutils/sleep#sleep--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/sleep#sleep--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/sleep>
+or available locally via: info '(coreutils) sleep invocation'

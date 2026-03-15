@@ -1,0 +1,50 @@
+Usage: chmod [OPTION]... MODE[,MODE]... FILE...
+  or:  chmod [OPTION]... OCTAL-MODE FILE...
+  or:  chmod [OPTION]... --reference=RFILE FILE...
+Change the mode of each FILE to MODE.
+With --reference, change the mode of each FILE to that of RFILE.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-c\[1m-c, --changes[0m]8;;\
+         like verbose but report only when a change is made
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-f\[1m-f, --silent, --quiet[0m]8;;\
+         suppress most error messages
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-v\[1m-v, --verbose[0m]8;;\
+         output a diagnostic for every file processed
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod--dereference\[1m--dereference[0m]8;;\
+         affect the referent of each symbolic link,
+         rather than the symbolic link itself
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-h\[1m-h, --no-dereference[0m]8;;\
+         affect each symbolic link, rather than the referent
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod--no-preserve-root\[1m--no-preserve-root[0m]8;;\
+         do not treat '/' specially (the default)
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod--preserve-root\[1m--preserve-root[0m]8;;\
+         fail to operate recursively on '/'
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod--reference\[1m--reference=RFILE[0m]8;;\
+         use RFILE's mode instead of specifying MODE values.
+         RFILE is always dereferenced if a symbolic link.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-R\[1m-R, --recursive[0m]8;;\
+         change files and directories recursively
+
+The following options modify how a hierarchy is traversed when the -R
+option is also specified.  If more than one is specified, only the final
+one takes effect. -H is the default.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-H\[1m-H[0m]8;;\
+         if a command line argument is a symlink to a directory, traverse it
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-L\[1m-L[0m]8;;\
+         traverse every symbolic link to a directory encountered
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#chmod-P\[1m-P[0m]8;;\
+         do not traverse any symbolic links
+
+      ]8;;https://www.gnu.org/software/coreutils/chmod#chmod--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/chmod#chmod--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Each MODE is of the form '[ugoa]*([-+=]([rwxXst]*|[ugo]))+|[-+=][0-7]+'.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/chmod>
+or available locally via: info '(coreutils) chmod invocation'

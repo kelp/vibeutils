@@ -1,0 +1,33 @@
+du(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/du.1
+
+-a    Display entries for files in addition to directory
+      entries.
+
+-c    Display the grand total after all arguments have
+      been processed.
+
+-d depth
+      Do not display entries for files and directories
+      more than depth levels deep.
+
+-H    Symbolic links on the command line are followed;
+      those in tree traversal are not.
+
+-h    "Human-readable" output using unit suffixes (Byte,
+      Kilobyte, Megabyte, etc.).
+
+-k    Report numbers in kilobyte counts instead of
+      default 512-byte block counts.
+
+-L    All symbolic links are followed.
+
+-P    No symbolic links are followed.
+
+-r    Generate messages about unreadable directories and
+      unopenable files (default behavior).
+
+-s    Display only the total for each specified file and
+      directory.
+
+-x    File system mount points are not traversed.

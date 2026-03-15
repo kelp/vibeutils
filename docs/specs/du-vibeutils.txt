@@ -1,0 +1,28 @@
+Usage: du [OPTION]... [FILE]...
+Summarize disk usage of the set of FILEs, recursively for directories.
+
+  -a, --all             write counts for all files, not just directories
+  -b, --bytes           equivalent to --apparent-size --block-size=1
+      --block-size=SIZE scale sizes by SIZE before printing them
+  -c, --total           produce a grand total
+  -d, --max-depth=N     print the total for a directory only if it is N
+                          or fewer levels below the command line argument
+  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
+  -k                    like --block-size=1K
+  -L, --dereference     dereference all symbolic links
+  -s, --summarize       display only a total for each argument
+  -S, --separate-dirs   for directories do not include size of subdirectories
+  -x, --one-file-system skip directories on different file systems
+      --apparent-size   print apparent sizes rather than disk usage
+      --color=WHEN      colorize sizes; WHEN is 'always', 'auto' (default),
+                          or 'never'
+      --icons=WHEN      when to show icons (valid: always, auto, never)
+      --help            display this help and exit
+      --version         output version information and exit
+
+Display values are in units of the first available SIZE from --block-size,
+and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
+Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
+
+SIZE is an integer and optional unit (example: 10K is 10*1024).
+Units are K, M, G, T, P, E (powers of 1024) or KB, MB, ... (powers of 1000).

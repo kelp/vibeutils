@@ -1,0 +1,32 @@
+Usage: tee [OPTION]... [FILE]...
+Copy standard input to each FILE, and also to standard output.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tee-a\[1m-a, --append[0m]8;;\
+         append to the given FILEs, do not overwrite
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tee-i\[1m-i, --ignore-interrupts[0m]8;;\
+         ignore interrupt signals
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tee-p\[1m-p[0m]8;;\
+         operate in a more appropriate MODE with pipes
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tee--output-error\[1m--output-error[=MODE][0m]8;;\
+         set behavior on write error.  See MODE below
+      ]8;;https://www.gnu.org/software/coreutils/tee#tee--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/tee#tee--version\[1m--version[0m]8;;\
+         output version information and exit
+
+MODE determines behavior with write errors on the outputs:
+  warn           diagnose errors writing to any output
+  warn-nopipe    diagnose errors writing to any output not a pipe
+  exit           exit on error writing to any output
+  exit-nopipe    exit on error writing to any output not a pipe
+The default MODE for the -p option is 'warn-nopipe'.
+With "nopipe" MODEs, exit immediately if all outputs become broken pipes.
+The default operation when --output-error is not specified, is to
+exit immediately on error writing to a pipe, and diagnose errors
+writing to non pipe outputs.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/tee>
+or available locally via: info '(coreutils) tee invocation'

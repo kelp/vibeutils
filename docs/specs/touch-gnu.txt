@@ -1,0 +1,42 @@
+Usage: touch [OPTION]... FILE...
+Update the access and modification times of each FILE to the current time.
+
+A FILE argument that does not exist is created empty, unless -c or -h
+is supplied.
+
+A FILE argument string of - is handled specially and causes touch to
+change the times of the file associated with standard output.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-a\[1m-a[0m]8;;\
+         change only the access time
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-c\[1m-c, --no-create[0m]8;;\
+         do not create any files
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-d\[1m-d, --date=STRING[0m]8;;\
+         parse STRING and use it instead of current time
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-f\[1m-f[0m]8;;\
+         (ignored)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-h\[1m-h, --no-dereference[0m]8;;\
+         affect each symbolic link instead of any referenced file;
+         useful only on systems that can change the timestamps of a symlink
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-m\[1m-m[0m]8;;\
+         change only the modification time
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-r\[1m-r, --reference=FILE[0m]8;;\
+         use this file's times instead of current time
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch-t\[1m-t [[CC]YY]MMDDhhmm[.ss][0m]8;;\
+         use specified time instead of current time,
+         with a date-time format that differs from -d's
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#touch--time\[1m--time=WORD[0m]8;;\
+         specify which time to change:
+         access time (-a): 'access', 'atime', 'use';
+         modification time (-m): 'modify', 'mtime'
+      ]8;;https://www.gnu.org/software/coreutils/touch#touch--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/touch#touch--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/touch>
+or available locally via: info '(coreutils) touch invocation'

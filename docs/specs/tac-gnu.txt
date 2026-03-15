@@ -1,0 +1,21 @@
+Usage: tac [OPTION]... [FILE]...
+Write each FILE to standard output, last line first.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tac-b\[1m-b, --before[0m]8;;\             attach the separator before instead of after
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tac-r\[1m-r, --regex[0m]8;;\              interpret the separator as a regular expression
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#tac-s\[1m-s, --separator=STRING[0m]8;;\   use STRING as the separator instead of newline
+      ]8;;https://www.gnu.org/software/coreutils/tac#tac--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/tac#tac--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Non-seekable input is buffered to $TMPDIR, defaulting to /tmp.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/tac>
+or available locally via: info '(coreutils) tac invocation'

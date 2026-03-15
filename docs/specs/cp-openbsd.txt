@@ -1,0 +1,35 @@
+cp(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/cp.1
+
+-a    Archive mode. Equivalent to -RpP combined.
+
+-f    Remove existing destination files and create new
+      ones without prompting, overriding any previous -i
+      options.
+
+-H    When used with -R, follow symbolic links on the
+      command line only; do not follow links found during
+      tree traversal.
+
+-i    Prompt before overwriting existing files; proceed
+      only if response begins with 'y'. Overrides
+      previous -f options.
+
+-L    When used with -R, follow all symbolic links
+      encountered.
+
+-P    When used with -R, do not follow any symbolic
+      links.
+
+-p    Preserve modification time, access time, file
+      flags, file mode, user ID, and group ID where
+      permissions allow.
+
+-R    Copy directories recursively with their entire
+      subtrees. Copies symbolic links as links rather
+      than following them. Copies special files as
+      special files. Creates directories matching source
+      mode, unmodified by umask.
+
+-v    Display source and destination paths after each
+      copy operation.

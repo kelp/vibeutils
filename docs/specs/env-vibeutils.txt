@@ -1,0 +1,18 @@
+Usage: env [OPTION]... [-] [NAME=VALUE]... [COMMAND [ARG]...]
+Set each NAME to VALUE in the environment and run COMMAND.
+
+  -i, --ignore-environment  start with an empty environment
+  -0, --null                end each output line with NUL, not newline
+  -u, --unset=NAME          remove variable from the environment
+  -C, --chdir=DIR           change working directory to DIR
+  -h, --help                display this help and exit
+  -V, --version             output version information and exit
+
+A mere - implies -i.  If no COMMAND, print the resulting environment.
+
+Exit status:
+  0      if no COMMAND, or COMMAND exits with 0
+  125    if env itself fails (e.g., chdir error)
+  126    if COMMAND is found but cannot be invoked
+  127    if COMMAND cannot be found
+  other  the exit status of COMMAND

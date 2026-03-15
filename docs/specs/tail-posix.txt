@@ -1,0 +1,15 @@
+POSIX tail - OPTIONS
+
+  -c number
+        Copy number bytes from the file. A leading '+'
+        means relative to the beginning, '-' or no sign
+        means relative to the end. Counting starts at 1.
+
+  -f    Do not terminate after the last line of the input
+        file has been copied; read and copy further bytes
+        when they become available. Ignored if standard
+        input is a pipe with no file operand specified.
+
+  -n number
+        Like -c but measured in lines instead of bytes.
+        Default if neither -c nor -n is specified: -n 10.

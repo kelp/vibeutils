@@ -1,0 +1,13 @@
+Usage: mktemp [OPTION]... [TEMPLATE]
+Create a temporary file or directory, safely, and print its name.
+TEMPLATE must contain at least 3 consecutive 'X's in last component.
+If TEMPLATE is not specified, use tmp.XXXXXXXXXX.
+
+  -d, --directory    create a directory, not a file
+  -u, --dry-run      do not create anything; merely print a name (unsafe)
+  -q, --quiet        suppress diagnostics about file/dir-creation failure
+  -p DIR, --tmpdir=DIR  use DIR as prefix; if not given, use $TMPDIR or /tmp
+      --suffix=SUFF  append SUFF to TEMPLATE
+  -t                 interpret TEMPLATE relative to a directory
+  -h, --help         display this help and exit
+  -V, --version      output version information and exit

@@ -1,0 +1,17 @@
+POSIX printf - OPTIONS and OPERANDS
+
+OPTIONS:
+No options.
+
+OPERANDS:
+  format      A string describing the format to use to
+              write the remaining operands.
+
+  argument    The strings to be written to standard output,
+              under the control of format.
+
+The format string is reused as needed to accommodate all
+arguments. Arguments are treated as strings for b, c, or s
+conversion specifiers, evaluated via strtod() for floating-
+point conversions, or interpreted as C integer constants for
+other numeric conversions.

@@ -1,0 +1,47 @@
+POSIX nl - OPTIONS
+
+  -b type
+        Specify which logical page body lines shall be
+        numbered. Types: a (all lines), t (non-empty
+        lines), n (no numbering), pstring (lines matching
+        regex). Default: t
+
+  -d delim
+        Specify the delimiter characters that indicate the
+        start of a logical page section. Default: \:
+
+  -f type
+        Same as -b type except for footer. Default: n
+
+  -h type
+        Same as -b type except for header. Default: n
+
+  -i incr
+        Specify the increment value used to number logical
+        page lines. Default: 1
+
+  -l num
+        Specify the number of blank lines to be considered
+        as one. Default: 1
+
+  -n format
+        Specify the line numbering format:
+        ln (left justified, no leading zeros),
+        rn (right justified, no leading zeros),
+        rz (right justified, leading zeros).
+        Default: rn
+
+  -p    Do not restart numbering at logical page
+        delimiters.
+
+  -s sep
+        Specify the characters used in separating the line
+        number and the text line. Default: tab
+
+  -v startnum
+        Specify the initial value used to number logical
+        page lines. Default: 1
+
+  -w width
+        Specify the number of characters to be used for
+        the line number. Default: 6

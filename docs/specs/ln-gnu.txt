@@ -1,0 +1,66 @@
+Usage: ln [OPTION]... [-T] TARGET LINK_NAME
+  or:  ln [OPTION]... TARGET
+  or:  ln [OPTION]... TARGET... DIRECTORY
+  or:  ln [OPTION]... -t DIRECTORY TARGET...
+In the 1st form, create a link to TARGET with the name LINK_NAME.
+In the 2nd form, create a link to TARGET in the current directory.
+In the 3rd and 4th forms, create links to each TARGET in DIRECTORY.
+Create hard links by default, symbolic links with --symbolic.
+By default, each destination (name of new link) should not already exist.
+When creating hard links, each TARGET must exist.  Symbolic links
+can hold arbitrary text; if later resolved, a relative link is
+interpreted in relation to its parent directory.
+
+Mandatory arguments to long options are mandatory for short options too.
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln--backup\[1m--backup[=CONTROL][0m]8;;\
+         make a backup of each existing destination file
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-b\[1m-b[0m]8;;\
+         like --backup but does not accept an argument
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-d\[1m-d, -F, --directory[0m]8;;\
+         allow the superuser to attempt to hard link directories,
+         if supported by the system
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-f\[1m-f, --force[0m]8;;\
+         remove existing destination files
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-i\[1m-i, --interactive[0m]8;;\
+         prompt whether to remove destinations
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-L\[1m-L, --logical[0m]8;;\
+         dereference TARGETs that are symbolic links
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-n\[1m-n, --no-dereference[0m]8;;\
+         treat LINK_NAME as a normal file
+         if it is a symbolic link to a directory
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-P\[1m-P, --physical[0m]8;;\
+         make hard links directly to symbolic links
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-r\[1m-r, --relative[0m]8;;\
+         with -s, create links relative to link location
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-s\[1m-s, --symbolic[0m]8;;\
+         make symbolic links instead of hard links
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-S\[1m-S, --suffix=SUFFIX[0m]8;;\
+         override the usual backup suffix
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-t\[1m-t, --target-directory=DIRECTORY[0m]8;;\
+         specify the DIRECTORY in which to create the links
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-T\[1m-T, --no-target-directory[0m]8;;\
+         treat LINK_NAME as a normal file always
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ln-v\[1m-v, --verbose[0m]8;;\
+         print name of each linked file
+      ]8;;https://www.gnu.org/software/coreutils/ln#ln--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/ln#ln--version\[1m--version[0m]8;;\
+         output version information and exit
+
+The backup suffix is '~', unless set with --suffix or SIMPLE_BACKUP_SUFFIX.
+The version control method may be selected via the --backup option or through
+the VERSION_CONTROL environment variable.  Here are the values:
+
+  none, off       never make backups (even if --backup is given)
+  numbered, t     make numbered backups
+  existing, nil   numbered if numbered backups exist, simple otherwise
+  simple, never   always make simple backups
+
+Using -s ignores -L and -P.  Otherwise, the last option specified controls
+behavior when a TARGET is a symbolic link, defaulting to -L.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/ln>
+or available locally via: info '(coreutils) ln invocation'

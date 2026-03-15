@@ -1,0 +1,62 @@
+Usage: df [OPTION]... [FILE]...
+Show information about the file system on which each FILE resides,
+or all file systems by default.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-a\[1m-a, --all[0m]8;;\
+         include pseudo, duplicate, inaccessible file systems
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-B\[1m-B, --block-size=SIZE[0m]8;;\
+         scale sizes by SIZE before printing them; see SIZE format below;
+         E.g., '-BM' prints sizes in units of 1,048,576 bytes
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-h\[1m-h, --human-readable[0m]8;;\
+         print sizes in powers of 1024 (e.g., 1023M)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-H\[1m-H, --si[0m]8;;\
+         print sizes in powers of 1000 (e.g., 1.1G)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-i\[1m-i, --inodes[0m]8;;\
+         list inode information instead of block usage
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-k\[1m-k[0m]8;;\
+         like --block-size=1K
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-l\[1m-l, --local[0m]8;;\
+         limit listing to local file systems
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df--no-sync\[1m--no-sync[0m]8;;\
+         do not invoke sync before getting usage info (default)
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df--output\[1m--output[=FIELD_LIST][0m]8;;\
+         use the output format defined by FIELD_LIST,
+         or print all fields if FIELD_LIST is omitted
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-P\[1m-P, --portability[0m]8;;\
+         use the POSIX output format
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df--sync\[1m--sync[0m]8;;\
+         invoke sync before getting usage info
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df--total\[1m--total[0m]8;;\
+         elide all entries insignificant to available space,
+         and produce a grand total
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-t\[1m-t, --type=TYPE[0m]8;;\
+         limit listing to file systems of type TYPE
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-T\[1m-T, --print-type[0m]8;;\
+         print file system type
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-x\[1m-x, --exclude-type=TYPE[0m]8;;\
+         limit listing to file systems not of type TYPE
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#df-v\[1m-v[0m]8;;\
+         (ignored)
+      ]8;;https://www.gnu.org/software/coreutils/df#df--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/df#df--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Display values are in units of the first available SIZE from --block-size,
+and the DF_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
+Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
+
+The SIZE argument is an integer and optional unit (example: 10K is 10*1024).
+Units are K,M,G,T,P,E,Z,Y,R,Q (powers of 1024) or KB,MB,... (powers of 1000).
+Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
+
+FIELD_LIST is a comma-separated list of columns to be included.  Valid
+field names are: 'source', 'fstype', 'itotal', 'iused', 'iavail', 'ipcent',
+'size', 'used', 'avail', 'pcent', 'file' and 'target' (see info page).
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/df>
+or available locally via: info '(coreutils) df invocation'

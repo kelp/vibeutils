@@ -1,0 +1,15 @@
+head(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/head.1
+
+-count
+      Copies the first count lines of each input file
+      to standard output. The count must be a positive
+      decimal integer. (Deprecated form.)
+
+-n count
+      Copies the first count lines of each input file
+      to standard output. The count must be a positive
+      decimal integer.
+
+Default behavior: displays 10 lines when count is
+omitted.

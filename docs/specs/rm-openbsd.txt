@@ -1,0 +1,25 @@
+rm(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/rm.1
+
+-d    Attempt to remove directories as well as other
+      types of files.
+
+-f    Attempt to remove the files without prompting for
+      confirmation, regardless of the file's permissions.
+      Overrides previous -i options.
+
+-i    Request confirmation before attempting to remove
+      each file, regardless of the file's permissions,
+      or whether or not the standard input device is a
+      terminal. Overrides previous -f options.
+
+-P    Attempt to overwrite regular writable files before
+      deleting them. Files are overwritten once with a
+      random pattern.
+
+-R    Attempt to remove the file hierarchy rooted in
+      each file argument. Implies -d option.
+
+-r    Equivalent to -R.
+
+-v    Display each file name after it was removed.

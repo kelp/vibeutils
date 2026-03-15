@@ -1,0 +1,16 @@
+pwd(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/pwd.1
+
+-L    If the PWD environment variable is an absolute
+      pathname that references the current directory and
+      doesn't contain path components of "." or "..",
+      then PWD is printed as the name of the current
+      directory. Otherwise, act as if -P was given.
+
+-P    Print the physical path to the current working
+      directory, with symbolic links in the path
+      resolved.
+
+The -L and -P options override each other; behavior is
+determined by whichever option is specified last. When
+no options are provided, -P is the default.

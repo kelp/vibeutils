@@ -1,0 +1,4 @@
+No man page found
+
+--- --help output ---
+No macOS binary found

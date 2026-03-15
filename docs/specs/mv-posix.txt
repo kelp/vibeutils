@@ -1,0 +1,11 @@
+POSIX mv - OPTIONS
+
+  -f    Do not prompt for confirmation if the destination
+        path exists. Any previous occurrence of -i is
+        ignored.
+
+  -i    Prompt for confirmation if the destination path
+        exists. Any previous occurrence of -f is ignored.
+
+Specifying more than one of -f or -i is not an error. The
+last option specified determines behavior.

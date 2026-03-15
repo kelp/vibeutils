@@ -1,0 +1,22 @@
+seq(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/seq.1
+
+-w, --fixed-width
+      Equalize the widths of all numbers by padding with
+      zeros as necessary. No effect with -f option.
+
+-f format, --format format
+      Use a printf(3) style format to print each number.
+      Supports A, a, E, e, F, f, G, g, and % conversion
+      characters with optional flags and field
+      width/precision.
+
+-s string, --separator string
+      Use string to separate numbers. Supports character
+      escape sequences. Default is newline.
+
+--help
+      Display program usage information and exit.
+
+--version
+      Display the version number and exit.

@@ -1,0 +1,18 @@
+Usage: realpath [OPTION]... FILE...
+Print the resolved absolute file name; all but the last component must exist.
+
+  -e, --canonicalize-existing  all components must exist (default)
+  -m, --canonicalize-missing   no components need exist
+  -s, --no-symlinks, --strip   do not resolve symlinks
+  -z, --zero                   end each output line with NUL, not newline
+  -q, --quiet                  suppress most error messages
+      --relative-to=DIR        print path relative to DIR
+      --relative-base=DIR      print path relative to DIR if under it,
+                               otherwise print absolute path
+  -h, --help                   display this help and exit
+  -V, --version                output version information and exit
+
+Examples:
+  realpath /usr/bin/../lib      Output "/usr/lib".
+  realpath -m /tmp/new/path     Resolve even if path does not exist.
+  realpath -s ./file            Resolve without following symlinks.

@@ -1,0 +1,16 @@
+Usage: basename NAME [SUFFIX]
+   or: basename OPTION... NAME...
+Print NAME with any leading directory components removed.
+If specified, also remove a trailing SUFFIX.
+
+  -a, --multiple     support multiple arguments and treat each as a NAME
+  -s, --suffix=SUFFIX  remove a trailing SUFFIX; implies -a
+  -z, --zero         end each output line with NUL, not newline
+  -h, --help         display this help and exit
+  -V, --version      output version information and exit
+
+Examples:
+  basename /usr/bin/sort          Output "sort".
+  basename include/stdio.h .h     Output "stdio".
+  basename -s .h include/stdio.h  Output "stdio".
+  basename -a any/str1 any/str2   Output "str1", then "str2".

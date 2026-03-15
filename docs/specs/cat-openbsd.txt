@@ -1,0 +1,28 @@
+cat(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/cat.1
+
+-b    Number the output lines, excluding blank lines from
+      the count.
+
+-e    Append a dollar sign ('$') to the end of each line.
+      Also activates the -v flag to make non-printing
+      characters visible.
+
+-n    Add line numbers to all output lines, beginning
+      with 1.
+
+-s    Compress consecutive blank lines into single
+      spacing.
+
+-t    Display tab characters as '^I'. Also enables the -v
+      flag to reveal non-printing characters.
+
+-u    Ensures output is not buffered.
+
+-v    Render non-printing characters in a visible format.
+      Control characters appear as '^X' (where X
+      represents the control character), except tabs and
+      line endings which display normally. The DEL
+      character displays as '^?'. Characters with the
+      high bit set show as 'M-' followed by the
+      corresponding 7-bit character.

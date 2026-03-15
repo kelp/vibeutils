@@ -1,0 +1,49 @@
+Usage: nl [OPTION]... [FILE]...
+Write each FILE to standard output, with line numbers added.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-b\[1m-b, --body-numbering=STYLE[0m]8;;\      use STYLE for numbering body lines
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-d\[1m-d, --section-delimiter=CC[0m]8;;\      use CC for logical page delimiters
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-f\[1m-f, --footer-numbering=STYLE[0m]8;;\    use STYLE for numbering footer lines
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-h\[1m-h, --header-numbering=STYLE[0m]8;;\    use STYLE for numbering header lines
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-i\[1m-i, --line-increment=NUMBER[0m]8;;\     line number increment at each line
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-l\[1m-l, --join-blank-lines=NUMBER[0m]8;;\   group of NUMBER empty lines counted as one
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-n\[1m-n, --number-format=FORMAT[0m]8;;\      insert line numbers according to FORMAT
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-p\[1m-p, --no-renumber[0m]8;;\               do not reset line numbers for each section
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-s\[1m-s, --number-separator=STRING[0m]8;;\   add STRING after (possible) line number
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-v\[1m-v, --starting-line-number=NUMBER[0m]8;;\  first line number for each section
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#nl-w\[1m-w, --number-width=NUMBER[0m]8;;\       use NUMBER columns for line numbers
+      ]8;;https://www.gnu.org/software/coreutils/nl#nl--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/nl#nl--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Default options are: -bt -d'\:' -fn -hn -i1 -l1 -n'rn' -s<TAB> -v1 -w6
+
+CC are two delimiter characters used to construct logical page delimiters;
+a missing second character implies ':'.  As a GNU extension one can specify
+more than two characters, and also specifying the empty string (-d '')
+disables section matching.
+
+STYLE is one of:
+
+  a      number all lines
+  t      number only nonempty lines
+  n      number no lines
+  pBRE   number only lines that contain a match for the basic regular
+         expression, BRE
+
+FORMAT is one of:
+
+  ln     left justified, no leading zeros
+  rn     right justified, no leading zeros
+  rz     right justified, leading zeros
+
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/nl>
+or available locally via: info '(coreutils) nl invocation'

@@ -1,0 +1,74 @@
+Usage: dd [OPERAND]...
+  or:  dd OPTION
+Copy a file, converting and formatting according to the operands.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddbs\[1mbs=BYTES[0m]8;;\        read and write up to BYTES bytes at a time (default: 512);
+                  overrides ibs and obs
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddcbs\[1mcbs=BYTES[0m]8;;\       convert BYTES bytes at a time
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddconv\[1mconv=CONVS[0m]8;;\      convert the file as per the comma separated symbol list
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddcount\[1mcount=N[0m]8;;\         copy only N input blocks
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddibs\[1mibs=BYTES[0m]8;;\       read up to BYTES bytes at a time (default: 512)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddif\[1mif=FILE[0m]8;;\         read from FILE instead of standard input
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddiflag\[1miflag=FLAGS[0m]8;;\     read as per the comma separated symbol list
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddobs\[1mobs=BYTES[0m]8;;\       write BYTES bytes at a time (default: 512)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddof\[1mof=FILE[0m]8;;\         write to FILE instead of standard output
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddoflag\[1moflag=FLAGS[0m]8;;\     write as per the comma separated symbol list
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddseek\[1mseek=N[0m]8;;\          (or oseek=N) skip N obs sized output blocks
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddskip\[1mskip=N[0m]8;;\          (or iseek=N) skip N ibs sized input blocks
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#ddstatus\[1mstatus=LEVEL[0m]8;;\    The LEVEL of information to print to standard error;
+                  'none' suppresses everything but error messages,
+                  'noxfer' suppresses the final transfer statistics,
+                  'progress' shows periodic transfer statistics
+
+N and BYTES may be followed by the following multiplicative suffixes:
+c=1, w=2, b=512, kB=1000, K=1024, MB=1000*1000, M=1024*1024, xM=M,
+GB=1000*1000*1000, G=1024*1024*1024, and so on for T, P, E, Z, Y, R, Q.
+Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
+If N ends in 'B', it counts bytes not blocks.
+
+Each CONV symbol may be:
+
+  ascii     from EBCDIC to ASCII
+  ebcdic    from ASCII to EBCDIC
+  ibm       from ASCII to alternate EBCDIC
+  block     pad newline-terminated records with spaces to cbs-size
+  unblock   replace trailing spaces in cbs-size records with newline
+  lcase     change upper case to lower case
+  ucase     change lower case to upper case
+  sparse    try to seek rather than write all-NUL output blocks
+  swab      swap every pair of input bytes
+  sync      pad every input block with NULs to ibs-size; when used
+            with block or unblock, pad with spaces rather than NULs
+  excl      fail if the output file already exists
+  nocreat   do not create the output file
+  notrunc   do not truncate the output file
+  noerror   continue after read errors
+  fdatasync  physically write output file data before finishing
+  fsync     likewise, but also write metadata
+
+Each FLAG symbol may be:
+
+  append    append mode (makes sense only for output; conv=notrunc suggested)
+  directory  fail unless a directory
+  dsync     use synchronized I/O for data
+  sync      likewise, but also for metadata
+  fullblock  accumulate full blocks of input (iflag only)
+  nonblock  use non-blocking I/O
+  noctty    do not assign controlling terminal from file
+  nofollow  do not follow symlinks
+
+Sending a INFO signal to a running 'dd' process makes it
+print I/O statistics to standard error and then resume copying.
+
+Options are:
+
+      ]8;;https://www.gnu.org/software/coreutils/dd#dd--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/dd#dd--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/dd>
+or available locally via: info '(coreutils) dd invocation'

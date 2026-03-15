@@ -1,0 +1,16 @@
+tr(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/tr.1
+
+-C    Complement the set of characters in string1; for
+      instance, '-C ab' includes every character except
+      for 'a' and 'b'.
+
+-c    Same as -C option.
+
+-d    Delete characters from the input.
+
+-s    After all deletion and translation is completed,
+      squeeze multiple consecutive occurrences of the
+      characters listed in the last operand (either
+      string1 or string2) into a single instance of the
+      character.

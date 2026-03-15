@@ -1,0 +1,20 @@
+Usage: rmdir [OPTION]... DIRECTORY...
+Remove the DIRECTORY(ies), if they are empty.
+
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#rmdir--ignore-fail-on-non-empty\[1m--ignore-fail-on-non-empty[0m]8;;\
+         ignore each failure to remove a non-empty directory
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#rmdir-p\[1m-p, --parents[0m]8;;\
+         remove DIRECTORY and its ancestors;
+         e.g., 'rmdir -p a/b' is similar to 'rmdir a/b a'
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#rmdir-v\[1m-v, --verbose[0m]8;;\
+         output a diagnostic for every directory processed
+      ]8;;https://www.gnu.org/software/coreutils/rmdir#rmdir--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/rmdir#rmdir--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/rmdir>
+or available locally via: info '(coreutils) rmdir invocation'

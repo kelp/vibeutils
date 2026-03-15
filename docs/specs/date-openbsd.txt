@@ -1,0 +1,28 @@
+date(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/date.1
+
+-a    Use the adjtime(2) call to gradually skew the local
+      time to the desired time rather than just hopping.
+
+-f pformat
+      Parse the specified time using strptime(3) with a
+      format string of pformat.
+
+-j    Parse the provided date and time and display the
+      result without changing the clock.
+
+-r seconds
+      Print out (in specified format) the date and time
+      represented by seconds from the Epoch.
+
+-u    Display or set the date in UTC (Coordinated
+      Universal) time.
+
+-z output_zone
+      Just before printing the time, change to the
+      specified timezone; can be used with -j to convert
+      time specifications from one zone to another.
+
++format
+      Custom format string for displaying date and time
+      using conversion specifications from strftime(3).

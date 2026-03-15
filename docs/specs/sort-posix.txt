@@ -1,0 +1,43 @@
+POSIX sort - OPTIONS
+
+  -c    Check that the single input file is ordered as
+        specified. No output; exit code indicates disorder.
+
+  -C    Same as -c, except no warning message is sent to
+        stderr if disorder or duplicate key is detected.
+
+  -m    Merge only; the input file shall be assumed to be
+        already sorted.
+
+  -o output
+        Specify the name of an output file to be used
+        instead of standard output. Can be the same as an
+        input file.
+
+  -u    Unique: suppress all but one in each set of lines
+        having equal keys.
+
+  -d    Only blank and alphanumeric characters shall be
+        significant in comparisons.
+
+  -f    Consider all lowercase characters to be the
+        uppercase equivalent for comparison purposes.
+
+  -i    Ignore all characters that are non-printable.
+
+  -n    Restrict the sort key to an initial numeric string,
+        sorted by arithmetic value.
+
+  -r    Reverse the sense of comparisons.
+
+  -b    Ignore leading blank characters when determining
+        starting and ending positions of a restricted sort
+        key.
+
+  -t char
+        Use char as the field separator character.
+
+  -k keydef
+        Define a key field using format:
+        field_start[type][,field_end[type]]
+        where type modifiers are b, d, f, i, n, r.

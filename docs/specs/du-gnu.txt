@@ -1,0 +1,91 @@
+Usage: du [OPTION]... [FILE]...
+  or:  du [OPTION]... --files0-from=F
+Summarize device usage of the set of FILEs, recursively for directories.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-0\[1m-0, --null[0m]8;;\
+         end each output line with NUL, not newline
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-a\[1m-a, --all[0m]8;;\
+         write counts for all files, not just directories
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-A\[1m-A, --apparent-size[0m]8;;\
+         print apparent sizes rather than device usage;
+         although the apparent size is usually smaller, it may be
+         larger due to holes in ('sparse') files,
+         internal fragmentation, indirect blocks, etc.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-B\[1m-B, --block-size=SIZE[0m]8;;\
+         scale sizes by SIZE before printing them; See SIZE format below;
+         E.g., '-BM' prints sizes in units of 1,048,576 bytes
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-b\[1m-b, --bytes[0m]8;;\
+         equivalent to '--apparent-size --block-size=1'
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-c\[1m-c, --total[0m]8;;\
+         produce a grand total
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-D\[1m-D, --dereference-args[0m]8;;\
+         dereference only symlinks that are listed on the command line
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-d\[1m-d, --max-depth=N[0m]8;;\
+         print the total for a directory (or file, with --all)
+         only if it is N or fewer levels below the command
+         line argument;  --max-depth=0 is the same as --summarize
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--files0-from\[1m--files0-from=F[0m]8;;\
+         summarize device usage of the NUL-terminated file names
+         specified in file F;  if F is -, read names from standard input
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-H\[1m-H[0m]8;;\
+         equivalent to --dereference-args (-D)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-h\[1m-h, --human-readable[0m]8;;\
+         print sizes in human readable format (e.g., 1K 234M 2G)
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--inodes\[1m--inodes[0m]8;;\
+         list inode usage information instead of block usage
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-k\[1m-k[0m]8;;\
+         like --block-size=1K
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-L\[1m-L, --dereference[0m]8;;\
+         dereference all symbolic links
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-l\[1m-l, --count-links[0m]8;;\
+         count sizes many times if hard linked
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-m\[1m-m[0m]8;;\
+         like --block-size=1M
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-P\[1m-P, --no-dereference[0m]8;;\
+         don't follow any symbolic links (this is the default)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-S\[1m-S, --separate-dirs[0m]8;;\
+         for directories do not include size of subdirectories
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--si\[1m--si[0m]8;;\
+         like -h, but use powers of 1000 not 1024
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-s\[1m-s, --summarize[0m]8;;\
+         display only a total for each argument
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-t\[1m-t, --threshold=SIZE[0m]8;;\
+         exclude entries smaller than SIZE if positive,
+         or entries greater than SIZE if negative
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--time\[1m--time[0m]8;;\
+         show time of the last modification of any file in the directory,
+         or any of its subdirectories
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--time\[1m--time=WORD[0m]8;;\
+         show time as WORD instead of modification time:
+         atime, access, use, ctime or status
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--time-style\[1m--time-style=STYLE[0m]8;;\
+         time/date format with --time; see TIME_STYLE below
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-X\[1m-X, --exclude-from=FILE[0m]8;;\
+         exclude files that match any pattern in FILE
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du--exclude\[1m--exclude=PATTERN[0m]8;;\
+         exclude files that match PATTERN
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#du-x\[1m-x, --one-file-system[0m]8;;\
+         skip directories on different file systems
+      ]8;;https://www.gnu.org/software/coreutils/du#du--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/du#du--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Display values are in units of the first available SIZE from --block-size,
+and the DU_BLOCK_SIZE, BLOCK_SIZE and BLOCKSIZE environment variables.
+Otherwise, units default to 1024 bytes (or 512 if POSIXLY_CORRECT is set).
+
+The SIZE argument is an integer and optional unit (example: 10K is 10*1024).
+Units are K,M,G,T,P,E,Z,Y,R,Q (powers of 1024) or KB,MB,... (powers of 1000).
+Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
+
+The --time-style STYLE argument can be full-iso, long-iso, iso, or +FORMAT.
+FORMAT is interpreted like in date(1).
+Also the TIME_STYLE environment variable sets the default style to use.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/du>
+or available locally via: info '(coreutils) du invocation'

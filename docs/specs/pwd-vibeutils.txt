@@ -1,0 +1,16 @@
+Usage: pwd [OPTION]...
+Print the full filename of the current working directory.
+
+  -L, --logical   use PWD from environment, even if it contains symlinks
+  -P, --physical  resolve all symbolic links (default)
+  -h, --help      display this help and exit
+  -V, --version   output version information and exit
+
+NOTE: your shell may have its own version of pwd, which usually supersedes
+the version described here. Please refer to your shell's documentation
+for details about the options it supports.
+
+Examples:
+  pwd             Print current directory (resolving symlinks)
+  pwd -L          Use PWD environment variable if valid
+  pwd -P          Explicitly resolve all symlinks

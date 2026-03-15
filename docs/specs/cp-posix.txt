@@ -1,0 +1,36 @@
+POSIX cp - OPTIONS
+
+  -f    If a file descriptor for a destination file cannot
+        be obtained, attempt to unlink the destination file
+        and proceed.
+
+  -H    Take actions based on the type and contents of the
+        file referenced by any symbolic link specified as a
+        source_file operand.
+
+  -i    Write a prompt to standard error before copying to
+        any existing non-directory destination file. If the
+        response from the standard input is affirmative,
+        the copy shall be attempted; otherwise, it shall
+        not.
+
+  -L    Take actions based on the type and contents of the
+        file referenced by any symbolic link specified as a
+        source_file operand or any symbolic links
+        encountered during traversal of a file hierarchy.
+
+  -P    Take actions on any symbolic link specified as a
+        source_file operand or any symbolic link
+        encountered during traversal of a file hierarchy.
+
+  -p    Duplicates three characteristics of each source
+        file in the corresponding destination file:
+        (1) modification and access times,
+        (2) user and group IDs, and
+        (3) file permission bits including S_ISUID and
+            S_ISGID bits.
+
+  -R    Copy file hierarchies.
+
+When multiple mutually-exclusive options (-H, -L, -P) are
+specified, the last one determines behavior.

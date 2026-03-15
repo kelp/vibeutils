@@ -1,0 +1,16 @@
+POSIX wc - OPTIONS
+
+  -c    Write to standard output the number of bytes in
+        each input file.
+
+  -l    Write to standard output the number of newline
+        characters in each input file.
+
+  -m    Write to standard output the number of characters
+        in each input file.
+
+  -w    Write to standard output the number of words in
+        each input file.
+
+When any option is specified, wc reports only the
+information requested by the specified options.

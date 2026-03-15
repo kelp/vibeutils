@@ -1,0 +1,6 @@
+sleep(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/sleep.1
+
+No flags or options. The utility accepts a single
+argument: seconds (a non-negative decimal value that may
+include a fraction).

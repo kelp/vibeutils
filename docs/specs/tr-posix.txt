@@ -1,0 +1,12 @@
+POSIX tr - OPTIONS
+
+  -c    Complement the set of values specified by string1.
+
+  -C    Complement the set of characters specified by
+        string1.
+
+  -d    Delete all occurrences of input characters that
+        are specified by string1.
+
+  -s    Replace instances of repeated characters with a
+        single character.

@@ -1,0 +1,35 @@
+POSIX dd - OPERANDS
+
+  if=file       Specify the input pathname; the default is
+                standard input.
+
+  of=file       Specify the output pathname; the default is
+                standard output. Truncated before copying
+                unless notrunc or seek= is used.
+
+  ibs=expr      Specify the input block size, in bytes, by
+                expr (default is 512).
+
+  obs=expr      Specify the output block size, in bytes, by
+                expr (default is 512).
+
+  bs=expr       Set both input and output block sizes to
+                expr bytes, superseding ibs= and obs=.
+
+  cbs=expr      Specify the conversion block size for block
+                and unblock in bytes by expr (default is
+                zero).
+
+  skip=n        Skip n input blocks (using the specified
+                input block size) before starting to copy.
+
+  seek=n        Skip n blocks (using the specified output
+                block size) from the beginning of the output
+                file before copying.
+
+  count=n       Copy only n input blocks.
+
+  conv=value[,value...]
+                Comma-separated conversion symbols:
+                ascii, ebcdic, ibm, block, unblock, lcase,
+                ucase, swab, noerror, notrunc, sync

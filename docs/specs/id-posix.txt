@@ -1,0 +1,12 @@
+POSIX id - OPTIONS
+
+  -G    Output all different group IDs (effective, real,
+        and supplementary) only.
+
+  -g    Output only the effective group ID.
+
+  -n    Output the name instead of the numeric ID.
+
+  -r    Output the real ID instead of the effective ID.
+
+  -u    Output only the effective user ID.

@@ -1,0 +1,26 @@
+touch(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/touch.1
+
+-a    Change the file's access time. The modification
+      time remains unchanged unless -m is also specified.
+
+-c    Prevent file creation if it doesn't exist. No
+      error is reported and exit status is unaffected.
+
+-d ccyy-mm-ddTHH:MM:SS[.frac][Z]
+      Set access and modification times to a specified
+      moment using ISO 8601 format, with optional
+      timezone indicator.
+
+-m    Change the file's modification time. The access
+      time remains unchanged unless -a is also specified.
+
+-r file
+      Apply the access and modification times from
+      another specified file instead of using the current
+      moment.
+
+-t [[cc]yy]mmddHHMM[.SS]
+      Set access and modification times using traditional
+      format. Years 69-99 default to 19xx; others
+      default to 20xx.

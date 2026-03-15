@@ -1,0 +1,6 @@
+POSIX chmod - OPTIONS
+
+  -R    Recursively change file mode bits. For each file
+        operand that names a directory, chmod shall change
+        the file mode bits of the directory and all files
+        in the file hierarchy below it.

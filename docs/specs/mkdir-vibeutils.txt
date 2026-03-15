@@ -1,0 +1,13 @@
+Usage: mkdir [OPTION]... DIRECTORY...
+Create the DIRECTORY(ies), if they do not already exist.
+
+  -m, --mode=MODE   set file mode (as in chmod)
+  -p, --parents     make parent directories as needed, no error if existing
+  -v, --verbose     print a message for each created directory
+  -h, --help        display this help and exit
+  -V, --version     output version information and exit
+
+Examples:
+  mkdir dir1          Create directory 'dir1'
+  mkdir -p a/b/c      Create directory tree including parents
+  mkdir -m 755 bin    Create directory with permissions rwxr-xr-x

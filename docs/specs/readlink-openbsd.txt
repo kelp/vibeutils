@@ -1,0 +1,10 @@
+readlink(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/readlink.1
+
+-f    Canonicalize by following every symlink in every
+      component of the given path recursively. Resolves
+      both absolute and relative paths to return the
+      absolute pathname. The argument need not be a
+      symbolic link.
+
+-n    Do not print a trailing newline character.

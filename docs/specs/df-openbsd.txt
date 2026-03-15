@@ -1,0 +1,32 @@
+df(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/df.1
+
+-h    "Human-readable" output using unit suffixes (Byte,
+      Kilobyte, Megabyte, Gigabyte, Terabyte, Petabyte,
+      Exabyte) to limit digits to four or fewer.
+      Incompatible with -P.
+
+-i    Include statistics regarding the quantity of
+      available inodes; may be paired with -h for SI
+      symbol reporting. Incompatible with -P.
+
+-k    Report all measurements in kilobyte counts instead
+      of the default 512-byte blocks.
+
+-l    Restrict output to mounted file systems bearing
+      the MNT_LOCAL flag; issues warning if non-local
+      file system is specified.
+
+-n    Provide previously collected statistics without
+      requesting fresh data from file systems, useful
+      when delays are anticipated.
+
+-P    Generate output conforming to a standardized format
+      suitable for portable script parsing; disregards
+      BLOCKSIZE environment variable.
+
+-t type
+      Execute actions exclusively on file systems of
+      the specified type(s); multiple types may be listed
+      separated by commas. Prefix with "no" to exclude
+      specified types.

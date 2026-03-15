@@ -1,0 +1,36 @@
+Usage: readlink [OPTION]... FILE...
+Print value of a symbolic link or canonical file name
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-f\[1m-f, --canonicalize[0m]8;;\
+         canonicalize by following every symlink
+         in every component of the given name recursively;
+         all but the last component must exist
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-e\[1m-e, --canonicalize-existing[0m]8;;\
+         canonicalize by following every symlink
+         in every component of the given name recursively;
+         all components must exist
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-m\[1m-m, --canonicalize-missing[0m]8;;\
+         canonicalize by following every symlink
+         in every component of the given name recursively,
+         without requirements on components existence
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-n\[1m-n, --no-newline[0m]8;;\
+         do not output the trailing delimiter
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-q\[1m-q, --quiet[0m]8;;\
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-s\[1m-s, --silent[0m]8;;\
+         suppress most error messages
+         (on by default if POSIXLY_CORRECT is not set)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-v\[1m-v, --verbose[0m]8;;\
+         report error messages
+         (on by default if POSIXLY_CORRECT is set)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#readlink-z\[1m-z, --zero[0m]8;;\
+         end each output line with NUL, not newline
+      ]8;;https://www.gnu.org/software/coreutils/readlink#readlink--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/readlink#readlink--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/readlink>
+or available locally via: info '(coreutils) readlink invocation'

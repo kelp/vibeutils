@@ -1,0 +1,28 @@
+tail(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/tail.1
+
+-b number
+      Specifies location or quantity in units of
+      512-byte blocks, depending on whether -r is used.
+
+-c number
+      Specifies location or quantity in units of bytes,
+      depending on whether -r is used.
+
+-f    Do not stop when end-of-file is reached; instead,
+      wait for additional data to be appended to the
+      input. Reopens files if replaced and resets
+      position if truncated. Ignored when reading from
+      pipes or FIFOs.
+
+-n number
+      Specifies location or quantity in units of lines.
+      Default is 10 lines from the end. Leading plus
+      sign indicates position relative to file beginning;
+      minus sign or no sign indicates position relative
+      to file end.
+
+-r    Display input in reverse order by line. Changes the
+      meaning of -b, -c, and -n options to specify the
+      quantity to display rather than starting position.
+      Defaults to displaying all input.

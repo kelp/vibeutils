@@ -1,0 +1,10 @@
+Usage: mv [OPTION]... SOURCE DEST
+  or:  mv [OPTION]... SOURCE... DIRECTORY
+Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
+
+  -f, --force                overwrite without prompting
+  -i, --interactive          prompt before overwrite
+  -n, --no-clobber           never overwrite an existing file
+  -v, --verbose              print each action
+  -h, --help                 display this help and exit
+  -V, --version              output version information and exit

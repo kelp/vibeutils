@@ -1,0 +1,16 @@
+mkdir(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/mkdir.1
+
+-m mode
+      Set the file permission bits of the newly created
+      directory. The mode argument can be specified in
+      formats accepted by chmod(1). For symbolic modes,
+      operators '+' and '-' are interpreted relative to
+      an initial mode of "a=rwx".
+
+-p    Create intermediate directories as required. If
+      omitted, the full path prefix must already exist.
+      Intermediate directories are created with
+      rwxrwxrwx (0777) permissions as modified by umask,
+      plus write and search permission for the owner.
+      Does not treat existing directories as errors.

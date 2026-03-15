@@ -1,0 +1,34 @@
+Usage: seq [OPTION]... LAST
+  or:  seq [OPTION]... FIRST LAST
+  or:  seq [OPTION]... FIRST INCREMENT LAST
+Print numbers from FIRST to LAST, in steps of INCREMENT.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#seq-f\[1m-f, --format=FORMAT[0m]8;;\
+         use printf style floating-point FORMAT
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#seq-s\[1m-s, --separator=STRING[0m]8;;\
+         use STRING to separate numbers (default: \n)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#seq-w\[1m-w, --equal-width[0m]8;;\
+         equalize width by padding with leading zeroes
+      ]8;;https://www.gnu.org/software/coreutils/seq#seq--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/seq#seq--version\[1m--version[0m]8;;\
+         output version information and exit
+
+If FIRST or INCREMENT is omitted, it defaults to 1.  That is, an
+omitted INCREMENT defaults to 1 even when LAST is smaller than FIRST.
+The sequence of numbers ends when the sum of the current number and
+INCREMENT would become greater than LAST.
+FIRST, INCREMENT, and LAST are interpreted as floating point values.
+INCREMENT is usually positive if FIRST is smaller than LAST, and
+INCREMENT is usually negative if FIRST is greater than LAST.
+INCREMENT must not be 0; none of FIRST, INCREMENT and LAST may be NaN.
+FORMAT must be suitable for printing one argument of type 'double';
+it defaults to %.PRECf if FIRST, INCREMENT, and LAST are all fixed point
+decimal numbers with maximum precision PREC, and to %g otherwise.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/seq>
+or available locally via: info '(coreutils) seq invocation'

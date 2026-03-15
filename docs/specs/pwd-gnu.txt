@@ -1,0 +1,23 @@
+Usage: pwd [OPTION]...
+Print the full filename of the current working directory.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#pwd-L\[1m-L, --logical[0m]8;;\
+         use PWD from environment, even if it contains symlinks
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#pwd-P\[1m-P, --physical[0m]8;;\
+         resolve all symlinks
+      ]8;;https://www.gnu.org/software/coreutils/pwd#pwd--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/pwd#pwd--version\[1m--version[0m]8;;\
+         output version information and exit
+
+If no option is specified, -P is assumed.
+
+Your shell may have its own version of pwd, which usually supersedes
+the version described here.  Please refer to your shell's documentation
+for details about the options it supports.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/pwd>
+or available locally via: info '(coreutils) pwd invocation'

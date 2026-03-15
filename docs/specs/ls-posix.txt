@@ -1,0 +1,74 @@
+POSIX ls - OPTIONS
+
+  -A    Write out all directory entries, including those
+        whose names begin with a period, but excluding
+        dot and dot-dot.
+
+  -C    Write multi-text-column output with entries sorted
+        down the columns.
+
+  -F    Write a slash after directories, asterisk after
+        executables, pipe after FIFOs, at-sign after
+        symlinks.
+
+  -H    Evaluate file information for symbolic links on
+        the command line as those of the referenced file.
+
+  -L    Evaluate file information for all symbolic links
+        as those of the referenced file.
+
+  -R    Recursively list subdirectories encountered.
+
+  -S    Sort by file size (decreasing), then filename.
+
+  -a    Write out all directory entries, including those
+        whose names begin with a period.
+
+  -c    Use time of last status change instead of last
+        modification for sorting (-t) or writing (-l).
+
+  -d    Do not treat directories differently than other
+        types of files.
+
+  -f    List entries in directory order. Turns on -a.
+        Ignores -r, -S, -t.
+
+  -g    Turn on -l but disable writing the file's owner
+        name or number. (XSI)
+
+  -i    Write the file's file serial number (inode).
+
+  -k    Set block size for -s and per-directory block
+        count to 1024 bytes.
+
+  -l    Long format output. Disables -C, -m, -x.
+
+  -m    Stream output format; pathnames separated by
+        comma and space.
+
+  -n    Turn on -l but write numeric UID/GID instead of
+        names. Disables -C, -m, -x.
+
+  -o    Turn on -l but disable writing the file's group
+        name or number. (XSI)
+
+  -p    Write a slash after each directory name.
+
+  -q    Force non-printable filename characters to be
+        written as question marks.
+
+  -r    Reverse the order of the sort.
+
+  -s    Show total number of file system blocks consumed
+        by each file.
+
+  -t    Sort by time modified (most recent first), then
+        filename.
+
+  -u    Use time of last access instead of last
+        modification for sorting (-t) or writing (-l).
+
+  -x    Multi-text-column output with entries sorted
+        across, rather than down, the columns.
+
+  -1    Force output to be one entry per line.

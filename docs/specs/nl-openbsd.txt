@@ -1,0 +1,46 @@
+nl(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/nl.1
+
+-b type
+      Designate how body section lines get numbered.
+      Types: a (all), t (non-empty), n (none),
+      pexpr (matching regex).
+
+-d delim
+      Configure delimiter characters for logical page
+      section markers (default: '\:').
+
+-f type
+      Set footer section numbering method using same
+      type options as -b.
+
+-h type
+      Set header section numbering method using same
+      type options as -b.
+
+-i incr
+      Configure the increment value for line numbering
+      (default: 1).
+
+-l num
+      When numbering all lines, treat multiple
+      consecutive blank lines as one unit (default: 1).
+
+-n format
+      Specify output format: ln (left justified),
+      rn (right justified without leading zeros),
+      rz (right justified with leading zeros).
+
+-p    Disable line number resets at logical page
+      delimiters.
+
+-s sep
+      Define separator characters between line numbers
+      and text (default: tab character).
+
+-v startnum
+      Set the starting line number value (default: 1).
+
+-w width
+      Configure the character width for line numbers
+      (default: 6).

@@ -1,0 +1,7 @@
+tee(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/tee.1
+
+-a    Append the output to the files rather than
+      overwriting them.
+
+-i    Ignore the SIGINT signal.

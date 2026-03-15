@@ -1,0 +1,7 @@
+POSIX rmdir - OPTIONS
+
+  -p    Remove all directories in a pathname. For each dir
+        operand, the directory entry it names shall be
+        removed, then if the dir operand includes more than
+        one pathname component, the parent directories
+        shall also be removed.

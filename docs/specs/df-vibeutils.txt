@@ -1,0 +1,33 @@
+Usage: df [OPTION]... [FILE]...
+Show information about the file system on which each FILE resides,
+or all file systems by default.
+
+Displays human-readable sizes by default with colored output and
+usage bars. Use -P for POSIX-compatible plain output.
+
+  -a, --all             include pseudo, duplicate, inaccessible file systems
+  -h, --human-readable  print sizes in powers of 1024 (default)
+  -H, --si              print sizes in powers of 1000 (e.g., 1.1G)
+  -i, --inodes          list inode information instead of block usage
+  -k                    like --block-size=1K (disables human-readable)
+  -l, --local           limit listing to local file systems
+  -P, --portability     use the POSIX output format (no colors or bars)
+  -T, --print-type      print file system type
+  -t, --type=TYPE       limit listing to file systems of type TYPE
+  -x, --exclude-type=TYPE  limit listing to file systems not of type TYPE
+      --block-size=SIZE  scale sizes by SIZE before printing them
+      --total            produce a grand total
+      --output[=FIELD_LIST]  use the output format defined by FIELD_LIST
+      --help             display this help and exit
+      --version          output version information and exit
+
+VIBEUTILS_STYLE controls visual enhancements:
+  full    colored output with usage bars (default)
+  color   colored percentage only, no bars
+  plain   no colors or visual enhancements
+
+Per-feature overrides (auto/always/never):
+  VIBEUTILS_COLOR      enable/disable colored output
+  VIBEUTILS_ICONS      enable/disable usage bars
+  VIBEUTILS_HIGHLIGHT  enable/disable syntax highlighting
+  VIBEUTILS_THEME      theme selection (default/none)

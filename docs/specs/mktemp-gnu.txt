@@ -1,0 +1,35 @@
+Usage: mktemp [OPTION]... [TEMPLATE]
+Create a temporary file or directory, safely, and print its name.
+TEMPLATE must contain at least 3 consecutive 'X's in last component.
+If TEMPLATE is not specified, use tmp.XXXXXXXXXX, and --tmpdir is implied.
+Files are created u+rw, and directories u+rwx, minus umask restrictions.
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp-d\[1m-d, --directory[0m]8;;\
+         create a directory, not a file
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp-u\[1m-u, --dry-run[0m]8;;\
+         do not create anything; merely print a name (unsafe)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp-q\[1m-q, --quiet[0m]8;;\
+         suppress diagnostics about file/dir-creation failure
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp--suffix\[1m--suffix=SUFF[0m]8;;\
+         append SUFF to TEMPLATE; SUFF must not contain a slash.
+         This option is implied if TEMPLATE does not end in X
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp-p\[1m-p DIR, --tmpdir[=DIR][0m]8;;\
+         interpret TEMPLATE relative to DIR;
+         if DIR is not specified, use $TMPDIR if set, else /tmp.
+         With this option, TEMPLATE must not be an absolute name;
+         unlike with -t, TEMPLATE may contain slashes,
+         but mktemp creates only the final component
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#mktemp-t\[1m-t[0m]8;;\
+         interpret TEMPLATE as a single file name component,
+         relative to a directory: $TMPDIR, if set;
+         else the directory specified via -p; else /tmp [deprecated]
+      ]8;;https://www.gnu.org/software/coreutils/mktemp#mktemp--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/mktemp#mktemp--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/mktemp>
+or available locally via: info '(coreutils) mktemp invocation'

@@ -1,0 +1,51 @@
+dd(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/dd.1
+
+dd uses operands rather than flags:
+
+Input/Output:
+  if=file       Read input from file instead of stdin.
+  of=file       Write output to file instead of stdout.
+
+Block Sizes:
+  ibs=n         Set input block size to n bytes
+                (default 512).
+  obs=n         Set output block size to n bytes
+                (default 512).
+  bs=n          Set both input and output block size to
+                n bytes.
+  cbs=n         Set conversion record size to n bytes.
+
+Data Transfer Control:
+  count=n       Copy only n input blocks.
+  files=n       Copy n input files before terminating
+                (tape devices only).
+  seek=n        Seek n blocks from the beginning of the
+                output before copying.
+  skip=n        Skip n blocks from the beginning of the
+                input before copying.
+
+Status:
+  status=value  Control output statistics. Values:
+                noxfer, none.
+
+Conversions (conv=value[,value...]):
+  ascii         Translate EBCDIC to ASCII.
+  block         Convert variable-length records to
+                fixed-length output.
+  ebcdic        Translate ASCII to EBCDIC.
+  ibm           Alternate EBCDIC mapping compatible with
+                System V UNIX.
+  fsync         Call fsync(2) on the output file before
+                exiting.
+  lcase         Transform uppercase to lowercase.
+  noerror       Continue processing despite input errors.
+  notrunc       Preserve output file blocks not
+                explicitly written.
+  osync         Pad final output block to full block
+                size.
+  swab          Swap every pair of input bytes.
+  sync          Pad every input block to buffer size.
+  ucase         Transform lowercase to uppercase.
+  unblock       Convert fixed-length records to
+                variable-length output.

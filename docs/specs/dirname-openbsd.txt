@@ -1,0 +1,6 @@
+dirname(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/dirname.1
+
+No flags or options. The utility takes a single pathname
+argument and outputs the directory portion of that path
+to standard output.

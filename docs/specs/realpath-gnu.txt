@@ -1,0 +1,22 @@
+Usage: realpath [OPTION]... FILE...
+Print the resolved absolute file name.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-E\[1m-E, --canonicalize[0m]8;;\           all but the last component must exist (default)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-e\[1m-e, --canonicalize-existing[0m]8;;\  all components of the path must exist
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-m\[1m-m, --canonicalize-missing[0m]8;;\   no path components need exist or be a directory
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-L\[1m-L, --logical[0m]8;;\                resolve '..' components before symlinks
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-P\[1m-P, --physical[0m]8;;\               resolve symlinks as encountered (default)
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-q\[1m-q, --quiet[0m]8;;\                  suppress most error messages
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath--relative-to\[1m--relative-to=DIR[0m]8;;\        print the resolved path relative to DIR
+      ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath--relative-base\[1m--relative-base=DIR[0m]8;;\      print absolute paths unless paths below DIR
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-s\[1m-s, --strip, --no-symlinks[0m]8;;\   don't expand symlinks
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#realpath-z\[1m-z, --zero[0m]8;;\                   end each output line with NUL, not newline
+      ]8;;https://www.gnu.org/software/coreutils/realpath#realpath--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/realpath#realpath--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/realpath>
+or available locally via: info '(coreutils) realpath invocation'

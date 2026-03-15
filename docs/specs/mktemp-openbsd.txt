@@ -1,0 +1,22 @@
+mktemp(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/mktemp.1
+
+-d    Create a directory instead of a file.
+
+-p directory
+      Specify a directory prefix for generating the
+      temporary name. User's TMPDIR environment variable
+      overrides this. Implies the -t flag.
+
+-q    Fail silently if an error occurs. Useful if a
+      script does not want error output to go to
+      standard error.
+
+-t    Generate a path rooted in a temporary directory.
+      Uses TMPDIR if set, otherwise the -p directory,
+      otherwise /tmp. Template should be a directory
+      component without forward slashes.
+
+-u    Operate in unsafe mode where the temporary file is
+      removed before mktemp exits. Creates a race
+      condition and is not recommended.

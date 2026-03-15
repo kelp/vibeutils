@@ -1,0 +1,9 @@
+env(1) - OpenBSD Man Page Flags
+Source: https://man.openbsd.org/env.1
+
+-i    Disregard the inherited environment entirely and
+      start with a clean slate.
+
+-u name
+      Remove the specified variable name from the
+      environment before executing the utility.

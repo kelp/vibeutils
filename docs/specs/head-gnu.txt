@@ -1,0 +1,34 @@
+Usage: head [OPTION]... [FILE]...
+Print the first 10 lines of each FILE to standard output.
+With more than one FILE, precede each with a header giving the file name.
+
+With no FILE, or when FILE is -, read standard input.
+
+Mandatory arguments to long options are mandatory for short options too.
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#head-c\[1m-c, --bytes=[-]NUM[0m]8;;\
+         print the first NUM bytes of each file;
+         with the leading '-', print all but the last NUM bytes of each file
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#head-n\[1m-n, --lines=[-]NUM[0m]8;;\
+         print the first NUM lines instead of the first 10;
+         with the leading '-', print all but the last NUM lines of each file
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#head-q\[1m-q, --quiet, --silent[0m]8;;\
+         never print headers giving file names
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#head-v\[1m-v, --verbose[0m]8;;\
+         always print headers giving file names
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#head-z\[1m-z, --zero-terminated[0m]8;;\
+         line delimiter is NUL, not newline
+      ]8;;https://www.gnu.org/software/coreutils/head#head--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/head#head--version\[1m--version[0m]8;;\
+         output version information and exit
+
+NUM may have a multiplier suffix:
+b 512, kB 1000, K 1024, MB 1000*1000, M 1024*1024,
+GB 1000*1000*1000, G 1024*1024*1024, and so on for T, P, E, Z, Y, R, Q.
+Binary prefixes can be used, too: KiB=K, MiB=M, and so on.
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/head>
+or available locally via: info '(coreutils) head invocation'

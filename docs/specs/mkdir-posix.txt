@@ -1,0 +1,8 @@
+POSIX mkdir - OPTIONS
+
+  -m mode
+        Set the file permission bits of the newly-created
+        directory to the specified mode value.
+
+  -p    Create any missing intermediate pathname
+        components (parent directories).

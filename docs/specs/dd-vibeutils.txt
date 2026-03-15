@@ -1,0 +1,35 @@
+Usage: dd [OPERAND]...
+  or:  dd --help
+  or:  dd --version
+
+Copy a file, converting and formatting according to the operands.
+
+  if=FILE         read from FILE instead of stdin
+  of=FILE         write to FILE instead of stdout
+  bs=BYTES        read and write up to BYTES bytes at a time
+  ibs=BYTES       read up to BYTES bytes at a time (default: 512)
+  obs=BYTES       write BYTES bytes at a time (default: 512)
+  count=N         copy only N input blocks
+  skip=N          skip N ibs-sized blocks at start of input
+  seek=N          skip N obs-sized blocks at start of output
+  conv=CONVS      convert the file as per the comma-separated list
+  status=LEVEL    transfer information to print to stderr;
+                  LEVEL is one of: none, noxfer, progress
+      --help      display this help and exit
+      --version   output version information and exit
+
+BYTES may be followed by a suffix:
+  c=1, w=2, b=512, k=K=1024, M=1048576, G=1073741824
+Sizes may also use 'x' for multiplication (e.g., 1024x1024).
+
+CONVS is a comma-separated list of:
+  lcase     convert uppercase to lowercase
+  ucase     convert lowercase to uppercase
+  notrunc   do not truncate the output file
+  noerror   continue after read errors
+  sync      pad input blocks with NULs to ibs size
+
+Examples:
+  dd if=input.bin of=output.bin bs=1M
+  dd if=/dev/zero of=file.img bs=1024 count=1024
+  dd if=file.txt conv=ucase

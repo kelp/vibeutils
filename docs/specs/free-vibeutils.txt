@@ -1,0 +1,15 @@
+Usage: free [OPTION]...
+Display the amount of free and used memory in the system.
+
+  -b, --bytes     display output in bytes
+  -k, --kibi      display output in kibibytes (default)
+  -m, --mebi      display output in mebibytes
+  -g, --gibi      display output in gibibytes
+  -h, --human     show human-readable output
+      --si        use powers of 1000 instead of 1024
+  -t, --total     display a line showing column totals
+  -w, --wide      wide output
+  -s N, --seconds=N   continuously display every N seconds
+  -c N, --count=N     display N times (used with -s)
+      --help      display this help and exit
+  -V, --version   output version information and exit

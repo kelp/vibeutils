@@ -1,0 +1,8 @@
+POSIX basename - OPTIONS and OPERANDS
+
+OPTIONS:
+No options.
+
+OPERANDS:
+  string    A string.
+  suffix    A string.

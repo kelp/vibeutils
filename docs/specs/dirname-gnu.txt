@@ -1,0 +1,21 @@
+Usage: dirname [OPTION] NAME...
+Output each NAME with its last non-slash component and trailing slashes
+removed; if NAME contains no /'s, output '.' (meaning the current directory).
+
+  ]8;;https://www.gnu.org/software/coreutils/manual/coreutils.html#dirname-z\[1m-z, --zero[0m]8;;\
+         end each output line with NUL, not newline
+      ]8;;https://www.gnu.org/software/coreutils/dirname#dirname--help\[1m--help[0m]8;;\
+         display this help and exit
+      ]8;;https://www.gnu.org/software/coreutils/dirname#dirname--version\[1m--version[0m]8;;\
+         output version information and exit
+
+Examples:
+  dirname /usr/bin/          -> "/usr"
+  dirname dir1/str dir2/str  -> "dir1" followed by "dir2"
+  dirname stdio.h            -> "."
+
+Report bugs to: bug-coreutils@gnu.org
+GNU coreutils home page: <https://www.gnu.org/software/coreutils/>
+General help using GNU software: <https://www.gnu.org/gethelp/>
+Full documentation <https://www.gnu.org/software/coreutils/dirname>
+or available locally via: info '(coreutils) dirname invocation'
