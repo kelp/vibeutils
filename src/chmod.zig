@@ -16,6 +16,9 @@ const ChmodArgs = struct {
     silent: bool = false,
     verbose: bool = false,
     recursive: bool = false,
+    H: bool = false,
+    L: bool = false,
+    P: bool = false,
     reference: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
 
@@ -26,6 +29,9 @@ const ChmodArgs = struct {
         .silent = .{ .short = 'f', .desc = "Suppress most error messages" },
         .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
         .recursive = .{ .short = 'R', .desc = "Change files and directories recursively" },
+        .H = .{ .short = 'H', .desc = "Traverse symlinks given on the command line" },
+        .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
+        .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .reference = .{ .desc = "Use reference file's mode instead of MODE", .value_name = "RFILE" },
     };
 };
@@ -78,6 +84,9 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         .quiet = parsed_args.silent,
         .verbose = parsed_args.verbose,
         .recursive = parsed_args.recursive,
+        .traverse_cmdline_symlinks = parsed_args.H,
+        .traverse_all_symlinks = parsed_args.L,
+        .no_traverse_symlinks = parsed_args.P,
         .reference_file = parsed_args.reference,
     };
 
@@ -143,6 +152,15 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --help             display this help and exit
         \\      --version          output version information and exit
         \\
+        \\The following options modify how a hierarchy is traversed when the -R
+        \\option is also specified.  If more than one is specified, only the final
+        \\one takes effect.
+        \\
+        \\  -H                     traverse symlinks given on the command line
+        \\  -L                     traverse every symbolic link to a directory
+        \\                         encountered
+        \\  -P                     do not traverse any symbolic links (default)
+        \\
         \\Each MODE is of the form '[ugoa]*[-+=]([rwxXst]*|[ugo])'.
         \\
         \\Examples:
@@ -165,6 +183,9 @@ const ChmodOptions = struct {
     quiet: bool = false,
     verbose: bool = false,
     recursive: bool = false,
+    traverse_cmdline_symlinks: bool = false,
+    traverse_all_symlinks: bool = false,
+    no_traverse_symlinks: bool = false,
     reference_file: ?[]const u8 = null,
 };
 
@@ -286,8 +307,8 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
 
     for (files) |file_path| {
         if (options.recursive) {
-            // Check if path is a directory
-            const stat_result = std.fs.cwd().statFile(file_path) catch |err| {
+            // Use lstat to check if the command-line arg is a symlink
+            const lstat_result = common.file.FileInfo.lstat(file_path) catch |err| {
                 if (!options.quiet) {
                     common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
                 }
@@ -295,7 +316,22 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
                 continue;
             };
 
-            if (stat_result.kind == .directory) {
+            const should_follow = lstat_result.kind == .sym_link and
+                (options.traverse_cmdline_symlinks or options.traverse_all_symlinks);
+
+            const effective_kind = if (should_follow) blk: {
+                // Follow the symlink to check the target type
+                const target_stat = std.fs.cwd().statFile(file_path) catch |err| {
+                    if (!options.quiet) {
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    }
+                    had_errors = true;
+                    continue;
+                };
+                break :blk target_stat.kind;
+            } else lstat_result.kind;
+
+            if (effective_kind == .directory) {
                 chmodRecursive(allocator, file_path, mode_spec, writer, stderr_writer, options) catch {
                     had_errors = true;
                 };
@@ -372,8 +408,30 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
                     had_errors = true;
                 };
             },
+            .sym_link => {
+                // With -L, follow symlinks to directories during traversal
+                if (options.traverse_all_symlinks) {
+                    const target_stat = std.fs.cwd().statFile(full_path) catch {
+                        // Symlink target inaccessible; apply chmod to symlink itself
+                        const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
+                        if (!result) had_errors = true;
+                        continue;
+                    };
+                    if (target_stat.kind == .directory) {
+                        chmodRecursive(allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
+                            had_errors = true;
+                        };
+                        continue;
+                    }
+                }
+                // Default: don't follow symlinks (-P, -H during recursion)
+                const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
+                if (!result) {
+                    had_errors = true;
+                }
+            },
             else => {
-                // Handle all file types uniformly (files, symlinks, devices, etc.)
+                // Handle all other file types (regular files, devices, etc.)
                 const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
                 if (!result) {
                     had_errors = true;
@@ -646,7 +704,6 @@ fn errorToMessage(err: anytype) []const u8 {
     return switch (err) {
         error.FileNotFound => "No such file or directory",
         error.AccessDenied => "Permission denied",
-        error.PermissionDenied => "Permission denied",
         error.NotDir => "Not a directory",
         else => @errorName(err),
     };
@@ -1545,4 +1602,51 @@ test "no non-octal digit warning for valid octal mode" {
 
     // Should NOT contain non-octal warning (may contain other error messages)
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "non-octal digits") == null);
+}
+
+// Tests: -H, -L, -P symlink traversal flags
+
+test "parse -H flag" {
+    const args = [_][]const u8{ "-H", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.H);
+    try testing.expect(!parsed.L);
+    try testing.expect(!parsed.P);
+}
+
+test "parse -L flag" {
+    const args = [_][]const u8{ "-L", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(!parsed.H);
+    try testing.expect(parsed.L);
+    try testing.expect(!parsed.P);
+}
+
+test "parse -P flag" {
+    const args = [_][]const u8{ "-P", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(!parsed.H);
+    try testing.expect(!parsed.L);
+    try testing.expect(parsed.P);
+}
+
+test "ChmodOptions has symlink traversal fields" {
+    const options = ChmodOptions{
+        .traverse_cmdline_symlinks = true,
+        .traverse_all_symlinks = false,
+        .no_traverse_symlinks = false,
+    };
+    try testing.expect(options.traverse_cmdline_symlinks);
+    try testing.expect(!options.traverse_all_symlinks);
+    try testing.expect(!options.no_traverse_symlinks);
+}
+
+test "ChmodOptions symlink traversal defaults to false" {
+    const options = ChmodOptions{};
+    try testing.expect(!options.traverse_cmdline_symlinks);
+    try testing.expect(!options.traverse_all_symlinks);
+    try testing.expect(!options.no_traverse_symlinks);
 }
