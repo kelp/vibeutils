@@ -120,6 +120,8 @@ const ExprTag = enum {
     xdev,
     nouser,
     nogroup,
+    mmin,
+    inum,
     print,
     print0,
     delete,
@@ -164,6 +166,8 @@ const FindConfig = struct {
     follow_symlinks: bool = false,
     follow_cmdline_symlinks: bool = false,
     has_action: bool = false,
+    xdev: bool = false,
+    xargs_safe: bool = false,
 };
 
 // ============================================================================
@@ -512,6 +516,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     var depth_first = false;
     var follow_symlinks = false;
     var follow_cmdline_symlinks = false;
+    var xdev = false;
+    var xargs_safe = false;
 
     // Collect starting paths and global options before expressions
     var expr_start: usize = 0;
@@ -523,9 +529,21 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
         } else if (std.mem.eql(u8, arg, "-H")) {
             follow_cmdline_symlinks = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-depth")) {
+        } else if (std.mem.eql(u8, arg, "-depth") or std.mem.eql(u8, arg, "-d")) {
             depth_first = true;
             expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-x")) {
+            xdev = true;
+            expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-X")) {
+            xargs_safe = true;
+            expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-f")) {
+            expr_start += 1;
+            if (expr_start < args.len) {
+                try start_paths.append(allocator, args[expr_start]);
+                expr_start += 1;
+            }
         } else if (arg.len > 0 and arg[0] == '-' and !std.mem.eql(u8, arg, "-")) {
             break;
         } else if (std.mem.eql(u8, arg, "(") or std.mem.eql(u8, arg, "!")) {
@@ -563,8 +581,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
                 return error.InvalidExpression;
             };
             i += 2;
-        } else if (std.mem.eql(u8, args[i], "-depth")) {
+        } else if (std.mem.eql(u8, args[i], "-depth") or std.mem.eql(u8, args[i], "-d")) {
             depth_first = true;
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "-xdev") or std.mem.eql(u8, args[i], "-mount")) {
+            xdev = true;
             i += 1;
         } else {
             i += 1;
@@ -609,6 +630,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
         .follow_symlinks = follow_symlinks,
         .follow_cmdline_symlinks = follow_cmdline_symlinks,
         .has_action = has_action,
+        .xdev = xdev,
+        .xargs_safe = xargs_safe,
     };
 }
 
@@ -713,7 +736,7 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 2;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
-    if (std.mem.eql(u8, arg, "-depth")) {
+    if (std.mem.eql(u8, arg, "-depth") or std.mem.eql(u8, arg, "-d")) {
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
@@ -984,6 +1007,34 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .nogroup, .{ .none = {} });
     }
 
+    if (std.mem.eql(u8, arg, "-mmin")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-mmin'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-mmin'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .mmin, .{ .time = te });
+    }
+
+    if (std.mem.eql(u8, arg, "-inum")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-inum'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-inum'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .inum, .{ .time = te });
+    }
+
     pctx.setError("unknown predicate '{s}'", .{arg});
     return error.InvalidExpression;
 }
@@ -1078,6 +1129,26 @@ fn evaluate(
                 .less_than => nlink < te.days,
             };
         },
+        .mmin => {
+            const te = expr.data.time;
+            const file_mtime = getMtime(stat_buf);
+            const age_secs = now - file_mtime;
+            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
+            return switch (te.cmp) {
+                .exactly => age_mins == te.days,
+                .greater_than => age_mins > te.days,
+                .less_than => age_mins < te.days,
+            };
+        },
+        .inum => {
+            const te = expr.data.time;
+            const file_ino: u64 = @intCast(stat_buf.ino);
+            return switch (te.cmp) {
+                .exactly => file_ino == te.days,
+                .greater_than => file_ino > te.days,
+                .less_than => file_ino < te.days,
+            };
+        },
         // Stubs for primaries not yet fully implemented
         .ok => return true,
         .xdev => return true,
@@ -1122,6 +1193,18 @@ fn evaluate(
             return true;
         },
     }
+}
+
+/// Check if a filename contains characters that are problematic for xargs.
+/// Characters: space, tab, newline, single quote, double quote, backslash.
+fn isXargsUnsafe(name: []const u8) bool {
+    for (name) |ch| {
+        switch (ch) {
+            ' ', '\t', '\n', '\'', '"', '\\' => return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn isDirEmpty(path: []const u8) !bool {
@@ -1224,6 +1307,7 @@ fn walkPath(
     stderr: anytype,
     had_error: *bool,
     now: i64,
+    root_dev: ?i64,
 ) void {
     // Check maxdepth
     if (config.maxdepth) |max| {
@@ -1256,6 +1340,20 @@ fn walkPath(
     const kind = getFileKind(stat_buf.mode);
     const basename = std.fs.path.basename(path);
     const is_depth_first = config.depth_first;
+
+    // -xdev: skip entries on different filesystems
+    if (root_dev) |rd| {
+        const entry_dev: i64 = @intCast(stat_buf.dev);
+        if (entry_dev != rd) return;
+    }
+
+    // -X: warn about and skip xargs-unsafe filenames
+    if (config.xargs_safe and depth > 0) {
+        if (isXargsUnsafe(basename)) {
+            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "warning: file name '{s}' is not safe for use with xargs", .{basename});
+            return;
+        }
+    }
 
     // Non-directory: evaluate and return
     if (kind != .directory) {
@@ -1320,7 +1418,7 @@ fn walkPath(
         };
         defer allocator.free(child_path);
 
-        walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now);
+        walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev);
     }
 
     // Depth-first: evaluate directory after children
@@ -1355,7 +1453,14 @@ pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, 
     var had_error = false;
 
     for (config.start_paths) |path| {
-        walkPath(allocator, path, 0, &config, stdout, stderr, &had_error, now);
+        // Get root device for -xdev enforcement
+        var root_dev: ?i64 = null;
+        if (config.xdev) {
+            if (doStat(path, config.follow_symlinks)) |sb| {
+                root_dev = @intCast(sb.dev);
+            } else |_| {}
+        }
+        walkPath(allocator, path, 0, &config, stdout, stderr, &had_error, now, root_dev);
     }
 
     return if (had_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
@@ -1386,14 +1491,17 @@ pub fn main() !void {
 
 fn printHelp(allocator: Allocator, writer: anytype) void {
     const help_text =
-        \\Usage: find [-H] [-L] [path...] [expression]
+        \\Usage: find [-H] [-L] [-d] [-x] [-X] [-f path] [path...] [expression]
         \\
         \\Search for files in a directory hierarchy.
         \\
         \\Global options:
         \\  -H                 follow symbolic links on the command line only
         \\  -L, -follow        follow all symbolic links
-        \\  -depth             process directory contents before directory itself
+        \\  -d, -depth         process directory contents before directory itself
+        \\  -x                 don't descend into other filesystems (same as -xdev)
+        \\  -X                 warn about and skip xargs-unsafe filenames
+        \\  -f path            specify a search path explicitly
         \\  -maxdepth N        descend at most N levels below starting points
         \\  -mindepth N        do not apply tests at levels less than N
         \\
@@ -1406,15 +1514,25 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -empty             file is empty (regular file or directory)
         \\  -newer FILE        modified more recently than FILE
         \\  -mtime N           modified N*24 hours ago (+N/-N/N)
+        \\  -atime N           accessed N*24 hours ago (+N/-N/N)
+        \\  -ctime N           status changed N*24 hours ago (+N/-N/N)
+        \\  -mmin N            modified N minutes ago (+N/-N/N)
         \\  -perm MODE         permission bits match MODE (octal)
         \\  -user NAME         file belongs to user NAME
         \\  -group NAME        file belongs to group NAME
+        \\  -nouser            file not owned by any user
+        \\  -nogroup           file not owned by any group
+        \\  -links N           file has N hard links (+N/-N/N)
+        \\  -inum N            file has inode number N (+N/-N/N)
+        \\  -xdev              don't descend into other filesystems
+        \\  -prune             don't descend into matched directory
         \\
         \\Actions:
         \\  -print             print full path (default action)
         \\  -print0            print full path followed by NUL
         \\  -delete            delete file (implies -depth)
         \\  -exec CMD {} ;     execute command for each file
+        \\  -ok CMD {} ;       like -exec but ask user first
         \\
         \\Operators:
         \\  -and, -a           logical AND (default between tests)
@@ -2251,4 +2369,208 @@ test "find: -xdev is accepted without error" {
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-xdev", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+// ============================================================================
+// Tests for new global options and primaries
+// ============================================================================
+
+test "find: -d is alias for -depth" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("adir");
+    var sub = try tmp.dir.openDir("adir", .{});
+    const f1 = try sub.createFile("file.txt", .{});
+    f1.close();
+    sub.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -d should behave like -depth: file.txt before adir
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-d" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const output = stdout_buf.items;
+    const file_pos = std.mem.indexOf(u8, output, "file.txt");
+    const dir_pos = std.mem.indexOf(u8, output, "adir\n");
+    try testing.expect(file_pos != null);
+    try testing.expect(dir_pos != null);
+    try testing.expect(file_pos.? < dir_pos.?);
+}
+
+test "find: -f specifies explicit search path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile("file.txt", .{});
+    f1.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -f path should specify the search path
+    const exit_code = runFind(allocator, &[_][]const u8{ "-f", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -x is alias for -xdev" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -x should be accepted just like -xdev
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-x", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -X warns about xargs-unsafe filenames" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a file with a space in its name (xargs-problematic)
+    const f1 = try tmp.dir.createFile("has space.txt", .{});
+    f1.close();
+    // Create a normal file
+    const f2 = try tmp.dir.createFile("safe.txt", .{});
+    f2.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -X should warn about the file with a space
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-X", "-type", "f" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // safe.txt should appear in output
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "safe.txt") != null);
+    // has space.txt should NOT appear in output (skipped by -X)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "has space.txt") == null);
+    // Warning about the problematic name should be on stderr
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "has space.txt") != null);
+}
+
+test "find: -mmin matches recently modified files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("fresh.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // File was just created, so modified less than 5 minutes ago
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "fresh.txt") != null);
+}
+
+test "find: -mmin +9999 matches nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("recent.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -inum matches file by inode number" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("target.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Get the inode number of target.txt
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "target.txt" });
+    const stat_buf = try doStat(file_path, false);
+    const ino = stat_buf.ino;
+    var ino_buf: [32]u8 = undefined;
+    const ino_str = std.fmt.bufPrint(&ino_buf, "{d}", .{ino}) catch unreachable;
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-inum", ino_str }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") != null);
+}
+
+test "find: -inum with non-matching inode returns nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Inode 0 should not match any real file
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-inum", "0" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
 }
