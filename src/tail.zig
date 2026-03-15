@@ -25,6 +25,7 @@ const TailArgs = struct {
     version: bool = false,
     lines: ?[]const u8 = null,
     bytes: ?[]const u8 = null,
+    blocks: ?[]const u8 = null,
     quiet: bool = false,
     verbose: bool = false,
     zero_terminated: bool = false,
@@ -37,6 +38,7 @@ const TailArgs = struct {
         .version = .{ .short = 'V', .desc = "output version information and exit" },
         .lines = .{ .short = 'n', .desc = "output the last NUM lines, instead of the last 10" },
         .bytes = .{ .short = 'c', .desc = "output the last NUM bytes" },
+        .blocks = .{ .short = 'b', .desc = "output the last NUM 512-byte blocks" },
         .quiet = .{ .short = 'q', .desc = "never output headers when multiple files are being examined" },
         .verbose = .{ .short = 'v', .desc = "always output headers when examining files" },
         .zero_terminated = .{ .short = 'z', .desc = "line delimiter is NUL, not newline" },
@@ -192,6 +194,26 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             return @intFromEnum(common.ExitCode.misuse);
         };
         options.line_count = null; // byte mode overrides line mode
+    }
+
+    // Parse block count (-b flag) - overrides lines, like -c but in 512-byte blocks
+    if (parsed_args.blocks) |blocks_str| {
+        if (blocks_str.len > 0 and blocks_str[0] == '+') {
+            options.from_beginning_bytes = true;
+        }
+        const block_count = parseNumericArg(blocks_str) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "invalid number of blocks: '{s}'", .{blocks_str});
+            return @intFromEnum(common.ExitCode.misuse);
+        };
+        if (options.from_beginning_bytes) {
+            // +N blocks means start at block N (1-indexed), skip (N-1)*512 bytes
+            // processInputByBytesFromBeginning uses skip = byte_count - 1
+            // so byte_count = (N-1)*512 + 1
+            options.byte_count = if (block_count > 0) (block_count - 1) * 512 + 1 else 1;
+        } else {
+            options.byte_count = block_count * 512;
+        }
+        options.line_count = null; // block mode overrides line mode
     }
 
     // Process files
@@ -1174,6 +1196,92 @@ test "tail: help output mentions -f and -F flags" {
     try testing.expect(std.mem.indexOf(u8, buffer.items, "-f") != null);
     // Help text should document the -F (follow-retry) flag
     try testing.expect(std.mem.indexOf(u8, buffer.items, "-F") != null);
+}
+
+test "tail: -b flag is parsed" {
+    const args = [_][]const u8{ "-b", "3", "/tmp/somefile" };
+    const parsed = try common.argparse.ArgParser.parse(TailArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.blocks != null);
+    try testing.expectEqualStrings("3", parsed.blocks.?);
+}
+
+test "tail: -b 2 shows last 1024 bytes" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with 2048 bytes (4 blocks of 512)
+    var content: [2048]u8 = undefined;
+    @memset(content[0..1024], 'A');
+    @memset(content[1024..2048], 'B');
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", &content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-b", "2", file_path };
+    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqual(@as(usize, 1024), buffer.items.len);
+    // Last 1024 bytes should all be 'B'
+    for (buffer.items) |byte| {
+        try testing.expectEqual(@as(u8, 'B'), byte);
+    }
+}
+
+test "tail: -b +2 shows from byte 512 onwards" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with 1536 bytes (3 blocks of 512)
+    var content: [1536]u8 = undefined;
+    @memset(content[0..512], 'A');
+    @memset(content[512..1024], 'B');
+    @memset(content[1024..1536], 'C');
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", &content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -b +2 means starting from block 2 (byte 512), output the rest
+    const args = [_][]const u8{ "-b", "+2", file_path };
+    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    // Should output from byte 512 onwards (1024 bytes: 512 B's + 512 C's)
+    try testing.expectEqual(@as(usize, 1024), buffer.items.len);
+    for (buffer.items[0..512]) |byte| {
+        try testing.expectEqual(@as(u8, 'B'), byte);
+    }
+    for (buffer.items[512..1024]) |byte| {
+        try testing.expectEqual(@as(u8, 'C'), byte);
+    }
+}
+
+test "tail: -b with file shorter than block count shows everything" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "short file content";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -b 10 = 5120 bytes, much larger than the file
+    const args = [_][]const u8{ "-b", "10", file_path };
+    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("short file content", buffer.items);
 }
 
 /// Test helper for processing a file from a directory
