@@ -14,6 +14,8 @@ const RmArgs = struct {
     interactive_once: bool = false,
     recursive: bool = false,
     R: bool = false,
+    remove_empty_dirs: bool = false,
+    P: bool = false,
     verbose: bool = false,
     preserve_root: bool = false,
     no_preserve_root: bool = false,
@@ -27,6 +29,8 @@ const RmArgs = struct {
         .interactive_once = .{ .short = 'I', .desc = "Prompt once before removing more than three files, or when removing recursively" },
         .recursive = .{ .short = 'r', .desc = "Remove directories and their contents recursively" },
         .R = .{ .short = 'R', .desc = "Remove directories and their contents recursively (same as -r)" },
+        .remove_empty_dirs = .{ .short = 'd', .desc = "Remove empty directories" },
+        .P = .{ .short = 'P', .desc = "Overwrite before deletion (no-op, BSD compatibility)" },
         .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
         .preserve_root = .{ .short = 0, .desc = "Do not remove '/' (default)" },
         .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially" },
@@ -39,6 +43,7 @@ const RmOptions = struct {
     interactive: bool,
     interactive_once: bool,
     recursive: bool,
+    remove_empty_dirs: bool = false,
     verbose: bool,
     preserve_root: bool,
 };
@@ -83,6 +88,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         .interactive = parsed_args.interactive,
         .interactive_once = parsed_args.interactive_once,
         .recursive = parsed_args.recursive or parsed_args.R,
+        .remove_empty_dirs = parsed_args.remove_empty_dirs,
         .verbose = parsed_args.verbose,
         .preserve_root = !parsed_args.no_preserve_root,
     };
@@ -234,6 +240,27 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                             },
                         }
                     };
+                } else if (options.remove_empty_dirs) {
+                    // -d flag: attempt to remove empty directory (like rmdir)
+                    std.fs.cwd().deleteDir(file) catch |dir_err| {
+                        switch (dir_err) {
+                            error.DirNotEmpty => {
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Directory not empty", .{file});
+                                any_errors = true;
+                            },
+                            error.AccessDenied => {
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Permission denied", .{file});
+                                any_errors = true;
+                            },
+                            else => {
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                                any_errors = true;
+                            },
+                        }
+                    };
+                    if (!any_errors and options.verbose) {
+                        try stdout_writer.print("removed directory '{s}'\n", .{file});
+                    }
                 } else {
                     common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Is a directory", .{file});
                     any_errors = true;
@@ -842,4 +869,166 @@ test "rm: help text includes preserve-root flags" {
     try testing.expect(exit_code == 0);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--preserve-root") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--no-preserve-root") != null);
+}
+
+// ============================================================
+// Tests for rm -d (remove empty directories)
+// ============================================================
+
+test "rm: -d flag is accepted by argument parser" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+}
+
+test "rm: -d removes an empty directory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("emptydir");
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "emptydir");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", dir_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+
+    const stat = tmp.dir.statFile("emptydir");
+    try testing.expect(stat == error.FileNotFound);
+}
+
+test "rm: -d fails on non-empty directory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("nonemptydir");
+    var subdir = try tmp.dir.openDir("nonemptydir", .{});
+    const file = try subdir.createFile("somefile.txt", .{});
+    file.close();
+    subdir.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "nonemptydir");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", dir_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code != 0);
+    try testing.expect(stderr_buffer.items.len > 0);
+}
+
+test "rm: -d still removes regular files" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("regularfile.txt", .{});
+    file.close();
+
+    const file_path = try tmp.dir.realpathAlloc(testing.allocator, "regularfile.txt");
+    defer testing.allocator.free(file_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", file_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+
+    const stat = tmp.dir.statFile("regularfile.txt");
+    try testing.expect(stat == error.FileNotFound);
+}
+
+test "rm: without -d or -r refuses to remove directory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("somedir");
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "somedir");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{dir_path};
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code != 0);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+}
+
+// ============================================================
+// Tests for rm -P (BSD compatibility no-op flag)
+// ============================================================
+
+test "rm: -P flag is accepted by argument parser" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-P", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+}
+
+test "rm: -P removes a file just like normal rm" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("securefile.txt", .{});
+    file.close();
+
+    const file_path = try tmp.dir.realpathAlloc(testing.allocator, "securefile.txt");
+    defer testing.allocator.free(file_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-P", file_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+
+    const stat = tmp.dir.statFile("securefile.txt");
+    try testing.expect(stat == error.FileNotFound);
+}
+
+test "rm: -P combined with -f works" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-P", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+    try testing.expect(stderr_buffer.items.len == 0);
 }
