@@ -7,15 +7,15 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 268 | 20 |
+| MUST | 288 | 279 | 9 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **359** | **335** |
+| **Total** | **694** | **370** | **324** |
 
 ## MUST Flags — Not Yet Implemented
 
-**20 flags** across 8 utilities.
+**9 flags** across 7 utilities.
 
 ### chmod
 
@@ -26,20 +26,6 @@ assignments.
 - `-f`
 - `-j`
 - `-z`
-
-### dd
-
-- `cbs=`
-- `files=`
-- `ascii`
-- `ebcdic`
-- `ibm`
-- `block`
-- `unblock`
-- `swab`
-- `fsync`
-- `osync`
-- `noxfer`
 
 ### df
 
