@@ -9,7 +9,7 @@
 | -f | yes | yes | yes | yes | yes | MUST |
 | -i | yes | yes | yes | yes | yes | MUST |
 | -k | yes | yes | yes | yes | yes | MUST |
-| -m | yes | yes | yes | yes | - | MUST |
+| -m | yes | yes | yes | yes | yes | MUST |
 | -n | yes | yes | yes | yes | yes | MUST |
 | -o | yes | yes | yes | yes | yes | MUST |
 | -r | yes | yes | yes | yes | yes | MUST |
@@ -17,11 +17,11 @@
 | -u | yes | yes | yes | yes | yes | MUST |
 | -g | - | yes | yes | yes | yes | MUST |
 | -h | - | yes | yes | yes | yes | MUST |
-| -M | - | yes | yes | yes | - | MUST |
-| -R | - | yes | yes | yes | - | MUST |
+| -M | - | yes | yes | yes | yes | MUST |
+| -R | - | yes | yes | yes | yes | MUST |
 | -s | - | yes | yes | yes | yes | MUST |
-| -S | - | yes | yes | yes | - | MUST |
-| -T | - | yes | yes | yes | - | MUST |
+| -S | - | yes | yes | yes | yes | MUST |
+| -T | - | yes | yes | yes | yes | MUST |
 | -V | - | yes | yes | yes | yes | MUST |
 | -z | - | yes | yes | yes | yes | MUST |
 | --batch-size | - | yes | yes | yes | - | MUST |

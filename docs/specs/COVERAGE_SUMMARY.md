@@ -7,22 +7,19 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 226 | 62 |
+| MUST | 288 | 248 | 40 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **317** | **377** |
+| **Total** | **694** | **339** | **355** |
 
 ## MUST Flags — Not Yet Implemented
 
-**62 flags** across 10 utilities.
+**40 flags** across 10 utilities.
 
 ### chmod
 
 - `-h`
-- `-H`
-- `-L`
-- `-P`
 
 ### date
 
@@ -50,28 +47,14 @@ assignments.
 
 ### find
 
-- `-X (Global Options)`
-- `-d (Global Options)`
-- `-f (Global Options)`
-- `-x (Global Options)`
-- `-nouser (Primaries / Tests)`
-- `-nogroup (Primaries / Tests)`
-- `-xdev (Primaries / Tests)`
-- `-prune (Primaries / Tests)`
-- `-links (Primaries / Tests)`
-- `-atime (Primaries / Tests)`
-- `-ctime (Primaries / Tests)`
 - `-ok (Primaries / Tests)`
-- `-mindepth (Primaries / Tests)`
 - `-execdir (Primaries / Tests)`
 - `-amin (Primaries / Tests)`
 - `-anewer (Primaries / Tests)`
 - `-cmin (Primaries / Tests)`
 - `-cnewer (Primaries / Tests)`
-- `-mmin (Primaries / Tests)`
 - `-ls (Primaries / Tests)`
 - `-fstype (Primaries / Tests)`
-- `-inum (Primaries / Tests)`
 - `-flags (Primaries / Tests)`
 
 ### grep
@@ -92,11 +75,6 @@ assignments.
 
 ### sort
 
-- `-m`
-- `-M`
-- `-R`
-- `-S`
-- `-T`
 - `--batch-size`
 - `--compress-program`
 - `--debug`

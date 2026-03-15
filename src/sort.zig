@@ -23,6 +23,8 @@ const SortFlags = struct {
     numeric_sort: bool = false,
     reverse: bool = false,
     human_numeric_sort: bool = false,
+    month_sort: bool = false,
+    random_sort: bool = false,
 };
 
 /// A KEYDEF specifying a field range and per-key sort options
@@ -58,6 +60,9 @@ const SortOptions = struct {
     check: CheckMode = .none,
     output_file: ?[]const u8 = null,
     zero_terminated: bool = false,
+    merge_only: bool = false,
+    buffer_size: ?usize = null,
+    temp_dir: ?[]const u8 = null,
     help: bool = false,
     version: bool = false,
     files: std.ArrayListUnmanaged([]const u8) = .{},
@@ -112,6 +117,20 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 opts.global_flags.reverse = true;
             } else if (std.mem.eql(u8, flag, "human-numeric-sort")) {
                 opts.global_flags.human_numeric_sort = true;
+            } else if (std.mem.eql(u8, flag, "month-sort")) {
+                opts.global_flags.month_sort = true;
+            } else if (std.mem.eql(u8, flag, "random-sort")) {
+                opts.global_flags.random_sort = true;
+            } else if (std.mem.eql(u8, flag, "merge")) {
+                opts.merge_only = true;
+            } else if (std.mem.startsWith(u8, flag, "buffer-size=")) {
+                const size_str = flag["buffer-size=".len..];
+                opts.buffer_size = parseBufferSize(size_str) orelse {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid buffer size: '{s}'", .{size_str});
+                    return null;
+                };
+            } else if (std.mem.startsWith(u8, flag, "temporary-directory=")) {
+                opts.temp_dir = flag["temporary-directory=".len..];
             } else if (std.mem.eql(u8, flag, "unique")) {
                 opts.unique = true;
             } else if (std.mem.eql(u8, flag, "stable")) {
@@ -156,6 +175,38 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                     'n' => opts.global_flags.numeric_sort = true,
                     'r' => opts.global_flags.reverse = true,
                     'h' => opts.global_flags.human_numeric_sort = true,
+                    'M' => opts.global_flags.month_sort = true,
+                    'R' => opts.global_flags.random_sort = true,
+                    'm' => opts.merge_only = true,
+                    'S' => {
+                        const value = if (j + 1 < arg.len)
+                            arg[j + 1 ..]
+                        else if (i + 1 < args.len) blk: {
+                            i += 1;
+                            break :blk args[i];
+                        } else {
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'S'", .{});
+                            return null;
+                        };
+                        opts.buffer_size = parseBufferSize(value) orelse {
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid buffer size: '{s}'", .{value});
+                            return null;
+                        };
+                        break;
+                    },
+                    'T' => {
+                        const value = if (j + 1 < arg.len)
+                            arg[j + 1 ..]
+                        else if (i + 1 < args.len) blk: {
+                            i += 1;
+                            break :blk args[i];
+                        } else {
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'T'", .{});
+                            return null;
+                        };
+                        opts.temp_dir = value;
+                        break;
+                    },
                     'u' => opts.unique = true,
                     's' => opts.stable = true,
                     'c' => opts.check = .diagnose_first,
@@ -287,7 +338,7 @@ fn parseFieldSpec(spec: []const u8) !FieldSpec {
     // Validate option chars
     for (opts) |c| {
         switch (c) {
-            'b', 'd', 'f', 'i', 'n', 'r', 'h', 'g' => {},
+            'b', 'd', 'f', 'i', 'n', 'r', 'h', 'g', 'M' => {},
             else => return error.InvalidFieldSpec,
         }
     }
@@ -311,6 +362,7 @@ fn applyKeyFlags(flags: *SortFlags, opts: []const u8) void {
             'n' => flags.numeric_sort = true,
             'r' => flags.reverse = true,
             'h' => flags.human_numeric_sort = true,
+            'M' => flags.month_sort = true,
             else => {},
         }
     }
@@ -356,11 +408,69 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
         return @intFromEnum(common.ExitCode.success);
     }
 
+    const delimiter: u8 = if (opts.zero_terminated) 0 else '\n';
+
+    const sort_ctx = SortContext{
+        .opts = &opts,
+        .allocator = allocator,
+    };
+
+    // For merge mode, read each file separately and merge
+    if (opts.merge_only and opts.files.items.len > 1) {
+        var per_file_lines = std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+        defer {
+            for (per_file_lines.items) |*fl| fl.deinit(allocator);
+            per_file_lines.deinit(allocator);
+        }
+
+        for (opts.files.items) |file_path| {
+            var file_lines = std.ArrayListUnmanaged([]const u8){};
+            if (std.mem.eql(u8, file_path, "-")) {
+                const stdin_file = std.fs.File.stdin();
+                try readLines(allocator, stdin_file, &file_lines, delimiter);
+            } else {
+                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
+                    return @intFromEnum(common.ExitCode.misuse);
+                };
+                defer file.close();
+                try readLines(allocator, file, &file_lines, delimiter);
+            }
+            try per_file_lines.append(allocator, file_lines);
+        }
+
+        // Build slice of slices for mergeLines
+        var slices = try allocator.alloc([]const []const u8, per_file_lines.items.len);
+        defer allocator.free(slices);
+        for (per_file_lines.items, 0..) |fl, idx| {
+            slices[idx] = fl.items;
+        }
+
+        var merged = try mergeLines(allocator, slices, sort_ctx);
+        defer merged.deinit(allocator);
+
+        // Write output
+        if (opts.output_file) |out_path| {
+            const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "open failed: {s}: {s}", .{ out_path, @errorName(err) });
+                return @intFromEnum(common.ExitCode.misuse);
+            };
+            defer out_file.close();
+            var out_buffer: [8192]u8 = undefined;
+            var file_writer = out_file.writer(&out_buffer);
+            const out_writer = &file_writer.interface;
+            try writeLines(out_writer, merged.items, &opts, delimiter);
+            out_writer.flush() catch {};
+        } else {
+            try writeLines(stdout_writer, merged.items, &opts, delimiter);
+        }
+
+        return @intFromEnum(common.ExitCode.success);
+    }
+
     // Read all lines from files or stdin
     var lines = std.ArrayListUnmanaged([]const u8){};
     defer lines.deinit(allocator);
-
-    const delimiter: u8 = if (opts.zero_terminated) 0 else '\n';
 
     if (opts.files.items.len == 0) {
         // Read from stdin
@@ -388,10 +498,6 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     // Sort the lines
-    const sort_ctx = SortContext{
-        .opts = &opts,
-        .allocator = allocator,
-    };
     std.mem.sort([]const u8, lines.items, sort_ctx, compareLinesWrapper);
 
     // Determine output target
@@ -584,6 +690,14 @@ fn fieldOffset(line: []const u8, fields: []const []const u8, field_idx: usize) u
 
 /// Compare two strings according to sort flags, returning ordering
 fn compareWithFlags(a: []const u8, b: []const u8, flags: SortFlags) std.math.Order {
+    // Special sort modes
+    if (flags.month_sort) {
+        return compareMonth(a, b);
+    }
+    if (flags.random_sort) {
+        return compareRandom(a, b);
+    }
+
     // Numeric sort modes
     if (flags.human_numeric_sort) {
         return compareHumanNumeric(a, b);
@@ -859,6 +973,120 @@ fn parseHumanNumber(s: []const u8) f64 {
     return if (negative) -result else result;
 }
 
+/// Month sort: compare by month abbreviation
+fn compareMonth(a: []const u8, b: []const u8) std.math.Order {
+    const a_month = parseMonthName(a);
+    const b_month = parseMonthName(b);
+    return std.math.order(a_month, b_month);
+}
+
+/// Random sort: sort by hash of each line. Equal lines stay together.
+fn compareRandom(a: []const u8, b: []const u8) std.math.Order {
+    if (std.mem.eql(u8, a, b)) return .eq;
+    const a_hash = std.hash.Wyhash.hash(0, a);
+    const b_hash = std.hash.Wyhash.hash(0, b);
+    return std.math.order(a_hash, b_hash);
+}
+
+/// Parse a month abbreviation, returning 1-12 or 0 for non-month
+fn parseMonthName(s: []const u8) u8 {
+    // Skip leading whitespace
+    var trimmed = s;
+    var i: usize = 0;
+    while (i < trimmed.len and (trimmed[i] == ' ' or trimmed[i] == '\t')) : (i += 1) {}
+    trimmed = trimmed[i..];
+
+    if (trimmed.len < 3) return 0;
+
+    // Get first 3 chars, uppercased
+    var abbr: [3]u8 = undefined;
+    for (0..3) |idx| {
+        abbr[idx] = std.ascii.toUpper(trimmed[idx]);
+    }
+
+    const months = [_][3]u8{
+        .{ 'J', 'A', 'N' },
+        .{ 'F', 'E', 'B' },
+        .{ 'M', 'A', 'R' },
+        .{ 'A', 'P', 'R' },
+        .{ 'M', 'A', 'Y' },
+        .{ 'J', 'U', 'N' },
+        .{ 'J', 'U', 'L' },
+        .{ 'A', 'U', 'G' },
+        .{ 'S', 'E', 'P' },
+        .{ 'O', 'C', 'T' },
+        .{ 'N', 'O', 'V' },
+        .{ 'D', 'E', 'C' },
+    };
+
+    for (months, 0..) |month, idx| {
+        if (std.mem.eql(u8, &abbr, &month)) {
+            return @intCast(idx + 1);
+        }
+    }
+    return 0;
+}
+
+/// Parse a buffer size string with optional K/M/G suffix
+fn parseBufferSize(s: []const u8) ?usize {
+    if (s.len == 0) return null;
+
+    // Find where digits end
+    var end: usize = 0;
+    while (end < s.len and std.ascii.isDigit(s[end])) : (end += 1) {}
+    if (end == 0) return null;
+
+    const num = std.fmt.parseInt(usize, s[0..end], 10) catch return null;
+
+    if (end >= s.len) return num;
+
+    // Check for suffix
+    const suffix = std.ascii.toUpper(s[end]);
+    return switch (suffix) {
+        'K' => num * 1024,
+        'M' => num * 1024 * 1024,
+        'G' => num * 1024 * 1024 * 1024,
+        else => null,
+    };
+}
+
+/// Merge pre-sorted line lists using a simple merge
+fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx: SortContext) !std.ArrayListUnmanaged([]const u8) {
+    var result = std.ArrayListUnmanaged([]const u8){};
+    errdefer result.deinit(allocator);
+
+    // Track current position in each file's lines
+    var positions = try allocator.alloc(usize, file_lines.len);
+    defer allocator.free(positions);
+    @memset(positions, 0);
+
+    while (true) {
+        // Find the smallest current line across all files
+        var min_idx: ?usize = null;
+        for (positions, 0..) |pos, file_idx| {
+            if (pos >= file_lines[file_idx].len) continue;
+            if (min_idx) |mi| {
+                const min_line = file_lines[mi][positions[mi]];
+                const cur_line = file_lines[file_idx][pos];
+                if (compareLines(ctx, cur_line, min_line)) {
+                    min_idx = file_idx;
+                }
+            } else {
+                min_idx = file_idx;
+            }
+        }
+
+        if (min_idx) |mi| {
+            try result.append(allocator, file_lines[mi][positions[mi]]);
+            positions[mi] += 1;
+        } else {
+            break; // All files exhausted
+        }
+    }
+
+    return result;
+}
+
 /// Check if input is already sorted
 fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const SortOptions, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     _ = stdout_writer;
@@ -936,8 +1164,13 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -n, --numeric-sort           compare according to string numerical value
         \\  -r, --reverse                reverse the result of comparisons
         \\  -h, --human-numeric-sort     compare human readable numbers (e.g., 2K 1G)
+        \\  -M, --month-sort             compare (unknown) < 'JAN' < ... < 'DEC'
+        \\  -R, --random-sort            shuffle, but group identical keys
         \\
         \\Other options:
+        \\  -m, --merge                  merge already sorted files; do not sort
+        \\  -S SIZE, --buffer-size=SIZE  use SIZE for main memory buffer
+        \\  -T DIR, --temporary-directory=DIR  use DIR for temporaries
         \\  -k KEYDEF, --key=KEYDEF      sort via a key; KEYDEF gives location and type
         \\  -t CHAR, --field-separator=CHAR  use CHAR as the field separator
         \\  -u, --unique                 with -c, check for strict ordering;
@@ -1185,4 +1418,236 @@ test "compareGeneralNumeric with scientific notation" {
     try testing.expectEqual(std.math.Order.lt, compareGeneralNumeric("1e2", "1e3"));
     try testing.expectEqual(std.math.Order.gt, compareGeneralNumeric("1e3", "1e2"));
     try testing.expectEqual(std.math.Order.eq, compareGeneralNumeric("100", "1e2"));
+}
+
+// ============================================================================
+//                    TESTS: -m, -M, -R, -S, -T flags
+// ============================================================================
+
+test "parseArgs -m sets merge_only" {
+    const args = [_][]const u8{"-m"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.merge_only);
+}
+
+test "parseArgs --merge sets merge_only" {
+    const args = [_][]const u8{"--merge"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.merge_only);
+}
+
+test "parseArgs -M sets month_sort" {
+    const args = [_][]const u8{"-M"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.global_flags.month_sort);
+}
+
+test "parseArgs --month-sort sets month_sort" {
+    const args = [_][]const u8{"--month-sort"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.global_flags.month_sort);
+}
+
+test "parseArgs -R sets random_sort" {
+    const args = [_][]const u8{"-R"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.global_flags.random_sort);
+}
+
+test "parseArgs --random-sort sets random_sort" {
+    const args = [_][]const u8{"--random-sort"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.global_flags.random_sort);
+}
+
+test "parseArgs -S accepts buffer size" {
+    const args = [_][]const u8{ "-S", "10M" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 10 * 1024 * 1024), opts.buffer_size.?);
+}
+
+test "parseArgs --buffer-size accepts value" {
+    const args = [_][]const u8{"--buffer-size=1G"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1024 * 1024 * 1024), opts.buffer_size.?);
+}
+
+test "parseArgs -S accepts plain number" {
+    const args = [_][]const u8{ "-S", "4096" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 4096), opts.buffer_size.?);
+}
+
+test "parseArgs -S accepts K suffix" {
+    const args = [_][]const u8{ "-S", "64K" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 64 * 1024), opts.buffer_size.?);
+}
+
+test "parseArgs -T accepts temp directory" {
+    const args = [_][]const u8{ "-T", "/tmp/sort" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqualStrings("/tmp/sort", opts.temp_dir.?);
+}
+
+test "parseArgs --temporary-directory accepts value" {
+    const args = [_][]const u8{"--temporary-directory=/var/tmp"};
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqualStrings("/var/tmp", opts.temp_dir.?);
+}
+
+test "parseMonthName" {
+    try testing.expectEqual(@as(u8, 1), parseMonthName("JAN"));
+    try testing.expectEqual(@as(u8, 1), parseMonthName("jan"));
+    try testing.expectEqual(@as(u8, 1), parseMonthName("January"));
+    try testing.expectEqual(@as(u8, 2), parseMonthName("FEB"));
+    try testing.expectEqual(@as(u8, 3), parseMonthName("MAR"));
+    try testing.expectEqual(@as(u8, 4), parseMonthName("APR"));
+    try testing.expectEqual(@as(u8, 5), parseMonthName("MAY"));
+    try testing.expectEqual(@as(u8, 6), parseMonthName("JUN"));
+    try testing.expectEqual(@as(u8, 7), parseMonthName("JUL"));
+    try testing.expectEqual(@as(u8, 8), parseMonthName("AUG"));
+    try testing.expectEqual(@as(u8, 9), parseMonthName("SEP"));
+    try testing.expectEqual(@as(u8, 10), parseMonthName("OCT"));
+    try testing.expectEqual(@as(u8, 11), parseMonthName("NOV"));
+    try testing.expectEqual(@as(u8, 12), parseMonthName("DEC"));
+    try testing.expectEqual(@as(u8, 0), parseMonthName("NOTAMONTH"));
+    try testing.expectEqual(@as(u8, 0), parseMonthName(""));
+}
+
+test "parseMonthName with leading whitespace" {
+    try testing.expectEqual(@as(u8, 1), parseMonthName("  JAN"));
+    try testing.expectEqual(@as(u8, 12), parseMonthName("\tDEC"));
+}
+
+test "compareMonth ordering" {
+    try testing.expectEqual(std.math.Order.lt, compareMonth("JAN", "FEB"));
+    try testing.expectEqual(std.math.Order.gt, compareMonth("DEC", "JAN"));
+    try testing.expectEqual(std.math.Order.eq, compareMonth("MAR", "MAR"));
+    // Non-month strings sort before months
+    try testing.expectEqual(std.math.Order.lt, compareMonth("NOTAMONTH", "JAN"));
+    try testing.expectEqual(std.math.Order.gt, compareMonth("JAN", "NOTAMONTH"));
+    // Two non-months are equal
+    try testing.expectEqual(std.math.Order.eq, compareMonth("FOO", "BAR"));
+}
+
+test "parseKeyDef with M option" {
+    const key = try parseKeyDef("2M");
+    try testing.expectEqual(@as(usize, 2), key.start_field);
+    try testing.expect(key.flags.month_sort);
+    try testing.expect(key.has_flags);
+}
+
+test "parseBufferSize" {
+    try testing.expectEqual(@as(usize, 1024), parseBufferSize("1024"));
+    try testing.expectEqual(@as(usize, 10 * 1024), parseBufferSize("10K"));
+    try testing.expectEqual(@as(usize, 10 * 1024), parseBufferSize("10k"));
+    try testing.expectEqual(@as(usize, 5 * 1024 * 1024), parseBufferSize("5M"));
+    try testing.expectEqual(@as(usize, 2 * 1024 * 1024 * 1024), parseBufferSize("2G"));
+    try testing.expectEqual(@as(?usize, null), parseBufferSize(""));
+    try testing.expectEqual(@as(?usize, null), parseBufferSize("abc"));
+}
+
+test "sort -R produces all input lines" {
+    // Use arena since runSort/readLines allocates content that
+    // only gets freed when the arena is destroyed
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    // Create a temp file with test data
+    const tmp_path = "/tmp/sort_test_random.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("apple\nbanana\ncherry\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{ "-R", tmp_path };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // All three lines must appear in output
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "apple") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "banana") != null);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "cherry") != null);
+}
+
+test "sort -m merges pre-sorted files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    // Create two pre-sorted temp files
+    const tmp1 = "/tmp/sort_test_merge1.txt";
+    const tmp2 = "/tmp/sort_test_merge2.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp1, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("a\nc\ne\n");
+        try writer.interface.flush();
+    }
+    {
+        const file = try std.fs.cwd().createFile(tmp2, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("b\nd\nf\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp1) catch {};
+    defer std.fs.cwd().deleteFile(tmp2) catch {};
+
+    const args = [_][]const u8{ "-m", tmp1, tmp2 };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    try testing.expectEqualStrings("a\nb\nc\nd\ne\nf\n", buffer.items);
+}
+
+test "sort -M sorts by month name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    const tmp_path = "/tmp/sort_test_month.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("MAR\nJAN\nFEB\nDEC\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{ "-M", tmp_path };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    try testing.expectEqualStrings("JAN\nFEB\nMAR\nDEC\n", buffer.items);
 }
