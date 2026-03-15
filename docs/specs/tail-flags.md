@@ -7,7 +7,7 @@
 | -n | yes | yes | yes | yes | yes | MUST |
 | -b | - | yes | yes | - | yes | MUST |
 | -q | - | yes | - | yes | yes | SHOULD |
-| -r | - | yes | yes | - | - | MUST |
+| -r | - | yes | yes | - | yes | MUST |
 | -v | - | yes | - | yes | yes | SHOULD |
 | -F | - | yes | - | yes | yes | SHOULD |
 | -z | - | - | - | yes | yes | SHOULD |

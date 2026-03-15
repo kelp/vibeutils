@@ -29,6 +29,7 @@ const TailArgs = struct {
     quiet: bool = false,
     verbose: bool = false,
     zero_terminated: bool = false,
+    reverse: bool = false,
     follow: bool = false,
     follow_retry: bool = false,
     positionals: []const []const u8 = &.{},
@@ -42,6 +43,7 @@ const TailArgs = struct {
         .quiet = .{ .short = 'q', .desc = "never output headers when multiple files are being examined" },
         .verbose = .{ .short = 'v', .desc = "always output headers when examining files" },
         .zero_terminated = .{ .short = 'z', .desc = "line delimiter is NUL, not newline" },
+        .reverse = .{ .short = 'r', .desc = "display the input in reverse order, by line" },
         .follow = .{ .short = 'f', .desc = "output appended data as the file grows" },
         .follow_retry = .{ .short = 'F', .desc = "same as -f, but retry if file is inaccessible" },
     };
@@ -56,6 +58,7 @@ const TailOptions = struct {
     zero_terminated: bool = false,
     from_beginning: bool = false,
     from_beginning_bytes: bool = false,
+    reverse: bool = false,
 
     /// Returns true if we should show headers for multiple files
     pub fn shouldShowHeaders(self: TailOptions, file_count: usize) bool {
@@ -169,6 +172,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         .quiet = parsed_args.quiet,
         .verbose = parsed_args.verbose,
         .zero_terminated = parsed_args.zero_terminated,
+        .reverse = parsed_args.reverse,
     };
 
     // Parse line count (-n flag)
@@ -180,6 +184,8 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             common.printErrorWithProgram(allocator, stderr_writer, "tail", std.fs.File.stderr().isTty(), "invalid number of lines: '{s}'", .{lines_str});
             return @intFromEnum(common.ExitCode.misuse);
         };
+    } else if (parsed_args.reverse) {
+        options.line_count = null; // -r without -n: show all lines
     } else {
         options.line_count = 10; // default
     }
@@ -378,8 +384,7 @@ fn processStdin(allocator: std.mem.Allocator, stdout_writer: anytype, options: T
     if (options.byte_count) |byte_count| {
         try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null, options.from_beginning_bytes);
     } else {
-        const line_count = options.line_count.?;
-        try processInputByLines(allocator, stdin, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
+        try processInputByLines(allocator, stdin, stdout_writer, options.line_count, options.zero_terminated, options.from_beginning, options.reverse);
     }
 }
 
@@ -391,8 +396,7 @@ fn processFile(allocator: std.mem.Allocator, file: std.fs.File, stdout_writer: a
         const file_interface = &file_reader.interface;
         try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file, options.from_beginning_bytes);
     } else {
-        const line_count = options.line_count.?;
-        try processInputByLinesFromFile(allocator, file, stdout_writer, line_count, options.zero_terminated, options.from_beginning);
+        try processInputByLinesFromFile(allocator, file, stdout_writer, options.line_count, options.zero_terminated, options.from_beginning, options.reverse);
     }
 }
 
@@ -586,19 +590,58 @@ const LineBuffer = struct {
             }
         }
     }
+
+    fn writeAllLinesReversed(self: *LineBuffer, writer: anytype, delimiter: u8) !void {
+        if (!self.is_full) {
+            // Buffer not full, output lines in reverse order
+            var i = self.next_index;
+            while (i > 0) {
+                i -= 1;
+                const line = self.lines[i];
+                // Strip trailing delimiter, write content, then add delimiter
+                if (line.len > 0 and line[line.len - 1] == delimiter) {
+                    try writer.writeAll(line[0 .. line.len - 1]);
+                    try writer.writeByte(delimiter);
+                } else {
+                    try writer.writeAll(line);
+                    try writer.writeByte(delimiter);
+                }
+            }
+        } else {
+            // Buffer is full, output from newest to oldest
+            var i = self.capacity;
+            while (i > 0) {
+                i -= 1;
+                // newest is at (next_index - 1 + capacity) % capacity, going backwards
+                const line_idx = (self.next_index + i) % self.capacity;
+                const line = self.lines[line_idx];
+                if (line.len > 0 and line[line.len - 1] == delimiter) {
+                    try writer.writeAll(line[0 .. line.len - 1]);
+                    try writer.writeByte(delimiter);
+                } else {
+                    try writer.writeAll(line);
+                    try writer.writeByte(delimiter);
+                }
+            }
+        }
+    }
 };
 
 /// Process input by line count using file handle when available.
 /// Streams the file in chunks instead of reading it all into memory.
-fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, writer: anytype, line_count: u64, zero_terminated: bool, from_beginning: bool) !void {
-    if (line_count == 0 and !from_beginning) return;
+/// When line_count is null (used with -r), all lines are collected.
+fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, writer: anytype, line_count: ?u64, zero_terminated: bool, from_beginning: bool, reverse: bool) !void {
+    if (line_count) |lc| {
+        if (lc == 0 and !from_beginning) return;
+    }
 
     const delimiter: u8 = if (zero_terminated) 0 else '\n';
-    const max_lines = @as(usize, @intCast(line_count));
 
     if (from_beginning) {
+        const lc = line_count orelse 1;
+        const max_lines = @as(usize, @intCast(lc));
         // Skip the first (line_count - 1) lines and stream the rest
-        const skip_count = if (line_count > 0) max_lines - 1 else 0;
+        const skip_count = if (lc > 0) max_lines - 1 else 0;
         var read_buf: [8192]u8 = undefined;
 
         if (skip_count == 0) {
@@ -632,6 +675,66 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
             }
         }
     }
+
+    // When line_count is null (reverse all), collect into a dynamic list
+    if (line_count == null) {
+        var lines = std.ArrayListUnmanaged([]u8){};
+        defer {
+            for (lines.items) |line| allocator.free(line);
+            lines.deinit(allocator);
+        }
+
+        var read_buf: [8192]u8 = undefined;
+        var partial = std.ArrayListUnmanaged(u8){};
+        defer partial.deinit(allocator);
+
+        while (true) {
+            const bytes_read = try file.read(&read_buf);
+            if (bytes_read == 0) break;
+
+            var chunk_start: usize = 0;
+            for (read_buf[0..bytes_read], 0..) |byte, pos| {
+                if (byte == delimiter) {
+                    const chunk_end = pos + 1;
+                    if (partial.items.len > 0) {
+                        try partial.appendSlice(allocator, read_buf[chunk_start..chunk_end]);
+                        const line_copy = try allocator.dupe(u8, partial.items);
+                        try lines.append(allocator, line_copy);
+                        partial.clearRetainingCapacity();
+                    } else {
+                        const line_copy = try allocator.dupe(u8, read_buf[chunk_start..chunk_end]);
+                        try lines.append(allocator, line_copy);
+                    }
+                    chunk_start = chunk_end;
+                }
+            }
+            if (chunk_start < bytes_read) {
+                try partial.appendSlice(allocator, read_buf[chunk_start..bytes_read]);
+            }
+        }
+
+        if (partial.items.len > 0) {
+            const line_copy = try allocator.dupe(u8, partial.items);
+            try lines.append(allocator, line_copy);
+        }
+
+        // Output in reverse order
+        var i = lines.items.len;
+        while (i > 0) {
+            i -= 1;
+            const line = lines.items[i];
+            if (line.len > 0 and line[line.len - 1] == delimiter) {
+                try writer.writeAll(line[0 .. line.len - 1]);
+                try writer.writeByte(delimiter);
+            } else {
+                try writer.writeAll(line);
+                try writer.writeByte(delimiter);
+            }
+        }
+        return;
+    }
+
+    const max_lines = @as(usize, @intCast(line_count.?));
 
     // Use LineBuffer to keep the last N lines
     var line_buffer = try LineBuffer.init(allocator, max_lines);
@@ -674,19 +777,26 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
         try line_buffer.addLine(partial.items);
     }
 
-    try line_buffer.writeAllLines(writer);
+    if (reverse) {
+        try line_buffer.writeAllLinesReversed(writer, delimiter);
+    } else {
+        try line_buffer.writeAllLines(writer);
+    }
 }
 
 /// Process input by line count (fallback for non-file inputs like stdin)
-fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: anytype, line_count: u64, zero_terminated: bool, from_beginning: bool) !void {
-    if (line_count == 0 and !from_beginning) return; // Output nothing for 0 lines
+fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: anytype, line_count: ?u64, zero_terminated: bool, from_beginning: bool, reverse: bool) !void {
+    if (line_count) |lc| {
+        if (lc == 0 and !from_beginning) return; // Output nothing for 0 lines
+    }
 
     const delimiter: u8 = if (zero_terminated) 0 else '\n';
-    const max_lines = @as(usize, @intCast(line_count));
 
     if (from_beginning) {
+        const lc = line_count orelse 1;
+        const max_lines = @as(usize, @intCast(lc));
         // Skip the first (line_count - 1) lines and output the rest
-        const skip_count = if (line_count > 0) max_lines - 1 else 0;
+        const skip_count = if (lc > 0) max_lines - 1 else 0;
         var lines_skipped: usize = 0;
 
         // Skip lines by reading and discarding them
@@ -716,6 +826,47 @@ fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: an
         return;
     }
 
+    // When line_count is null (reverse all), collect into a dynamic list
+    if (line_count == null) {
+        var lines = std.ArrayListUnmanaged([]u8){};
+        defer {
+            for (lines.items) |line| allocator.free(line);
+            lines.deinit(allocator);
+        }
+
+        while (reader.takeDelimiterInclusive(delimiter)) |line| {
+            const line_copy = try allocator.dupe(u8, line);
+            try lines.append(allocator, line_copy);
+        } else |err| switch (err) {
+            error.EndOfStream => {
+                const remaining = reader.buffered();
+                if (remaining.len > 0) {
+                    const line_copy = try allocator.dupe(u8, remaining);
+                    try lines.append(allocator, line_copy);
+                    reader.toss(remaining.len);
+                }
+            },
+            else => return err,
+        }
+
+        // Output in reverse order
+        var i = lines.items.len;
+        while (i > 0) {
+            i -= 1;
+            const line = lines.items[i];
+            if (line.len > 0 and line[line.len - 1] == delimiter) {
+                try writer.writeAll(line[0 .. line.len - 1]);
+                try writer.writeByte(delimiter);
+            } else {
+                try writer.writeAll(line);
+                try writer.writeByte(delimiter);
+            }
+        }
+        return;
+    }
+
+    const max_lines = @as(usize, @intCast(line_count.?));
+
     // Use LineBuffer ring buffer for last N lines
     var line_buffer = try LineBuffer.init(allocator, max_lines);
     defer line_buffer.deinit();
@@ -736,7 +887,11 @@ fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: an
     }
 
     // Output all stored lines
-    try line_buffer.writeAllLines(writer);
+    if (reverse) {
+        try line_buffer.writeAllLinesReversed(writer, delimiter);
+    } else {
+        try line_buffer.writeAllLines(writer);
+    }
 }
 
 // ========== TESTS ==========
@@ -1284,6 +1439,62 @@ test "tail: -b with file shorter than block count shows everything" {
     try testing.expectEqualStrings("short file content", buffer.items);
 }
 
+test "tail: -r flag is parsed" {
+    const args = [_][]const u8{ "-r", "/tmp/somefile" };
+    const parsed = try common.argparse.ArgParser.parse(TailArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.reverse);
+}
+
+test "tail: -r reverses all lines of a file" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "line1\nline2\nline3\nline4\nline5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const options = TailOptions{ .line_count = null, .reverse = true };
+    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+
+    try testing.expectEqualStrings("line5\nline4\nline3\nline2\nline1\n", buffer.items);
+}
+
+test "tail: -r -n 3 reverses last 3 lines" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "line1\nline2\nline3\nline4\nline5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const options = TailOptions{ .line_count = 3, .reverse = true };
+    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+
+    try testing.expectEqualStrings("line5\nline4\nline3\n", buffer.items);
+}
+
+test "tail: -r on single-line file" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "only line\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const options = TailOptions{ .line_count = null, .reverse = true };
+    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+
+    try testing.expectEqualStrings("only line\n", buffer.items);
+}
+
 /// Test helper for processing a file from a directory
 fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options: TailOptions) !void {
     const file = try dir.openFile(filename, .{});
@@ -1294,7 +1505,7 @@ fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options:
         const file_interface = &file_reader.interface;
         try processInputByBytes(testing.allocator, file_interface, writer, byte_count, file, options.from_beginning_bytes);
     } else {
-        const line_count = options.line_count orelse 10;
-        try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated, options.from_beginning);
+        const line_count = if (options.line_count) |lc| @as(?u64, lc) else if (options.reverse) null else @as(?u64, 10);
+        try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated, options.from_beginning, options.reverse);
     }
 }

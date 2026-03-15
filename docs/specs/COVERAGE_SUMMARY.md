@@ -7,15 +7,15 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 213 | 75 |
+| MUST | 288 | 214 | 74 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **304** | **390** |
+| **Total** | **694** | **305** | **389** |
 
 ## MUST Flags — Not Yet Implemented
 
-**75 flags** across 11 utilities.
+**74 flags** across 10 utilities.
 
 ### chmod
 
@@ -120,10 +120,6 @@ assignments.
 - `--mmap`
 - `--qsort`
 - `--radixsort`
-
-### tail
-
-- `-r`
 
 ## SHOULD Flags — Not Yet Implemented
 
