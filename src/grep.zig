@@ -52,6 +52,7 @@ const GrepOptions = struct {
     no_messages: bool = false,
     word_regexp: bool = false,
     line_regexp: bool = false,
+    byte_offset: bool = false,
     recursive: bool = false,
     dereference_recursive: bool = false,
     max_count: ?usize = null,
@@ -156,6 +157,12 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 opts.word_regexp = true;
             } else if (std.mem.eql(u8, flag, "line-regexp")) {
                 opts.line_regexp = true;
+            } else if (std.mem.eql(u8, flag, "byte-offset")) {
+                opts.byte_offset = true;
+            } else if (std.mem.eql(u8, flag, "text")) {
+                // No-op: treat binary as text (no binary detection yet)
+            } else if (std.mem.eql(u8, flag, "binary")) {
+                // No-op: Unix treats all files as binary by default
             } else if (std.mem.eql(u8, flag, "recursive")) {
                 opts.recursive = true;
             } else if (std.mem.eql(u8, flag, "dereference-recursive")) {
@@ -239,6 +246,10 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                     's' => opts.no_messages = true,
                     'w' => opts.word_regexp = true,
                     'x' => opts.line_regexp = true,
+                    'b' => opts.byte_offset = true,
+                    'a' => {}, // --text: treat binary as text (no-op, no binary detection yet)
+                    'I' => {}, // ignore binary files (no-op, no binary detection yet)
+                    'U' => {}, // --binary: Unix no-op
                     'r' => opts.recursive = true,
                     'R' => {
                         opts.dereference_recursive = true;
@@ -532,6 +543,15 @@ fn printLineNumber(writer: anytype, line_num: usize, use_color: bool) void {
     }
 }
 
+/// Print a byte offset
+fn printByteOffset(writer: anytype, offset: usize, use_color: bool) void {
+    if (use_color) {
+        writer.print("{s}{d}{s}", .{ Color.line_number, offset, Color.reset }) catch {};
+    } else {
+        writer.print("{d}", .{offset}) catch {};
+    }
+}
+
 /// Print a separator character
 fn printSep(writer: anytype, sep: u8, use_color: bool) void {
     if (use_color) {
@@ -577,19 +597,23 @@ fn processFile(
     var match_count: usize = 0;
     var line_num: usize = 0;
 
-    // Split into lines
+    // Split into lines, tracking byte offsets
     var lines = std.ArrayListUnmanaged([]const u8){};
     defer lines.deinit(allocator);
+    var line_offsets = std.ArrayListUnmanaged(usize){};
+    defer line_offsets.deinit(allocator);
     {
         var start: usize = 0;
         for (content, 0..) |ch, idx| {
             if (ch == '\n') {
                 lines.append(allocator, content[start..idx]) catch return false;
+                line_offsets.append(allocator, start) catch return false;
                 start = idx + 1;
             }
         }
         if (start < content.len) {
             lines.append(allocator, content[start..]) catch return false;
+            line_offsets.append(allocator, start) catch return false;
         }
     }
 
@@ -626,7 +650,7 @@ fn processFile(
 
                     var ctx_line = effective_start;
                     while (ctx_line < line_num) : (ctx_line += 1) {
-                        printContextLine(stdout_writer, lines.items[ctx_line - 1], ctx_line, filename, show_filename, opts.line_number, use_color);
+                        printContextLine(stdout_writer, lines.items[ctx_line - 1], ctx_line, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[ctx_line - 1], use_color);
                         last_printed_line = ctx_line;
                     }
                 }
@@ -645,6 +669,10 @@ fn processFile(
                     }
                     if (opts.line_number) {
                         printLineNumber(stdout_writer, line_num, use_color);
+                        printSep(stdout_writer, ':', use_color);
+                    }
+                    if (opts.byte_offset) {
+                        printByteOffset(stdout_writer, line_offsets.items[line_num - 1], use_color);
                         printSep(stdout_writer, ':', use_color);
                     }
                     if (result.match_end > result.match_start and result.match_end <= line.len) {
@@ -666,6 +694,10 @@ fn processFile(
                         printLineNumber(stdout_writer, line_num, use_color);
                         printSep(stdout_writer, ':', use_color);
                     }
+                    if (opts.byte_offset) {
+                        printByteOffset(stdout_writer, line_offsets.items[line_num - 1], use_color);
+                        printSep(stdout_writer, ':', use_color);
+                    }
                     if (!opts.invert_match) {
                         printMatchLine(stdout_writer, line, result.match_start, result.match_end, use_color);
                     } else {
@@ -682,7 +714,7 @@ fn processFile(
             }
         } else if (remaining_after > 0) {
             // Print after-context line
-            printContextLine(stdout_writer, line, line_num, filename, show_filename, opts.line_number, use_color);
+            printContextLine(stdout_writer, line, line_num, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[line_num - 1], use_color);
             last_printed_line = line_num;
             remaining_after -= 1;
         }
@@ -708,13 +740,17 @@ fn processFile(
 }
 
 /// Print a context line (with - separator instead of :)
-fn printContextLine(writer: anytype, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, use_color: bool) void {
+fn printContextLine(writer: anytype, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool) void {
     if (show_filename) {
         printFilename(writer, filename, use_color);
         printSep(writer, '-', use_color);
     }
     if (show_line_number) {
         printLineNumber(writer, line_num, use_color);
+        printSep(writer, '-', use_color);
+    }
+    if (show_byte_offset) {
+        printByteOffset(writer, byte_offset, use_color);
         printSep(writer, '-', use_color);
     }
     writer.writeAll(line) catch {};
@@ -874,11 +910,15 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\Miscellaneous:
         \\  -s, --no-messages         suppress error messages
         \\  -v, --invert-match        select non-matching lines
+        \\  -a, --text                equivalent to --binary-files=text
+        \\  -I                        equivalent to --binary-files=without-match
+        \\  -U, --binary              do not strip CR characters (no-op on Unix)
         \\      --help                display this help and exit
         \\      --version             output version information and exit
         \\
         \\Output control:
         \\  -m, --max-count=NUM       stop after NUM selected lines
+        \\  -b, --byte-offset         print the byte offset with output lines
         \\  -n, --line-number         print line number with output lines
         \\  -H, --with-filename       print file name with output lines
         \\  -h, --no-filename         suppress the file name prefix on output
@@ -1433,4 +1473,112 @@ test "runGrep invalid regex returns misuse" {
 test "runGrep -m max-count" {
     const exit_code = try testRunGrep("hello one\nhello two\nhello three\nhello four\n", &.{ "-m", "2", "hello" });
     try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+/// Helper to run grep and capture stdout output
+fn testRunGrepOutput(file_content: []const u8, grep_args: []const []const u8) !struct { exit_code: u8, output: []const u8, arena: std.heap.ArenaAllocator } {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll(file_content);
+    file.close();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(tmp_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    for (grep_args) |a| {
+        try args.append(allocator, a);
+    }
+    try args.append(allocator, tmp_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    return .{ .exit_code = exit_code, .output = stdout_buf.items, .arena = arena };
+}
+
+test "parseArgs -b sets byte_offset" {
+    const args = [_][]const u8{ "-b", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.byte_offset);
+}
+
+test "parseArgs --byte-offset sets byte_offset" {
+    const args = [_][]const u8{ "--byte-offset", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.byte_offset);
+}
+
+test "parseArgs -a flag accepted (no-op)" {
+    const args = [_][]const u8{ "-a", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --text flag accepted (no-op)" {
+    const args = [_][]const u8{ "--text", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -I flag accepted (no-op)" {
+    const args = [_][]const u8{ "-I", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -U flag accepted (no-op)" {
+    const args = [_][]const u8{ "-U", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --binary flag accepted (no-op)" {
+    const args = [_][]const u8{ "--binary", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "runGrep -b prints byte offset" {
+    // "hello\nworld\nfoo\n" -> "hello" at offset 0, "world" at offset 6, "foo" at offset 12
+    var result = try testRunGrepOutput("hello\nworld\nfoo\n", &.{ "-b", "world" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("6:world\n", result.output);
+}
+
+test "runGrep -b -n prints line number then byte offset" {
+    // "hello\nworld\nfoo\n" -> "world" is line 2, offset 6
+    var result = try testRunGrepOutput("hello\nworld\nfoo\n", &.{ "-b", "-n", "world" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("2:6:world\n", result.output);
+}
+
+test "runGrep -b -c prints only count" {
+    var result = try testRunGrepOutput("hello\nworld\nfoo\n", &.{ "-b", "-c", "world" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("1\n", result.output);
+}
+
+test "runGrep -b multiple matches" {
+    // "aaa\nbbb\naaa\n" -> first "aaa" at offset 0 (line 1), second "aaa" at offset 8 (line 3)
+    var result = try testRunGrepOutput("aaa\nbbb\naaa\n", &.{ "-b", "aaa" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("0:aaa\n8:aaa\n", result.output);
 }
