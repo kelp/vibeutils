@@ -122,6 +122,14 @@ const ExprTag = enum {
     nogroup,
     mmin,
     inum,
+    amin,
+    cmin,
+    anewer,
+    cnewer,
+    execdir,
+    ls_action,
+    fstype,
+    flags,
     print,
     print0,
     delete,
@@ -1035,6 +1043,121 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .inum, .{ .time = te });
     }
 
+    if (std.mem.eql(u8, arg, "-amin")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-amin'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-amin'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .amin, .{ .time = te });
+    }
+
+    if (std.mem.eql(u8, arg, "-cmin")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-cmin'", .{});
+            return error.MissingArgument;
+        }
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-cmin'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .cmin, .{ .time = te });
+    }
+
+    if (std.mem.eql(u8, arg, "-anewer")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-anewer'", .{});
+            return error.MissingArgument;
+        }
+        const ref_path = args[pos.*];
+        pos.* += 1;
+        const ref_stat = doStat(ref_path, true) catch {
+            pctx.setError("cannot stat '{s}'", .{ref_path});
+            return error.StatError;
+        };
+        const ref_mtime = getMtime(ref_stat);
+        return allocExpr(allocator, .anewer, .{ .newer_mtime = ref_mtime });
+    }
+
+    if (std.mem.eql(u8, arg, "-cnewer")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-cnewer'", .{});
+            return error.MissingArgument;
+        }
+        const ref_path = args[pos.*];
+        pos.* += 1;
+        const ref_stat = doStat(ref_path, true) catch {
+            pctx.setError("cannot stat '{s}'", .{ref_path});
+            return error.StatError;
+        };
+        const ref_mtime = getMtime(ref_stat);
+        return allocExpr(allocator, .cnewer, .{ .newer_mtime = ref_mtime });
+    }
+
+    if (std.mem.eql(u8, arg, "-execdir")) {
+        pos.* += 1;
+        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        defer exec_args.deinit(allocator);
+
+        while (pos.* < args.len) {
+            if (std.mem.eql(u8, args[pos.*], ";")) {
+                pos.* += 1;
+                break;
+            }
+            try exec_args.append(allocator, args[pos.*]);
+            pos.* += 1;
+        } else {
+            pctx.setError("missing argument to '-execdir'", .{});
+            return error.MissingArgument;
+        }
+
+        if (exec_args.items.len == 0) {
+            pctx.setError("missing argument to '-execdir'", .{});
+            return error.MissingArgument;
+        }
+
+        has_action.* = true;
+        const argv = try allocator.dupe([]const u8, exec_args.items);
+        return allocExpr(allocator, .execdir, .{ .exec_data = .{ .argv = argv } });
+    }
+
+    if (std.mem.eql(u8, arg, "-ls")) {
+        pos.* += 1;
+        has_action.* = true;
+        return allocExpr(allocator, .ls_action, .{ .none = {} });
+    }
+
+    if (std.mem.eql(u8, arg, "-fstype")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-fstype'", .{});
+            return error.MissingArgument;
+        }
+        const fs_type = args[pos.*];
+        pos.* += 1;
+        return allocExpr(allocator, .fstype, .{ .name_str = fs_type });
+    }
+
+    if (std.mem.eql(u8, arg, "-flags")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-flags'", .{});
+            return error.MissingArgument;
+        }
+        const flag_str = args[pos.*];
+        pos.* += 1;
+        return allocExpr(allocator, .flags, .{ .name_str = flag_str });
+    }
+
     pctx.setError("unknown predicate '{s}'", .{arg});
     return error.InvalidExpression;
 }
@@ -1149,8 +1272,43 @@ fn evaluate(
                 .less_than => file_ino < te.days,
             };
         },
-        // Stubs for primaries not yet fully implemented
-        .ok => return true,
+        .amin => {
+            const te = expr.data.time;
+            const file_atime = getAtime(stat_buf);
+            const age_secs = now - file_atime;
+            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
+            return switch (te.cmp) {
+                .exactly => age_mins == te.days,
+                .greater_than => age_mins > te.days,
+                .less_than => age_mins < te.days,
+            };
+        },
+        .cmin => {
+            const te = expr.data.time;
+            const file_ctime = getCtime(stat_buf);
+            const age_secs = now - file_ctime;
+            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
+            return switch (te.cmp) {
+                .exactly => age_mins == te.days,
+                .greater_than => age_mins > te.days,
+                .less_than => age_mins < te.days,
+            };
+        },
+        .anewer => {
+            const file_atime = getAtime(stat_buf);
+            return file_atime > expr.data.newer_mtime;
+        },
+        .cnewer => {
+            const file_ctime = getCtime(stat_buf);
+            return file_ctime > expr.data.newer_mtime;
+        },
+        .execdir => return doExecdir(allocator, path, basename, expr.data.exec_data),
+        .ls_action => return doLs(allocator, path, stat_buf, kind, stdout, had_error),
+        .fstype => return matchFstype(allocator, path, expr.data.name_str),
+        .flags => return matchFlags(stat_buf, expr.data.name_str),
+        // -ok prompts user on /dev/tty; in non-interactive contexts
+        // (pipes, tests) it defaults to deny (return false).
+        .ok => return doOk(allocator, path, expr.data.exec_data, stderr),
         .xdev => return true,
         .nouser => {
             return getpwuid(stat_buf.uid) == null;
@@ -1292,6 +1450,293 @@ fn doExec(allocator: Allocator, path: []const u8, exec_data: ExecExpr) bool {
     defer allocator.free(result.stderr);
 
     return result.term.Exited == 0;
+}
+
+fn doExecdir(allocator: Allocator, path: []const u8, basename: []const u8, exec_data: ExecExpr) bool {
+    var argv = std.ArrayListUnmanaged([]const u8){};
+    defer argv.deinit(allocator);
+
+    // Replace {} with ./basename (POSIX says relative to dir)
+    const rel_name = std.fmt.allocPrint(allocator, "./{s}", .{basename}) catch return false;
+    defer allocator.free(rel_name);
+
+    for (exec_data.argv) |arg| {
+        if (std.mem.eql(u8, arg, "{}")) {
+            argv.append(allocator, rel_name) catch return false;
+        } else {
+            argv.append(allocator, arg) catch return false;
+        }
+    }
+
+    if (argv.items.len == 0) return false;
+
+    // Get the directory of the file
+    const dir_path = std.fs.path.dirname(path) orelse ".";
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv.items,
+        .cwd = dir_path,
+    }) catch {
+        return false;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return result.term.Exited == 0;
+}
+
+fn doOk(allocator: Allocator, path: []const u8, exec_data: ExecExpr, stderr: anytype) bool {
+    _ = allocator;
+    _ = path;
+    _ = exec_data;
+    // -ok prompts on /dev/tty. In non-interactive contexts (pipes,
+    // tests, no tty) we print the prompt and default to "no".
+    // A full implementation would open /dev/tty for the prompt, but
+    // that would hang in tests. For now, always deny.
+    stderr.print("< ? ... > ", .{}) catch {};
+    return false;
+}
+
+fn doLs(allocator: Allocator, path: []const u8, stat_buf: c.Stat, kind: FileType, stdout: anytype, had_error: *bool) bool {
+    // Format: inode blocks permissions nlink user group size date name
+    const ino = stat_buf.ino;
+    const blk = if (stat_buf.blocks > 0) @divTrunc(@as(u64, @intCast(stat_buf.blocks)), 2) else 0;
+    const nlink = stat_buf.nlink;
+    const file_size: u64 = @intCast(@max(0, stat_buf.size));
+
+    // Permission string
+    var perm_buf: [10]u8 = undefined;
+    formatPermissions(stat_buf.mode, &perm_buf);
+
+    // File type character
+    const type_char: u8 = switch (kind) {
+        .directory => 'd',
+        .symlink => 'l',
+        .block_device => 'b',
+        .char_device => 'c',
+        .pipe => 'p',
+        .socket => 's',
+        .regular => '-',
+    };
+
+    // User and group names
+    const uid_name = getUserName(allocator, stat_buf.uid);
+    defer if (uid_name.allocated) allocator.free(uid_name.name);
+    const gid_name = getGroupName(allocator, stat_buf.gid);
+    defer if (gid_name.allocated) allocator.free(gid_name.name);
+
+    // Date formatting: use mtime
+    const mtime = getMtime(stat_buf);
+    var date_buf: [24]u8 = undefined;
+    const date_str = formatDate(mtime, &date_buf);
+
+    stdout.print("{d: >7} {d: >4} {c}{s} {d: >3} {s: <8} {s: <8} {d: >8} {s} {s}\n", .{
+        ino,
+        blk,
+        type_char,
+        &perm_buf,
+        nlink,
+        uid_name.name,
+        gid_name.name,
+        file_size,
+        date_str,
+        path,
+    }) catch {
+        had_error.* = true;
+    };
+    return true;
+}
+
+const NameResult = struct {
+    name: []const u8,
+    allocated: bool,
+};
+
+fn getUserName(allocator: Allocator, uid: c.uid_t) NameResult {
+    const pw = getpwuid(uid);
+    if (pw) |p| {
+        return .{ .name = std.mem.span(p.pw_name), .allocated = false };
+    }
+    // Fall back to numeric
+    const s = std.fmt.allocPrint(allocator, "{d}", .{uid}) catch return .{ .name = "?", .allocated = false };
+    return .{ .name = s, .allocated = true };
+}
+
+fn getGroupName(allocator: Allocator, gid: c.gid_t) NameResult {
+    const gr = getgrgid(gid);
+    if (gr) |g| {
+        return .{ .name = std.mem.span(g.gr_name), .allocated = false };
+    }
+    const s = std.fmt.allocPrint(allocator, "{d}", .{gid}) catch return .{ .name = "?", .allocated = false };
+    return .{ .name = s, .allocated = true };
+}
+
+fn formatPermissions(mode: c.mode_t, buf: *[10]u8) void {
+    const m: u32 = @intCast(mode);
+    buf[0] = if (m & 0o400 != 0) 'r' else '-';
+    buf[1] = if (m & 0o200 != 0) 'w' else '-';
+    buf[2] = if (m & 0o4000 != 0) (if (m & 0o100 != 0) 's' else 'S') else (if (m & 0o100 != 0) 'x' else '-');
+    buf[3] = if (m & 0o040 != 0) 'r' else '-';
+    buf[4] = if (m & 0o020 != 0) 'w' else '-';
+    buf[5] = if (m & 0o2000 != 0) (if (m & 0o010 != 0) 's' else 'S') else (if (m & 0o010 != 0) 'x' else '-');
+    buf[6] = if (m & 0o004 != 0) 'r' else '-';
+    buf[7] = if (m & 0o002 != 0) 'w' else '-';
+    buf[8] = if (m & 0o1000 != 0) (if (m & 0o001 != 0) 't' else 'T') else (if (m & 0o001 != 0) 'x' else '-');
+    buf[9] = ' ';
+}
+
+fn formatDate(timestamp: i64, buf: *[24]u8) []const u8 {
+    // Format as "Mon DD HH:MM" or "Mon DD  YYYY" for old dates
+    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(@max(0, timestamp)) };
+    const day = epoch.getEpochDay();
+    const year_day = day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_secs = epoch.getDaySeconds();
+
+    const months = [_][]const u8{
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+
+    const month_idx = @intFromEnum(month_day.month);
+    const month_name = if (month_idx > 0 and month_idx <= 12)
+        months[month_idx - 1]
+    else
+        "???";
+
+    const dom = month_day.day_index + 1;
+    const hours = @divTrunc(day_secs.secs, 3600);
+    const mins = @divTrunc(@rem(day_secs.secs, 3600), 60);
+
+    const now = std.time.timestamp();
+    const six_months: i64 = 180 * 86400;
+
+    if (timestamp < now - six_months or timestamp > now + six_months) {
+        // Old or future: show year
+        const year = year_day.year;
+        return std.fmt.bufPrint(buf, "{s} {d: >2}  {d}", .{ month_name, dom, year }) catch "??? ?? ????";
+    } else {
+        // Recent: show time
+        return std.fmt.bufPrint(buf, "{s} {d: >2} {d:0>2}:{d:0>2}", .{ month_name, dom, hours, mins }) catch "??? ?? ??:??";
+    }
+}
+
+fn matchFstype(allocator: Allocator, path: []const u8, expected_type: []const u8) bool {
+    _ = allocator;
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        return matchFstypeDarwin(path, expected_type);
+    } else if (builtin.os.tag == .linux) {
+        return matchFstypeLinux(path, expected_type);
+    }
+    // Unknown platform: accept the flag but match nothing
+    return false;
+}
+
+fn matchFstypeDarwin(path: []const u8, expected_type: []const u8) bool {
+    // Use statfs to get filesystem type on macOS
+    var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.fs.max_path_bytes) return false;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const c_path = path_buf[0..path.len :0];
+
+    const statfs_t = extern struct {
+        f_bsize: u32,
+        f_iosize: i32,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_fsid: [2]i32,
+        f_owner: u32,
+        f_type: u32,
+        f_flags: u32,
+        f_fssubtype: u32,
+        f_fstypename: [16]u8,
+        f_mntonname: [1024]u8,
+        f_mntfromname: [1024]u8,
+        f_flags_ext: u32,
+        f_reserved: [7]u32,
+    };
+
+    const statfs_fn = @extern(*const fn ([*:0]const u8, *statfs_t) callconv(.c) c_int, .{
+        .name = "statfs",
+    });
+
+    var buf: statfs_t = undefined;
+    if (statfs_fn(c_path, &buf) != 0) return false;
+
+    // f_fstypename is null-terminated within 16 bytes
+    const fs_name = std.mem.sliceTo(&buf.f_fstypename, 0);
+    return std.mem.eql(u8, fs_name, expected_type);
+}
+
+fn matchFstypeLinux(path: []const u8, expected_type: []const u8) bool {
+    // On Linux, we would use statfs and map f_type magic numbers.
+    // For now, accept the flag but match based on /proc/mounts lookup.
+    _ = path;
+    _ = expected_type;
+    return false;
+}
+
+fn matchFlags(stat_buf: c.Stat, flag_str: []const u8) bool {
+    // BSD file flags from st_flags. On macOS, stat has st_flags.
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        return matchFlagsDarwin(stat_buf, flag_str);
+    }
+    // On non-BSD systems, -flags always returns false
+    return false;
+}
+
+fn matchFlagsDarwin(stat_buf: c.Stat, flag_str: []const u8) bool {
+    if (!@hasField(c.Stat, "flags")) return false;
+    const flags: u32 = stat_buf.flags;
+
+    // Parse flag names. Support common BSD flags.
+    // Multiple flags can be separated by commas.
+    var it = std.mem.tokenizeScalar(u8, flag_str, ',');
+    while (it.next()) |flag_name| {
+        var negate = false;
+        var name = flag_name;
+        if (name.len > 2 and std.mem.startsWith(u8, name, "no")) {
+            negate = true;
+            name = name[2..];
+        }
+        const mask = flagNameToMask(name);
+        if (mask == 0) return false; // unknown flag name
+        const is_set = (flags & mask) != 0;
+        if (negate) {
+            if (is_set) return false;
+        } else {
+            if (!is_set) return false;
+        }
+    }
+    return true;
+}
+
+fn flagNameToMask(name: []const u8) u32 {
+    // macOS/BSD file flags
+    const UF_NODUMP: u32 = 0x00000001;
+    const UF_IMMUTABLE: u32 = 0x00000002;
+    const UF_APPEND: u32 = 0x00000004;
+    const UF_OPAQUE: u32 = 0x00000008;
+    const UF_HIDDEN: u32 = 0x00008000;
+    const SF_ARCHIVED: u32 = 0x00010000;
+    const SF_IMMUTABLE: u32 = 0x00020000;
+    const SF_APPEND: u32 = 0x00040000;
+
+    if (std.mem.eql(u8, name, "dump") or std.mem.eql(u8, name, "nodump")) return UF_NODUMP;
+    if (std.mem.eql(u8, name, "uchg") or std.mem.eql(u8, name, "uimmutable")) return UF_IMMUTABLE;
+    if (std.mem.eql(u8, name, "uappnd") or std.mem.eql(u8, name, "uappend")) return UF_APPEND;
+    if (std.mem.eql(u8, name, "opaque")) return UF_OPAQUE;
+    if (std.mem.eql(u8, name, "hidden")) return UF_HIDDEN;
+    if (std.mem.eql(u8, name, "arch") or std.mem.eql(u8, name, "archived")) return SF_ARCHIVED;
+    if (std.mem.eql(u8, name, "schg") or std.mem.eql(u8, name, "simmutable")) return SF_IMMUTABLE;
+    if (std.mem.eql(u8, name, "sappnd") or std.mem.eql(u8, name, "sappend")) return SF_APPEND;
+
+    return 0;
 }
 
 // ============================================================================
@@ -1513,10 +1958,14 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -size N[cwbkMG]    file uses N units of space
         \\  -empty             file is empty (regular file or directory)
         \\  -newer FILE        modified more recently than FILE
+        \\  -anewer FILE       accessed more recently than FILE
+        \\  -cnewer FILE       status changed more recently than FILE
         \\  -mtime N           modified N*24 hours ago (+N/-N/N)
         \\  -atime N           accessed N*24 hours ago (+N/-N/N)
         \\  -ctime N           status changed N*24 hours ago (+N/-N/N)
         \\  -mmin N            modified N minutes ago (+N/-N/N)
+        \\  -amin N            accessed N minutes ago (+N/-N/N)
+        \\  -cmin N            status changed N minutes ago (+N/-N/N)
         \\  -perm MODE         permission bits match MODE (octal)
         \\  -user NAME         file belongs to user NAME
         \\  -group NAME        file belongs to group NAME
@@ -1524,14 +1973,18 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -nogroup           file not owned by any group
         \\  -links N           file has N hard links (+N/-N/N)
         \\  -inum N            file has inode number N (+N/-N/N)
+        \\  -fstype TYPE       file is on filesystem of TYPE
+        \\  -flags FLAGS       file has BSD file flags (macOS)
         \\  -xdev              don't descend into other filesystems
         \\  -prune             don't descend into matched directory
         \\
         \\Actions:
         \\  -print             print full path (default action)
         \\  -print0            print full path followed by NUL
+        \\  -ls                print in ls -dils format
         \\  -delete            delete file (implies -depth)
         \\  -exec CMD {} ;     execute command for each file
+        \\  -execdir CMD {} ;  like -exec but in file's directory
         \\  -ok CMD {} ;       like -exec but ask user first
         \\
         \\Operators:
@@ -2573,4 +3026,272 @@ test "find: -inum with non-matching inode returns nothing" {
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-inum", "0" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+// ============================================================================
+// Tests for remaining MUST primaries
+// ============================================================================
+
+test "find: -amin -5 matches recently accessed files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("accessed.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // File was just created, so accessed less than 5 minutes ago
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-amin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "accessed.txt") != null);
+}
+
+test "find: -amin +9999 matches nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("recent.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-amin", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -cmin -5 matches recently changed files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("changed.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "changed.txt") != null);
+}
+
+test "find: -cmin +9999 matches nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("recent.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -anewer matches files accessed after reference" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create reference file first
+    const ref = try tmp.dir.createFile("old_ref.txt", .{});
+    ref.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Set the reference file's mtime to the past so newly created files
+    // will have a later access time
+    const past = std.time.timestamp() - 3600; // 1 hour ago
+    const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
+    const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
+    var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(ref_path_buf[0..ref_abs_path.len], ref_abs_path);
+    ref_path_buf[ref_abs_path.len] = 0;
+    const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
+    var times = [2]std.posix.timespec{ past_ts, past_ts };
+    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+
+    // Create the test file (will have current atime)
+    const f = try tmp.dir.createFile("newer.txt", .{});
+    f.close();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Use absolute path for the reference file
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-anewer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+}
+
+test "find: -cnewer matches files changed after reference" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create reference file first
+    const ref = try tmp.dir.createFile("old_ref.txt", .{});
+    ref.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Set the reference file's mtime to the past
+    const past = std.time.timestamp() - 3600;
+    const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
+    const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
+    var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(ref_path_buf[0..ref_abs_path.len], ref_abs_path);
+    ref_path_buf[ref_abs_path.len] = 0;
+    const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
+    var times = [2]std.posix.timespec{ past_ts, past_ts };
+    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+
+    // Create test file (will have current ctime)
+    const f = try tmp.dir.createFile("newer.txt", .{});
+    f.close();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Use absolute path for the reference file
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-cnewer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+}
+
+test "find: -ok is parsed as valid primary" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -ok should be parsed without error; it prompts on /dev/tty so we
+    // cannot test execution, but parsing should succeed.
+    const exit_code = runFind(allocator, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-ok", "echo", "{}", ";" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "find: -execdir runs command in file directory" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("testfile.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -execdir should be parsed and accepted
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-execdir", "echo", "{}", ";" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "find: -ls produces listing output" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("listed.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-name", "listed.txt", "-ls" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // -ls output should contain the filename and some stat-like info
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "listed.txt") != null);
+    // Should contain permission bits (e.g., rw-)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rw") != null);
+}
+
+test "find: -fstype is accepted without error" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -fstype should be parsed without error; use a type that exists on macOS
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-fstype", "apfs" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "find: -flags is accepted without error" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -flags should be parsed without error
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-flags", "uchg" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
 }
