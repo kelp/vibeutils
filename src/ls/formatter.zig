@@ -80,11 +80,8 @@ fn writeNlinkColored(style: anytype, writer: anytype, nlink: u32) !void {
     }
 }
 
-/// Write user and group names with distinct colors.
-/// Truecolor: warm wheat for user, soft lavender for group.
-/// 16-color: yellow for user, cyan for group.
-fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8, group_name: []const u8) !void {
-    // User name
+/// Write a single owner/group column with color.
+fn writeOwnerColored(style: anytype, writer: anytype, name: []const u8) !void {
     if (style.color_mode != .none) {
         if (style.color_mode == .truecolor) {
             try style.setRgb(190, 165, 120);
@@ -92,11 +89,14 @@ fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8,
             try style.setColor(.yellow);
         }
     }
-    try writer.print("{s: <8} ", .{user_name});
+    try writer.print("{s: <8} ", .{name});
     if (style.color_mode != .none) {
         try style.reset();
     }
-    // Group name
+}
+
+/// Write a single group column with color.
+fn writeGroupColored(style: anytype, writer: anytype, name: []const u8) !void {
     if (style.color_mode != .none) {
         if (style.color_mode == .truecolor) {
             try style.setRgb(150, 145, 185);
@@ -104,9 +104,21 @@ fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8,
             try style.setColor(.cyan);
         }
     }
-    try writer.print("{s: <8} ", .{group_name});
+    try writer.print("{s: <8} ", .{name});
     if (style.color_mode != .none) {
         try style.reset();
+    }
+}
+
+/// Write user and group names with distinct colors.
+/// Truecolor: warm wheat for user, soft lavender for group.
+/// 16-color: yellow for user, cyan for group.
+fn writeUserGroupColored(style: anytype, writer: anytype, user_name: []const u8, group_name: []const u8, omit_owner: bool, omit_group: bool) !void {
+    if (!omit_owner) {
+        try writeOwnerColored(style, writer, user_name);
+    }
+    if (!omit_group) {
+        try writeGroupColored(style, writer, group_name);
     }
 }
 
@@ -315,17 +327,18 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
             var gid_buf: [16]u8 = undefined;
             const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{stat.uid}) catch "?";
             const gid_str = std.fmt.bufPrint(&gid_buf, "{d}", .{stat.gid}) catch "?";
-            try writeUserGroupColored(style, writer, uid_str, gid_str);
+            try writeUserGroupColored(style, writer, uid_str, gid_str, options.omit_owner, options.omit_group);
         } else {
             // Show names (default behavior)
             var user_buf: [32]u8 = undefined;
             var group_buf: [32]u8 = undefined;
             const user_name = try common.file.getUserName(stat.uid, &user_buf);
             const group_name = try common.file.getGroupName(stat.gid, &group_buf);
-            try writeUserGroupColored(style, writer, user_name, group_name);
+            try writeUserGroupColored(style, writer, user_name, group_name, options.omit_owner, options.omit_group);
         }
     } else {
-        try writer.writeAll("?        ?        ");
+        if (!options.omit_owner) try writer.writeAll("?        ");
+        if (!options.omit_group) try writer.writeAll("?        ");
     }
 
     // Size
@@ -353,7 +366,7 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     }
 
     // Name with color and optional indicator
-    try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+    try display.printEntryName(entry, writer, style, options);
 
     // Show symlink target if available, colored by target's file type
     if (entry.symlink_target) |target| {
@@ -390,7 +403,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
     // This ensures all widths are cached and finds the maximum width
     var max_width: usize = 0;
     for (entries) |*entry| {
-        const width = entry.getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+        const width = entry.getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
         max_width = @max(max_width, width);
     }
 
@@ -412,12 +425,12 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
             const entry = entries[idx];
 
             // Print entry name with color and indicator
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options);
 
             // Pad to column width (except for last column)
             if (col < num_cols - 1 and idx < entries.len - 1) {
                 // This uses cached width from the pre-calculation pass above
-                const width = entries[idx].getDisplayWidth(options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+                const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
                 const padding = col_width - width;
                 for (0..padding) |_| {
                     try writer.writeByte(' ');
@@ -448,7 +461,11 @@ pub fn printEntries(
                     try writer.print("? ", .{});
                 }
             }
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, false, false);
+            // In one-per-line mode, disable icons and git status
+            var one_opts = options;
+            one_opts.icon_mode = .never;
+            one_opts.show_git_status = false;
+            try display.printEntryName(entry, writer, style, one_opts);
             try writer.writeByte('\n');
         }
     } else if (options.long_format) {
@@ -482,7 +499,7 @@ pub fn printEntries(
         // Comma-separated format
         for (entries, 0..) |entry, i| {
             if (i > 0) try writer.writeAll(", ");
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options);
         }
         if (entries.len > 0) try writer.writeByte('\n');
     } else {
@@ -654,7 +671,7 @@ test "writeUserGroupColored - no color writes plain" {
     defer buffer.deinit(testing.allocator);
     const style = makeTestStyle(&buffer, .none);
 
-    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel");
+    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", false, false);
     try testing.expectEqualSlices(u8, "root     wheel    ", buffer.items);
 }
 
@@ -663,7 +680,7 @@ test "writeUserGroupColored - basic mode uses yellow for user and cyan for group
     defer buffer.deinit(testing.allocator);
     const style = makeTestStyle(&buffer, .basic);
 
-    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel");
+    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", false, false);
     const output = buffer.items;
 
     // Should contain yellow (33) for user and cyan (36) for group
@@ -671,6 +688,24 @@ test "writeUserGroupColored - basic mode uses yellow for user and cyan for group
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[36m") != null);
     try testing.expect(std.mem.indexOf(u8, output, "root") != null);
     try testing.expect(std.mem.indexOf(u8, output, "wheel") != null);
+}
+
+test "writeUserGroupColored - omit_owner hides user column" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const style = makeTestStyle(&buffer, .none);
+
+    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", true, false);
+    try testing.expectEqualSlices(u8, "wheel    ", buffer.items);
+}
+
+test "writeUserGroupColored - omit_group hides group column" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+    const style = makeTestStyle(&buffer, .none);
+
+    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", false, true);
+    try testing.expectEqualSlices(u8, "root     ", buffer.items);
 }
 
 test "writeSizeColored - no color writes plain" {

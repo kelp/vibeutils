@@ -29,6 +29,10 @@ const LsArgs = struct {
     one_per_line: bool = false,
     directory: bool = false,
     file_type_indicators: bool = false,
+    append_slash_dirs: bool = false,
+    non_printable_as_question: bool = false,
+    omit_owner: bool = false,
+    omit_group: bool = false,
     show_inodes: bool = false,
     comma_format: bool = false,
     numeric_ids: bool = false,
@@ -56,6 +60,10 @@ const LsArgs = struct {
         .one_per_line = .{ .short = '1', .desc = "List one file per line" },
         .directory = .{ .short = 'd', .desc = "List directories themselves, not their contents" },
         .file_type_indicators = .{ .short = 'F', .desc = "Append indicator (one of */=>@|) to entries" },
+        .append_slash_dirs = .{ .short = 'p', .desc = "Write a slash (/) after each directory name" },
+        .non_printable_as_question = .{ .short = 'q', .desc = "Force non-printable characters to be written as '?'" },
+        .omit_owner = .{ .short = 'g', .desc = "Like -l, but do not print the owner" },
+        .omit_group = .{ .short = 'o', .desc = "Like -l, but do not print the group" },
         .show_inodes = .{ .short = 'i', .desc = "Print the index number of each file" },
         .comma_format = .{ .short = 'm', .desc = "Fill width with a comma separated list of entries" },
         .numeric_ids = .{ .short = 'n', .desc = "With -l, show numeric user and group IDs" },
@@ -218,10 +226,11 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     const is_terminal = stdout_file.isTty();
 
     // Create options struct by consolidating all parsed arguments
+    // -g and -o imply long format
     const options = LsOptions{
         .all = args.all,
         .almost_all = args.almost_all,
-        .long_format = args.long_format,
+        .long_format = args.long_format or args.omit_owner or args.omit_group,
         .human_readable = args.human_readable,
         .kilobytes = args.kilobytes,
         .one_per_line = args.one_per_line,
@@ -231,6 +240,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .sort_by_size = args.sort_by_size,
         .reverse_sort = args.reverse_sort,
         .file_type_indicators = args.file_type_indicators,
+        .append_slash_dirs = args.append_slash_dirs,
+        .non_printable_as_question = args.non_printable_as_question,
+        .omit_owner = args.omit_owner,
+        .omit_group = args.omit_group,
         .color_mode = color_mode,
         .group_directories_first = args.group_directories_first,
         .show_inodes = args.show_inodes,
@@ -285,6 +298,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
         \\  -F, --file-type-indicators append indicator (one of */=>@|) to entries
+        \\  -g, --omit-owner           like -l, but do not print the owner
         \\      --git=WHEN             when to show git status (valid: always, auto, never)
         \\      --group-directories-first  group directories before files
         \\  -h, --human-readable       with -l, print sizes in human readable format
@@ -292,7 +306,10 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -k, --kilobytes            with -l, print sizes in kilobytes
         \\  -l, --long-format          use a long listing format
         \\  -n, --numeric-ids          with -l, show numeric user and group IDs
+        \\  -q, --non-printable-as-question  force non-printable characters as '?'
+        \\  -o, --omit-group           like -l, but do not print the group
         \\  -1, --one-per-line         list one file per line
+        \\  -p, --append-slash-dirs    write a slash (/) after each directory name
         \\  -R, --recursive            list subdirectories recursively
         \\  -r, --reverse-sort         reverse order while sorting
         \\  -i, --show-inodes          print the index number of each file
@@ -400,7 +417,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
         if (options.long_format) {
             try formatter.printLongFormatEntry(allocator, entry, writer, options, style);
         } else {
-            try display.printEntryName(entry, writer, style, options.file_type_indicators, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+            try display.printEntryName(entry, writer, style, options);
         }
         try writer.writeAll("\n");
         return;

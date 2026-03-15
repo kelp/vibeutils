@@ -349,3 +349,149 @@ test "recursive: handles symlink cycles safely" {
     // Should contain the symlink but not recurse infinitely
     try LsAssertions.expectContainsFile(env.getStdout(), "parent_link");
 }
+
+// ============================================================================
+// -p flag: append slash to directories
+// ============================================================================
+
+test "append_slash: appends / to directories but not files" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("regular.txt", "");
+    try env.createDir("mydir");
+
+    try env.runLs(.{ .append_slash_dirs = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectFileTypeIndicator(output, "mydir/");
+    try LsAssertions.expectContainsFile(output, "regular.txt");
+    // regular files should NOT get any indicator with -p
+    try LsAssertions.expectNotContainsFile(output, "regular.txt/");
+    try LsAssertions.expectNotContainsFile(output, "regular.txt*");
+}
+
+test "append_slash: does not add indicators for executables or symlinks" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createDir("mydir");
+
+    if (PlatformHelpers.supportsExecutableBit()) {
+        try env.createExecutableFile("myexe");
+    }
+    try env.createFile("target.txt", "content");
+    try env.createSymlink("target.txt", "mylink");
+
+    try env.runLs(.{ .append_slash_dirs = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    // Only directories get /
+    try LsAssertions.expectFileTypeIndicator(output, "mydir/");
+    // Executables should NOT get * with -p (unlike -F)
+    if (PlatformHelpers.supportsExecutableBit()) {
+        try LsAssertions.expectNotContainsFile(output, "myexe*");
+    }
+    // Symlinks should NOT get @ with -p (unlike -F)
+    try LsAssertions.expectNotContainsFile(output, "mylink@");
+}
+
+// ============================================================================
+// -q flag: non-printable characters as ?
+// ============================================================================
+
+test "non_printable: replaces control chars with question marks" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Create a file with a control character (tab = 0x09) in the name
+    try env.createFile("file\x09name", "");
+    try env.createFile("normal.txt", "");
+
+    try env.runLs(.{ .non_printable_as_question = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    // The tab should be replaced with ?
+    try LsAssertions.expectContainsFile(output, "file?name");
+    // Normal file should be unchanged
+    try LsAssertions.expectContainsFile(output, "normal.txt");
+    // The raw control character should NOT appear
+    try LsAssertions.expectNotContainsFile(output, "file\x09name");
+}
+
+// ============================================================================
+// -g flag: long format without owner
+// ============================================================================
+
+test "omit_owner: long format without owner column" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "Hello");
+
+    // -g implies long format and omits owner
+    try env.runLs(.{ .long_format = true, .omit_owner = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    try LsAssertions.expectContainsPermissions(output, "-rw-");
+
+    // Compare with normal long format to verify owner is missing
+    env.stdout_buffer.clearRetainingCapacity();
+    try env.runLs(.{ .long_format = true });
+
+    const normal_output = env.getStdout();
+
+    // The -g output should be shorter per line (missing owner column)
+    // Split both outputs into lines and compare the test.txt line length
+    var g_lines = std.mem.splitScalar(u8, output, '\n');
+    var normal_lines = std.mem.splitScalar(u8, normal_output, '\n');
+
+    // Skip "total" lines
+    _ = g_lines.next();
+    _ = normal_lines.next();
+
+    const g_line = g_lines.next() orelse "";
+    const normal_line = normal_lines.next() orelse "";
+
+    // The -g line should be shorter because it omits the owner
+    try testing.expect(g_line.len < normal_line.len);
+}
+
+// ============================================================================
+// -o flag: long format without group
+// ============================================================================
+
+test "omit_group: long format without group column" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "Hello");
+
+    // -o implies long format and omits group
+    try env.runLs(.{ .long_format = true, .omit_group = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    try LsAssertions.expectContainsPermissions(output, "-rw-");
+
+    // Compare with normal long format to verify group is missing
+    env.stdout_buffer.clearRetainingCapacity();
+    try env.runLs(.{ .long_format = true });
+
+    const normal_output = env.getStdout();
+
+    // Split both outputs into lines and compare the test.txt line length
+    var o_lines = std.mem.splitScalar(u8, output, '\n');
+    var normal_lines = std.mem.splitScalar(u8, normal_output, '\n');
+
+    // Skip "total" lines
+    _ = o_lines.next();
+    _ = normal_lines.next();
+
+    const o_line = o_lines.next() orelse "";
+    const normal_line = normal_lines.next() orelse "";
+
+    // The -o line should be shorter because it omits the group
+    try testing.expect(o_line.len < normal_line.len);
+}

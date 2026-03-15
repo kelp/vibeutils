@@ -30,6 +30,10 @@ pub const LsOptions = struct {
     sort_by_size: bool = false,
     reverse_sort: bool = false,
     file_type_indicators: bool = false,
+    append_slash_dirs: bool = false,
+    non_printable_as_question: bool = false,
+    omit_owner: bool = false,
+    omit_group: bool = false,
     color_mode: ColorMode = .auto,
     terminal_width: ?u16 = null, // null means auto-detect
     group_directories_first: bool = false,
@@ -53,7 +57,7 @@ pub const Entry = struct {
     file_type_indicator: ?u8 = null, // Cached file type indicator for performance
 
     /// Calculate the display width of this entry without caching
-    pub fn calculateDisplayWidth(self: *const Entry, file_type_indicators: bool, show_icons: bool, show_git_status: bool) usize {
+    pub fn calculateDisplayWidth(self: *const Entry, file_type_indicators: bool, append_slash_dirs: bool, show_icons: bool, show_git_status: bool) usize {
         // Calculate display width based on entry properties
         var width: usize = 0;
 
@@ -78,18 +82,20 @@ pub const Entry = struct {
             if (indicator != 0) {
                 width += 1;
             }
+        } else if (append_slash_dirs and self.kind == .directory) {
+            width += 1; // -p: slash after directory names
         }
 
         return width;
     }
 
     /// Get the display width of this entry, caching the result for future calls
-    pub fn getDisplayWidth(self: *Entry, file_type_indicators: bool, show_icons: bool, show_git_status: bool) usize {
+    pub fn getDisplayWidth(self: *Entry, file_type_indicators: bool, append_slash_dirs: bool, show_icons: bool, show_git_status: bool) usize {
         if (self.display_width) |cached_width| {
             return cached_width;
         }
 
-        const width = self.calculateDisplayWidth(file_type_indicators, show_icons, show_git_status);
+        const width = self.calculateDisplayWidth(file_type_indicators, append_slash_dirs, show_icons, show_git_status);
 
         // Cache the calculated width
         self.display_width = width;

@@ -113,8 +113,29 @@ pub fn getFileTypeIndicator(entry: Entry) u8 {
     }
 }
 
+/// Sanitize a filename by replacing non-printable characters with '?'.
+/// Non-printable means characters with values < 0x20 or == 0x7F (DEL).
+fn sanitizeName(name: []const u8, buf: []u8) []const u8 {
+    if (name.len > buf.len) return name;
+    var needs_sanitize = false;
+    for (name) |c| {
+        if (c < 0x20 or c == 0x7F) {
+            needs_sanitize = true;
+            break;
+        }
+    }
+    if (!needs_sanitize) return name;
+    for (name, 0..) |c, i| {
+        buf[i] = if (c < 0x20 or c == 0x7F) '?' else c;
+    }
+    return buf[0..name.len];
+}
+
 /// Print entry name with optional icon, color and file type indicator
-pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indicator: bool, show_icons: bool, show_git_status: bool) !void {
+pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: LsOptions) !void {
+    const show_icons = common.icons.shouldShowIcons(options.icon_mode, options.is_terminal);
+    const show_git_status = options.show_git_status;
+
     // Print Git status indicator if enabled
     if (show_git_status and entry.git_status != .not_in_repo) {
         const git_indicator = entry.git_status.getIndicator();
@@ -154,16 +175,29 @@ pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, show_indica
         try style.setColor(color);
     }
 
-    try writer.print("{s}", .{entry.name});
+    // Apply -q: replace non-printable characters with '?'
+    if (options.non_printable_as_question) {
+        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const display_name = sanitizeName(entry.name, &name_buf);
+        try writer.print("{s}", .{display_name});
+    } else {
+        try writer.print("{s}", .{entry.name});
+    }
 
     if (style.color_mode != .none) {
         try style.reset();
     }
 
-    if (show_indicator) {
+    // -F: full file type indicators (/ * @ | =)
+    if (options.file_type_indicators) {
         const indicator = getFileTypeIndicator(entry);
         if (indicator != 0) {
             try writer.writeByte(indicator);
+        }
+    } else if (options.append_slash_dirs) {
+        // -p: only append / for directories
+        if (entry.kind == .directory) {
+            try writer.writeByte('/');
         }
     }
 }
