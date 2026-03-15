@@ -359,8 +359,9 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     // Date/time (padded to max_time_width for alignment)
     if (entry.stat) |stat| {
         var time_buf: [128]u8 = undefined;
-        const time_str = try formatTimeWithStyle(stat.mtime, options.time_style, allocator, &time_buf);
-        try writeDateColored(style, writer, time_str, stat.mtime, max_time_width);
+        const time_field = if (options.use_atime) stat.atime else stat.mtime;
+        const time_str = try formatTimeWithStyle(time_field, options.time_style, allocator, &time_buf);
+        try writeDateColored(style, writer, time_str, time_field, max_time_width);
     } else {
         try writer.writeAll("??? ?? ??:?? ");
     }
@@ -392,12 +393,34 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     try writer.writeByte('\n');
 }
 
+/// Calculate the display width of a block count number
+fn blockCountWidth(blocks: u64) usize {
+    if (blocks == 0) return 1;
+    var n = blocks;
+    var width: usize = 0;
+    while (n > 0) {
+        n /= 10;
+        width += 1;
+    }
+    return width;
+}
+
 /// Print entries in columnar format
 pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
 
     // Get terminal width
     const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
+
+    // Calculate block width prefix if -s is enabled
+    var block_prefix_width: usize = 0;
+    if (options.show_blocks) {
+        var max_block_width: usize = 0;
+        for (entries) |entry| {
+            max_block_width = @max(max_block_width, blockCountWidth(calculateBlocks(entry)));
+        }
+        block_prefix_width = max_block_width + 1; // block count + space
+    }
 
     // Pre-calculate display widths for all entries in a single pass
     // This ensures all widths are cached and finds the maximum width
@@ -407,8 +430,8 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
         max_width = @max(max_width, width);
     }
 
-    // Add padding between columns
-    const col_width = max_width + COLUMN_PADDING;
+    // Add padding between columns, including block prefix
+    const col_width = block_prefix_width + max_width + COLUMN_PADDING;
 
     // Calculate number of columns that fit
     const num_cols = @max(1, term_width / col_width);
@@ -424,6 +447,18 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
 
             const entry = entries[idx];
 
+            // Print block count prefix if -s
+            if (options.show_blocks) {
+                const blocks = calculateBlocks(entry);
+                // Right-align block count to max_block_width
+                const bw = blockCountWidth(blocks);
+                const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
+                for (0..pad_count) |_| {
+                    try writer.writeByte(' ');
+                }
+                try writer.print("{d} ", .{blocks});
+            }
+
             // Print entry name with color and indicator
             try display.printEntryName(entry, writer, style, options);
 
@@ -431,13 +466,81 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
             if (col < num_cols - 1 and idx < entries.len - 1) {
                 // This uses cached width from the pre-calculation pass above
                 const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
-                const padding = col_width - width;
+                const padding = max_width + COLUMN_PADDING - width;
                 for (0..padding) |_| {
                     try writer.writeByte(' ');
                 }
             }
         }
         try writer.writeByte('\n');
+    }
+}
+
+/// Calculate filesystem blocks for a file (512-byte units)
+fn calculateBlocks(entry: Entry) u64 {
+    if (entry.stat) |stat| {
+        return (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
+    }
+    return 0;
+}
+
+/// Print entries in columnar format sorted across rows (-x flag)
+pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
+    if (entries.len == 0) return;
+
+    // Get terminal width
+    const term_width = options.terminal_width orelse common.terminal.getWidth(allocator) catch 80;
+
+    // Calculate block width prefix if -s is enabled
+    var block_prefix_width: usize = 0;
+    if (options.show_blocks) {
+        var max_block_width: usize = 0;
+        for (entries) |entry| {
+            max_block_width = @max(max_block_width, blockCountWidth(calculateBlocks(entry)));
+        }
+        block_prefix_width = max_block_width + 1; // block count + space
+    }
+
+    // Pre-calculate display widths for all entries in a single pass
+    var max_width: usize = 0;
+    for (entries) |*entry| {
+        const width = entry.getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+        max_width = @max(max_width, width);
+    }
+
+    // Add padding between columns, including block prefix
+    const col_width = block_prefix_width + max_width + COLUMN_PADDING;
+
+    // Calculate number of columns that fit
+    const num_cols = @max(1, term_width / col_width);
+
+    // Print in row-major order (across rows, like -x)
+    for (entries, 0..) |entry, idx| {
+        // Print block count prefix if -s
+        if (options.show_blocks) {
+            const blocks = calculateBlocks(entry);
+            const bw = blockCountWidth(blocks);
+            const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
+            for (0..pad_count) |_| {
+                try writer.writeByte(' ');
+            }
+            try writer.print("{d} ", .{blocks});
+        }
+
+        try display.printEntryName(entry, writer, style, options);
+
+        // Check if this is the last entry on the row or the last entry overall
+        const col = idx % num_cols;
+        if (col == num_cols - 1 or idx == entries.len - 1) {
+            try writer.writeByte('\n');
+        } else {
+            // Pad to column width
+            const width = entries[idx].getDisplayWidth(options.file_type_indicators, options.append_slash_dirs, common.icons.shouldShowIcons(options.icon_mode, options.is_terminal), options.show_git_status);
+            const padding = max_width + COLUMN_PADDING - width;
+            for (0..padding) |_| {
+                try writer.writeByte(' ');
+            }
+        }
     }
 }
 
@@ -451,8 +554,24 @@ pub fn printEntries(
 ) !u64 {
     var total_blocks: u64 = 0;
 
+    // Calculate total blocks for -s or -l
+    if (options.show_blocks or options.long_format) {
+        for (entries) |entry| {
+            total_blocks += calculateBlocks(entry);
+        }
+    }
+
+    // Print total blocks line for -s (in any format) or -l
+    if (options.show_blocks and entries.len > 0 and !options.long_format) {
+        try writer.print("total {d}\n", .{total_blocks});
+    }
+
     if (options.one_per_line) {
         for (entries) |entry| {
+            // Print block count if -s
+            if (options.show_blocks) {
+                try writer.print("{d: >4} ", .{calculateBlocks(entry)});
+            }
             // Print inode number if requested
             if (options.show_inodes) {
                 if (entry.stat) |stat| {
@@ -469,13 +588,6 @@ pub fn printEntries(
             try writer.writeByte('\n');
         }
     } else if (options.long_format) {
-        // Calculate total blocks
-        for (entries) |entry| {
-            if (entry.stat) |stat| {
-                total_blocks += (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
-            }
-        }
-
         // Print total if we have entries
         if (entries.len > 0) {
             try writer.print("total {d}\n", .{total_blocks});
@@ -486,7 +598,8 @@ pub fn printEntries(
         for (entries) |entry| {
             if (entry.stat) |stat| {
                 var tbuf: [128]u8 = undefined;
-                const ts = formatTimeWithStyle(stat.mtime, options.time_style, allocator, &tbuf) catch continue;
+                const time_field = if (options.use_atime) stat.atime else stat.mtime;
+                const ts = formatTimeWithStyle(time_field, options.time_style, allocator, &tbuf) catch continue;
                 max_time_width = @max(max_time_width, ts.len);
             }
         }
@@ -502,8 +615,11 @@ pub fn printEntries(
             try display.printEntryName(entry, writer, style, options);
         }
         if (entries.len > 0) try writer.writeByte('\n');
+    } else if (options.columns_across) {
+        // -x: multi-column sorted across rows
+        try printColumnarAcross(allocator, entries, writer, options, style);
     } else {
-        // Default format: multi-column layout
+        // Default format: multi-column layout (sorted down columns)
         try printColumnar(allocator, entries, writer, options, style);
     }
 

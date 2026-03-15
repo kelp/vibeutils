@@ -44,6 +44,10 @@ pub const LsOptions = struct {
     time_style: TimeStyle = .default,
     show_git_status: bool = false,
     is_terminal: bool = false, // Terminal status for icon display
+    no_sort: bool = false, // -f: list entries in directory order
+    show_blocks: bool = false, // -s: show filesystem blocks
+    use_atime: bool = false, // -u: use access time instead of mtime
+    columns_across: bool = false, // -x: sort across rows instead of down columns
 };
 
 /// Represents a directory entry with metadata
@@ -149,6 +153,7 @@ pub const SortConfig = struct {
     by_size: bool = false,
     dirs_first: bool = false,
     reverse: bool = false,
+    use_atime: bool = false, // -u: sort by access time instead of mtime
 };
 
 /// Parse color mode from string argument

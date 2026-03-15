@@ -54,15 +54,18 @@ pub fn listDirectoryTest(
         try entry_collector.enhanceEntriesWithMetadata(allocator, entries.items, dir, test_options, null, stderr_writer);
     }
 
-    // Sort entries based on options
-    const sort_config = types.SortConfig{
-        .by_time = test_options.sort_by_time,
-        .by_size = test_options.sort_by_size,
-        .dirs_first = test_options.group_directories_first,
-        .reverse = test_options.reverse_sort,
-    };
+    // Sort entries based on options (skip if -f)
+    if (!test_options.no_sort) {
+        const sort_config = types.SortConfig{
+            .by_time = test_options.sort_by_time,
+            .by_size = test_options.sort_by_size,
+            .dirs_first = test_options.group_directories_first,
+            .reverse = test_options.reverse_sort,
+            .use_atime = test_options.use_atime,
+        };
 
-    sorter.sortEntries(entries.items, sort_config);
+        sorter.sortEntries(entries.items, sort_config);
+    }
 
     // Print entries
     _ = try formatter.printEntries(allocator, entries.items, stdout_writer, test_options, style);

@@ -18,13 +18,16 @@ pub fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
 
     // Primary sort criteria
     const result: bool = if (config.by_time) blk: {
-        // Sort by modification time
-        if (a.stat != null and b.stat != null and a.stat.?.mtime != b.stat.?.mtime) {
-            break :blk a.stat.?.mtime > b.stat.?.mtime; // Newest first by default
-        } else {
-            // Fall back to name sort
-            break :blk std.mem.order(u8, a.name, b.name) == .lt;
+        // Sort by time (mtime by default, atime with -u)
+        if (a.stat != null and b.stat != null) {
+            const a_time = if (config.use_atime) a.stat.?.atime else a.stat.?.mtime;
+            const b_time = if (config.use_atime) b.stat.?.atime else b.stat.?.mtime;
+            if (a_time != b_time) {
+                break :blk a_time > b_time; // Newest first by default
+            }
         }
+        // Fall back to name sort
+        break :blk std.mem.order(u8, a.name, b.name) == .lt;
     } else if (config.by_size) blk: {
         // Sort by size
         if (a.stat != null and b.stat != null and a.stat.?.size != b.stat.?.size) {
@@ -133,4 +136,23 @@ test "sorter - time sorting" {
     try testing.expectEqualStrings("new.txt", entries[0].name);
     try testing.expectEqualStrings("medium.txt", entries[1].name);
     try testing.expectEqualStrings("old.txt", entries[2].name);
+}
+
+test "sorter - atime sorting with use_atime" {
+    const common = @import("common");
+
+    // Files with different atime values (atime order differs from mtime order)
+    var entries = [_]Entry{
+        .{ .name = "old_access.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 1000, .mtime = 3000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "new_access.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 3000, .mtime = 1000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "mid_access.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 2000, .mtime = 2000, .mode = 0, .kind = .file, .inode = 3, .nlink = 1, .uid = 1000, .gid = 1000 } },
+    };
+
+    const config = SortConfig{ .by_time = true, .use_atime = true };
+    sortEntries(&entries, config);
+
+    // Should be sorted by atime, newest first
+    try testing.expectEqualStrings("new_access.txt", entries[0].name);
+    try testing.expectEqualStrings("mid_access.txt", entries[1].name);
+    try testing.expectEqualStrings("old_access.txt", entries[2].name);
 }

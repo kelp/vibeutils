@@ -40,6 +40,11 @@ const LsArgs = struct {
     sort_by_time: bool = false,
     sort_by_size: bool = false,
     reverse_sort: bool = false,
+    no_sort: bool = false,
+    show_blocks: bool = false,
+    use_atime: bool = false,
+    multi_column: bool = false,
+    columns_across: bool = false,
     color: ?[]const u8 = null,
     group_directories_first: bool = false,
     icons: ?[]const u8 = null,
@@ -71,6 +76,11 @@ const LsArgs = struct {
         .sort_by_time = .{ .short = 't', .desc = "Sort by modification time, newest first" },
         .sort_by_size = .{ .short = 'S', .desc = "Sort by file size, largest first" },
         .reverse_sort = .{ .short = 'r', .desc = "Reverse order while sorting" },
+        .no_sort = .{ .short = 'f', .desc = "Do not sort; list entries in directory order (implies -a)" },
+        .show_blocks = .{ .short = 's', .desc = "Display number of filesystem blocks" },
+        .use_atime = .{ .short = 'u', .desc = "Use access time instead of modification time" },
+        .multi_column = .{ .short = 'C', .desc = "Force multi-column output sorted down columns" },
+        .columns_across = .{ .short = 'x', .desc = "Multi-column output sorted across rows" },
         .color = .{ .short = 0, .desc = "When to use colors (valid: always, auto, never)", .value_name = "WHEN" },
         .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
         .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
@@ -227,8 +237,9 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
 
     // Create options struct by consolidating all parsed arguments
     // -g and -o imply long format
+    // -f implies -a (show all entries)
     const options = LsOptions{
-        .all = args.all,
+        .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
         .long_format = args.long_format or args.omit_owner or args.omit_group,
         .human_readable = args.human_readable,
@@ -253,6 +264,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .time_style = time_style,
         .show_git_status = resolveGitMode(args.git, display_config),
         .is_terminal = is_terminal,
+        .no_sort = args.no_sort,
+        .show_blocks = args.show_blocks,
+        .use_atime = args.use_atime,
+        .columns_across = args.columns_across,
     };
 
     // Initialize GitContext once if git status is requested
@@ -294,9 +309,11 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\  -a, --all                  do not ignore entries starting with .
         \\  -A, --almost-all           do not list implied . and ..
+        \\  -C, --multi-column         force multi-column output sorted down columns
         \\      --color=WHEN           when to use colors (valid: always, auto, never)
         \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
+        \\  -f, --no-sort              do not sort; list in directory order (implies -a)
         \\  -F, --file-type-indicators append indicator (one of */=>@|) to entries
         \\  -g, --omit-owner           like -l, but do not print the owner
         \\      --git=WHEN             when to show git status (valid: always, auto, never)
@@ -312,12 +329,15 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -p, --append-slash-dirs    write a slash (/) after each directory name
         \\  -R, --recursive            list subdirectories recursively
         \\  -r, --reverse-sort         reverse order while sorting
+        \\  -s, --show-blocks          display number of filesystem blocks
         \\  -i, --show-inodes          print the index number of each file
         \\  -S, --sort-by-size         sort by file size, largest first
         \\  -t, --sort-by-time         sort by modification time, newest first
         \\      --test-icons           test Nerd Font icon rendering
         \\      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
+        \\  -u, --use-atime            use access time instead of modification time
         \\  -V, --version              output version information and exit
+        \\  -x, --columns-across       multi-column output sorted across rows
         \\      --help                 display this help and exit
         \\
         \\Examples:

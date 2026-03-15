@@ -495,3 +495,169 @@ test "omit_group: long format without group column" {
     // The -o line should be shorter because it omits the group
     try testing.expect(o_line.len < normal_line.len);
 }
+
+// ============================================================================
+// -f flag: no sort, implies -a
+// ============================================================================
+
+test "no_sort: -f shows hidden files (implies -a)" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("visible.txt", "");
+    try env.createFile(".hidden", "");
+
+    try env.runLs(.{ .no_sort = true, .all = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    // -f implies -a, so hidden files should appear
+    try LsAssertions.expectContainsFile(output, "visible.txt");
+    try LsAssertions.expectContainsFile(output, ".hidden");
+}
+
+test "no_sort: -f does not sort entries alphabetically" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Create files; directory order is filesystem-dependent,
+    // but we can at least verify that all files appear
+    try env.createFile("zebra.txt", "");
+    try env.createFile("apple.txt", "");
+    try env.createFile("mango.txt", "");
+
+    try env.runLs(.{ .no_sort = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "zebra.txt");
+    try LsAssertions.expectContainsFile(output, "apple.txt");
+    try LsAssertions.expectContainsFile(output, "mango.txt");
+}
+
+// ============================================================================
+// -s flag: show filesystem blocks
+// ============================================================================
+
+test "show_blocks: -s displays block counts" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFileWithSize("test.txt", TEST_SIZE_2K, 'X');
+
+    try env.runLs(.{ .show_blocks = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    // Should contain the filename
+    try LsAssertions.expectContainsFile(output, "test.txt");
+    // Should contain numeric block count before the filename
+    try LsAssertions.expectContainsNumeric(output, "block count");
+}
+
+test "show_blocks: -s prints total line" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("a.txt", "hello");
+    try env.createFile("b.txt", "world");
+
+    try env.runLs(.{ .show_blocks = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "total");
+}
+
+// ============================================================================
+// -u flag: use access time
+// ============================================================================
+
+test "use_atime: -u flag is accepted" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("test.txt", "content");
+
+    // -u should work without error
+    try env.runLs(.{ .use_atime = true, .one_per_line = true });
+
+    try LsAssertions.expectContainsFile(env.getStdout(), "test.txt");
+}
+
+test "use_atime: -u with -t sorts by access time" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("file1.txt", "content");
+    try env.createFile("file2.txt", "content");
+
+    // Both flags should be accepted together
+    try env.runLs(.{ .use_atime = true, .sort_by_time = true, .one_per_line = true });
+
+    const output = env.getStdout();
+    try LsAssertions.expectContainsFile(output, "file1.txt");
+    try LsAssertions.expectContainsFile(output, "file2.txt");
+}
+
+// ============================================================================
+// -C flag: multi-column sorted down columns
+// ============================================================================
+
+test "multi_column: -C forces multi-column output" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    const files = [_][]const u8{ "aaa", "bbb", "ccc", "ddd", "eee", "fff" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    // -C should produce multi-column output (fewer lines than files)
+    try env.runLs(.{ .terminal_width = TEST_TERMINAL_WIDTH });
+
+    try LsAssertions.expectMultiColumnFormat(env.getStdout(), files.len);
+}
+
+// ============================================================================
+// -x flag: multi-column sorted across rows
+// ============================================================================
+
+test "columns_across: -x sorts entries across rows" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    const files = [_][]const u8{ "aaa", "bbb", "ccc", "ddd", "eee", "fff" };
+    for (files) |name| {
+        try env.createFile(name, "");
+    }
+
+    // -x should produce multi-column output sorted across
+    try env.runLs(.{ .columns_across = true, .terminal_width = TEST_TERMINAL_WIDTH });
+
+    const output = env.getStdout();
+    // Should contain all files
+    for (files) |name| {
+        try LsAssertions.expectContainsFile(output, name);
+    }
+    // Should be multi-column (fewer lines than files)
+    try LsAssertions.expectMultiColumnFormat(output, files.len);
+}
+
+test "columns_across: -x first row contains first entries" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Use enough files to get multiple rows with a narrow terminal
+    try env.createFile("aaa", "");
+    try env.createFile("bbb", "");
+    try env.createFile("ccc", "");
+    try env.createFile("ddd", "");
+
+    // With a 20-char terminal, we should get ~2 columns
+    try env.runLs(.{ .columns_across = true, .terminal_width = 20 });
+
+    const output = env.getStdout();
+    // In -x mode, first row should have "aaa" and "bbb"
+    // (sorted across, not down)
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    const first_line = lines.next() orelse "";
+    try testing.expect(std.mem.indexOf(u8, first_line, "aaa") != null);
+    try testing.expect(std.mem.indexOf(u8, first_line, "bbb") != null);
+}

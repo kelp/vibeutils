@@ -56,7 +56,7 @@ pub fn collectFilteredEntries(
 pub fn needsMetadata(options: LsOptions) bool {
     return options.long_format or options.sort_by_time or options.sort_by_size or
         options.file_type_indicators or options.show_inodes or
-        options.show_git_status;
+        options.show_git_status or options.show_blocks or options.use_atime;
 }
 
 /// Simplified symlink reading that trusts OS readLink syscall completely
@@ -94,7 +94,8 @@ pub fn enhanceEntriesWithMetadata(
 
     // Determine what metadata we need
     const needs_stat = options.long_format or options.sort_by_time or options.sort_by_size or
-        options.file_type_indicators or options.show_inodes;
+        options.file_type_indicators or options.show_inodes or
+        options.show_blocks or options.use_atime;
     const needs_symlink = options.long_format;
     const needs_git = options.show_git_status and git_context != null;
 
@@ -238,6 +239,14 @@ test "entry_collector - needsMetadata" {
     // Git status needs metadata
     const git_options = LsOptions{ .show_git_status = true };
     try testing.expect(needsMetadata(git_options));
+
+    // Block display needs metadata
+    const blocks_options = LsOptions{ .show_blocks = true };
+    try testing.expect(needsMetadata(blocks_options));
+
+    // Access time needs metadata
+    const atime_options = LsOptions{ .use_atime = true };
+    try testing.expect(needsMetadata(atime_options));
 }
 
 test "entry_collector - collectFilteredEntries basic" {

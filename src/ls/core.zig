@@ -45,11 +45,15 @@ pub fn collectAndPrepareEntries(allocator: std.mem.Allocator, dir: std.fs.Dir, o
 
 /// Sort entries according to the provided options
 pub fn sortEntriesFromOptions(entries: []Entry, options: LsOptions) void {
+    // -f: no sorting at all
+    if (options.no_sort) return;
+
     const sort_config = types.SortConfig{
         .by_time = options.sort_by_time,
         .by_size = options.sort_by_size,
         .dirs_first = options.group_directories_first,
         .reverse = options.reverse_sort,
+        .use_atime = options.use_atime,
     };
     sorter.sortEntries(entries, sort_config);
 }
