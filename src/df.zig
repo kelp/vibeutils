@@ -101,6 +101,7 @@ const DfOptions = struct {
     include_type: ?[]const u8 = null,
     exclude_type: ?[]const u8 = null,
     output_fields: ?[]const u8 = null,
+    thousands_grouping: bool = false,
     positionals: []const []const u8 = &.{},
 };
 
@@ -287,6 +288,35 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                     j = arg.len;
                     break;
                 },
+                'b' => {
+                    opts.block_size = 512;
+                    opts.human_readable = false;
+                },
+                'c' => opts.total = true,
+                'g' => {
+                    opts.block_size = 1024 * 1024 * 1024;
+                    opts.human_readable = false;
+                },
+                'I' => {
+                    if (j + 1 < arg.len) {
+                        opts.exclude_type = arg[j + 1 ..];
+                        j = arg.len;
+                        break;
+                    } else if (i + 1 < args.len) {
+                        i += 1;
+                        opts.exclude_type = args[i];
+                    } else {
+                        err_msg = "option '-I' requires an argument";
+                    }
+                    j = arg.len;
+                    break;
+                },
+                'm' => {
+                    opts.block_size = 1024 * 1024;
+                    opts.human_readable = false;
+                },
+                'Y' => {}, // no-op: don't resolve NFS paths
+                ',' => opts.thousands_grouping = true,
                 else => {
                     err_msg = "unrecognized option";
                     break;
@@ -825,6 +855,42 @@ fn formatHumanReadable(buf: []u8, bytes: u64, use_si: bool) []const u8 {
     }
 }
 
+/// Format a u64 with thousands grouping (commas): 1234567 -> "1,234,567"
+fn formatWithCommas(buf: []u8, value: u64) []const u8 {
+    // First format the number without commas into a temp buffer
+    var num_buf: [32]u8 = undefined;
+    const digits = std.fmt.bufPrint(&num_buf, "{d}", .{value}) catch return "?";
+
+    if (digits.len <= 3) {
+        @memcpy(buf[0..digits.len], digits);
+        return buf[0..digits.len];
+    }
+
+    // Calculate output length: digits + number of commas
+    const num_commas = @divTrunc(digits.len - 1, 3);
+    const out_len = digits.len + num_commas;
+    if (out_len > buf.len) return "?";
+
+    // Fill from right to left
+    var src: usize = digits.len;
+    var dst: usize = out_len;
+    var count: usize = 0;
+
+    while (src > 0) {
+        src -= 1;
+        dst -= 1;
+        buf[dst] = digits[src];
+        count += 1;
+        if (count == 3 and src > 0) {
+            dst -= 1;
+            buf[dst] = ',';
+            count = 0;
+        }
+    }
+
+    return buf[0..out_len];
+}
+
 fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []const u8 {
     const bytes = blocks * fs_block_size;
 
@@ -844,6 +910,11 @@ fn formatSize(buf: []u8, blocks: u64, fs_block_size: u64, opts: DfOptions) []con
         1024;
 
     const value = @divTrunc(bytes + display_block - 1, display_block);
+
+    if (opts.thousands_grouping) {
+        return formatWithCommas(buf, value);
+    }
+
     return std.fmt.bufPrint(buf, "{d}", .{value}) catch "?";
 }
 
@@ -1319,6 +1390,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
             break :blk "Size";
         }
         if (opts.block_size) |bs| {
+            if (bs == 512) break :blk "512B-blocks";
             if (bs == 1024) break :blk "1K-blocks";
             if (bs == 1024 * 1024) break :blk "1M-blocks";
             if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
@@ -1519,6 +1591,7 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, col
             break :blk formatHumanReadable(&total_buf, sum_total_bytes, true);
         }
         const val = @divTrunc(sum_total_bytes + display_block - 1, display_block);
+        if (opts.thousands_grouping) break :blk formatWithCommas(&total_buf, val);
         break :blk std.fmt.bufPrint(&total_buf, "{d}", .{val}) catch "?";
     };
     const used_str = blk: {
@@ -1528,6 +1601,7 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, col
             break :blk formatHumanReadable(&used_buf, sum_used_bytes, true);
         }
         const val = @divTrunc(sum_used_bytes + display_block - 1, display_block);
+        if (opts.thousands_grouping) break :blk formatWithCommas(&used_buf, val);
         break :blk std.fmt.bufPrint(&used_buf, "{d}", .{val}) catch "?";
     };
     const avail_str = blk: {
@@ -1537,6 +1611,7 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, col
             break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, true);
         }
         const val = @divTrunc(sum_avail_bytes + display_block - 1, display_block);
+        if (opts.thousands_grouping) break :blk formatWithCommas(&avail_buf, val);
         break :blk std.fmt.bufPrint(&avail_buf, "{d}", .{val}) catch "?";
     };
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
@@ -1613,6 +1688,7 @@ fn printHeaderDynamic(stdout: anytype, opts: DfOptions, widths: ColumnWidths, s:
     const size_label: []const u8 = blk: {
         if (opts.human_readable or opts.si) break :blk "Size";
         if (opts.block_size) |bs| {
+            if (bs == 512) break :blk "512B-blocks";
             if (bs == 1024) break :blk "1K-blocks";
             if (bs == 1024 * 1024) break :blk "1M-blocks";
             if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
@@ -1791,18 +1867,21 @@ fn printTotalDynamic(stdout: anytype, filesystems: []const FsInfo, opts: DfOptio
         if (opts.human_readable) break :blk formatHumanReadable(&total_buf, sum_total_bytes, false);
         if (opts.si) break :blk formatHumanReadable(&total_buf, sum_total_bytes, true);
         const val = @divTrunc(sum_total_bytes + display_block - 1, display_block);
+        if (opts.thousands_grouping) break :blk formatWithCommas(&total_buf, val);
         break :blk std.fmt.bufPrint(&total_buf, "{d}", .{val}) catch "?";
     };
     const used_str = blk: {
         if (opts.human_readable) break :blk formatHumanReadable(&used_buf, sum_used_bytes, false);
         if (opts.si) break :blk formatHumanReadable(&used_buf, sum_used_bytes, true);
         const val = @divTrunc(sum_used_bytes + display_block - 1, display_block);
+        if (opts.thousands_grouping) break :blk formatWithCommas(&used_buf, val);
         break :blk std.fmt.bufPrint(&used_buf, "{d}", .{val}) catch "?";
     };
     const avail_str = blk: {
         if (opts.human_readable) break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, false);
         if (opts.si) break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, true);
         const val = @divTrunc(sum_avail_bytes + display_block - 1, display_block);
+        if (opts.thousands_grouping) break :blk formatWithCommas(&avail_buf, val);
         break :blk std.fmt.bufPrint(&avail_buf, "{d}", .{val}) catch "?";
     };
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
@@ -2054,15 +2133,22 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\usage bars. Use -P for POSIX-compatible plain output.
         \\
         \\  -a, --all             include pseudo, duplicate, inaccessible file systems
+        \\  -b                    display free space in 512-byte blocks
+        \\  -c                    display a grand total (same as --total)
+        \\  -g                    display in 1-gigabyte blocks
         \\  -h, --human-readable  print sizes in powers of 1024 (default)
         \\  -H, --si              print sizes in powers of 1000 (e.g., 1.1G)
         \\  -i, --inodes          list inode information instead of block usage
+        \\  -I TYPE               exclude file systems of type TYPE
         \\  -k                    like --block-size=1K (disables human-readable)
         \\  -l, --local           limit listing to local file systems
+        \\  -m                    display in 1-megabyte blocks
         \\  -P, --portability     use the POSIX output format (no colors or bars)
         \\  -T, --print-type      print file system type
         \\  -t, --type=TYPE       limit listing to file systems of type TYPE
         \\  -x, --exclude-type=TYPE  limit listing to file systems not of type TYPE
+        \\  -Y                    don't resolve NFS paths (no-op)
+        \\  -,                    format numbers with thousands grouping (commas)
         \\      --block-size=SIZE  scale sizes by SIZE before printing them
         \\      --total            produce a grand total
         \\      --output[=FIELD_LIST]  use the output format defined by FIELD_LIST
@@ -3172,4 +3258,235 @@ test "runDf - n flag accepted" {
     const args = [_][]const u8{"-n"};
     const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
+}
+
+// ============================================================================
+// Tests for new macOS-compatible flags
+// ============================================================================
+
+test "parseArgs - b flag sets 512 block size" {
+    const args = [_][]const u8{"-b"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqual(@as(?u64, 512), parsed.opts.block_size);
+    try testing.expect(!parsed.opts.human_readable);
+}
+
+test "parseArgs - c flag sets total" {
+    const args = [_][]const u8{"-c"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expect(parsed.opts.total);
+}
+
+test "parseArgs - g flag sets 1G block size" {
+    const args = [_][]const u8{"-g"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqual(@as(?u64, 1073741824), parsed.opts.block_size);
+    try testing.expect(!parsed.opts.human_readable);
+}
+
+test "parseArgs - I flag sets exclude type" {
+    const args = [_][]const u8{ "-I", "tmpfs" };
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqualStrings("tmpfs", parsed.opts.exclude_type.?);
+}
+
+test "parseArgs - I flag inline value" {
+    const args = [_][]const u8{"-Itmpfs"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqualStrings("tmpfs", parsed.opts.exclude_type.?);
+}
+
+test "parseArgs - I flag missing argument" {
+    const args = [_][]const u8{"-I"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err != null);
+}
+
+test "parseArgs - m flag sets 1M block size" {
+    const args = [_][]const u8{"-m"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqual(@as(?u64, 1048576), parsed.opts.block_size);
+    try testing.expect(!parsed.opts.human_readable);
+}
+
+test "parseArgs - Y flag accepted as no-op" {
+    const args = [_][]const u8{"-Y"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+}
+
+test "parseArgs - comma flag sets thousands grouping" {
+    const args = [_][]const u8{"-,"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expect(parsed.opts.thousands_grouping);
+}
+
+test "parseArgs - combined new flags" {
+    const args = [_][]const u8{"-bgm"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    // -m is last, so block_size should be 1M
+    try testing.expectEqual(@as(?u64, 1048576), parsed.opts.block_size);
+    try testing.expect(!parsed.opts.human_readable);
+}
+
+test "formatWithCommas - small numbers" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("0", formatWithCommas(&buf, 0));
+    try testing.expectEqualStrings("1", formatWithCommas(&buf, 1));
+    try testing.expectEqualStrings("999", formatWithCommas(&buf, 999));
+}
+
+test "formatWithCommas - thousands" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("1,000", formatWithCommas(&buf, 1000));
+    try testing.expectEqualStrings("1,234", formatWithCommas(&buf, 1234));
+    try testing.expectEqualStrings("12,345", formatWithCommas(&buf, 12345));
+    try testing.expectEqualStrings("123,456", formatWithCommas(&buf, 123456));
+}
+
+test "formatWithCommas - millions" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("1,000,000", formatWithCommas(&buf, 1000000));
+    try testing.expectEqualStrings("1,234,567", formatWithCommas(&buf, 1234567));
+}
+
+test "formatWithCommas - large numbers" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("1,000,000,000", formatWithCommas(&buf, 1000000000));
+}
+
+test "formatSize - 512 byte blocks with comma" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = 512;
+    opts.thousands_grouping = true;
+    // 1000 blocks * 4096 = 4096000 bytes / 512 = 8000 blocks
+    const result = formatSize(&buf, 1000, 4096, opts);
+    try testing.expectEqualStrings("8,000", result);
+}
+
+test "formatSize - 1G blocks" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = 1024 * 1024 * 1024;
+    // 1000000 blocks * 4096 = 4096000000 bytes / 1G = ~3.8 -> rounds to 4
+    const result = formatSize(&buf, 1000000, 4096, opts);
+    try testing.expectEqualStrings("4", result);
+}
+
+test "formatSize - 1M blocks" {
+    var buf: [32]u8 = undefined;
+    var opts = DfOptions{};
+    opts.human_readable = false;
+    opts.block_size = 1024 * 1024;
+    // 1000 blocks * 4096 = 4096000 bytes / 1M = ~3.9 -> rounds to 4
+    const result = formatSize(&buf, 1000, 4096, opts);
+    try testing.expectEqualStrings("4", result);
+}
+
+test "runDf - b flag accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-b", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "512B-blocks") != null);
+}
+
+test "runDf - c flag shows total" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "total") != null);
+}
+
+test "runDf - g flag accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-g", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1G-blocks") != null);
+}
+
+test "runDf - m flag accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-m", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1M-blocks") != null);
+}
+
+test "runDf - Y flag accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-Y"};
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+}
+
+test "runDf - comma flag accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-,", "-k", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+}
+
+test "runDf - help mentions new flags" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-b") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-g") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-m") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-Y") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-,") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-I") != null);
 }
