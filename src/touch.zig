@@ -20,12 +20,14 @@ const TouchArgs = struct {
     date: ?[]const u8 = null,
     t: ?[]const u8 = null,
     time: ?[]const u8 = null,
+    adjust: ?[]const u8 = null,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .a = .{ .desc = "Change only the access time" },
+        .adjust = .{ .short = 'A', .desc = "Adjust access and modification times by value (not yet implemented)", .value_name = "ADJUST" },
         .c = .{ .desc = "Do not create any files" },
         .no_create = .{ .short = 0, .desc = "Do not create any files" },
         .f = .{ .desc = "(ignored)" },
@@ -96,6 +98,11 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     if (parsed_args.version) {
         try stdout_writer.print("touch ({s}) {s}\n", .{ common.name, common.version });
         return @intFromEnum(common.ExitCode.success);
+    }
+
+    // Warn about unimplemented -A flag
+    if (parsed_args.adjust != null) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "warning: -A flag is not yet implemented, ignoring adjustment value", .{});
     }
 
     // Map long form aliases to short form
@@ -868,6 +875,34 @@ test "touch with -t timestamp" {
     // but the file should exist and have been touched
     const stat = try common.file.FileInfo.stat(test_file);
     try testing.expect(stat.mtime > 0);
+}
+
+// ==================== -A (adjust time stub) tests ====================
+
+test "touch: -A flag is accepted with warning" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_test.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -A should be accepted and produce a warning, but still succeed
+    const args = [_][]const u8{ "-A", "0130", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should contain a warning about -A not being implemented
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "not yet implemented") != null);
+
+    // File should still be created (normal touch behavior)
+    const file = try tmp_dir.dir.openFile("adjust_test.txt", .{});
+    file.close();
 }
 
 // ==================== -d (date string) tests ====================

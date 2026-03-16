@@ -8,7 +8,7 @@
 | -m   | yes   | yes   | yes     | yes | yes  | MUST |
 | -r   | yes   | yes   | yes     | yes | yes  | MUST |
 | -t   | yes   | yes   | yes     | yes | yes  | MUST |
-| -A   | -     | yes   | -       | -   | -    | SHOULD |
+| -A   | -     | yes   | -       | -   | yes  | SHOULD |
 | -f   | -     | -     | -       | yes | yes  | SHOULD |
 | -h   | -     | yes   | -       | yes | yes  | SHOULD |
 | --time=WORD | - | -  | -       | yes | yes  | SHOULD |
