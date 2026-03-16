@@ -19,6 +19,8 @@ const RmArgs = struct {
     verbose: bool = false,
     preserve_root: bool = false,
     no_preserve_root: bool = false,
+    no_cross_device: bool = false,
+    undelete: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -34,6 +36,8 @@ const RmArgs = struct {
         .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
         .preserve_root = .{ .short = 0, .desc = "Do not remove '/' (default)" },
         .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially" },
+        .no_cross_device = .{ .short = 'x', .desc = "Don't cross mount points during recursive removal" },
+        .undelete = .{ .short = 'W', .desc = "Attempt to undelete (not supported, stub)" },
     };
 };
 
@@ -46,6 +50,7 @@ const RmOptions = struct {
     remove_empty_dirs: bool = false,
     verbose: bool,
     preserve_root: bool,
+    no_cross_device: bool = false,
 };
 
 /// Main entry point for the rm command with writer-based interface.
@@ -81,6 +86,11 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // -W: stub -- print warning and skip undelete operation
+    if (parsed_args.undelete) {
+        try stderr_writer.writeAll("rm: -W (undelete) not supported\n");
+    }
+
     // Create options structure - merge -i/-I and -r/-R flags
     // --preserve-root is default true; --no-preserve-root disables it
     const options = RmOptions{
@@ -91,6 +101,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         .remove_empty_dirs = parsed_args.remove_empty_dirs,
         .verbose = parsed_args.verbose,
         .preserve_root = !parsed_args.no_preserve_root,
+        .no_cross_device = parsed_args.no_cross_device,
     };
 
     const success = try removeFiles(allocator, files, stdout_writer, stderr_writer, options);
@@ -136,6 +147,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\                          or when removing recursively
         \\  -r, -R, --recursive   remove directories and their contents recursively
         \\  -v, --verbose         explain what is being done
+        \\  -x                    don't cross mount points during recursive removal
+        \\  -W                    attempt to undelete (not supported, stub)
         \\      --preserve-root   do not remove '/' (default)
         \\      --no-preserve-root  do not treat '/' specially
         \\      --help            display this help and exit
@@ -343,8 +356,8 @@ const Entry = struct {
 
 /// Remove a directory recursively with per-entry verbose/interactive support.
 fn removeDirectory(allocator: Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
-    // For non-verbose, non-interactive mode with force, use deleteTree as fast path
-    if (!options.verbose and !options.interactive and options.force) {
+    // For non-verbose, non-interactive mode with force and no -x, use deleteTree as fast path
+    if (!options.verbose and !options.interactive and options.force and !options.no_cross_device) {
         std.fs.cwd().deleteTree(dir_path) catch |err| switch (err) {
             error.AccessDenied => return error.AccessDenied,
             else => return err,
@@ -352,12 +365,36 @@ fn removeDirectory(allocator: Allocator, dir_path: []const u8, stdout_writer: an
         return;
     }
 
+    // Determine root device ID for -x (don't cross mount points)
+    const root_dev: ?u64 = if (options.no_cross_device)
+        getDeviceId(dir_path, allocator) catch null
+    else
+        null;
+
     // Manual depth-first recursive traversal
-    try removeDirectoryRecursive(allocator, dir_path, stdout_writer, stderr_writer, options);
+    try removeDirectoryRecursive(allocator, dir_path, stdout_writer, stderr_writer, options, root_dev);
+}
+
+/// Get the device ID for a path using C stat.
+fn getDeviceId(path: []const u8, allocator: Allocator) !u64 {
+    const path_c = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_c);
+    var stat_buf: std.c.Stat = undefined;
+    const result = std.c.stat(path_c.ptr, &stat_buf);
+    if (result != 0) return error.StatFailed;
+    return @intCast(stat_buf.dev);
 }
 
 /// Depth-first recursive directory removal with per-entry verbose/interactive support.
-fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) anyerror!void {
+fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions, root_dev: ?u64) anyerror!void {
+    // -x: skip directories on different filesystems
+    if (options.no_cross_device) {
+        if (root_dev) |rd| {
+            const dev = getDeviceId(dir_path, allocator) catch 0;
+            if (dev != rd) return;
+        }
+    }
+
     // Open directory for iteration
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
         error.AccessDenied => return error.AccessDenied,
@@ -402,7 +439,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
 
         if (entry.kind == .directory) {
             // Recurse into subdirectory first (depth-first)
-            if (removeDirectoryRecursive(allocator, full_path, stdout_writer, stderr_writer, options)) {
+            if (removeDirectoryRecursive(allocator, full_path, stdout_writer, stderr_writer, options, root_dev)) {
                 // Success - continue
             } else |err| switch (err) {
                 error.InteractiveUserCancelled => {},
@@ -1031,4 +1068,127 @@ test "rm: -P combined with -f works" {
 
     try testing.expect(exit_code == 0);
     try testing.expect(stderr_buffer.items.len == 0);
+}
+
+// ============================================================
+// Tests for rm -x (don't cross mount points)
+// ============================================================
+
+test "rm: -x flag is accepted by argument parser" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-x", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+}
+
+test "rm: -x recursive removal stays on same device" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a directory tree on the same device
+    try tmp.dir.makePath("xdir/subdir");
+    var subdir = try tmp.dir.openDir("xdir/subdir", .{});
+    const file = try subdir.createFile("file.txt", .{});
+    file.close();
+    subdir.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "xdir");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -x -r should remove everything since it's all on the same device
+    const args = [_][]const u8{ "-x", "-r", dir_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+
+    // Verify directory is gone
+    const stat = std.fs.cwd().statFile(dir_path);
+    try testing.expect(stat == error.FileNotFound);
+}
+
+test "rm: -x combined with -rf works" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-x", "-rf", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+}
+
+test "rm: help text includes -x flag" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-x") != null);
+}
+
+// ============================================================
+// Tests for rm -W (undelete stub)
+// ============================================================
+
+test "rm: -W flag is accepted and prints warning" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-W", "-f", "nonexistent_file_test_12345" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+    // Should print the stub warning to stderr
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "rm: -W (undelete) not supported") != null);
+}
+
+test "rm: -W still removes files normally" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("undelete_test.txt", .{});
+    file.close();
+
+    const file_path = try tmp.dir.realpathAlloc(testing.allocator, "undelete_test.txt");
+    defer testing.allocator.free(file_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-W", file_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expect(exit_code == 0);
+    // Warning should appear
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-W (undelete) not supported") != null);
+    // File should still be removed
+    const stat = tmp.dir.statFile("undelete_test.txt");
+    try testing.expect(stat == error.FileNotFound);
+}
+
+test "rm: getDeviceId returns consistent results" {
+    // "/" always exists on all systems
+    const dev1 = try getDeviceId("/", testing.allocator);
+    const dev2 = try getDeviceId("/", testing.allocator);
+    try testing.expectEqual(dev1, dev2);
+    try testing.expect(dev1 > 0);
 }
