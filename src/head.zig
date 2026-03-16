@@ -18,6 +18,8 @@ const HeadArgs = struct {
     quiet: bool = false,
     /// Verbose flag - always print headers
     verbose: bool = false,
+    /// Use NUL as line delimiter instead of newline
+    zero_terminated: bool = false,
     /// Files to process
     positionals: []const []const u8 = &.{},
 
@@ -28,6 +30,7 @@ const HeadArgs = struct {
         .quiet = .{ .short = 'q', .desc = "Never print headers giving file names" },
         .verbose = .{ .short = 'v', .desc = "Always print headers giving file names" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
     };
 };
 
@@ -109,6 +112,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         .line_count = line_count,
         .byte_count = parsed_args.bytes,
         .show_headers = if (parsed_args.quiet) false else if (parsed_args.verbose) true else parsed_args.positionals.len > 1,
+        .line_delimiter = if (parsed_args.zero_terminated) 0 else '\n',
     };
 
     var stdin_buffer: [8192]u8 = undefined;
@@ -217,6 +221,8 @@ const HeadOptions = struct {
     byte_count: ?u64 = null,
     /// Whether to show file headers
     show_headers: bool = false,
+    /// Line delimiter character (newline by default, NUL with -z)
+    line_delimiter: u8 = '\n',
 };
 
 /// Process input from a reader and output first lines/bytes to writer.
@@ -238,11 +244,12 @@ pub fn processInput(reader: anytype, writer: anytype, options: HeadOptions) !voi
         }
     } else {
         // Line mode: output first N lines
+        const delimiter = options.line_delimiter;
         var lines_written: u64 = 0;
         while (lines_written < options.line_count) {
-            const line = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
                 error.EndOfStream => {
-                    // Output any remaining partial line (no trailing newline)
+                    // Output any remaining partial line (no trailing delimiter)
                     const remaining = reader.buffered();
                     if (remaining.len > 0) {
                         try writer.writeAll(remaining);
@@ -613,6 +620,71 @@ test "head with multiple files shows headers" {
     // Should contain both files' content
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content A") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content B") != null);
+}
+
+test "head with -z uses NUL as line delimiter" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with NUL-separated "lines"
+    const content = "Line 1\x00Line 2\x00Line 3\x00Line 4\x00Line 5\x00";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-z", "-n", "3", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\x00Line 2\x00Line 3\x00", stdout_buffer.items);
+}
+
+test "head with -z and default line count" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with 15 NUL-separated "lines"
+    const content = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00L9\x00L10\x00L11\x00L12\x00L13\x00L14\x00L15\x00";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-z", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Default is 10 lines
+    const expected = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00L9\x00L10\x00";
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
+}
+
+test "head with -z and fewer items than requested" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with 2 NUL-separated "lines"
+    const content = "Line A\x00Line B\x00";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-z", "-n", "10", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line A\x00Line B\x00", stdout_buffer.items);
 }
 
 test "head with obsolete -NUM syntax" {

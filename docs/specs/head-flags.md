@@ -6,4 +6,4 @@
 | -c | -- | yes | -- | yes | yes | SHOULD |
 | -q | -- | -- | -- | yes | yes | SHOULD |
 | -v | -- | -- | -- | yes | yes | SHOULD |
-| -z | -- | -- | -- | yes | -- | SHOULD |
+| -z | -- | -- | -- | yes | yes | SHOULD |
