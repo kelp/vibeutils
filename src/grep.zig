@@ -53,6 +53,7 @@ const GrepOptions = struct {
     word_regexp: bool = false,
     line_regexp: bool = false,
     byte_offset: bool = false,
+    null_data: bool = false,
     recursive: bool = false,
     dereference_recursive: bool = false,
     max_count: ?usize = null,
@@ -163,6 +164,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 // No-op: treat binary as text (no binary detection yet)
             } else if (std.mem.eql(u8, flag, "binary")) {
                 // No-op: Unix treats all files as binary by default
+            } else if (std.mem.eql(u8, flag, "null")) {
+                opts.null_data = true;
             } else if (std.mem.eql(u8, flag, "recursive")) {
                 opts.recursive = true;
             } else if (std.mem.eql(u8, flag, "dereference-recursive")) {
@@ -247,6 +250,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                     'w' => opts.word_regexp = true,
                     'x' => opts.line_regexp = true,
                     'b' => opts.byte_offset = true,
+                    'Z' => opts.null_data = true,
                     'a' => {}, // --text: treat binary as text (no-op, no binary detection yet)
                     'I' => {}, // ignore binary files (no-op, no binary detection yet)
                     'U' => {}, // --binary: Unix no-op
@@ -729,11 +733,19 @@ fn processFile(
     }
 
     if (opts.files_with_matches and found_match) {
-        stdout_writer.print("{s}\n", .{filename}) catch {};
+        stdout_writer.print("{s}", .{filename}) catch {};
+        if (opts.null_data)
+            stdout_writer.writeByte(0) catch {}
+        else
+            stdout_writer.writeByte('\n') catch {};
     }
 
     if (opts.files_without_match and !found_match) {
-        stdout_writer.print("{s}\n", .{filename}) catch {};
+        stdout_writer.print("{s}", .{filename}) catch {};
+        if (opts.null_data)
+            stdout_writer.writeByte(0) catch {}
+        else
+            stdout_writer.writeByte('\n') catch {};
     }
 
     return found_match;
@@ -927,6 +939,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -c, --count               print only a count of selected lines per FILE
         \\  -l, --files-with-matches  print only names of FILEs with selected lines
         \\  -L, --files-without-match print only names of FILEs with no selected lines
+        \\  -Z, --null                print 0 byte after file name
         \\      --color[=WHEN]        use markers to highlight the matching strings;
         \\                            WHEN is 'always', 'never', or 'auto'
         \\
@@ -1253,7 +1266,7 @@ test "parseArgs -- separator" {
 }
 
 test "parseArgs invalid option returns null" {
-    const args = [_][]const u8{ "-Z", "pattern" };
+    const args = [_][]const u8{ "-j", "pattern" };
     const result = try parseArgs(testing.allocator, &args, common.null_writer);
     try testing.expect(result == null);
 }
@@ -1581,4 +1594,82 @@ test "runGrep -b multiple matches" {
     defer result.arena.deinit();
     try testing.expectEqual(@as(u8, 0), result.exit_code);
     try testing.expectEqualStrings("0:aaa\n8:aaa\n", result.output);
+}
+
+test "parseArgs -Z sets null_data" {
+    const args = [_][]const u8{ "-Z", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.null_data);
+}
+
+test "parseArgs --null sets null_data" {
+    const args = [_][]const u8{ "--null", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.null_data);
+}
+
+test "runGrep -lZ uses NUL byte after filename" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll("hello world\n");
+    file.close();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(tmp_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-lZ");
+    try args.append(allocator, "hello");
+    try args.append(allocator, tmp_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should be filename followed by NUL byte (not newline)
+    const expected_len = tmp_path.len + 1;
+    try testing.expectEqual(expected_len, stdout_buf.items.len);
+    try testing.expectEqualStrings(tmp_path, stdout_buf.items[0..tmp_path.len]);
+    try testing.expectEqual(@as(u8, 0), stdout_buf.items[tmp_path.len]);
+}
+
+test "runGrep -l without -Z uses newline after filename" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll("hello world\n");
+    file.close();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(tmp_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-l");
+    try args.append(allocator, "hello");
+    try args.append(allocator, tmp_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should be filename followed by newline
+    const expected_len = tmp_path.len + 1;
+    try testing.expectEqual(expected_len, stdout_buf.items.len);
+    try testing.expectEqualStrings(tmp_path, stdout_buf.items[0..tmp_path.len]);
+    try testing.expectEqual(@as(u8, '\n'), stdout_buf.items[tmp_path.len]);
 }

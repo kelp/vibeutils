@@ -30,7 +30,7 @@
 | -m | -- | yes | yes | yes | yes | MUST |
 | -o | -- | yes | yes | yes | yes | MUST |
 | -w | -- | yes | yes | yes | yes | MUST |
-| -Z | -- | yes | yes | yes | -- | MUST |
+| -Z | -- | yes | yes | yes | yes | MUST |
 | -r | -- | yes | -- | yes | yes | SHOULD |
 | -D | -- | yes | -- | yes | -- | SHOULD |
 | -d | -- | yes | -- | yes | -- | SHOULD |
