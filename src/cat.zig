@@ -24,6 +24,7 @@ const CatArgs = struct {
     show_tabs_and_nonprinting: bool = false,
     show_tabs: bool = false,
     ignored_u: bool = false,
+    ignored_l: bool = false,
     show_nonprinting: bool = false,
     positionals: []const []const u8 = &.{},
 
@@ -39,6 +40,7 @@ const CatArgs = struct {
         .show_tabs_and_nonprinting = .{ .short = 't', .desc = "Equivalent to -vT" },
         .show_tabs = .{ .short = 'T', .desc = "Display TAB characters as ^I" },
         .ignored_u = .{ .short = 'u', .desc = "(no effect; for compatibility)" },
+        .ignored_l = .{ .short = 'l', .desc = "Set output to line buffered (no effect; for compatibility)" },
         .show_nonprinting = .{ .short = 'v', .desc = "Use ^ and M- notation, except for LFD and TAB" },
     };
 };
@@ -579,6 +581,26 @@ test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     try testing.expectEqualStrings("Line^Iwith^Itabs\n", stdout_buffer.items);
+}
+
+test "cat with -l flag is ignored" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Test content\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-l", file_path };
+    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
+    // -l should be ignored, so output should be normal
+    try testing.expectEqualStrings("Test content\n", stdout_buffer.items);
 }
 
 test "cat with -u flag is ignored" {

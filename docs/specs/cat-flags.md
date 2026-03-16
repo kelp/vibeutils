@@ -6,7 +6,7 @@
 | -b   |       | yes   | yes     | yes | yes  | MUST |
 | -e   |       | yes   | yes     | yes | yes  | MUST |
 | -E   |       |       |         | yes | yes  | SHOULD |
-| -l   |       | yes   |         |     |      | SHOULD |
+| -l   |       | yes   |         |     | yes  | SHOULD |
 | -n   |       | yes   | yes     | yes | yes  | MUST |
 | -s   |       | yes   | yes     | yes | yes  | MUST |
 | -t   |       | yes   | yes     | yes | yes  | MUST |
