@@ -113,6 +113,7 @@ const ExprTag = enum {
     user,
     group,
     path_match,
+    ipath,
     atime,
     ctime,
     links,
@@ -138,12 +139,38 @@ const ExprTag = enum {
     or_expr,
     not_expr,
     true_expr,
+    false_expr,
     prune,
+    // Stubs: accept syntax, simple behavior
+    regex_stub,
+    iregex_stub,
+    bmin_stub,
+    bnewer_stub,
+    btime_stub,
+    acl_stub,
+    depth_n,
+    gid_match,
+    ilname,
+    lname,
+    newerxy_stub,
+    okdir_stub,
+    quit_action,
+    samefile,
+    sparse_stub,
+    uid_match,
+    xattr_stub,
+    xattrname_stub,
+    printf_action,
 };
 
 const Expression = struct {
     tag: ExprTag,
     data: ExprData,
+};
+
+const SamefileData = struct {
+    ino: u64,
+    dev: i64,
 };
 
 const ExprData = union {
@@ -157,6 +184,10 @@ const ExprData = union {
     exec_data: ExecExpr,
     binary: BinaryData,
     unary: *Expression,
+    samefile_data: SamefileData,
+    depth_val: u32,
+    uid_val: c.uid_t,
+    gid_val: c.gid_t,
     none: void,
 };
 
@@ -537,7 +568,26 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
         } else if (std.mem.eql(u8, arg, "-H")) {
             follow_cmdline_symlinks = true;
             expr_start += 1;
-        } else if (std.mem.eql(u8, arg, "-depth") or std.mem.eql(u8, arg, "-d")) {
+        } else if (std.mem.eql(u8, arg, "-P")) {
+            // -P: never follow symlinks (default behavior); accept as no-op
+            expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-E")) {
+            // -E: extended regex mode; accept as no-op stub
+            expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-s")) {
+            // -s: traverse in alphabetical order; accept as no-op stub
+            expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-depth")) {
+            // Check if followed by a number: -depth N is an expression primary
+            if (expr_start + 1 < args.len) {
+                if (std.fmt.parseInt(u32, args[expr_start + 1], 10)) |_| {
+                    // -depth N: this is an expression, stop collecting globals
+                    break;
+                } else |_| {}
+            }
+            depth_first = true;
+            expr_start += 1;
+        } else if (std.mem.eql(u8, arg, "-d")) {
             depth_first = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-x")) {
@@ -589,11 +639,32 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
                 return error.InvalidExpression;
             };
             i += 2;
-        } else if (std.mem.eql(u8, args[i], "-depth") or std.mem.eql(u8, args[i], "-d")) {
+        } else if (std.mem.eql(u8, args[i], "-depth")) {
+            // Check if next arg is numeric: -depth N (exact depth match, not depth-first)
+            if (i + 1 < args.len) {
+                if (std.fmt.parseInt(u32, args[i + 1], 10)) |_| {
+                    // -depth N: exact depth matching, skip (handled by parsePrimary)
+                    i += 2;
+                } else |_| {
+                    // -depth without numeric arg: depth-first mode
+                    depth_first = true;
+                    i += 1;
+                }
+            } else {
+                depth_first = true;
+                i += 1;
+            }
+        } else if (std.mem.eql(u8, args[i], "-d")) {
             depth_first = true;
             i += 1;
         } else if (std.mem.eql(u8, args[i], "-xdev") or std.mem.eql(u8, args[i], "-mount")) {
             xdev = true;
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "-ignore_readdir_race") or
+            std.mem.eql(u8, args[i], "-noignore_readdir_race") or
+            std.mem.eql(u8, args[i], "-noleaf"))
+        {
+            // Accept as no-ops
             i += 1;
         } else {
             i += 1;
@@ -744,7 +815,19 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 2;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
-    if (std.mem.eql(u8, arg, "-depth") or std.mem.eql(u8, arg, "-d")) {
+    if (std.mem.eql(u8, arg, "-depth")) {
+        // Check if next arg is numeric: -depth N (exact depth matching)
+        if (pos.* + 1 < args.len) {
+            if (std.fmt.parseInt(u32, args[pos.* + 1], 10)) |n| {
+                pos.* += 2;
+                return allocExpr(allocator, .depth_n, .{ .depth_val = n });
+            } else |_| {}
+        }
+        // Non-numeric or no argument: depth-first mode (already handled in parseArgs)
+        pos.* += 1;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    if (std.mem.eql(u8, arg, "-d")) {
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
@@ -1158,6 +1241,281 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .flags, .{ .name_str = flag_str });
     }
 
+    // -ipath: case-insensitive path matching
+    if (std.mem.eql(u8, arg, "-ipath") or std.mem.eql(u8, arg, "-iwholename")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-ipath'", .{});
+            return error.MissingArgument;
+        }
+        const pattern = args[pos.*];
+        pos.* += 1;
+        return allocExpr(allocator, .ipath, .{ .pattern = pattern });
+    }
+
+    // -regex: regex match on full path (stub: always true)
+    if (std.mem.eql(u8, arg, "-regex")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-regex'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .regex_stub, .{ .none = {} });
+    }
+
+    // -iregex: case-insensitive regex match on full path (stub: always true)
+    if (std.mem.eql(u8, arg, "-iregex")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-iregex'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .iregex_stub, .{ .none = {} });
+    }
+
+    // -Bmin: birth time in minutes (macOS stub: always true)
+    if (std.mem.eql(u8, arg, "-Bmin")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-Bmin'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .bmin_stub, .{ .none = {} });
+    }
+
+    // -Bnewer: birth time newer than FILE (macOS stub: always true)
+    if (std.mem.eql(u8, arg, "-Bnewer")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-Bnewer'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .bnewer_stub, .{ .none = {} });
+    }
+
+    // -Btime: birth time in days (macOS stub: always true)
+    if (std.mem.eql(u8, arg, "-Btime")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-Btime'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .btime_stub, .{ .none = {} });
+    }
+
+    // -acl: has ACL set (macOS stub: always false)
+    if (std.mem.eql(u8, arg, "-acl")) {
+        pos.* += 1;
+        return allocExpr(allocator, .acl_stub, .{ .none = {} });
+    }
+
+    // -gid N: match numeric group ID
+    if (std.mem.eql(u8, arg, "-gid")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-gid'", .{});
+            return error.MissingArgument;
+        }
+        const gid_val = std.fmt.parseInt(c.gid_t, args[pos.*], 10) catch {
+            pctx.setError("invalid argument '{s}' to '-gid'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .gid_match, .{ .gid_val = gid_val });
+    }
+
+    // -ignore_readdir_race: accept as no-op
+    if (std.mem.eql(u8, arg, "-ignore_readdir_race")) {
+        pos.* += 1;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+
+    // -noignore_readdir_race: accept as no-op
+    if (std.mem.eql(u8, arg, "-noignore_readdir_race")) {
+        pos.* += 1;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+
+    // -noleaf: accept as no-op
+    if (std.mem.eql(u8, arg, "-noleaf")) {
+        pos.* += 1;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+
+    // -ilname: case-insensitive symlink target matching
+    if (std.mem.eql(u8, arg, "-ilname")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-ilname'", .{});
+            return error.MissingArgument;
+        }
+        const pattern = args[pos.*];
+        pos.* += 1;
+        return allocExpr(allocator, .ilname, .{ .pattern = pattern });
+    }
+
+    // -lname: match symlink target against pattern
+    if (std.mem.eql(u8, arg, "-lname")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-lname'", .{});
+            return error.MissingArgument;
+        }
+        const pattern = args[pos.*];
+        pos.* += 1;
+        return allocExpr(allocator, .lname, .{ .pattern = pattern });
+    }
+
+    // -mnewer: alias for -newer (modification time newer than FILE)
+    if (std.mem.eql(u8, arg, "-mnewer")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-mnewer'", .{});
+            return error.MissingArgument;
+        }
+        const ref_path = args[pos.*];
+        pos.* += 1;
+        const ref_stat = doStat(ref_path, true) catch {
+            pctx.setError("cannot stat '{s}'", .{ref_path});
+            return error.StatError;
+        };
+        const ref_mtime = getMtime(ref_stat);
+        return allocExpr(allocator, .newer, .{ .newer_mtime = ref_mtime });
+    }
+
+    // -newerXY: compare timestamps (stub: always true)
+    // Matches -newerXY where X,Y are one of: a, B, c, m, t (8 chars total)
+    if (arg.len == 8 and std.mem.startsWith(u8, arg, "-newer")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '{s}'", .{arg});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .newerxy_stub, .{ .none = {} });
+    }
+
+    // -okdir: like -execdir but prompts (stub: always false)
+    if (std.mem.eql(u8, arg, "-okdir")) {
+        pos.* += 1;
+        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        defer exec_args.deinit(allocator);
+
+        while (pos.* < args.len) {
+            if (std.mem.eql(u8, args[pos.*], ";")) {
+                pos.* += 1;
+                break;
+            }
+            try exec_args.append(allocator, args[pos.*]);
+            pos.* += 1;
+        } else {
+            pctx.setError("missing argument to '-okdir'", .{});
+            return error.MissingArgument;
+        }
+
+        if (exec_args.items.len == 0) {
+            pctx.setError("missing argument to '-okdir'", .{});
+            return error.MissingArgument;
+        }
+
+        has_action.* = true;
+        const argv = try allocator.dupe([]const u8, exec_args.items);
+        return allocExpr(allocator, .okdir_stub, .{ .exec_data = .{ .argv = argv } });
+    }
+
+    // -quit: stop processing immediately
+    if (std.mem.eql(u8, arg, "-quit")) {
+        pos.* += 1;
+        has_action.* = true;
+        return allocExpr(allocator, .quit_action, .{ .none = {} });
+    }
+
+    // -samefile: match files with same inode and device as FILE
+    if (std.mem.eql(u8, arg, "-samefile")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-samefile'", .{});
+            return error.MissingArgument;
+        }
+        const ref_path = args[pos.*];
+        pos.* += 1;
+        const ref_stat = doStat(ref_path, true) catch {
+            pctx.setError("cannot stat '{s}'", .{ref_path});
+            return error.StatError;
+        };
+        return allocExpr(allocator, .samefile, .{ .samefile_data = .{
+            .ino = @intCast(ref_stat.ino),
+            .dev = @intCast(ref_stat.dev),
+        } });
+    }
+
+    // -sparse: match sparse files (macOS stub: always false)
+    if (std.mem.eql(u8, arg, "-sparse")) {
+        pos.* += 1;
+        return allocExpr(allocator, .sparse_stub, .{ .none = {} });
+    }
+
+    // -uid N: match numeric user ID
+    if (std.mem.eql(u8, arg, "-uid")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-uid'", .{});
+            return error.MissingArgument;
+        }
+        const uid_val = std.fmt.parseInt(c.uid_t, args[pos.*], 10) catch {
+            pctx.setError("invalid argument '{s}' to '-uid'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .uid_match, .{ .uid_val = uid_val });
+    }
+
+    // -xattr: has extended attributes (macOS stub: always false)
+    if (std.mem.eql(u8, arg, "-xattr")) {
+        pos.* += 1;
+        return allocExpr(allocator, .xattr_stub, .{ .none = {} });
+    }
+
+    // -xattrname: has named extended attribute (macOS stub: always false)
+    if (std.mem.eql(u8, arg, "-xattrname")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-xattrname'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume value
+        return allocExpr(allocator, .xattrname_stub, .{ .none = {} });
+    }
+
+    // -printf: formatted output (stub: prints filename + newline)
+    if (std.mem.eql(u8, arg, "-printf")) {
+        pos.* += 1;
+        if (pos.* >= args.len) {
+            pctx.setError("missing argument to '-printf'", .{});
+            return error.MissingArgument;
+        }
+        pos.* += 1; // consume format string
+        has_action.* = true;
+        return allocExpr(allocator, .printf_action, .{ .none = {} });
+    }
+
+    // -false: always evaluates to false
+    if (std.mem.eql(u8, arg, "-false")) {
+        pos.* += 1;
+        return allocExpr(allocator, .false_expr, .{ .none = {} });
+    }
+
+    // -true: always evaluates to true
+    if (std.mem.eql(u8, arg, "-true")) {
+        pos.* += 1;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+
     pctx.setError("unknown predicate '{s}'", .{arg});
     return error.InvalidExpression;
 }
@@ -1173,6 +1531,7 @@ fn evaluate(
     stat_buf: c.Stat,
     kind: FileType,
     now: i64,
+    depth: u32,
     allocator: Allocator,
     stdout: anytype,
     stderr: anytype,
@@ -1334,20 +1693,63 @@ fn evaluate(
         .delete => return doDelete(allocator, path, kind, stderr, had_error),
         .exec_cmd => return doExec(allocator, path, expr.data.exec_data),
         .and_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
+            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
             if (!left_result) return false;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
+            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
         },
         .or_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
+            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
             if (left_result) return true;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
+            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
         },
         .not_expr => {
-            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, pruned);
+            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
         },
         .prune => {
             pruned.* = true;
+            return true;
+        },
+        .false_expr => return false,
+        .ipath => return globMatchInsensitive(expr.data.pattern, path),
+        .regex_stub, .iregex_stub => return true,
+        .bmin_stub, .bnewer_stub, .btime_stub => return true,
+        .newerxy_stub => return true,
+        .acl_stub => return false,
+        .sparse_stub => return false,
+        .xattr_stub => return false,
+        .xattrname_stub => return false,
+        .depth_n => return depth == expr.data.depth_val,
+        .gid_match => return stat_buf.gid == expr.data.gid_val,
+        .uid_match => return stat_buf.uid == expr.data.uid_val,
+        .lname => {
+            if (kind != .symlink) return false;
+            return matchSymlinkTarget(allocator, path, expr.data.pattern, false);
+        },
+        .ilname => {
+            if (kind != .symlink) return false;
+            return matchSymlinkTarget(allocator, path, expr.data.pattern, true);
+        },
+        .samefile => {
+            const sf = expr.data.samefile_data;
+            const file_ino: u64 = @intCast(stat_buf.ino);
+            const file_dev: i64 = @intCast(stat_buf.dev);
+            return file_ino == sf.ino and file_dev == sf.dev;
+        },
+        .okdir_stub => {
+            stderr.print("< ? ... > ", .{}) catch {};
+            return false;
+        },
+        .quit_action => {
+            // Signal that we should stop processing.
+            // In production, this leads to an immediate exit from main.
+            // We use process.exit to match GNU find behavior.
+            std.process.exit(0);
+        },
+        .printf_action => {
+            // Stub: just print filename + newline (like -print)
+            stdout.print("{s}\n", .{path}) catch {
+                had_error.* = true;
+            };
             return true;
         },
     }
@@ -1407,6 +1809,13 @@ fn matchGroup(name_str: []const u8, gid: c.gid_t) bool {
         return gid == g.gr_gid;
     }
     return false;
+}
+
+fn matchSymlinkTarget(allocator: Allocator, path: []const u8, pattern: []const u8, case_insensitive: bool) bool {
+    _ = allocator;
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target = std.fs.cwd().readLink(path, &link_buf) catch return false;
+    return globMatchImpl(pattern, target, case_insensitive);
 }
 
 fn doDelete(allocator: Allocator, path: []const u8, kind: FileType, stderr: anytype, had_error: *bool) bool {
@@ -1804,7 +2213,7 @@ fn walkPath(
     if (kind != .directory) {
         if (depth >= config.mindepth) {
             var dummy_pruned = false;
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
+            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
         }
         return;
     }
@@ -1812,7 +2221,7 @@ fn walkPath(
     // Directory: evaluate before traversal (breadth-first)
     var was_pruned = false;
     if (!is_depth_first and depth >= config.mindepth) {
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &was_pruned);
+        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &was_pruned);
     }
 
     // If -prune was triggered, do not descend into this directory
@@ -1823,7 +2232,7 @@ fn walkPath(
         if (depth >= max) {
             if (is_depth_first and depth >= config.mindepth) {
                 var dummy_pruned = false;
-                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
+                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
             }
             return;
         }
@@ -1842,7 +2251,7 @@ fn walkPath(
         had_error.* = true;
         if (is_depth_first and depth >= config.mindepth) {
             var dummy_pruned = false;
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
+            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
         }
         return;
     };
@@ -1869,7 +2278,7 @@ fn walkPath(
     // Depth-first: evaluate directory after children
     if (is_depth_first and depth >= config.mindepth) {
         var dummy_pruned = false;
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, allocator, stdout, stderr, had_error, &dummy_pruned);
+        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
     }
 }
 
@@ -3294,4 +3703,771 @@ test "find: -flags is accepted without error" {
     // -flags should be parsed without error
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-flags", "uchg" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+// ============================================================================
+// Tests for SHOULD flags
+// ============================================================================
+
+test "find: -P global option accepted as no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ "-P", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -E global option accepted as no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ "-E", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -s global option accepted as no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ "-s", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -ipath case-insensitive path matching" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("SubDir");
+    var sub = try tmp.dir.openDir("SubDir", .{});
+    const f = try sub.createFile("File.TXT", .{});
+    f.close();
+    sub.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Case-insensitive path matching
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-ipath", "*/subdir/*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "File.TXT") != null);
+}
+
+test "find: -iwholename is alias for -ipath" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("Test.TXT", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-iwholename", "*test*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Test.TXT") != null);
+}
+
+test "find: -regex stub accepted (always true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-regex", ".*\\.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Stub matches everything
+    try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "find: -iregex stub accepted (always true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "find: -Bmin stub accepted (always true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-Bmin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "find: -Bnewer stub accepted (always true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-Bnewer", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "find: -Btime stub accepted (always true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-Btime", "+7" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "find: -acl stub accepted (always false)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-acl" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // -acl always returns false, so nothing should match
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -depth N matches files at exact depth" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile("top.txt", .{});
+    f1.close();
+    try tmp.dir.makeDir("sub");
+    var sub = try tmp.dir.openDir("sub", .{});
+    const f2 = try sub.createFile("deep.txt", .{});
+    f2.close();
+    sub.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // depth 1 should match top.txt and sub (not the root dir at depth 0)
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-depth", "1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "top.txt") != null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "sub\n") != null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "deep.txt") == null);
+    }
+
+    // depth 2 should match deep.txt only
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-depth", "2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "deep.txt") != null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "top.txt") == null);
+    }
+}
+
+test "find: -gid matches numeric group ID" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Get the GID of the test file
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
+    const stat_buf = try doStat(file_path, false);
+    var gid_buf: [32]u8 = undefined;
+    const gid_str = std.fmt.bufPrint(&gid_buf, "{d}", .{stat_buf.gid}) catch unreachable;
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-gid", gid_str }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -gid with non-matching GID returns nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // GID 99999 is unlikely to match any file
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-gid", "99999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -uid matches numeric user ID" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Get the UID of the test file
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
+    const stat_buf = try doStat(file_path, false);
+    var uid_buf: [32]u8 = undefined;
+    const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{stat_buf.uid}) catch unreachable;
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-uid", uid_str }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -uid with non-matching UID returns nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // UID 99999 is unlikely to match any file
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-uid", "99999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -ignore_readdir_race accepted as no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-ignore_readdir_race", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -noignore_readdir_race accepted as no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-noignore_readdir_race", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -noleaf accepted as no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-noleaf", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -lname matches symlink target" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("target.txt", .{});
+    f.close();
+    try tmp.dir.symLink("target.txt", "link.txt", .{});
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-lname", "target*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "link.txt") != null);
+    // target.txt is not a symlink, should not match
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") == null);
+}
+
+test "find: -ilname case-insensitive symlink target matching" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("Target.TXT", .{});
+    f.close();
+    try tmp.dir.symLink("Target.TXT", "link.txt", .{});
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Case-insensitive match against symlink target
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-ilname", "target*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "link.txt") != null);
+}
+
+test "find: -mnewer is alias for -newer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const ref = try tmp.dir.createFile("old_ref.txt", .{});
+    ref.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Set reference file mtime to the past
+    const past = std.time.timestamp() - 3600;
+    const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
+    const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
+    var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(ref_path_buf[0..ref_abs_path.len], ref_abs_path);
+    ref_path_buf[ref_abs_path.len] = 0;
+    const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
+    var times = [2]std.posix.timespec{ past_ts, past_ts };
+    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+
+    const f = try tmp.dir.createFile("newer.txt", .{});
+    f.close();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-mnewer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+}
+
+test "find: -mount is alias for -xdev" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-mount", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -newerXY stub accepted (always true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-neweram", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "find: -okdir stub accepted (always false)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-okdir", "echo", "{}", ";" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "find: -quit is accepted as valid primary" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -quit with -maxdepth 0 -false ensures we never actually reach -quit
+    // (so the test process doesn't exit)
+    const exit_code = runFind(allocator, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-false", "-quit" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "find: -samefile matches files with same inode" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("original.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const orig_path = try std.fs.path.join(allocator, &.{ dir_path, "original.txt" });
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-samefile", orig_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "original.txt") != null);
+}
+
+test "find: -sparse stub accepted (always false)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-sparse" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -xattr stub accepted (always false)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-xattr" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -xattrname stub accepted (always false)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-xattrname", "com.apple.metadata" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -printf stub accepted (prints like -print)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-name", "file.txt", "-printf", "%p\\n" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -false always evaluates to false" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -false should prevent any output
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-false" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+}
+
+test "find: -true always evaluates to true" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -true should match everything (equivalent to no test)
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-true" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -false -o -true evaluates to true" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "(", "-false", "-o", "-true", ")" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
 }

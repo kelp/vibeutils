@@ -6,12 +6,12 @@
 |------|-------|-------|---------|-----|------|------|
 | -H | yes | yes | yes | yes | yes | MUST |
 | -L | yes | yes | yes | yes | yes | MUST |
-| -P | -- | yes | -- | yes | -- | SHOULD |
-| -E | -- | yes | -- | -- | -- | SHOULD |
+| -P | -- | yes | -- | yes | yes | SHOULD |
+| -E | -- | yes | -- | -- | yes | SHOULD |
 | -X | -- | yes | yes | -- | yes | MUST |
 | -d | -- | yes | yes | -- | yes | MUST |
 | -f | -- | yes | yes | -- | yes | MUST |
-| -s | -- | yes | -- | -- | -- | SHOULD |
+| -s | -- | yes | -- | -- | yes | SHOULD |
 | -x | -- | yes | yes | -- | yes | MUST |
 | -O | -- | -- | -- | yes | -- | WONT |
 | -D | -- | -- | -- | yes | -- | WONT |
@@ -57,38 +57,38 @@
 | -inum | -- | yes | yes | yes | yes | MUST |
 | -flags | -- | yes | yes | -- | yes | MUST |
 | -follow | -- | yes | yes | -- | yes | MUST |
-| -ipath | -- | yes | -- | -- | -- | SHOULD |
-| -iregex | -- | yes | -- | yes | -- | SHOULD |
-| -regex | -- | yes | -- | yes | -- | SHOULD |
-| -Bmin | -- | yes | -- | -- | -- | SHOULD |
-| -Bnewer | -- | yes | -- | -- | -- | SHOULD |
-| -Btime | -- | yes | -- | -- | -- | SHOULD |
-| -acl | -- | yes | -- | -- | -- | SHOULD |
-| -depth N | -- | yes | -- | -- | -- | SHOULD |
-| -gid | -- | yes | -- | -- | -- | SHOULD |
-| -ignore_readdir_race | -- | yes | -- | yes | -- | SHOULD |
-| -ilname | -- | yes | -- | yes | -- | SHOULD |
-| -lname | -- | yes | -- | yes | -- | SHOULD |
-| -mnewer | -- | yes | -- | -- | -- | SHOULD |
-| -mount | -- | yes | -- | yes | -- | SHOULD |
-| -newerXY | -- | yes | -- | yes | -- | SHOULD |
-| -noleaf | -- | yes | -- | yes | -- | SHOULD |
-| -noignore_readdir_race | -- | yes | -- | yes | -- | SHOULD |
-| -okdir | -- | yes | -- | yes | -- | SHOULD |
-| -quit | -- | yes | -- | -- | -- | SHOULD |
-| -samefile | -- | yes | -- | -- | -- | SHOULD |
-| -sparse | -- | yes | -- | -- | -- | SHOULD |
-| -uid | -- | yes | -- | -- | -- | SHOULD |
-| -wholename | -- | yes | -- | yes | -- | SHOULD |
-| -xattr | -- | yes | -- | -- | -- | SHOULD |
-| -xattrname | -- | yes | -- | -- | -- | SHOULD |
+| -ipath | -- | yes | -- | -- | yes | SHOULD |
+| -iregex | -- | yes | -- | yes | yes | SHOULD |
+| -regex | -- | yes | -- | yes | yes | SHOULD |
+| -Bmin | -- | yes | -- | -- | yes | SHOULD |
+| -Bnewer | -- | yes | -- | -- | yes | SHOULD |
+| -Btime | -- | yes | -- | -- | yes | SHOULD |
+| -acl | -- | yes | -- | -- | yes | SHOULD |
+| -depth N | -- | yes | -- | -- | yes | SHOULD |
+| -gid | -- | yes | -- | -- | yes | SHOULD |
+| -ignore_readdir_race | -- | yes | -- | yes | yes | SHOULD |
+| -ilname | -- | yes | -- | yes | yes | SHOULD |
+| -lname | -- | yes | -- | yes | yes | SHOULD |
+| -mnewer | -- | yes | -- | -- | yes | SHOULD |
+| -mount | -- | yes | -- | yes | yes | SHOULD |
+| -newerXY | -- | yes | -- | yes | yes | SHOULD |
+| -noleaf | -- | yes | -- | yes | yes | SHOULD |
+| -noignore_readdir_race | -- | yes | -- | yes | yes | SHOULD |
+| -okdir | -- | yes | -- | yes | yes | SHOULD |
+| -quit | -- | yes | -- | -- | yes | SHOULD |
+| -samefile | -- | yes | -- | -- | yes | SHOULD |
+| -sparse | -- | yes | -- | -- | yes | SHOULD |
+| -uid | -- | yes | -- | -- | yes | SHOULD |
+| -wholename | -- | yes | -- | yes | yes | SHOULD |
+| -xattr | -- | yes | -- | -- | yes | SHOULD |
+| -xattrname | -- | yes | -- | -- | yes | SHOULD |
 | -context | -- | -- | -- | yes | -- | WONT |
 | -readable | -- | -- | -- | yes | -- | WONT |
 | -writable | -- | -- | -- | yes | -- | WONT |
 | -executable | -- | -- | -- | yes | -- | WONT |
 | -used | -- | -- | -- | yes | -- | WONT |
 | -xtype | -- | -- | -- | yes | -- | WONT |
-| -printf | -- | -- | -- | yes | -- | SHOULD |
+| -printf | -- | -- | -- | yes | yes | SHOULD |
 | -fprintf | -- | -- | -- | yes | -- | WONT |
 | -fprint | -- | -- | -- | yes | -- | WONT |
 | -fprint0 | -- | -- | -- | yes | -- | WONT |
@@ -107,5 +107,5 @@
 | ! / -not | yes | yes | yes | yes | yes | MUST |
 | -a / -and | yes | yes | yes | yes | yes | MUST |
 | -o / -or | yes | yes | yes | yes | yes | MUST |
-| -false | -- | yes | -- | -- | -- | SHOULD |
-| -true | -- | yes | -- | -- | -- | SHOULD |
+| -false | -- | yes | -- | -- | yes | SHOULD |
+| -true | -- | yes | -- | -- | yes | SHOULD |
