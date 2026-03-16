@@ -40,6 +40,16 @@ const ChownArgs = struct {
     recursive: bool = false,
     /// Use file's owner and group as reference
     reference: ?[]const u8 = null,
+    /// Numeric IDs only, don't resolve names (macOS)
+    numeric_ids: bool = false,
+    /// Don't cross mount points during recursion (macOS)
+    no_cross_device: bool = false,
+    /// Affect the referent of symlinks (default, no-op)
+    dereference: bool = false,
+    /// Do not treat '/' specially (default, no-op)
+    no_preserve_root: bool = false,
+    /// Refuse to operate recursively on '/'
+    preserve_root: bool = false,
     /// Positional arguments (owner spec and file paths)
     positionals: []const []const u8 = &.{},
 
@@ -57,6 +67,11 @@ const ChownArgs = struct {
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .recursive = .{ .short = 'R', .desc = "Operate on files and directories recursively" },
         .reference = .{ .desc = "Use RFILE's owner and group rather than specifying values", .value_name = "RFILE" },
+        .numeric_ids = .{ .short = 'n', .desc = "Use numeric IDs only, don't resolve user/group names" },
+        .no_cross_device = .{ .short = 'x', .desc = "Don't cross mount points during recursive operations" },
+        .dereference = .{ .short = 0, .desc = "Affect the referent of each symbolic link (default)" },
+        .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially (default)" },
+        .preserve_root = .{ .short = 0, .desc = "Fail to operate recursively on '/'" },
     };
 };
 
@@ -127,6 +142,9 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         .no_traverse_symlinks = parsed_args.P,
         .recursive = parsed_args.recursive,
         .reference_file = parsed_args.reference,
+        .numeric_ids = parsed_args.numeric_ids,
+        .no_cross_device = parsed_args.no_cross_device,
+        .preserve_root = parsed_args.preserve_root,
     };
 
     // Extract owner spec and files based on whether --reference is used
@@ -152,6 +170,24 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     else
         positionals[1..];
 
+    // --preserve-root: refuse to operate recursively on '/'
+    if (options.preserve_root and options.recursive) {
+        for (files) |file_path| {
+            if (std.mem.eql(u8, file_path, "/")) {
+                common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "it is dangerous to operate recursively on '/'\nUse --no-preserve-root to override this failsafe.", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            }
+        }
+    }
+
+    // -n: validate that owner spec uses only numeric IDs
+    if (options.numeric_ids and owner_spec.len > 0) {
+        if (!isNumericOwnerSpec(owner_spec)) {
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "invalid spec: '{s}' (numeric IDs only with -n)", .{owner_spec});
+            return @intFromEnum(common.ExitCode.misuse);
+        }
+    }
+
     // Parse ownership specification once before the file loop
     var ownership: common.user_group.OwnershipSpec = undefined;
 
@@ -176,7 +212,7 @@ pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     var exit_code: u8 = 0;
     for (files) |file_path| {
         if (options.recursive) {
-            chownRecursive(file_path, ownership, options, allocator, stdout_writer, stderr_writer) catch {
+            chownRecursive(file_path, ownership, options, allocator, stdout_writer, stderr_writer, null) catch {
                 exit_code = @intFromEnum(common.ExitCode.general_error);
             };
         } else {
@@ -202,9 +238,14 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -f, --silent, --quiet  suppress most error messages
         \\  -v, --verbose          output a diagnostic for every file processed
         \\  -h, --no-dereference   affect symbolic links instead of any referenced file
+        \\      --dereference       affect the referent of each symbolic link (default)
         \\      --reference=RFILE  use RFILE's owner and group rather than
         \\                         specifying OWNER:GROUP values
+        \\  -n                     use numeric IDs only, don't resolve names
         \\  -R, --recursive        operate on files and directories recursively
+        \\  -x                     don't cross mount points during recursion
+        \\      --preserve-root    fail to operate recursively on '/'
+        \\      --no-preserve-root do not treat '/' specially (default)
         \\      --help             display this help and exit
         \\  -V, --version          output version information and exit
         \\
@@ -254,6 +295,12 @@ const ChownOptions = struct {
     recursive: bool = false,
     /// Reference file path
     reference_file: ?[]const u8 = null,
+    /// Only accept numeric user/group IDs
+    numeric_ids: bool = false,
+    /// Don't cross mount points during recursion
+    no_cross_device: bool = false,
+    /// Refuse to operate recursively on '/'
+    preserve_root: bool = false,
 };
 
 /// Change ownership of a file or directory
@@ -278,7 +325,7 @@ fn chownFile(
 
     // Apply ownership change
     if (options.recursive) {
-        try chownRecursive(path, ownership, options, allocator, stdout_writer, stderr_writer);
+        try chownRecursive(path, ownership, options, allocator, stdout_writer, stderr_writer, null);
     } else {
         try chownSingle(allocator, path, ownership, options, stdout_writer, stderr_writer);
     }
@@ -316,8 +363,18 @@ fn chownSingle(allocator: std.mem.Allocator, path: []const u8, ownership: common
     }
 }
 
+/// Get the device ID for a path using C stat
+fn getDeviceId(path: []const u8, allocator: std.mem.Allocator) !u64 {
+    const path_c = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_c);
+    var stat_buf: std.c.Stat = undefined;
+    const result = std.c.stat(path_c.ptr, &stat_buf);
+    if (result != 0) return error.StatFailed;
+    return @intCast(stat_buf.dev);
+}
+
 /// Recursively change ownership of directory and contents
-/// Respects -H/-L/-P symlink traversal options
+/// Respects -H/-L/-P symlink traversal options and -x mount point crossing
 fn chownRecursive(
     path: []const u8,
     ownership: common.user_group.OwnershipSpec,
@@ -325,12 +382,27 @@ fn chownRecursive(
     allocator: std.mem.Allocator,
     stdout_writer: anytype,
     stderr_writer: anytype,
+    root_dev: ?u64,
 ) !void {
     // Check if it's a directory to recurse into
     const stat_info = common.file.FileInfo.stat(path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "chown", std.fs.File.stderr().isTty(), "cannot stat '{s}': {s}", .{ path, @errorName(err) });
         return;
     };
+
+    // -x: skip entries on different filesystems
+    if (options.no_cross_device) {
+        const dev = getDeviceId(path, allocator) catch 0;
+        if (root_dev) |rd| {
+            if (dev != rd) return;
+        }
+    }
+
+    // Determine effective root_dev for children
+    const effective_root_dev: ?u64 = if (options.no_cross_device)
+        root_dev orelse (getDeviceId(path, allocator) catch null)
+    else
+        null;
 
     var had_errors = false;
 
@@ -360,7 +432,7 @@ fn chownRecursive(
             }
 
             // Recurse into subdirectory or change file
-            chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer) catch {
+            chownRecursive(full_path, ownership, options, allocator, stdout_writer, stderr_writer, effective_root_dev) catch {
                 had_errors = true;
             };
         }
@@ -416,6 +488,15 @@ fn getOwnershipFromReference(ref_path: []const u8) !common.user_group.OwnershipS
         .user = @as(common.user_group.uid_t, @intCast(stat_info.uid)),
         .group = @as(common.user_group.gid_t, @intCast(stat_info.gid)),
     };
+}
+
+/// Check if an owner spec is purely numeric (digits and colon only)
+/// Used by -n flag to reject name-based specifications
+fn isNumericOwnerSpec(spec: []const u8) bool {
+    for (spec) |ch| {
+        if (ch != ':' and !std.ascii.isDigit(ch)) return false;
+    }
+    return true;
 }
 
 /// Report successful ownership change
@@ -1048,4 +1129,124 @@ test "chown --version flag works" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "chown") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
+}
+
+// Tests for new flags
+
+test "isNumericOwnerSpec accepts numeric specs" {
+    try testing.expect(isNumericOwnerSpec("1000"));
+    try testing.expect(isNumericOwnerSpec("1000:100"));
+    try testing.expect(isNumericOwnerSpec(":100"));
+    try testing.expect(isNumericOwnerSpec("0:0"));
+}
+
+test "isNumericOwnerSpec rejects name specs" {
+    try testing.expect(!isNumericOwnerSpec("root"));
+    try testing.expect(!isNumericOwnerSpec("root:staff"));
+    try testing.expect(!isNumericOwnerSpec(":staff"));
+    try testing.expect(!isNumericOwnerSpec("root:100"));
+}
+
+test "chown -n flag rejects non-numeric owner spec" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", "root", "/tmp/test" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "numeric IDs only") != null);
+}
+
+test "chown -n flag accepts numeric owner spec" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Uses a nonexistent file, but the -n validation should pass
+    const args = [_][]const u8{ "-n", "1000:100", "/nonexistent/test" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should fail due to nonexistent file, not due to -n validation
+    try testing.expect(exit_code != @intFromEnum(common.ExitCode.misuse));
+}
+
+test "chown --preserve-root blocks recursive on /" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--preserve-root", "-R", "1000:1000", "/" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively on '/'") != null);
+}
+
+test "chown --preserve-root allows non-recursive on /" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Without -R, --preserve-root should not block
+    const args = [_][]const u8{ "--preserve-root", "1000:1000", "/" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should fail with permission error, not preserve-root error
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively") == null);
+    _ = exit_code;
+}
+
+test "chown --dereference flag is accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--dereference", "--help" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "chown --no-preserve-root flag is accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--no-preserve-root", "--help" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "chown -x flag is accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-x", "--help" };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "chown help text includes new flags" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    try printHelp(testing.allocator, stdout_buffer.writer(testing.allocator));
+
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--preserve-root") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--no-preserve-root") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--dereference") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "numeric IDs") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mount points") != null);
 }
