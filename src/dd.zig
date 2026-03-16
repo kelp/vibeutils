@@ -33,7 +33,13 @@ const DdConfig = struct {
     conv_ibm: bool = false,
     conv_block: bool = false,
     conv_unblock: bool = false,
+    conv_sparse: bool = false,
+    conv_pareven: bool = false,
+    conv_parnone: bool = false,
+    conv_parodd: bool = false,
+    conv_parset: bool = false,
     cbs: ?usize = null,
+    fillchar: u8 = ' ',
     files: usize = 1,
     status: StatusLevel = .default,
     help: bool = false,
@@ -153,6 +159,25 @@ fn parseOperands(args: []const []const u8) !DdConfig {
                     return error.InvalidValue;
             } else if (std.mem.eql(u8, key, "conv")) {
                 try parseConversions(&config, value);
+            } else if (std.mem.eql(u8, key, "iseek")) {
+                // Alias for skip
+                config.skip = std.fmt.parseInt(usize, value, 10) catch
+                    return error.InvalidValue;
+            } else if (std.mem.eql(u8, key, "oseek")) {
+                // Alias for seek
+                config.seek = std.fmt.parseInt(usize, value, 10) catch
+                    return error.InvalidValue;
+            } else if (std.mem.eql(u8, key, "fillchar")) {
+                if (value.len != 1) return error.InvalidValue;
+                config.fillchar = value[0];
+            } else if (std.mem.eql(u8, key, "iflag")) {
+                // Stub: accept comma-separated input flags, silently ignore
+            } else if (std.mem.eql(u8, key, "oflag")) {
+                // Stub: accept comma-separated output flags, silently ignore
+            } else if (std.mem.eql(u8, key, "speed")) {
+                // Stub: accept speed limit, silently ignore
+                _ = std.fmt.parseInt(usize, value, 10) catch
+                    return error.InvalidValue;
             } else if (std.mem.eql(u8, key, "status")) {
                 if (std.mem.eql(u8, value, "none")) {
                     config.status = .none;
@@ -207,6 +232,22 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_block = true;
         } else if (std.mem.eql(u8, conv, "unblock")) {
             config.conv_unblock = true;
+        } else if (std.mem.eql(u8, conv, "oldascii")) {
+            config.conv_ascii = true;
+        } else if (std.mem.eql(u8, conv, "oldebcdic")) {
+            config.conv_ebcdic = true;
+        } else if (std.mem.eql(u8, conv, "oldibm")) {
+            config.conv_ibm = true;
+        } else if (std.mem.eql(u8, conv, "sparse")) {
+            config.conv_sparse = true;
+        } else if (std.mem.eql(u8, conv, "pareven")) {
+            config.conv_pareven = true;
+        } else if (std.mem.eql(u8, conv, "parnone")) {
+            config.conv_parnone = true;
+        } else if (std.mem.eql(u8, conv, "parodd")) {
+            config.conv_parodd = true;
+        } else if (std.mem.eql(u8, conv, "parset")) {
+            config.conv_parset = true;
         } else {
             return error.InvalidValue;
         }
@@ -646,9 +687,9 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             const record_buf = cbs_buf.?;
             for (data) |byte| {
                 if (byte == '\n') {
-                    // End of record: pad with spaces to cbs and write
+                    // End of record: pad with fill character to cbs and write
                     if (cbs_pos < cbs) {
-                        @memset(record_buf[cbs_pos..], ' ');
+                        @memset(record_buf[cbs_pos..], config.fillchar);
                     }
                     output_file.writeAll(record_buf[0..cbs]) catch |err| {
                         common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
@@ -759,7 +800,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // Flush remaining record for conv=block (partial record without newline)
     if (config.conv_block and cbs_pos > 0) {
         const record_buf = cbs_buf.?;
-        @memset(record_buf[cbs_pos..], ' ');
+        @memset(record_buf[cbs_pos..], config.fillchar);
         output_file.writeAll(record_buf[0..cbs]) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
@@ -989,7 +1030,13 @@ test "parseOperands - defaults" {
     try testing.expect(!config.conv_ibm);
     try testing.expect(!config.conv_block);
     try testing.expect(!config.conv_unblock);
+    try testing.expect(!config.conv_sparse);
+    try testing.expect(!config.conv_pareven);
+    try testing.expect(!config.conv_parnone);
+    try testing.expect(!config.conv_parodd);
+    try testing.expect(!config.conv_parset);
     try testing.expect(config.cbs == null);
+    try testing.expectEqual(@as(u8, ' '), config.fillchar);
     try testing.expectEqual(@as(usize, 1), config.files);
     try testing.expectEqual(StatusLevel.default, config.status);
 }
@@ -1770,4 +1817,172 @@ test "EBCDIC round-trip: ASCII->EBCDIC->ASCII for printable chars" {
         const round_trip = ebcdic_to_ascii[ebcdic_val];
         try testing.expectEqual(@as(u8, @intCast(i)), round_trip);
     }
+}
+
+test "parseOperands - iseek maps to skip" {
+    const args = [_][]const u8{"iseek=7"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 7), config.skip);
+}
+
+test "parseOperands - oseek maps to seek" {
+    const args = [_][]const u8{"oseek=4"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(usize, 4), config.seek);
+}
+
+test "parseOperands - fillchar single character" {
+    const args = [_][]const u8{"fillchar=X"};
+    const config = try parseOperands(&args);
+    try testing.expectEqual(@as(u8, 'X'), config.fillchar);
+}
+
+test "parseOperands - fillchar rejects multi-char" {
+    const args = [_][]const u8{"fillchar=AB"};
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
+}
+
+test "parseOperands - fillchar rejects empty" {
+    const args = [_][]const u8{"fillchar="};
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
+}
+
+test "parseOperands - iflag accepted and ignored" {
+    const args = [_][]const u8{"iflag=fullblock,direct"};
+    const config = try parseOperands(&args);
+    // Should parse without error; flags are silently ignored
+    try testing.expect(config.input_file == null);
+}
+
+test "parseOperands - oflag accepted and ignored" {
+    const args = [_][]const u8{"oflag=dsync,noatime"};
+    const config = try parseOperands(&args);
+    // Should parse without error; flags are silently ignored
+    try testing.expect(config.output_file == null);
+}
+
+test "parseOperands - speed accepted and ignored" {
+    const args = [_][]const u8{"speed=1000000"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.input_file == null);
+}
+
+test "parseOperands - speed rejects non-numeric" {
+    const args = [_][]const u8{"speed=fast"};
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
+}
+
+test "parseConversions - oldascii maps to ascii" {
+    const args = [_][]const u8{"conv=oldascii"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_ascii);
+}
+
+test "parseConversions - oldebcdic maps to ebcdic" {
+    const args = [_][]const u8{"conv=oldebcdic"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_ebcdic);
+}
+
+test "parseConversions - oldibm maps to ibm" {
+    const args = [_][]const u8{"conv=oldibm"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_ibm);
+}
+
+test "parseConversions - sparse accepted as no-op" {
+    const args = [_][]const u8{"conv=sparse"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_sparse);
+}
+
+test "parseConversions - pareven accepted as no-op" {
+    const args = [_][]const u8{"conv=pareven"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_pareven);
+}
+
+test "parseConversions - parnone accepted as no-op" {
+    const args = [_][]const u8{"conv=parnone"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_parnone);
+}
+
+test "parseConversions - parodd accepted as no-op" {
+    const args = [_][]const u8{"conv=parodd"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_parodd);
+}
+
+test "parseConversions - parset accepted as no-op" {
+    const args = [_][]const u8{"conv=parset"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_parset);
+}
+
+test "parseConversions - multiple parity and sparse" {
+    const args = [_][]const u8{"conv=sparse,pareven,lcase"};
+    const config = try parseOperands(&args);
+    try testing.expect(config.conv_sparse);
+    try testing.expect(config.conv_pareven);
+    try testing.expect(config.conv_lcase);
+}
+
+test "runDd - conv=block with fillchar" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ab\n");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    // cbs=5, fillchar=X: record "ab" padded to "abXXX"
+    const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "fillchar=X", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqual(@as(usize, 5), content.len);
+    try testing.expectEqualStrings("abXXX", content);
+}
+
+test "runDd - iseek skips input blocks" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "AAAABBBB");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    // iseek=1 with bs=4 should skip first 4 bytes, get "BBBB"
+    const args = [_][]const u8{ if_arg, of_arg, "bs=4", "iseek=1", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("BBBB", content);
 }

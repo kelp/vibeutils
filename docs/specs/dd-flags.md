@@ -15,12 +15,12 @@ Operands are treated as flags for this table.
 | count= | yes | yes   | yes     | yes | yes  | MUST |
 | conv= | yes  | yes   | yes     | yes | yes  | MUST |
 | files= |     | yes   | yes     |     | yes  | MUST |
-| fillchar= |  | yes   |         |     |      | SHOULD |
-| iflag= |     | yes   |         | yes |      | SHOULD |
-| iseek= |     | yes   |         | yes |      | SHOULD |
-| oflag= |     | yes   |         | yes |      | SHOULD |
-| oseek= |     | yes   |         | yes |      | SHOULD |
-| speed= |     | yes   |         |     |      | SHOULD |
+| fillchar= |  | yes   |         |     | yes  | SHOULD |
+| iflag= |     | yes   |         | yes | yes  | SHOULD |
+| iseek= |     | yes   |         | yes | yes  | SHOULD |
+| oflag= |     | yes   |         | yes | yes  | SHOULD |
+| oseek= |     | yes   |         | yes | yes  | SHOULD |
+| speed= |     | yes   |         |     | yes  | SHOULD |
 | status= |    | yes   | yes     | yes | yes  | MUST |
 
 ### conv= values
@@ -38,16 +38,16 @@ Operands are treated as flags for this table.
 | noerror | yes | yes   | yes     | yes | yes  | MUST |
 | notrunc | yes | yes   | yes     | yes | yes  | MUST |
 | sync  | yes   | yes   | yes     | yes | yes  | MUST |
-| oldascii |   | yes   |         |     |      | SHOULD |
-| oldebcdic |  | yes   |         |     |      | SHOULD |
-| oldibm |     | yes   |         |     |      | SHOULD |
+| oldascii |   | yes   |         |     | yes  | SHOULD |
+| oldebcdic |  | yes   |         |     | yes  | SHOULD |
+| oldibm |     | yes   |         |     | yes  | SHOULD |
 | fsync |      | yes   | yes     | yes | yes  | MUST |
 | osync |      | yes   | yes     |     | yes  | MUST |
-| sparse |     | yes   |         | yes |      | SHOULD |
-| pareven |    | yes   |         |     |      | SHOULD |
-| parnone |    | yes   |         |     |      | SHOULD |
-| parodd |     | yes   |         |     |      | SHOULD |
-| parset |     | yes   |         |     |      | SHOULD |
+| sparse |     | yes   |         | yes | yes  | SHOULD |
+| pareven |    | yes   |         |     | yes  | SHOULD |
+| parnone |    | yes   |         |     | yes  | SHOULD |
+| parodd |     | yes   |         |     | yes  | SHOULD |
+| parset |     | yes   |         |     | yes  | SHOULD |
 | excl  |      |       |         | yes |      | WONT |
 | nocreat |    |       |         | yes |      | WONT |
 | fdatasync |  |       |         | yes |      | WONT |
