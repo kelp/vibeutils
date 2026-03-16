@@ -54,6 +54,9 @@ const GrepOptions = struct {
     line_regexp: bool = false,
     byte_offset: bool = false,
     null_data: bool = false,
+    null_line_sep: bool = false,
+    skip_dirs: bool = false,
+    stdin_label: ?[]const u8 = null,
     recursive: bool = false,
     dereference_recursive: bool = false,
     max_count: ?usize = null,
@@ -223,6 +226,18 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 try opts.exclude_globs.append(allocator, flag["exclude=".len..]);
             } else if (std.mem.startsWith(u8, flag, "exclude-dir=")) {
                 try opts.exclude_dirs.append(allocator, flag["exclude-dir=".len..]);
+            } else if (std.mem.startsWith(u8, flag, "label=")) {
+                opts.stdin_label = flag["label=".len..];
+            } else if (std.mem.eql(u8, flag, "line-buffered")) {
+                // No-op: we flush appropriately already
+            } else if (std.mem.startsWith(u8, flag, "binary-files=")) {
+                // Stub: accept silently (we treat all files as text)
+            } else if (std.mem.eql(u8, flag, "mmap")) {
+                // No-op: deprecated, accept silently
+            } else if (std.mem.startsWith(u8, flag, "include-dir=")) {
+                // No-op stub: accept with value, silently ignore
+            } else if (std.mem.eql(u8, flag, "null-data")) {
+                opts.null_line_sep = true;
             } else {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option '--{s}'", .{flag});
                 return null;
@@ -254,6 +269,19 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                     'a' => {}, // --text: treat binary as text (no-op, no binary detection yet)
                     'I' => {}, // ignore binary files (no-op, no binary detection yet)
                     'U' => {}, // --binary: Unix no-op
+                    'J' => {}, // macOS: decompress bzip2 (no-op stub)
+                    'M' => {}, // macOS: force mmap (no-op stub)
+                    'O' => {}, // macOS: follow symlinks on cmdline only (no-op stub)
+                    'p' => {}, // macOS: don't follow symlinks (no-op stub)
+                    'S' => {}, // macOS: follow all symlinks (no-op stub)
+                    'u' => {}, // macOS: report unmatched files (no-op stub)
+                    'X' => {}, // macOS: legacy exclude-from (no-op stub)
+                    'y' => opts.ignore_case = true, // legacy alias for -i
+                    'z' => opts.null_line_sep = true,
+                    'P' => {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "-P (Perl regex) not supported", .{});
+                        return null;
+                    },
                     'r' => opts.recursive = true,
                     'R' => {
                         opts.dereference_recursive = true;
@@ -349,6 +377,36 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                         };
                         opts.before_context = ctx;
                         opts.after_context = ctx;
+                        break;
+                    },
+                    'd' => {
+                        const value = if (j + 1 < arg.len)
+                            arg[j + 1 ..]
+                        else if (i + 1 < args.len) blk: {
+                            i += 1;
+                            break :blk args[i];
+                        } else {
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'd'", .{});
+                            return null;
+                        };
+                        if (std.mem.eql(u8, value, "recurse")) {
+                            opts.recursive = true;
+                        } else if (std.mem.eql(u8, value, "skip")) {
+                            opts.skip_dirs = true;
+                        }
+                        // "read" is the default behavior, no action needed
+                        break;
+                    },
+                    'D' => {
+                        // Device action stub: accept value, silently ignore
+                        if (j + 1 < arg.len) {
+                            // Value is rest of this arg
+                        } else if (i + 1 < args.len) {
+                            i += 1;
+                        } else {
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'D'", .{});
+                            return null;
+                        }
                         break;
                     },
                     else => {
@@ -558,7 +616,10 @@ fn printByteOffset(writer: anytype, offset: usize, use_color: bool) void {
 
 /// Print a separator character
 fn printSep(writer: anytype, sep: u8, use_color: bool) void {
-    if (use_color) {
+    if (sep == 0) {
+        // NUL separator: write raw byte, no color wrapping
+        writer.writeByte(0) catch {};
+    } else if (use_color) {
         writer.print("{s}{c}{s}", .{ Color.separator, sep, Color.reset }) catch {};
     } else {
         writer.print("{c}", .{sep}) catch {};
@@ -566,7 +627,7 @@ fn printSep(writer: anytype, sep: u8, use_color: bool) void {
 }
 
 /// Print a line with optional color highlighting of the match
-fn printMatchLine(writer: anytype, line: []const u8, match_start: usize, match_end: usize, use_color: bool) void {
+fn printMatchLine(writer: anytype, line: []const u8, match_start: usize, match_end: usize, use_color: bool, terminator: u8) void {
     if (use_color and match_end > match_start and match_end <= line.len) {
         writer.writeAll(line[0..match_start]) catch {};
         writer.print("{s}", .{Color.match_highlight}) catch {};
@@ -576,7 +637,7 @@ fn printMatchLine(writer: anytype, line: []const u8, match_start: usize, match_e
     } else {
         writer.writeAll(line) catch {};
     }
-    writer.writeAll("\n") catch {};
+    writer.writeByte(terminator) catch {};
 }
 
 // ============================================================================
@@ -601,6 +662,15 @@ fn processFile(
     var match_count: usize = 0;
     var line_num: usize = 0;
 
+    // Determine the line delimiter: NUL for -z/--null-data, newline otherwise
+    const line_delim: u8 = if (opts.null_line_sep) 0 else '\n';
+
+    // Determine filename separator: NUL for --null/-Z, colon otherwise
+    const fn_sep: u8 = if (opts.null_data) 0 else ':';
+
+    // Determine line terminator for output: NUL for -z, newline otherwise
+    const line_term: u8 = if (opts.null_line_sep) 0 else '\n';
+
     // Split into lines, tracking byte offsets
     var lines = std.ArrayListUnmanaged([]const u8){};
     defer lines.deinit(allocator);
@@ -609,7 +679,7 @@ fn processFile(
     {
         var start: usize = 0;
         for (content, 0..) |ch, idx| {
-            if (ch == '\n') {
+            if (ch == line_delim) {
                 lines.append(allocator, content[start..idx]) catch return false;
                 line_offsets.append(allocator, start) catch return false;
                 start = idx + 1;
@@ -654,7 +724,7 @@ fn processFile(
 
                     var ctx_line = effective_start;
                     while (ctx_line < line_num) : (ctx_line += 1) {
-                        printContextLine(stdout_writer, lines.items[ctx_line - 1], ctx_line, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[ctx_line - 1], use_color);
+                        printContextLine(stdout_writer, lines.items[ctx_line - 1], ctx_line, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[ctx_line - 1], use_color, fn_sep, line_term);
                         last_printed_line = ctx_line;
                     }
                 }
@@ -669,7 +739,7 @@ fn processFile(
                 if (opts.only_matching and !opts.invert_match) {
                     if (show_filename) {
                         printFilename(stdout_writer, filename, use_color);
-                        printSep(stdout_writer, ':', use_color);
+                        printSep(stdout_writer, fn_sep, use_color);
                     }
                     if (opts.line_number) {
                         printLineNumber(stdout_writer, line_num, use_color);
@@ -688,11 +758,11 @@ fn processFile(
                             stdout_writer.writeAll(line[result.match_start..result.match_end]) catch {};
                         }
                     }
-                    stdout_writer.writeAll("\n") catch {};
+                    stdout_writer.writeByte(line_term) catch {};
                 } else {
                     if (show_filename) {
                         printFilename(stdout_writer, filename, use_color);
-                        printSep(stdout_writer, ':', use_color);
+                        printSep(stdout_writer, fn_sep, use_color);
                     }
                     if (opts.line_number) {
                         printLineNumber(stdout_writer, line_num, use_color);
@@ -703,10 +773,10 @@ fn processFile(
                         printSep(stdout_writer, ':', use_color);
                     }
                     if (!opts.invert_match) {
-                        printMatchLine(stdout_writer, line, result.match_start, result.match_end, use_color);
+                        printMatchLine(stdout_writer, line, result.match_start, result.match_end, use_color, line_term);
                     } else {
                         stdout_writer.writeAll(line) catch {};
-                        stdout_writer.writeAll("\n") catch {};
+                        stdout_writer.writeByte(line_term) catch {};
                     }
                 }
                 last_printed_line = line_num;
@@ -718,7 +788,7 @@ fn processFile(
             }
         } else if (remaining_after > 0) {
             // Print after-context line
-            printContextLine(stdout_writer, line, line_num, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[line_num - 1], use_color);
+            printContextLine(stdout_writer, line, line_num, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[line_num - 1], use_color, fn_sep, line_term);
             last_printed_line = line_num;
             remaining_after -= 1;
         }
@@ -727,9 +797,10 @@ fn processFile(
     if (opts.count) {
         if (show_filename) {
             printFilename(stdout_writer, filename, use_color);
-            printSep(stdout_writer, ':', use_color);
+            printSep(stdout_writer, fn_sep, use_color);
         }
-        stdout_writer.print("{d}\n", .{match_count}) catch {};
+        stdout_writer.print("{d}", .{match_count}) catch {};
+        stdout_writer.writeByte(line_term) catch {};
     }
 
     if (opts.files_with_matches and found_match) {
@@ -752,10 +823,10 @@ fn processFile(
 }
 
 /// Print a context line (with - separator instead of :)
-fn printContextLine(writer: anytype, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool) void {
+fn printContextLine(writer: anytype, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool, fn_sep: u8, line_term: u8) void {
     if (show_filename) {
         printFilename(writer, filename, use_color);
-        printSep(writer, '-', use_color);
+        printSep(writer, if (fn_sep == 0) @as(u8, 0) else '-', use_color);
     }
     if (show_line_number) {
         printLineNumber(writer, line_num, use_color);
@@ -766,7 +837,7 @@ fn printContextLine(writer: anytype, line: []const u8, line_num: usize, filename
         printSep(writer, '-', use_color);
     }
     writer.writeAll(line) catch {};
-    writer.writeAll("\n") catch {};
+    writer.writeByte(line_term) catch {};
 }
 
 // ============================================================================
@@ -1045,10 +1116,13 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
     var found_any = false;
     var had_error = false;
 
+    // Determine stdin label (--label overrides default)
+    const stdin_label = opts.stdin_label orelse "(standard input)";
+
     if (opts.files.items.len == 0 and !opts.recursive) {
         // Read from stdin
         const stdin_file = std.fs.File.stdin();
-        if (processFile(allocator, stdin_file, "(standard input)", compiled.items, &opts, stdout_writer, show_filename, use_color)) {
+        if (processFile(allocator, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
             found_any = true;
         }
     } else if (opts.files.items.len == 0 and opts.recursive) {
@@ -1058,13 +1132,13 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
         for (opts.files.items) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 const stdin_file = std.fs.File.stdin();
-                if (processFile(allocator, stdin_file, "(standard input)", compiled.items, &opts, stdout_writer, show_filename, use_color)) {
+                if (processFile(allocator, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
                     found_any = true;
                 }
                 continue;
             }
 
-            if (opts.recursive) {
+            if (opts.recursive or opts.skip_dirs) {
                 // Check if it's a directory
                 const stat = std.fs.cwd().statFile(file_path) catch |err| {
                     if (!opts.no_messages) {
@@ -1074,6 +1148,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
                     continue;
                 };
                 if (stat.kind == .directory) {
+                    if (opts.skip_dirs) continue; // -d skip: silently skip
                     searchDirectory(allocator, file_path, compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
                     continue;
                 }
@@ -1672,4 +1747,320 @@ test "runGrep -l without -Z uses newline after filename" {
     try testing.expectEqual(expected_len, stdout_buf.items.len);
     try testing.expectEqualStrings(tmp_path, stdout_buf.items[0..tmp_path.len]);
     try testing.expectEqual(@as(u8, '\n'), stdout_buf.items[tmp_path.len]);
+}
+
+// ============================================================================
+// Tests for SHOULD flags
+// ============================================================================
+
+// --- No-op stub parse tests ---
+
+test "parseArgs -J flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-J", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -M flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-M", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -O flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-O", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -p flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-p", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -S flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-S", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -u flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-u", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -X flag accepted (no-op stub)" {
+    const args = [_][]const u8{ "-X", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -D flag accepted (stub)" {
+    const args = [_][]const u8{ "-D", "read", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs -D skip accepted (stub)" {
+    const args = [_][]const u8{ "-D", "skip", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --line-buffered accepted (no-op)" {
+    const args = [_][]const u8{ "--line-buffered", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --binary-files=text accepted (stub)" {
+    const args = [_][]const u8{ "--binary-files=text", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --binary-files=without-match accepted (stub)" {
+    const args = [_][]const u8{ "--binary-files=without-match", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --mmap accepted (no-op)" {
+    const args = [_][]const u8{ "--mmap", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+test "parseArgs --include-dir=PATTERN accepted (no-op stub)" {
+    const args = [_][]const u8{ "--include-dir=src", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
+}
+
+// --- -y alias for -i ---
+
+test "parseArgs -y sets ignore_case (alias for -i)" {
+    const args = [_][]const u8{ "-y", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.ignore_case);
+}
+
+test "runGrep -y case insensitive match" {
+    const exit_code = try testRunGrep("Hello World\n", &.{ "-y", "hello" });
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+// --- -P error stub ---
+
+test "parseArgs -P returns null (error stub)" {
+    const result = try parseArgs(testing.allocator, &[_][]const u8{ "-P", "pattern" }, common.null_writer);
+    try testing.expect(result == null);
+}
+
+test "runGrep -P returns misuse exit code" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const args = [_][]const u8{ "-P", "pattern", "/dev/null" };
+    const exit_code = runGrep(arena.allocator(), &args, common.null_writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 2), exit_code);
+}
+
+// --- -d directory action ---
+
+test "parseArgs -d recurse sets recursive" {
+    const args = [_][]const u8{ "-d", "recurse", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.recursive);
+}
+
+test "parseArgs -d skip sets skip_dirs" {
+    const args = [_][]const u8{ "-d", "skip", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.skip_dirs);
+}
+
+test "parseArgs -d read is default (no change)" {
+    const args = [_][]const u8{ "-d", "read", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(!opts.recursive);
+    try testing.expect(!opts.skip_dirs);
+}
+
+test "runGrep -d skip silently skips directories" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with matching content
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll("hello world\n");
+    file.close();
+
+    // Create a subdirectory
+    try tmp_dir.dir.makeDir("subdir");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const file_path = try std.fs.path.join(testing.allocator, &.{ tmp_path, "test.txt" });
+    defer testing.allocator.free(file_path);
+
+    const dir_path = try std.fs.path.join(testing.allocator, &.{ tmp_path, "subdir" });
+    defer testing.allocator.free(dir_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-d");
+    try args.append(allocator, "skip");
+    try args.append(allocator, "hello");
+    try args.append(allocator, dir_path);
+    try args.append(allocator, file_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    // Should find match in file, skip directory
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello world") != null);
+}
+
+// --- -z / --null-data (NUL line separator) ---
+
+test "parseArgs -z sets null_line_sep" {
+    const args = [_][]const u8{ "-z", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.null_line_sep);
+}
+
+test "parseArgs --null-data sets null_line_sep" {
+    const args = [_][]const u8{ "--null-data", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expect(opts.null_line_sep);
+}
+
+test "runGrep -z splits on NUL and terminates with NUL" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file with NUL-separated records
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll("hello world\x00foo bar\x00hello again\x00");
+    file.close();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(tmp_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-z");
+    try args.append(allocator, "hello");
+    try args.append(allocator, tmp_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should be NUL-terminated: "hello world\0hello again\0"
+    try testing.expectEqualStrings("hello world\x00hello again\x00", stdout_buf.items);
+}
+
+// --- --label=LABEL ---
+
+test "parseArgs --label=LABEL sets stdin_label" {
+    const args = [_][]const u8{ "--label=MYINPUT", "pattern" };
+    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    defer opts.deinit(testing.allocator);
+    try testing.expectEqualStrings("MYINPUT", opts.stdin_label.?);
+}
+
+// --- --null / -Z extended behavior (NUL after filename in normal output) ---
+
+test "runGrep -HZ uses NUL after filename in normal output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll("hello world\n");
+    file.close();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(tmp_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-HZ");
+    try args.append(allocator, "hello");
+    try args.append(allocator, tmp_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should have NUL after filename: "path\0hello world\n"
+    const expected = try std.fmt.allocPrint(allocator, "{s}\x00hello world\n", .{tmp_path});
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "runGrep -cZ uses NUL after filename in count output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll("hello world\nhello again\n");
+    file.close();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(tmp_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Use -H to force filename display with single file
+    var args = std.ArrayListUnmanaged([]const u8){};
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-cHZ");
+    try args.append(allocator, "hello");
+    try args.append(allocator, tmp_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should have NUL after filename: "path\02\n"
+    const expected = try std.fmt.allocPrint(allocator, "{s}\x002\n", .{tmp_path});
+    try testing.expectEqualStrings(expected, stdout_buf.items);
 }
