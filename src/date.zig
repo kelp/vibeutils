@@ -57,6 +57,7 @@ const DateOptions = struct {
     no_set_date: bool = false,
     input_fmt: ?[]const u8 = null,
     output_zone: ?[]const u8 = null,
+    v_adjust: ?[]const u8 = null,
     help: bool = false,
     version: bool = false,
 };
@@ -205,6 +206,22 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
                         opts.output_zone = args[i];
                     } else {
                         err_msg = "option '-z' requires an argument";
+                        return .{ .opts = opts, .err = err_msg };
+                    }
+                },
+                'n' => {
+                    // -n: do not set the system time (no-op, we never set time)
+                },
+                'v' => {
+                    // -v: adjust date/time component (stub)
+                    if (j + 1 < flags.len) {
+                        opts.v_adjust = flags[j + 1 ..];
+                        j = flags.len; // consume rest
+                    } else if (i + 1 < args.len) {
+                        i += 1;
+                        opts.v_adjust = args[i];
+                    } else {
+                        err_msg = "option '-v' requires an argument";
                         return .{ .opts = opts, .err = err_msg };
                     }
                 },
@@ -548,6 +565,11 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // Handle -v stub: print diagnostic and continue with normal behavior
+    if (opts.v_adjust != null) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "-v adjustment not yet implemented", .{});
+    }
+
     // Resolve the timestamp to format
     const ts = resolveTimestamp(opts);
     if (ts.err) |err_msg| {
@@ -624,6 +646,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\                           (default: 'date')
         \\  -f input_fmt            use input_fmt to parse date string (with -j)
         \\  -j                      do not try to set the date
+        \\  -n                      do not set the system time (no-op)
+        \\  -v val                  adjust date/time component (stub)
         \\  -z output_zone          set timezone for output display
         \\  -u, --utc, --universal  print or set Coordinated Universal Time (UTC)
         \\  -h, --help              display this help and exit
@@ -1213,4 +1237,64 @@ test "date parseArgs -z stores output_zone" {
     const parsed = parseArgs(&args);
     try testing.expect(parsed.err == null);
     try testing.expectEqualStrings("America/New_York", parsed.opts.output_zone.?);
+}
+
+test "date -n flag is accepted silently (no-op)" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-n", "-u", "-d", "@0", "+%Y" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970\n", stdout_buffer.items);
+    // -n should not produce any stderr output
+    try testing.expectEqualStrings("", stderr_buffer.items);
+}
+
+test "date parseArgs -n is silently accepted" {
+    const args = [_][]const u8{"-n"};
+    const parsed = parseArgs(&args);
+    try testing.expect(parsed.err == null);
+}
+
+test "date -v flag accepts value and prints diagnostic" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", "+1d", "-u", "-d", "@0", "+%Y" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    // Should still produce output (normal behavior continues)
+    try testing.expectEqualStrings("1970\n", stdout_buffer.items);
+    // Should print diagnostic to stderr
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-v adjustment not yet implemented") != null);
+}
+
+test "date parseArgs -v stores v_adjust" {
+    const args = [_][]const u8{ "-v", "+2H" };
+    const parsed = parseArgs(&args);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqualStrings("+2H", parsed.opts.v_adjust.?);
+}
+
+test "date parseArgs -v with inline value" {
+    const args = [_][]const u8{"-v+1d"};
+    const parsed = parseArgs(&args);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqualStrings("+1d", parsed.opts.v_adjust.?);
+}
+
+test "date -v missing argument returns misuse" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-v"};
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 2), result);
 }

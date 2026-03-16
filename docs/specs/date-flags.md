@@ -7,12 +7,12 @@
 | -f   |       | yes   | yes     | yes | yes  | MUST |
 | -I   |       | yes   |         | yes | yes  | SHOULD |
 | -j   |       | yes   | yes     |     | yes  | MUST |
-| -n   |       | yes   |         |     |      | SHOULD |
+| -n   |       | yes   |         |     | yes  | SHOULD |
 | -r   |       | yes   | yes     | yes | yes  | MUST |
 | -R   |       | yes   |         | yes | yes  | SHOULD |
 | -s   |       |       |         | yes |      | WONT |
 | -u   | yes   | yes   | yes     | yes | yes  | MUST |
-| -v   |       | yes   |         |     |      | SHOULD |
+| -v   |       | yes   |         |     | yes  | SHOULD |
 | -z   |       | yes   | yes     |     | yes  | MUST |
 | --debug |    |       |         | yes |      | WONT |
 | --rfc-3339 | |      |         | yes | yes  | SHOULD |
