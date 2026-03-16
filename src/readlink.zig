@@ -26,6 +26,8 @@ const ReadlinkArgs = struct {
     verbose: bool = false,
     /// Suppress most error messages
     quiet: bool = false,
+    /// Suppress most error messages (alias for quiet)
+    silent: bool = false,
     /// Display help and exit
     help: bool = false,
     /// Output version information and exit
@@ -41,6 +43,7 @@ const ReadlinkArgs = struct {
         .zero = .{ .short = 'z', .desc = "End each output line with NUL, not newline" },
         .verbose = .{ .short = 'v', .desc = "Report error messages" },
         .quiet = .{ .short = 'q', .desc = "Suppress most error messages" },
+        .silent = .{ .short = 0, .desc = "Suppress most error messages (alias for --quiet)" },
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
     };
@@ -102,7 +105,8 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
     }
 
     const canon_mode = getCanonicalizeMode(parsed);
-    const verbose = parsed.verbose and !parsed.quiet;
+    const quiet = parsed.quiet or parsed.silent;
+    const verbose = parsed.verbose and !quiet;
     var has_error = false;
 
     for (parsed.positionals) |path| {
