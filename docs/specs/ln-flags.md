@@ -10,12 +10,12 @@
 | -n | -- | yes | yes | yes | yes | MUST |
 | -i | -- | yes | -- | yes | yes | SHOULD |
 | -v | -- | yes | -- | yes | yes | SHOULD |
-| -F | -- | yes | -- | yes | -- | SHOULD |
-| -w | -- | yes | -- | -- | -- | SHOULD |
-| -b | -- | -- | -- | yes | -- | SHOULD |
+| -F | -- | yes | -- | yes | yes | SHOULD |
+| -w | -- | yes | -- | -- | yes | SHOULD |
+| -b | -- | -- | -- | yes | yes | SHOULD |
 | -d | -- | -- | -- | yes | -- | WONT |
 | -r | -- | -- | -- | yes | yes | SHOULD |
 | -S | -- | -- | -- | yes | -- | WONT |
 | -t | -- | -- | -- | yes | yes | SHOULD |
 | -T | -- | -- | -- | yes | yes | SHOULD |
-| --backup | -- | -- | -- | yes | -- | SHOULD |
+| --backup | -- | -- | -- | yes | yes | SHOULD |

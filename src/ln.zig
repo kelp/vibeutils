@@ -25,6 +25,12 @@ const LnArgs = struct {
     target_directory: ?[]const u8 = null,
     no_target_directory: bool = false,
     verbose: bool = false,
+    /// Force removal of existing destination files including directories
+    force_dir: bool = false,
+    /// Warn if symlink source does not exist
+    warn_missing: bool = false,
+    /// Make backup of each destination file
+    backup: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -41,6 +47,9 @@ const LnArgs = struct {
         .target_directory = .{ .short = 't', .desc = "Specify the DIRECTORY in which to create the links", .value_name = "DIRECTORY" },
         .no_target_directory = .{ .short = 'T', .desc = "Treat LINK_NAME as a normal file always" },
         .verbose = .{ .short = 'v', .desc = "Print name of each linked file" },
+        .force_dir = .{ .short = 'F', .desc = "Force removal of existing destinations including directories" },
+        .warn_missing = .{ .short = 'w', .desc = "Warn if symlink source does not exist" },
+        .backup = .{ .short = 'b', .desc = "Make backup of each destination file" },
     };
 };
 
@@ -195,8 +204,9 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     }
 
     // Create options (-h and -n are both aliases for --no-dereference)
+    // -F implies -f (force removal including directories)
     const options = LinkOptions{
-        .force = parsed_args.force,
+        .force = parsed_args.force or parsed_args.force_dir,
         .interactive = parsed_args.interactive,
         .no_dereference = parsed_args.no_dereference or parsed_args.no_deref_h,
         .physical = parsed_args.P,
@@ -205,6 +215,9 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
         .target_directory = parsed_args.target_directory,
         .no_target_directory = parsed_args.no_target_directory,
         .verbose = parsed_args.verbose,
+        .force_dir = parsed_args.force_dir,
+        .warn_missing = parsed_args.warn_missing,
+        .backup = parsed_args.backup,
     };
 
     const files = parsed_args.positionals;
@@ -234,7 +247,9 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\can hold arbitrary text; if later resolved, a relative link is
         \\interpreted in relation to its parent directory.
         \\
+        \\  -b, --backup                make backup of each destination file
         \\  -f, --force                 remove existing destination files
+        \\  -F                          force removal including directories
         \\  -i, --interactive           prompt whether to remove destinations
         \\  -h, -n, --no-dereference    treat LINK_NAME as a normal file if
         \\                                 it is a symbolic link to a directory
@@ -244,6 +259,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\                                 the links
         \\  -T, --no-target-directory   treat LINK_NAME as a normal file always
         \\  -v, --verbose               print name of each linked file
+        \\  -w                          warn if symlink source does not exist
         \\      --help     display this help and exit
         \\      --version  output version information and exit
         \\
@@ -266,6 +282,9 @@ const LinkOptions = struct {
     target_directory: ?[]const u8 = null,
     no_target_directory: bool = false,
     verbose: bool = false,
+    force_dir: bool = false,
+    warn_missing: bool = false,
+    backup: bool = false,
 };
 
 /// Handle the fallback case for 2 arguments when directory doesn't exist or isn't a directory
@@ -425,15 +444,41 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         }
     }
 
-    // Remove existing link if force is enabled
-    if (link_exists and options.force) {
-        std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
-            error.FileNotFound => {}, // Already removed
-            else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
-                return err;
-            },
+    // Create backup of destination if it exists and backup mode is enabled
+    if (link_exists and options.backup and (options.force or options.interactive)) {
+        const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{link_name});
+        defer allocator.free(backup_name);
+        std.posix.rename(link_name, backup_name) catch |backup_err| {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create backup '{s}': {s}", .{ backup_name, @errorName(backup_err) });
+            return backup_err;
         };
+        // After backup rename, link no longer exists at original location
+    } else if (link_exists and options.force) {
+        // Remove existing link if force is enabled (no backup)
+        if (options.force_dir) {
+            // -F: also attempt to remove directories
+            std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
+                error.FileNotFound => {}, // Already removed
+                error.IsDir => {
+                    std.fs.cwd().deleteDir(link_name) catch |dir_err| {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot remove directory '{s}': {s}", .{ link_name, @errorName(dir_err) });
+                        return dir_err;
+                    };
+                },
+                else => {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                    return err;
+                },
+            };
+        } else {
+            std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
+                error.FileNotFound => {}, // Already removed
+                else => {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                    return err;
+                },
+            };
+        }
     }
 
     if (options.symbolic) {
@@ -483,7 +528,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         };
 
         // Warn if the symlink target does not exist (dangling symlink)
-        if (isTargetMissing(target_path, link_name)) {
+        if (options.warn_missing and isTargetMissing(target_path, link_name)) {
             common.printWarningWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "creating dangling symlink: target '{s}' does not exist", .{target});
         }
     } else {
@@ -759,7 +804,7 @@ test "isTargetMissing returns false for existing target" {
     try testing.expect(!isTargetMissing("real_file.txt", link_path));
 }
 
-test "dangling symlink produces warning via createSingleLink" {
+test "dangling symlink produces warning via createSingleLink with -w" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -772,7 +817,35 @@ test "dangling symlink produces warning via createSingleLink" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    // Create symlink to nonexistent target using createSingleLink
+    // Create symlink to nonexistent target with -w flag
+    try createSingleLink(
+        testing.allocator,
+        "nonexistent_target",
+        link_path,
+        .{ .symbolic = true, .warn_missing = true },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+        true,
+    );
+
+    // Should contain a dangling symlink warning
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+}
+
+test "dangling symlink no warning without -w" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "no_warn_link" });
+    defer testing.allocator.free(link_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Create symlink to nonexistent target without -w flag
     try createSingleLink(
         testing.allocator,
         "nonexistent_target",
@@ -783,8 +856,8 @@ test "dangling symlink produces warning via createSingleLink" {
         true,
     );
 
-    // Should contain a dangling symlink warning
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+    // Should NOT contain a dangling symlink warning
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") == null);
 }
 
 test "ln: -h flag is parsed as no_dereference" {
@@ -913,4 +986,113 @@ test "ln: -P creates hard link to symlink itself" {
     // the current code follows the symlink (like -L) and creates a
     // hard link to the target file instead.
     try testing.expectEqual(symlink_info.inode, hardlink_info.inode);
+}
+
+test "ln: -b flag creates backup of destination" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create target and existing link
+    try createTestFile(tmp_dir.dir, "target.txt", "new content");
+    try createTestFile(tmp_dir.dir, "link.txt", "old content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
+    defer testing.allocator.free(target_abs);
+    const link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "link.txt" });
+    defer testing.allocator.free(link_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -bf target.txt link.txt (backup + force)
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-b", "-f", target_abs, link_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Backup file should exist with old content
+    const backup_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "link.txt~", 1024);
+    defer testing.allocator.free(backup_content);
+    try testing.expectEqualStrings("old content", backup_content);
+
+    // New link should point to target
+    const link_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "link.txt", 1024);
+    defer testing.allocator.free(link_content);
+    try testing.expectEqualStrings("new content", link_content);
+}
+
+test "ln: -b flag is parsed" {
+    const args = [_][]const u8{"-b"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.backup);
+}
+
+test "ln: --backup flag is parsed" {
+    const args = [_][]const u8{"--backup"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.backup);
+}
+
+test "ln: -F flag is parsed" {
+    const args = [_][]const u8{"-F"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.force_dir);
+}
+
+test "ln: -w flag is parsed" {
+    const args = [_][]const u8{"-w"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.warn_missing);
+}
+
+test "ln: -F implies force" {
+    const args = [_][]const u8{"-F"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    // -F should imply force in options construction
+    const options = LinkOptions{
+        .force = parsed.force or parsed.force_dir,
+        .force_dir = parsed.force_dir,
+    };
+    try testing.expect(options.force);
+    try testing.expect(options.force_dir);
+}
+
+test "ln: -w flag enables dangling symlink warning" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "w_warn_link" });
+    defer testing.allocator.free(link_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -sw nonexistent_target link_path
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-s", "-w", "nonexistent_target", link_path },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should warn about dangling symlink
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
 }
