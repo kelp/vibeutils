@@ -6,14 +6,14 @@
 | -i   | yes   | yes   | yes     | yes | yes  | MUST |
 | -n   | no    | yes   | no      | yes | yes  | SHOULD |
 | -v   | no    | yes   | yes     | yes | yes  | MUST |
-| -h   | no    | yes   | no      | no  | no   | SHOULD |
-| -b   | no    | no    | no      | yes | no   | SHOULD |
+| -h   | no    | yes   | no      | no  | yes  | SHOULD |
+| -b   | no    | no    | no      | yes | yes  | SHOULD |
 | -u   | no    | no    | no      | yes | no   | WONT |
 | -S   | no    | no    | no      | yes | no   | WONT |
 | -t   | no    | no    | no      | yes | no   | WONT |
 | -T   | no    | no    | no      | yes | no   | WONT |
 | -Z   | no    | no    | no      | yes | no   | WONT |
-| --backup | no | no   | no      | yes | no   | SHOULD |
+| --backup | no | no   | no      | yes | yes  | SHOULD |
 | --debug | no | no    | no      | yes | no   | WONT |
 | --exchange | no | no | no      | yes | no   | WONT |
 | --no-copy | no | no  | no      | yes | no   | WONT |

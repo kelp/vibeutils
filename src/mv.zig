@@ -19,16 +19,22 @@ const MvArgs = struct {
     verbose: bool = false,
     /// Do not overwrite existing files
     no_clobber: bool = false,
+    /// Do not follow symlinks at target
+    no_follow_symlink: bool = false,
+    /// Make backup of each destination file
+    backup: bool = false,
     /// Source files and destination
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .interactive = .{ .short = 'i', .desc = "Prompt before overwrite" },
         .force = .{ .short = 'f', .desc = "overwrite without prompting" },
         .verbose = .{ .short = 'v', .desc = "print each action" },
         .no_clobber = .{ .short = 'n', .desc = "never overwrite an existing file" },
+        .no_follow_symlink = .{ .short = 'h', .desc = "do not follow symlinks at target" },
+        .backup = .{ .short = 'b', .desc = "make backup of each destination file" },
     };
 };
 
@@ -42,6 +48,10 @@ const MoveOptions = struct {
     verbose: bool = false,
     /// Do not overwrite existing files
     no_clobber: bool = false,
+    /// Do not follow symlinks at target
+    no_follow_symlink: bool = false,
+    /// Make backup of each destination file
+    backup: bool = false,
 };
 
 // Test helpers
@@ -619,6 +629,28 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
     }
 }
 
+/// Check if path is a directory, respecting the no_follow_symlink option.
+/// When no_follow_symlink is true, a symlink to a directory is NOT treated
+/// as a directory (the symlink itself is treated as a file target).
+fn isDestDirectory(path: []const u8, no_follow_symlink: bool) !bool {
+    if (no_follow_symlink) {
+        // Use lstat to check without following symlinks
+        const info = common.file.FileInfo.lstat(path) catch |err| switch (err) {
+            error.FileNotFound => return error.FileNotFound,
+            else => return err,
+        };
+        // If it's a symlink, treat it as a file even if it points to a directory
+        if (info.kind == .sym_link) return false;
+        return info.kind == .directory;
+    }
+    // Default: use statFile which follows symlinks
+    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+        error.FileNotFound => return error.FileNotFound,
+        else => return err,
+    };
+    return stat.kind == .directory;
+}
+
 /// Check if source and destination refer to the same file (compares both inode and device)
 fn isSameFile(source: []const u8, dest: []const u8) bool {
     const source_file = std.fs.cwd().openFile(source, .{}) catch return false;
@@ -684,6 +716,21 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
         } else |_| {}
     }
 
+    // Create backup of destination if it exists and backup mode is enabled
+    if (options.backup) {
+        if (std.fs.cwd().access(dest, .{})) |_| {
+            const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{dest});
+            defer allocator.free(backup_name);
+            std.posix.rename(dest, backup_name) catch |backup_err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot create backup '{s}': {}", .{ backup_name, backup_err });
+                return backup_err;
+            };
+            if (options.verbose) {
+                try stdout_writer.print("mv: created backup '{s}'\n", .{backup_name});
+            }
+        } else |_| {}
+    }
+
     // Try atomic rename first
     std.posix.rename(source, dest) catch |err| switch (err) {
         error.RenameAcrossMountPoints => {
@@ -727,11 +774,13 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  or:  mv [OPTION]... SOURCE... DIRECTORY
         \\Rename SOURCE to DEST, or move SOURCE(s) to DIRECTORY.
         \\
+        \\  -b, --backup               make backup of each destination file
         \\  -f, --force                overwrite without prompting
+        \\  -h                         do not follow symlinks at target
         \\  -i, --interactive          prompt before overwrite
         \\  -n, --no-clobber           never overwrite an existing file
         \\  -v, --verbose              print each action
-        \\  -h, --help                 display this help and exit
+        \\      --help                 display this help and exit
         \\  -V, --version              output version information and exit
         \\
     );
@@ -812,6 +861,8 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         .force = parsed_args.force,
         .verbose = parsed_args.verbose,
         .no_clobber = parsed_args.no_clobber,
+        .no_follow_symlink = parsed_args.no_follow_symlink,
+        .backup = parsed_args.backup,
     };
 
     var hinted_overwrite = false;
@@ -820,7 +871,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     if (files.len > 2) {
         // Multiple sources - destination must be a directory
         const dest = files[files.len - 1];
-        const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
+        const dest_is_dir = isDestDirectory(dest, options.no_follow_symlink) catch |err| switch (err) {
             error.FileNotFound => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{dest});
                 return @intFromEnum(common.ExitCode.general_error);
@@ -828,7 +879,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             else => return err,
         };
 
-        if (dest_stat.kind != .directory) {
+        if (!dest_is_dir) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{dest});
             return @intFromEnum(common.ExitCode.general_error);
         }
@@ -858,8 +909,8 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         const source = files[0];
         const dest = files[1];
 
-        // Check if destination is a directory
-        const dest_stat = std.fs.cwd().statFile(dest) catch |err| switch (err) {
+        // Check if destination is a directory (respecting -h flag for symlinks)
+        const dest_is_dir = isDestDirectory(dest, options.no_follow_symlink) catch |err| switch (err) {
             error.FileNotFound => {
                 // Destination doesn't exist, proceed with normal rename
                 moveFile(allocator, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
@@ -875,7 +926,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         };
 
         // If destination is a directory, move source into it
-        if (dest_stat.kind == .directory) {
+        if (dest_is_dir) {
             const base_name = std.fs.path.basename(source);
             const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
             defer allocator.free(full_dest);
@@ -1090,4 +1141,147 @@ test "mv: overwrite hint NOT printed when destination does not exist" {
 
     try testing.expect(!hinted);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
+}
+
+test "mv: -b flag creates backup of destination" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "New content");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dest", "Old content");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true, .backup = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+
+    // Destination should have new content
+    const content = try test_dir.readFile(dest_name);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("New content", content);
+
+    // Backup file (dest~) should exist with old content
+    const backup_name = try std.fmt.allocPrint(testing.allocator, "{s}~", .{dest_name});
+    defer testing.allocator.free(backup_name);
+    const backup_content = try test_dir.readFile(backup_name);
+    defer testing.allocator.free(backup_content);
+    try testing.expectEqualStrings("Old content", backup_content);
+}
+
+test "mv: -b flag does nothing when dest does not exist" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("source", "Content");
+    defer testing.allocator.free(source_name);
+
+    const dest_name = try test_utils.uniqueTestName(testing.allocator, "dest");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getPath(".");
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    var hinted = false;
+    try moveFile(testing.allocator, source_path, dest_path, .{ .backup = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+
+    // Dest should have the content
+    try testing.expect(test_dir.fileExists(dest_name));
+    const content = try test_dir.readFile(dest_name);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("Content", content);
+
+    // No backup file should exist
+    const backup_name = try std.fmt.allocPrint(testing.allocator, "{s}~", .{dest_name});
+    defer testing.allocator.free(backup_name);
+    try testing.expect(!test_dir.fileExists(backup_name));
+}
+
+test "mv: -h flag prevents following symlink to directory" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create a real directory and a symlink pointing to it
+    try test_dir.tmp_dir.dir.makeDir("real_dir");
+    try test_dir.tmp_dir.dir.symLink("real_dir", "symlink_to_dir", .{ .is_directory = true });
+
+    // Create a source file
+    try test_dir.createFile("source.txt", "test content");
+
+    // Get base path and construct symlink path manually (realpathAlloc follows symlinks)
+    const base_path = try test_dir.getPath(".");
+    defer testing.allocator.free(base_path);
+    const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/symlink_to_dir", .{base_path});
+    defer testing.allocator.free(symlink_path);
+
+    // Without -h, isDestDirectory should detect symlink_to_dir as a directory
+    const is_dir_normal = try isDestDirectory(symlink_path, false);
+    try testing.expect(is_dir_normal);
+
+    // With -h, isDestDirectory should NOT detect symlink_to_dir as a directory
+    const is_dir_no_follow = try isDestDirectory(symlink_path, true);
+    try testing.expect(!is_dir_no_follow);
+}
+
+test "mv: -h flag still follows real directories" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create a real directory
+    try test_dir.tmp_dir.dir.makeDir("real_dir");
+
+    const dir_path = try test_dir.getPath("real_dir");
+    defer testing.allocator.free(dir_path);
+
+    // With -h, a real directory is still treated as a directory
+    const is_dir = try isDestDirectory(dir_path, true);
+    try testing.expect(is_dir);
+}
+
+test "mv: -b flag is parsed" {
+    const args = [_][]const u8{"-b"};
+    const parsed = try common.argparse.ArgParser.parse(MvArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.backup);
+}
+
+test "mv: --backup flag is parsed" {
+    const args = [_][]const u8{"--backup"};
+    const parsed = try common.argparse.ArgParser.parse(MvArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.backup);
+}
+
+test "mv: -h flag is parsed as no_follow_symlink" {
+    const args = [_][]const u8{"-h"};
+    const parsed = try common.argparse.ArgParser.parse(MvArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.no_follow_symlink);
+    try testing.expect(!parsed.help);
+}
+
+test "mv: --help still works as long-only flag" {
+    const args = [_][]const u8{"--help"};
+    const parsed = try common.argparse.ArgParser.parse(MvArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.help);
+    try testing.expect(!parsed.no_follow_symlink);
 }
