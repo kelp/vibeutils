@@ -9,6 +9,9 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayListUnmanaged;
 const common = @import("common");
 
+extern "c" fn geteuid() std.c.uid_t;
+extern "c" fn getegid() std.c.gid_t;
+
 /// Exit codes for test utility
 const ExitCode = enum(u8) {
     true = 0, // Expression is true
@@ -366,6 +369,8 @@ fn evaluateUnary(op: []const u8, arg: []const u8) ParseError!bool {
     if (std.mem.eql(u8, op, "-g")) return hasSetgid(arg);
     if (std.mem.eql(u8, op, "-u")) return hasSetuid(arg);
     if (std.mem.eql(u8, op, "-k")) return hasSticky(arg);
+    if (std.mem.eql(u8, op, "-G")) return isGroupOwned(arg);
+    if (std.mem.eql(u8, op, "-O")) return isUserOwned(arg);
     if (std.mem.eql(u8, op, "-t")) {
         const fd = std.fmt.parseInt(i32, arg, 10) catch return error.InvalidNumber;
         if (fd < 0) return error.InvalidNumber;
@@ -385,6 +390,8 @@ fn evaluateBinary(left: []const u8, op: []const u8, right: []const u8) ParseErro
     if (std.mem.eql(u8, op, "-le")) return NumericComparison.compare(left, right, .le);
     if (std.mem.eql(u8, op, "-gt")) return NumericComparison.compare(left, right, .gt);
     if (std.mem.eql(u8, op, "-ge")) return NumericComparison.compare(left, right, .ge);
+    if (std.mem.eql(u8, op, "<")) return std.mem.order(u8, left, right) == .lt;
+    if (std.mem.eql(u8, op, ">")) return std.mem.order(u8, left, right) == .gt;
     if (std.mem.eql(u8, op, "-nt")) return isNewerThan(left, right);
     if (std.mem.eql(u8, op, "-ot")) return isOlderThan(left, right);
     if (std.mem.eql(u8, op, "-ef")) return isSameFile(left, right);
@@ -458,6 +465,32 @@ fn hasSticky(path: []const u8) bool {
     return (stat.mode & std.posix.S.ISVTX) != 0;
 }
 
+/// Get raw C stat for a path (follows symlinks)
+fn getRawStat(path: []const u8) ?std.c.Stat {
+    var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.fs.max_path_bytes) return null;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+    const c_path = buf[0..path.len :0];
+
+    var stat_buf: std.c.Stat = undefined;
+    const result = std.c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, 0);
+    if (result != 0) return null;
+    return stat_buf;
+}
+
+/// Check if file exists and its group ID matches the effective group ID
+fn isGroupOwned(path: []const u8) bool {
+    const stat_buf = getRawStat(path) orelse return false;
+    return stat_buf.gid == getegid();
+}
+
+/// Check if file exists and its user ID matches the effective user ID
+fn isUserOwned(path: []const u8) bool {
+    const stat_buf = getRawStat(path) orelse return false;
+    return stat_buf.uid == geteuid();
+}
+
 /// Check if file1 is newer than file2 (compare mtime)
 fn isNewerThan(path1: []const u8, path2: []const u8) bool {
     const stat1 = FileAccess.getStat(path1) orelse return false;
@@ -481,7 +514,7 @@ fn isSameFile(path1: []const u8, path2: []const u8) bool {
 
 /// Check if string is a unary operator (alphabetized)
 fn isUnaryOperator(str: []const u8) bool {
-    const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-L", "-n", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z" };
+    const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-G", "-h", "-k", "-L", "-n", "-O", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z" };
 
     for (unary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -491,7 +524,7 @@ fn isUnaryOperator(str: []const u8) bool {
 
 /// Check if string is a binary operator (alphabetized)
 fn isBinaryOperator(str: []const u8) bool {
-    const binary_ops = [_][]const u8{ "!=", "-ef", "-eq", "-ge", "-gt", "-le", "-lt", "-ne", "-nt", "-ot", "=" };
+    const binary_ops = [_][]const u8{ "!=", "<", "=", ">", "-ef", "-eq", "-ge", "-gt", "-le", "-lt", "-ne", "-nt", "-ot" };
 
     for (binary_ops) |op| {
         if (std.mem.eql(u8, str, op)) return true;
@@ -1159,4 +1192,105 @@ test "file comparison operators -nt, -ot, -ef" {
     // Non-existent files should return false
     result = try runTest(testing.allocator, &[_][]const u8{ "/nonexistent1", "-nt", "/nonexistent2" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
+test "string ordering operator < (less than)" {
+    // "abc" < "def" should be true
+    var result = try runTest(testing.allocator, &[_][]const u8{ "abc", "<", "def" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // "def" < "abc" should be false
+    result = try runTest(testing.allocator, &[_][]const u8{ "def", "<", "abc" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Same strings should be false
+    result = try runTest(testing.allocator, &[_][]const u8{ "abc", "<", "abc" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Empty string sorts before non-empty
+    result = try runTest(testing.allocator, &[_][]const u8{ "", "<", "abc" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+}
+
+test "string ordering operator > (greater than)" {
+    // "def" > "abc" should be true
+    var result = try runTest(testing.allocator, &[_][]const u8{ "def", ">", "abc" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // "abc" > "def" should be false
+    result = try runTest(testing.allocator, &[_][]const u8{ "abc", ">", "def" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Same strings should be false
+    result = try runTest(testing.allocator, &[_][]const u8{ "abc", ">", "abc" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+
+    // Non-empty string sorts after empty
+    result = try runTest(testing.allocator, &[_][]const u8{ "abc", ">", "" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+}
+
+test "string ordering operators are recognized as binary operators" {
+    try testing.expect(isBinaryOperator("<"));
+    try testing.expect(isBinaryOperator(">"));
+}
+
+test "-G operator: file group matches effective group ID" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a file owned by current user/group
+    const test_file = try tmp.dir.createFile("test_file", .{});
+    test_file.close();
+
+    const temp_path = try tmp.dir.realpathAlloc(testing.allocator, "test_file");
+    defer testing.allocator.free(temp_path);
+
+    // File created by current process should match effective group ID
+    var result = try runTest(testing.allocator, &[_][]const u8{ "-G", temp_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // Non-existent file should return false
+    result = try runTest(testing.allocator, &[_][]const u8{ "-G", "/nonexistent/file" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
+test "-O operator: file user matches effective user ID" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a file owned by current user
+    const test_file = try tmp.dir.createFile("test_file", .{});
+    test_file.close();
+
+    const temp_path = try tmp.dir.realpathAlloc(testing.allocator, "test_file");
+    defer testing.allocator.free(temp_path);
+
+    // File created by current process should match effective user ID
+    var result = try runTest(testing.allocator, &[_][]const u8{ "-O", temp_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // Non-existent file should return false
+    result = try runTest(testing.allocator, &[_][]const u8{ "-O", "/nonexistent/file" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
+test "-G and -O are recognized as unary operators" {
+    try testing.expect(isUnaryOperator("-G"));
+    try testing.expect(isUnaryOperator("-O"));
+}
+
+test "evaluateBinary with < and > operators" {
+    try testing.expect(try evaluateBinary("abc", "<", "def"));
+    try testing.expect(!try evaluateBinary("def", "<", "abc"));
+    try testing.expect(!try evaluateBinary("abc", "<", "abc"));
+    try testing.expect(try evaluateBinary("def", ">", "abc"));
+    try testing.expect(!try evaluateBinary("abc", ">", "def"));
+    try testing.expect(!try evaluateBinary("abc", ">", "abc"));
+}
+
+test "evaluateUnary with -G and -O operators" {
+    // Non-existent file should return false for both
+    try testing.expect(!try evaluateUnary("-G", "/nonexistent"));
+    try testing.expect(!try evaluateUnary("-O", "/nonexistent"));
 }
