@@ -21,6 +21,7 @@ const TrArgs = struct {
     delete: bool = false,
     squeeze_repeats: bool = false,
     truncate_set1: bool = false,
+    ignored_u: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -31,6 +32,7 @@ const TrArgs = struct {
         .delete = .{ .short = 'd', .desc = "delete characters in SET1 without translating" },
         .squeeze_repeats = .{ .short = 's', .desc = "Replace each sequence of a repeated character that is listed in the last specified SET, with a single occurrence of that character" },
         .truncate_set1 = .{ .short = 't', .desc = "First truncate SET1 to length of SET2" },
+        .ignored_u = .{ .short = 'u', .desc = "Unbuffered output (no effect; for compatibility)" },
     };
 
     /// Returns true if either -c or -C was specified
@@ -755,6 +757,38 @@ test "tr translate missing SET2 returns misuse" {
     const args = [_][]const u8{"abc"};
     const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
+}
+
+test "tr -u flag is accepted and ignored" {
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("hello");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed = TrArgs{
+        .ignored_u = true,
+        .positionals = &.{ "aeiou", "AEIOU" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("hEllO", stdout_buffer.items);
 }
 
 test "tr unknown flag returns misuse" {

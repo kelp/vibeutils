@@ -7,4 +7,4 @@
 | -d   | yes   | yes   | yes     | yes | yes  | MUST |
 | -s   | yes   | yes   | yes     | yes | yes  | MUST |
 | -t   | -     | -     | -       | yes | yes  | SHOULD |
-| -u   | -     | yes   | -       | -   | -    | SHOULD |
+| -u   | -     | yes   | -       | -   | yes  | SHOULD |
