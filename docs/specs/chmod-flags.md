@@ -10,12 +10,12 @@
 | -P   |       | yes   | yes     | yes | yes  | MUST |
 | -R   | yes   | yes   | yes     | yes | yes  | MUST |
 | -v   |       | yes   |         | yes | yes  | SHOULD |
-| -C   |       | yes   |         |     |      | SHOULD |
-| -E   |       | yes   |         |     |      | SHOULD |
-| -i   |       | yes   |         |     |      | SHOULD |
-| -I   |       | yes   |         |     |      | SHOULD |
-| -N   |       | yes   |         |     |      | SHOULD |
+| -C   |       | yes   |         |     | yes  | SHOULD |
+| -E   |       | yes   |         |     | yes  | SHOULD |
+| -i   |       | yes   |         |     | yes  | SHOULD |
+| -I   |       | yes   |         |     | yes  | SHOULD |
+| -N   |       | yes   |         |     | yes  | SHOULD |
 | --reference | |      |         | yes | yes  | SHOULD |
-| --dereference | |    |         | yes |      | SHOULD |
-| --no-preserve-root | | |      | yes |      | SHOULD |
-| --preserve-root | |  |         | yes |      | SHOULD |
+| --dereference | |    |         | yes | yes  | SHOULD |
+| --no-preserve-root | | |      | yes | yes  | SHOULD |
+| --preserve-root | |  |         | yes | yes  | SHOULD |

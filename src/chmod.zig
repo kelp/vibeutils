@@ -21,6 +21,22 @@ const ChmodArgs = struct {
     L: bool = false,
     P: bool = false,
     reference: ?[]const u8 = null,
+    /// Check ACL configuration (macOS, no-op stub)
+    acl_check: bool = false,
+    /// Read ACL info from stdin (macOS, no-op stub)
+    acl_stdin: bool = false,
+    /// Remove inherited bit from ACL entries (macOS, no-op stub)
+    acl_remove_inherited: bool = false,
+    /// Remove all inherited ACL entries (macOS, no-op stub)
+    acl_remove_all_inherited: bool = false,
+    /// Remove ACL from file (macOS, no-op stub)
+    acl_remove: bool = false,
+    /// Affect the referent of symlinks (default, no-op)
+    dereference: bool = false,
+    /// Do not treat '/' specially (default, no-op)
+    no_preserve_root: bool = false,
+    /// Refuse to operate recursively on '/'
+    preserve_root: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -35,6 +51,14 @@ const ChmodArgs = struct {
         .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .reference = .{ .desc = "Use reference file's mode instead of MODE", .value_name = "RFILE" },
+        .acl_check = .{ .short = 'C', .desc = "Check ACL configuration (no-op)" },
+        .acl_stdin = .{ .short = 'E', .desc = "Read ACL info from stdin (no-op)" },
+        .acl_remove_inherited = .{ .short = 'i', .desc = "Remove inherited bit from ACL entries (no-op)" },
+        .acl_remove_all_inherited = .{ .short = 'I', .desc = "Remove all inherited ACL entries (no-op)" },
+        .acl_remove = .{ .short = 'N', .desc = "Remove ACL from file (no-op)" },
+        .dereference = .{ .short = 0, .desc = "Affect the referent of each symbolic link (default)" },
+        .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially (default)" },
+        .preserve_root = .{ .short = 0, .desc = "Fail to operate recursively on '/'" },
     };
 };
 
@@ -91,7 +115,18 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         .traverse_all_symlinks = parsed_args.L,
         .no_traverse_symlinks = parsed_args.P,
         .reference_file = parsed_args.reference,
+        .preserve_root = parsed_args.preserve_root,
     };
+
+    // --preserve-root: refuse to operate recursively on '/'
+    if (options.preserve_root and options.recursive) {
+        for (files) |file_path| {
+            if (std.mem.eql(u8, file_path, "/")) {
+                common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "it is dangerous to operate recursively on '/'\nUse --no-preserve-root to override this failsafe.", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            }
+        }
+    }
 
     chmodFiles(allocator, mode_str, files, stdout_writer, stderr_writer, options) catch |err| {
         switch (err) {
@@ -151,8 +186,11 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -f, --silent           suppress most error messages
         \\  -v, --verbose          output a diagnostic for every file processed
         \\  -h, --no-dereference   do not follow symbolic links (change link itself)
+        \\      --dereference       affect the referent of each symbolic link (default)
         \\  -R, --recursive        change files and directories recursively
         \\      --reference=RFILE  use RFILE's mode instead of MODE values
+        \\      --preserve-root    fail to operate recursively on '/'
+        \\      --no-preserve-root do not treat '/' specially (default)
         \\      --help             display this help and exit
         \\      --version          output version information and exit
         \\
@@ -164,6 +202,13 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -L                     traverse every symbolic link to a directory
         \\                         encountered
         \\  -P                     do not traverse any symbolic links (default)
+        \\
+        \\macOS ACL options (accepted but not implemented):
+        \\  -C                     check ACL configuration
+        \\  -E                     read ACL info from stdin
+        \\  -i                     remove inherited bit from ACL entries
+        \\  -I                     remove all inherited ACL entries
+        \\  -N                     remove ACL from file
         \\
         \\Each MODE is of the form '[ugoa]*[-+=]([rwxXst]*|[ugo])'.
         \\
@@ -192,6 +237,7 @@ const ChmodOptions = struct {
     traverse_all_symlinks: bool = false,
     no_traverse_symlinks: bool = false,
     reference_file: ?[]const u8 = null,
+    preserve_root: bool = false,
 };
 
 /// Unix file permissions with special bits
@@ -1718,4 +1764,117 @@ test "ChmodOptions has no_dereference field" {
         .no_dereference = true,
     };
     try testing.expect(options.no_dereference);
+}
+
+// Tests for new flags
+
+test "chmod --preserve-root blocks recursive on /" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--preserve-root", "-R", "755", "/" };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively on '/'") != null);
+}
+
+test "chmod --preserve-root allows non-recursive on /" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Without -R, --preserve-root should not block
+    const args = [_][]const u8{ "--preserve-root", "755", "/" };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should fail with permission error, not preserve-root error
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively") == null);
+    _ = exit_code;
+}
+
+test "chmod --dereference flag is accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--dereference", "--help" };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "chmod --no-preserve-root flag is accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--no-preserve-root", "--help" };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "chmod -C flag is accepted (ACL no-op)" {
+    const args = [_][]const u8{ "-C", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.acl_check);
+}
+
+test "chmod -E flag is accepted (ACL no-op)" {
+    const args = [_][]const u8{ "-E", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.acl_stdin);
+}
+
+test "chmod -i flag is accepted (ACL no-op)" {
+    const args = [_][]const u8{ "-i", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.acl_remove_inherited);
+}
+
+test "chmod -I flag is accepted (ACL no-op)" {
+    const args = [_][]const u8{ "-I", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.acl_remove_all_inherited);
+}
+
+test "chmod -N flag is accepted (ACL no-op)" {
+    const args = [_][]const u8{ "-N", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+    try testing.expect(parsed.acl_remove);
+}
+
+test "chmod help text includes new flags" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    try printHelp(testing.allocator, stdout_buffer.writer(testing.allocator));
+
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--preserve-root") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--no-preserve-root") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--dereference") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "ACL") != null);
+}
+
+test "chmod ChmodOptions has preserve_root field" {
+    const options = ChmodOptions{
+        .preserve_root = true,
+    };
+    try testing.expect(options.preserve_root);
+}
+
+test "chmod ChmodOptions preserve_root defaults to false" {
+    const options = ChmodOptions{};
+    try testing.expect(!options.preserve_root);
 }
