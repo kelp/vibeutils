@@ -276,6 +276,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                     'S' => {}, // macOS: follow all symlinks (no-op stub)
                     'u' => {}, // macOS: report unmatched files (no-op stub)
                     'X' => {}, // macOS: legacy exclude-from (no-op stub)
+                    'V' => opts.version = true,
                     'y' => opts.ignore_case = true, // legacy alias for -i
                     'z' => opts.null_line_sep = true,
                     'P' => {
@@ -997,7 +998,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -I                        equivalent to --binary-files=without-match
         \\  -U, --binary              do not strip CR characters (no-op on Unix)
         \\      --help                display this help and exit
-        \\      --version             output version information and exit
+        \\  -V, --version             output version information and exit
         \\
         \\Output control:
         \\  -m, --max-count=NUM       stop after NUM selected lines
