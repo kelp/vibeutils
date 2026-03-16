@@ -8,11 +8,11 @@
 | -r | yes | yes | yes | yes | yes | MUST |
 | -u | yes | yes | yes | yes | yes | MUST |
 | -p | -- | yes | yes | -- | yes | MUST |
-| -a | -- | yes | -- | yes | -- | SHOULD |
-| -A | -- | yes | -- | -- | -- | SHOULD |
+| -a | -- | yes | -- | yes | yes | SHOULD |
+| -A | -- | yes | -- | -- | yes | SHOULD |
 | -c | -- | -- | yes | -- | -- | WONT |
-| -F | -- | yes | -- | -- | -- | SHOULD |
-| -P | -- | yes | -- | -- | -- | SHOULD |
+| -F | -- | yes | -- | -- | yes | SHOULD |
+| -P | -- | yes | -- | -- | yes | SHOULD |
 | -R | -- | -- | yes | -- | -- | WONT |
 | -Z | -- | -- | -- | yes | -- | WONT |
 | -z | -- | -- | -- | yes | yes | SHOULD |

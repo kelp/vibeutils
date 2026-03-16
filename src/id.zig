@@ -13,6 +13,32 @@ extern "c" fn geteuid() std.c.uid_t;
 extern "c" fn getegid() std.c.gid_t;
 extern "c" fn getgroups(size: c_int, list: [*]std.c.gid_t) c_int;
 
+// C library bindings for passwd entry access (used by -F and -P flags)
+// macOS passwd struct includes pw_change, pw_class, pw_expire fields
+// that are absent on Linux. Must match the platform's struct layout.
+const c_passwd = if (@import("builtin").os.tag == .macos) extern struct {
+    pw_name: [*:0]u8,
+    pw_passwd: [*:0]u8,
+    pw_uid: std.c.uid_t,
+    pw_gid: std.c.gid_t,
+    pw_change: c_long, // __darwin_time_t
+    pw_class: [*:0]u8,
+    pw_gecos: [*:0]u8,
+    pw_dir: [*:0]u8,
+    pw_shell: [*:0]u8,
+    pw_expire: c_long, // __darwin_time_t
+} else extern struct {
+    pw_name: [*:0]u8,
+    pw_passwd: [*:0]u8,
+    pw_uid: std.c.uid_t,
+    pw_gid: std.c.gid_t,
+    pw_gecos: [*:0]u8,
+    pw_dir: [*:0]u8,
+    pw_shell: [*:0]u8,
+};
+
+extern "c" fn getpwuid(uid: std.c.uid_t) ?*c_passwd;
+
 /// Command-line arguments for the id utility
 const IdArgs = struct {
     /// Print only the effective user ID
@@ -29,6 +55,14 @@ const IdArgs = struct {
     real: bool = false,
     /// Use NUL delimiter instead of newline
     zero: bool = false,
+    /// Display all group memberships (compatibility alias for -G)
+    all: bool = false,
+    /// Display process audit properties (stub)
+    audit: bool = false,
+    /// Display user's full name (GECOS field)
+    full_name: bool = false,
+    /// Display passwd file entry
+    passwd_entry: bool = false,
     /// Display help and exit
     help: bool = false,
     /// Output version information and exit
@@ -44,6 +78,10 @@ const IdArgs = struct {
         .pretty = .{ .short = 'p', .desc = "Print human-readable output" },
         .real = .{ .short = 'r', .desc = "Print real ID instead of effective" },
         .zero = .{ .short = 'z', .desc = "Delimit entries with NUL characters, not whitespace" },
+        .all = .{ .short = 'a', .desc = "Display all group memberships (same as -G)" },
+        .audit = .{ .short = 'A', .desc = "Display process audit properties (stub)" },
+        .full_name = .{ .short = 'F', .desc = "Display user's full name (GECOS field)" },
+        .passwd_entry = .{ .short = 'P', .desc = "Display passwd file entry" },
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
     };
@@ -83,26 +121,35 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.success);
     }
 
+    // Handle -A (audit) stub: print diagnostic and exit 1
+    if (parsed.audit) {
+        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "-A (audit) not supported on this platform", .{});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+
     // Reject extra positional arguments (at most one USERNAME)
     if (parsed.positionals.len > 1) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "extra operand '{s}'", .{parsed.positionals[1]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // -a is a compatibility alias for -G (show all groups)
+    const show_groups = parsed.groups or parsed.all;
+
     // -n and -r only make sense with -u, -g, or -G
-    if (parsed.name and !parsed.user and !parsed.group and !parsed.groups) {
+    if (parsed.name and !parsed.user and !parsed.group and !show_groups) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print only names in default format", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
-    if (parsed.real and !parsed.user and !parsed.group and !parsed.groups) {
+    if (parsed.real and !parsed.user and !parsed.group and !show_groups) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print only real IDs in default format", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Mutually exclusive: -u, -g, -G
+    // Mutually exclusive: -u, -g, -G/-a
     const mode_count: u8 = @as(u8, @intFromBool(parsed.user)) +
         @as(u8, @intFromBool(parsed.group)) +
-        @as(u8, @intFromBool(parsed.groups));
+        @as(u8, @intFromBool(show_groups));
     if (mode_count > 1) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print 'only' of more than one choice", .{});
         return @intFromEnum(common.ExitCode.misuse);
@@ -146,6 +193,63 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         } else {
             uid = @intCast(geteuid());
             gid = @intCast(getegid());
+        }
+    }
+
+    // Handle -F (full name from GECOS field)
+    if (parsed.full_name) {
+        const pw = getpwuid(@intCast(uid));
+        if (pw) |passwd| {
+            const gecos = std.mem.span(passwd.pw_gecos);
+            try stdout_writer.print("{s}", .{gecos});
+            try stdout_writer.writeByte(delimiter);
+            return @intFromEnum(common.ExitCode.success);
+        } else {
+            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find full name for user ID {d}", .{uid});
+            return @intFromEnum(common.ExitCode.general_error);
+        }
+    }
+
+    // Handle -P (passwd file entry)
+    // Format: name:passwd:uid:gid:class:change:expire:gecos:home:shell
+    if (parsed.passwd_entry) {
+        const pw = getpwuid(@intCast(uid));
+        if (pw) |passwd| {
+            const pw_name = std.mem.span(passwd.pw_name);
+            const pw_passwd = std.mem.span(passwd.pw_passwd);
+            const pw_gecos = std.mem.span(passwd.pw_gecos);
+            const pw_dir = std.mem.span(passwd.pw_dir);
+            const pw_shell = std.mem.span(passwd.pw_shell);
+            if (@import("builtin").os.tag == .macos) {
+                const pw_class = std.mem.span(passwd.pw_class);
+                try stdout_writer.print("{s}:{s}:{d}:{d}:{s}:{d}:{d}:{s}:{s}:{s}", .{
+                    pw_name,
+                    pw_passwd,
+                    passwd.pw_uid,
+                    passwd.pw_gid,
+                    pw_class,
+                    passwd.pw_change,
+                    passwd.pw_expire,
+                    pw_gecos,
+                    pw_dir,
+                    pw_shell,
+                });
+            } else {
+                try stdout_writer.print("{s}:{s}:{d}:{d}::0:0:{s}:{s}:{s}", .{
+                    pw_name,
+                    pw_passwd,
+                    passwd.pw_uid,
+                    passwd.pw_gid,
+                    pw_gecos,
+                    pw_dir,
+                    pw_shell,
+                });
+            }
+            try stdout_writer.writeByte(delimiter);
+            return @intFromEnum(common.ExitCode.success);
+        } else {
+            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find passwd entry for user ID {d}", .{uid});
+            return @intFromEnum(common.ExitCode.general_error);
         }
     }
 
@@ -198,8 +302,8 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Handle -G (all groups)
-    if (parsed.groups) {
+    // Handle -G (all groups) or -a (compatibility alias)
+    if (show_groups) {
         const group_separator: u8 = if (parsed.zero) 0 else ' ';
 
         if (is_specified_user) {
@@ -488,6 +592,10 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -u, --user      print only the effective user ID
         \\  -g, --group     print only the effective group ID
         \\  -G, --groups    print all group IDs
+        \\  -a              display all group memberships (same as -G)
+        \\  -A              display process audit properties (stub)
+        \\  -F              display the user's full name (GECOS field)
+        \\  -P              display the passwd file entry
         \\  -n, --name      print a name instead of a number, for -ugG
         \\  -p, --pretty    print human-readable output
         \\  -r, --real      print the real ID instead of the effective ID, for -ugG
@@ -899,4 +1007,97 @@ test "id -p does not contain uid= format" {
     try testing.expectEqual(@as(u8, 0), result);
     // Should NOT contain the default format "uid=..."
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid=") == null);
+}
+
+test "id -a shows all groups (same as -G)" {
+    var stdout_a = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_a.deinit(testing.allocator);
+    var stdout_g = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_g.deinit(testing.allocator);
+
+    const args_a = [_][]const u8{"-a"};
+    const result_a = try runId(testing.allocator, &args_a, stdout_a.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_a);
+
+    const args_g = [_][]const u8{"-G"};
+    const result_g = try runId(testing.allocator, &args_g, stdout_g.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_g);
+
+    // -a and -G should produce identical output
+    try testing.expectEqualStrings(stdout_g.items, stdout_a.items);
+}
+
+test "id -a with -n shows group names" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-a", "-n" };
+    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(stdout_buffer.items.len > 1);
+}
+
+test "id -A prints audit stub and exits 1" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-A"};
+    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-A (audit) not supported") != null);
+}
+
+test "id -F displays full name" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-F"};
+    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    // Output should end with a newline
+    try testing.expect(stdout_buffer.items.len >= 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+}
+
+test "id -P displays passwd entry format" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-P"};
+    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    // Passwd entry format should contain colons separating fields
+    const colon_count = blk: {
+        var count: usize = 0;
+        for (stdout_buffer.items) |ch| {
+            if (ch == ':') count += 1;
+        }
+        break :blk count;
+    };
+    // passwd entry has at least 6 colons (name:passwd:uid:gid::change:expire:gecos:home:shell)
+    try testing.expect(colon_count >= 6);
+    // Should end with newline
+    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+}
+
+test "id -P output contains current username" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-P"};
+    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Should start with the current username
+    const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
+    const user_info = try common.user_group.getUserById(uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+
+    try testing.expect(std.mem.startsWith(u8, stdout_buffer.items, user_info.name));
 }
