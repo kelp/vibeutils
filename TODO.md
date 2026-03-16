@@ -3,6 +3,7 @@
 ## Progress Summary
 - **Completed**: 47/47 utilities - ALL IMPLEMENTED
 - **Utilities**: basename, cat, chmod, chown, cp, cut, date, dd, df, dirname, du, echo, env, false, find, free, grep, head, id, ln, ls, mkdir, mktemp, mv, nl, printf, pwd, readlink, realpath, rm, rmdir, seq, sleep, sort, stat, tac, tail, tee, test, timeout, touch, tr, true, uniq, wc, whoami, yes
+- **Flag coverage**: 288/288 MUST, 220/220 SHOULD (100%)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
@@ -16,35 +17,73 @@
 
 ## POSIX Compliance & Flag Coverage
 
-### Step 1: Build per-utility flag reference
-For each of our 47 utilities, create `docs/specs/<util>.md`
-with a flags table extracted from the POSIX spec at
-`pubs.opengroup.org/onlinepubs/9699919799/utilities/<util>.html`.
-Only utilities we implement; markdown format; OPTIONS section
-only.
+### Step 1: Download POSIX specs
+For each of the 37 POSIX utilities, download the OPTIONS
+section from
+`pubs.opengroup.org/onlinepubs/9699919799/utilities/<util>.html`
+and save as `docs/specs/<util>-posix.txt`. Plain text,
+flags and descriptions only.
 
-### Step 2: Capture macOS system flags
-For each utility, parse the flags section from
-`MANPATH=/usr/share/man man <util>` on macOS. Store alongside
-the POSIX table in the same `docs/specs/<util>.md` file under
-a "macOS" section. Also capture GNU coreutils flags via
-`g<util> --help` (Nix coreutils package) under a "GNU"
-section and our own flags from `./zig-out/bin/<util> --help`
-under a "vibeutils" section.
+**37 POSIX utilities**: basename, cat, chmod, chown, cp,
+cut, date, dd, df, dirname, du, echo, env, false, find,
+grep, head, id, ln, ls, mkdir, mv, nl, printf, pwd, rm,
+rmdir, sleep, sort, tail, tee, test, touch, tr, true,
+uniq, wc
 
-### Step 3: Coverage decisions (tiered)
-Add a coverage column to each flag in the spec files:
+**Skip** (non-POSIX): free, mktemp, readlink, realpath,
+seq, stat, tac, timeout, whoami, yes
+
+### Step 2: Capture reference flags from all sources
+For each of the 47 utilities, capture four sources:
+- **macOS man page + help**: Parse flags from
+  `MANPATH=/usr/share/man man <util>`, then append
+  `/bin/<util> --help` (or `-h`) output under a
+  `--- --help output ---` separator. Save to
+  `docs/specs/<util>-macos.txt`.
+- **OpenBSD man page**: Fetch from
+  `man.openbsd.org/<util>.1` and save to
+  `docs/specs/<util>-openbsd.txt`.
+- **GNU coreutils**: Run `g<util> --help` (from Nix
+  coreutils package), save to
+  `docs/specs/<util>-gnu.txt`.
+- **Our flags**: Run `./zig-out/bin/<util> --help`, save
+  to `docs/specs/<util>-vibeutils.txt`.
+
+### Step 3: Coverage decisions (interactive)
+Create `docs/specs/<util>-flags.md` for each utility with
+a flags table:
+
+```
+| Flag | POSIX | macOS | OpenBSD | GNU | Ours | Tier |
+|------|-------|-------|---------|-----|------|------|
+| -a   | yes   | yes   | yes     | yes | yes  | MUST |
+| -X   | no    | yes   | no      | yes | no   | SHOULD |
+| -Z   | no    | no    | no      | yes | no   | WONT |
+```
+
+**Auto-assign tiers:**
 - **MUST**: All POSIX-required flags (target 100%)
-- **SHOULD**: Top GNU coreutils flags that users expect
-- **WONT**: Rare, macOS-only, or legacy flags we choose to
-  skip (with documented rationale)
+- **MUST**: All flags present in both macOS AND OpenBSD
+  (platform parity baseline)
 
-### Step 4: Integration / regression tests
-Write bash shell scripts in `tests/posix/`, one per utility.
-Each script validates that every MUST and SHOULD flag is
-accepted and produces correct behavior. Compare output
-against expected results, not against GNU coreutils directly.
-Run via `just test-posix`.
+**Prompt user for remaining flags:**
+Use AskUserQuestion menu per utility to decide tier for
+flags that are GNU-only, macOS-only, or OpenBSD-only.
+Present the flag, its description, and which sources
+have it. Let user pick SHOULD or WONT.
+
+**Tiers:**
+- **MUST**: POSIX-required + macOS/OpenBSD parity
+- **SHOULD**: User-approved GNU/platform flags
+- **WONT**: Rare/legacy flags (document rationale)
+
+### Step 4: Integration tests
+Write bash scripts in `tests/posix/`, one per utility
+(e.g., `tests/posix/test_cp.sh`). Each script:
+- Validates every MUST and SHOULD flag is accepted
+- Tests correct behavior against expected output
+- Does NOT compare against GNU coreutils directly
+- Run via `just test-posix`
 
 ## TDD Development Cycle
 For each utility:
