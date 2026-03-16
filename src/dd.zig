@@ -220,8 +220,6 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_osync = true;
         } else if (std.mem.eql(u8, conv, "swab")) {
             config.conv_swab = true;
-        } else if (std.mem.eql(u8, conv, "noxfer")) {
-            config.status = .noxfer;
         } else if (std.mem.eql(u8, conv, "ascii")) {
             config.conv_ascii = true;
         } else if (std.mem.eql(u8, conv, "ebcdic")) {
@@ -460,7 +458,6 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  swab      swap every pair of input bytes
         \\  notrunc   do not truncate the output file
         \\  noerror   continue after read errors
-        \\  noxfer    do not print transfer statistics
         \\  sync      pad input blocks with NULs to ibs size
         \\  fsync     fsync output file before closing
         \\  osync     pad final output block with NULs to obs size
@@ -1479,10 +1476,9 @@ test "parseConversions - swab" {
     try testing.expect(config.conv_swab);
 }
 
-test "parseConversions - noxfer sets status to noxfer" {
+test "parseConversions - noxfer is rejected in conv" {
     const args = [_][]const u8{"conv=noxfer"};
-    const config = try parseOperands(&args);
-    try testing.expectEqual(StatusLevel.noxfer, config.status);
+    try testing.expectError(error.InvalidValue, parseOperands(&args));
 }
 
 test "parseConversions - ascii" {
@@ -1740,34 +1736,15 @@ test "runDd - conv=unblock replaces trailing spaces with newline" {
     try testing.expectEqualStrings("ab\ncd\n", content);
 }
 
-test "runDd - conv=noxfer omits transfer statistics" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "test");
-
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
-    defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
-    defer testing.allocator.free(base_path);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
-    defer testing.allocator.free(output_path);
-
-    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
-    defer testing.allocator.free(if_arg);
-    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
-    defer testing.allocator.free(of_arg);
-
+test "runDd - conv=noxfer is rejected" {
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
 
-    const args = [_][]const u8{ if_arg, of_arg, "conv=noxfer" };
+    const args = [_][]const u8{"conv=noxfer"};
     const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 0), exit_code);
-    // Should have records but not bytes/transfer line
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "records in") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "bytes") == null);
+    // conv=noxfer should be rejected; noxfer is only valid as status=noxfer
+    try testing.expect(exit_code != 0);
 }
 
 test "runDd - mutually exclusive ascii and ebcdic" {
