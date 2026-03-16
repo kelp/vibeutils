@@ -91,6 +91,7 @@ const DfOptions = struct {
     inodes: bool = false,
     block_1k: bool = false,
     local: bool = false,
+    no_sync: bool = false,
     portability: bool = false,
     print_type: bool = false,
     total: bool = false,
@@ -248,6 +249,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                     opts.human_readable = false;
                 },
                 'l' => opts.local = true,
+                'n' => opts.no_sync = true,
                 'P' => {
                     opts.portability = true;
                     opts.human_readable = false;
@@ -3142,4 +3144,32 @@ test "isCloudFs - source patterns" {
     try testing.expect(isCloudFs("rclone:remote", "ext4"));
     try testing.expect(isCloudFs("sshfs#host:/path", "ext4"));
     try testing.expect(!isCloudFs("/dev/sda1", "ext4"));
+}
+
+test "parseArgs - n flag accepted as no-op" {
+    const args = [_][]const u8{"-n"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expect(parsed.opts.no_sync);
+}
+
+test "parseArgs - n combined with other flags" {
+    const args = [_][]const u8{"-an"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expect(parsed.opts.all);
+    try testing.expect(parsed.opts.no_sync);
+}
+
+test "runDf - n flag accepted" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-n"};
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
 }

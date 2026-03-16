@@ -14,7 +14,7 @@
 | -k   | yes   | yes   | yes     | yes | yes  | MUST |
 | -l   |       | yes   | yes     | yes | yes  | MUST |
 | -m   |       | yes   |         |     |      | SHOULD |
-| -n   |       | yes   | yes     |     |      | MUST |
+| -n   |       | yes   | yes     |     | yes  | MUST |
 | -P   | yes   | yes   | yes     | yes | yes  | MUST |
 | -t   | yes   | yes   | yes     | yes | yes  | MUST |
 | -T   |       | yes   |         | yes | yes  | SHOULD |
