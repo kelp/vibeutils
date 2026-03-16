@@ -49,6 +49,23 @@ const LsArgs = struct {
     full_time: bool = false,
     follow_all_symlinks: bool = false,
     follow_cmdline_symlinks: bool = false,
+    escape_non_printable: bool = false,
+    hide_backups: bool = false,
+    dired: bool = false,
+    show_acls: bool = false,
+    colorize: bool = false,
+    ignore_pattern: ?[]const u8 = null,
+    show_file_flags: bool = false,
+    no_follow_symlinks: bool = false,
+    unsorted: bool = false,
+    version_sort: bool = false,
+    output_width: ?u16 = null,
+    show_whiteouts: bool = false,
+    sort_by_extension: bool = false,
+    sort_by_name: bool = false,
+    show_xattrs: bool = false,
+    show_sip: bool = false,
+    thousands_grouping: bool = false,
     color: ?[]const u8 = null,
     group_directories_first: bool = false,
     icons: ?[]const u8 = null,
@@ -89,6 +106,23 @@ const LsArgs = struct {
         .full_time = .{ .short = 'T', .desc = "With -l, show complete time including seconds" },
         .follow_all_symlinks = .{ .short = 'L', .desc = "Follow all symbolic links" },
         .follow_cmdline_symlinks = .{ .short = 'H', .desc = "Follow symbolic links on the command line" },
+        .escape_non_printable = .{ .short = 'b', .desc = "Print C-style escape sequences for non-printable characters" },
+        .hide_backups = .{ .short = 'B', .desc = "Do not list entries ending with ~" },
+        .dired = .{ .short = 'D', .desc = "Generate output suitable for Emacs dired mode" },
+        .show_acls = .{ .short = 'e', .desc = "Display ACL information in long format" },
+        .colorize = .{ .short = 'G', .desc = "Enable colorized output" },
+        .ignore_pattern = .{ .short = 'I', .desc = "Do not list entries matching shell PATTERN", .value_name = "PATTERN" },
+        .show_file_flags = .{ .short = 'O', .desc = "Display file flags in long format" },
+        .no_follow_symlinks = .{ .short = 'P', .desc = "Do not follow symbolic links" },
+        .unsorted = .{ .short = 'U', .desc = "Do not sort; list entries in directory order" },
+        .version_sort = .{ .short = 'v', .desc = "Natural sort of version numbers within text" },
+        .output_width = .{ .short = 'w', .desc = "Set output width to COLS columns", .value_name = "COLS" },
+        .show_whiteouts = .{ .short = 'W', .desc = "Display whiteout entries" },
+        .sort_by_extension = .{ .short = 'X', .desc = "Sort alphabetically by entry extension" },
+        .sort_by_name = .{ .short = 'y', .desc = "Sort by name (default behavior)" },
+        .show_xattrs = .{ .short = '@', .desc = "Display extended attribute keys and sizes" },
+        .show_sip = .{ .short = '%', .desc = "Display SIP protection information" },
+        .thousands_grouping = .{ .short = ',', .desc = "Format file sizes with thousands grouping" },
         .color = .{ .short = 0, .desc = "When to use colors (valid: always, auto, never)", .value_name = "WHEN" },
         .group_directories_first = .{ .short = 0, .desc = "Group directories before files" },
         .icons = .{ .short = 0, .desc = "When to show icons (valid: always, auto, never)", .value_name = "WHEN" },
@@ -213,6 +247,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         };
         color_mode = parsed;
     }
+    // -G: macOS-style enable colorized output (equivalent to --color=auto)
+    if (args.colorize) {
+        color_mode = .auto;
+    }
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
             common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
@@ -277,7 +315,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .time_style = time_style,
         .show_git_status = resolveGitMode(args.git, display_config),
         .is_terminal = is_terminal,
-        .no_sort = args.no_sort,
+        .no_sort = args.no_sort or args.unsorted,
         .show_blocks = args.show_blocks,
         .use_atime = args.use_atime,
         .use_ctime = args.use_ctime,
@@ -285,6 +323,15 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .full_time = args.full_time,
         .follow_all_symlinks = args.follow_all_symlinks,
         .follow_cmdline_symlinks = args.follow_cmdline_symlinks,
+        .escape_non_printable = args.escape_non_printable,
+        .hide_backups = args.hide_backups,
+        .ignore_pattern = args.ignore_pattern,
+        .no_follow_symlinks = args.no_follow_symlinks,
+        .unsorted = args.unsorted,
+        .version_sort = args.version_sort,
+        .sort_by_extension = args.sort_by_extension,
+        .thousands_grouping = args.thousands_grouping,
+        .terminal_width = args.output_width,
     };
 
     // Initialize GitContext once if git status is requested
@@ -326,15 +373,22 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\  -a, --all                  do not ignore entries starting with .
         \\  -A, --almost-all           do not list implied . and ..
+        \\  -b, --escape-non-printable print C-style escapes for non-printable characters
+        \\  -B, --hide-backups         do not list entries ending with ~
         \\  -c, --use-ctime            use status change time instead of modification time
         \\  -C, --multi-column         force multi-column output sorted down columns
         \\      --color=WHEN           when to use colors (valid: always, auto, never)
+        \\  -,                         format file sizes with thousands grouping
+        \\  -D                         generate output for Emacs dired mode (no-op)
+        \\  -e                         display ACL information (no-op)
         \\  -m, --comma-format         fill width with a comma separated list of entries
         \\  -d, --directory            list directories themselves, not their contents
         \\  -f, --no-sort              do not sort; list in directory order (implies -a)
         \\  -F, --file-type-indicators append indicator (one of */=>@|) to entries
         \\  -g, --omit-owner           like -l, but do not print the owner
+        \\  -G                         enable colorized output
         \\  -H, --follow-cmdline-symlinks  follow symlinks on the command line
+        \\  -I PATTERN                 do not list entries matching shell PATTERN
         \\  -L, --follow-all-symlinks  follow all symbolic links
         \\      --git=WHEN             when to show git status (valid: always, auto, never)
         \\      --group-directories-first  group directories before files
@@ -343,6 +397,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -k, --kilobytes            with -l, print sizes in kilobytes
         \\  -l, --long-format          use a long listing format
         \\  -n, --numeric-ids          with -l, show numeric user and group IDs
+        \\  -O                         display file flags (no-op)
+        \\  -P                         do not follow symbolic links
         \\  -q, --non-printable-as-question  force non-printable characters as '?'
         \\  -o, --omit-group           like -l, but do not print the group
         \\  -1, --one-per-line         list one file per line
@@ -357,8 +413,16 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --test-icons           test Nerd Font icon rendering
         \\      --time-style=STYLE     time/date format (valid: default, relative, iso, long-iso)
         \\  -u, --use-atime            use access time instead of modification time
+        \\  -U                         do not sort; list entries in directory order
+        \\  -v                         natural sort of version numbers within text
         \\  -V, --version              output version information and exit
+        \\  -w COLS                    set output width to COLS columns
+        \\  -W                         display whiteout entries (no-op)
         \\  -x, --columns-across       multi-column output sorted across rows
+        \\  -X                         sort alphabetically by entry extension
+        \\  -y                         sort by name (default behavior)
+        \\  -@                         display extended attributes (no-op)
+        \\  -%                         display SIP protection (no-op)
         \\      --help                 display this help and exit
         \\
         \\Examples:

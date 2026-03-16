@@ -370,6 +370,8 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
             try common.file.formatSizeHuman(stat.size, &size_buf)
         else if (options.kilobytes)
             try common.file.formatSizeKilobytes(stat.size, &size_buf)
+        else if (options.thousands_grouping)
+            formatWithThousands(stat.size, &size_buf)
         else
             try common.file.formatSize(stat.size, &size_buf);
 
@@ -414,6 +416,35 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
         }
     }
     try writer.writeByte('\n');
+}
+
+/// Format a number with thousands grouping (commas).
+/// Example: 1234567 -> "1,234,567"
+fn formatWithThousands(size: u64, buf: []u8) []const u8 {
+    // First format the plain number
+    var num_buf: [20]u8 = undefined;
+    const num_str = std.fmt.bufPrint(&num_buf, "{d}", .{size}) catch return "?";
+
+    if (num_str.len <= 3) {
+        @memcpy(buf[0..num_str.len], num_str);
+        return buf[0..num_str.len];
+    }
+
+    // Calculate output length: digits + number of commas
+    const num_commas = (num_str.len - 1) / 3;
+    const total_len = num_str.len + num_commas;
+    if (total_len > buf.len) return num_str;
+
+    var out: usize = 0;
+    for (num_str, 0..) |c, i| {
+        if (i > 0 and (num_str.len - i) % 3 == 0) {
+            buf[out] = ',';
+            out += 1;
+        }
+        buf[out] = c;
+        out += 1;
+    }
+    return buf[0..out];
 }
 
 /// Calculate the display width of a block count number
@@ -1095,4 +1126,17 @@ test "writeDateColored - all truecolor age tiers" {
         const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
         try testing.expect(std.mem.indexOf(u8, buffer.items, expected) != null);
     }
+}
+
+test "formatWithThousands - basic formatting" {
+    var buf: [32]u8 = undefined;
+
+    try testing.expectEqualStrings("0", formatWithThousands(0, &buf));
+    try testing.expectEqualStrings("999", formatWithThousands(999, &buf));
+    try testing.expectEqualStrings("1,000", formatWithThousands(1000, &buf));
+    try testing.expectEqualStrings("1,234", formatWithThousands(1234, &buf));
+    try testing.expectEqualStrings("12,345", formatWithThousands(12345, &buf));
+    try testing.expectEqualStrings("123,456", formatWithThousands(123456, &buf));
+    try testing.expectEqualStrings("1,234,567", formatWithThousands(1234567, &buf));
+    try testing.expectEqualStrings("1,234,567,890", formatWithThousands(1234567890, &buf));
 }

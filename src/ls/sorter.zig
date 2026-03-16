@@ -5,7 +5,8 @@ const Entry = types.Entry;
 const SortConfig = types.SortConfig;
 
 /// Unified comparison function for directory entries
-/// Handles all sorting modes: alphabetical, time, size, with directory grouping and reverse
+/// Handles all sorting modes: alphabetical, time, size, extension, version
+/// with directory grouping and reverse
 pub fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
     // Handle directory grouping first
     if (config.dirs_first) {
@@ -36,6 +37,19 @@ pub fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
             // Fall back to name sort
             break :blk std.mem.order(u8, a.name, b.name) == .lt;
         }
+    } else if (config.by_extension) blk: {
+        // Sort by file extension, then by name
+        const a_ext = getExtension(a.name);
+        const b_ext = getExtension(b.name);
+        const ext_cmp = std.mem.order(u8, a_ext, b_ext);
+        if (ext_cmp != .eq) {
+            break :blk ext_cmp == .lt;
+        }
+        // Same extension, fall back to name sort
+        break :blk std.mem.order(u8, a.name, b.name) == .lt;
+    } else if (config.version_sort) blk: {
+        // Natural version sort
+        break :blk versionCompare(a.name, b.name) == .lt;
     } else blk: {
         // Default: sort by name
         break :blk std.mem.order(u8, a.name, b.name) == .lt;
@@ -43,6 +57,82 @@ pub fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
 
     // Apply reverse if needed
     return if (config.reverse) !result else result;
+}
+
+/// Get file extension (part after last '.'), or empty string if none.
+/// Files starting with '.' and having no other '.' return empty extension.
+fn getExtension(name: []const u8) []const u8 {
+    // Find last dot, excluding leading dot
+    var i = name.len;
+    while (i > 0) {
+        i -= 1;
+        if (name[i] == '.') {
+            if (i == 0) return ""; // Hidden file with no extension
+            return name[i + 1 ..];
+        }
+    }
+    return ""; // No extension
+}
+
+/// Compare two strings using natural version sort order.
+/// Numeric parts are compared as numbers (file2 < file10).
+fn versionCompare(a: []const u8, b: []const u8) std.math.Order {
+    var ai: usize = 0;
+    var bi: usize = 0;
+
+    while (ai < a.len and bi < b.len) {
+        const a_is_digit = std.ascii.isDigit(a[ai]);
+        const b_is_digit = std.ascii.isDigit(b[bi]);
+
+        if (a_is_digit and b_is_digit) {
+            // Compare numeric parts as numbers
+            // Skip leading zeros
+            const a_start = ai;
+            const b_start = bi;
+            while (ai < a.len and a[ai] == '0') ai += 1;
+            while (bi < b.len and b[bi] == '0') bi += 1;
+
+            // Count digits
+            const a_num_start = ai;
+            const b_num_start = bi;
+            while (ai < a.len and std.ascii.isDigit(a[ai])) ai += 1;
+            while (bi < b.len and std.ascii.isDigit(b[bi])) bi += 1;
+            const a_num_len = ai - a_num_start;
+            const b_num_len = bi - b_num_start;
+
+            // Different digit count means different magnitude
+            if (a_num_len != b_num_len) {
+                return if (a_num_len < b_num_len) .lt else .gt;
+            }
+
+            // Same number of digits - compare lexicographically
+            if (a_num_len > 0) {
+                const a_digits = a[a_num_start..ai];
+                const b_digits = b[b_num_start..bi];
+                const ord = std.mem.order(u8, a_digits, b_digits);
+                if (ord != .eq) return ord;
+            }
+
+            // Equal numeric values - fewer leading zeros comes first
+            const a_zeros = a_num_start - a_start;
+            const b_zeros = b_num_start - b_start;
+            if (a_zeros != b_zeros) {
+                return if (a_zeros < b_zeros) .lt else .gt;
+            }
+        } else {
+            // Compare non-numeric characters
+            if (a[ai] != b[bi]) {
+                return if (a[ai] < b[bi]) .lt else .gt;
+            }
+            ai += 1;
+            bi += 1;
+        }
+    }
+
+    // One or both strings exhausted
+    if (ai < a.len) return .gt;
+    if (bi < b.len) return .lt;
+    return .eq;
 }
 
 /// Sort entries in place according to the provided configuration
@@ -191,4 +281,97 @@ test "sorter - ctime takes precedence over atime" {
     // ctime should take priority: b.txt (ctime=3000) before a.txt (ctime=1000)
     try testing.expectEqualStrings("b.txt", entries[0].name);
     try testing.expectEqualStrings("a.txt", entries[1].name);
+}
+
+test "sorter - extension sorting" {
+    var entries = [_]Entry{
+        .{ .name = "readme.md", .kind = .file },
+        .{ .name = "main.c", .kind = .file },
+        .{ .name = "util.c", .kind = .file },
+        .{ .name = "build.zig", .kind = .file },
+        .{ .name = "notes.txt", .kind = .file },
+    };
+
+    const config = SortConfig{ .by_extension = true };
+    sortEntries(&entries, config);
+
+    // Should be sorted by extension: .c, .md, .txt, .zig
+    try testing.expectEqualStrings("main.c", entries[0].name);
+    try testing.expectEqualStrings("util.c", entries[1].name);
+    try testing.expectEqualStrings("readme.md", entries[2].name);
+    try testing.expectEqualStrings("notes.txt", entries[3].name);
+    try testing.expectEqualStrings("build.zig", entries[4].name);
+}
+
+test "sorter - extension sorting with no extension" {
+    var entries = [_]Entry{
+        .{ .name = "Makefile", .kind = .file },
+        .{ .name = "readme.md", .kind = .file },
+        .{ .name = "LICENSE", .kind = .file },
+    };
+
+    const config = SortConfig{ .by_extension = true };
+    sortEntries(&entries, config);
+
+    // Files without extensions sort before those with extensions
+    // (empty string < "md")
+    try testing.expectEqualStrings("LICENSE", entries[0].name);
+    try testing.expectEqualStrings("Makefile", entries[1].name);
+    try testing.expectEqualStrings("readme.md", entries[2].name);
+}
+
+test "sorter - version sort basic" {
+    var entries = [_]Entry{
+        .{ .name = "file10", .kind = .file },
+        .{ .name = "file2", .kind = .file },
+        .{ .name = "file1", .kind = .file },
+        .{ .name = "file20", .kind = .file },
+    };
+
+    const config = SortConfig{ .version_sort = true };
+    sortEntries(&entries, config);
+
+    // Natural sort: file1, file2, file10, file20
+    try testing.expectEqualStrings("file1", entries[0].name);
+    try testing.expectEqualStrings("file2", entries[1].name);
+    try testing.expectEqualStrings("file10", entries[2].name);
+    try testing.expectEqualStrings("file20", entries[3].name);
+}
+
+test "sorter - version sort mixed" {
+    var entries = [_]Entry{
+        .{ .name = "v2.0", .kind = .file },
+        .{ .name = "v1.10", .kind = .file },
+        .{ .name = "v1.2", .kind = .file },
+        .{ .name = "v1.1", .kind = .file },
+    };
+
+    const config = SortConfig{ .version_sort = true };
+    sortEntries(&entries, config);
+
+    // Natural sort: v1.1, v1.2, v1.10, v2.0
+    try testing.expectEqualStrings("v1.1", entries[0].name);
+    try testing.expectEqualStrings("v1.2", entries[1].name);
+    try testing.expectEqualStrings("v1.10", entries[2].name);
+    try testing.expectEqualStrings("v2.0", entries[3].name);
+}
+
+test "sorter - getExtension" {
+    try testing.expectEqualStrings("txt", getExtension("file.txt"));
+    try testing.expectEqualStrings("gz", getExtension("archive.tar.gz"));
+    try testing.expectEqualStrings("", getExtension("Makefile"));
+    try testing.expectEqualStrings("", getExtension(".hidden"));
+    try testing.expectEqualStrings("conf", getExtension(".hidden.conf"));
+}
+
+test "sorter - versionCompare" {
+    // Basic cases
+    try testing.expectEqual(std.math.Order.lt, versionCompare("file1", "file2"));
+    try testing.expectEqual(std.math.Order.lt, versionCompare("file2", "file10"));
+    try testing.expectEqual(std.math.Order.eq, versionCompare("file1", "file1"));
+    try testing.expectEqual(std.math.Order.gt, versionCompare("file10", "file2"));
+
+    // Pure alphabetic
+    try testing.expectEqual(std.math.Order.lt, versionCompare("abc", "def"));
+    try testing.expectEqual(std.math.Order.gt, versionCompare("def", "abc"));
 }

@@ -55,6 +55,8 @@ pub fn sortEntriesFromOptions(entries: []Entry, options: LsOptions) void {
         .reverse = options.reverse_sort,
         .use_atime = options.use_atime,
         .use_ctime = options.use_ctime,
+        .by_extension = options.sort_by_extension,
+        .version_sort = options.version_sort,
     };
     sorter.sortEntries(entries, sort_config);
 }

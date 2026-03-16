@@ -38,6 +38,18 @@ pub fn collectFilteredEntries(
             continue;
         }
 
+        // -B: skip backup files ending with ~
+        if (options.hide_backups and entry.name.len > 0 and entry.name[entry.name.len - 1] == '~') {
+            continue;
+        }
+
+        // -I PATTERN: skip entries matching glob pattern
+        if (options.ignore_pattern) |pattern| {
+            if (globMatch(pattern, entry.name)) {
+                continue;
+            }
+        }
+
         const name_copy = try allocator.dupe(u8, entry.name);
         errdefer allocator.free(name_copy);
 
@@ -207,6 +219,111 @@ pub fn processSubdirectoriesRecursively(
     }
 }
 
+/// Simple shell glob pattern matching for -I flag.
+/// Supports *, ?, and [abc] bracket expressions.
+fn globMatch(pattern: []const u8, string: []const u8) bool {
+    var pi: usize = 0;
+    var si: usize = 0;
+    var star_pi: ?usize = null;
+    var star_si: ?usize = null;
+
+    while (si < string.len or pi < pattern.len) {
+        if (pi < pattern.len) {
+            switch (pattern[pi]) {
+                '*' => {
+                    star_pi = pi;
+                    star_si = si;
+                    pi += 1;
+                    continue;
+                },
+                '?' => {
+                    if (si < string.len) {
+                        pi += 1;
+                        si += 1;
+                        continue;
+                    }
+                },
+                '[' => {
+                    if (si < string.len) {
+                        if (matchBracket(pattern, pi, string[si])) |new_pi| {
+                            pi = new_pi;
+                            si += 1;
+                            continue;
+                        }
+                    }
+                },
+                '\\' => {
+                    if (pi + 1 < pattern.len) {
+                        pi += 1;
+                        if (si < string.len and pattern[pi] == string[si]) {
+                            pi += 1;
+                            si += 1;
+                            continue;
+                        }
+                    }
+                },
+                else => {
+                    if (si < string.len and pattern[pi] == string[si]) {
+                        pi += 1;
+                        si += 1;
+                        continue;
+                    }
+                },
+            }
+        }
+
+        // Backtrack to star
+        if (star_pi) |sp| {
+            pi = sp + 1;
+            star_si = star_si.? + 1;
+            si = star_si.?;
+            if (si > string.len) return false;
+            continue;
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+/// Match a bracket expression [abc], [a-z], [!abc].
+/// Returns the new pattern index past ']' on match, null otherwise.
+fn matchBracket(pattern: []const u8, start: usize, ch: u8) ?usize {
+    var pi = start + 1; // skip '['
+    if (pi >= pattern.len) return null;
+
+    var negate = false;
+    if (pattern[pi] == '!' or pattern[pi] == '^') {
+        negate = true;
+        pi += 1;
+    }
+
+    var matched = false;
+    var first = true;
+    while (pi < pattern.len and (first or pattern[pi] != ']')) {
+        first = false;
+        // Range: a-z
+        if (pi + 2 < pattern.len and pattern[pi + 1] == '-' and pattern[pi + 2] != ']') {
+            if (ch >= pattern[pi] and ch <= pattern[pi + 2]) {
+                matched = true;
+            }
+            pi += 3;
+        } else {
+            if (ch == pattern[pi]) {
+                matched = true;
+            }
+            pi += 1;
+        }
+    }
+
+    if (pi >= pattern.len) return null; // No closing ]
+    pi += 1; // skip ']'
+
+    if (negate) matched = !matched;
+    return if (matched) pi else null;
+}
+
 /// Free allocated memory for entries
 pub fn freeEntries(entries: []Entry, allocator: std.mem.Allocator) void {
     for (entries) |entry| {
@@ -315,4 +432,82 @@ test "entry_collector - collectFilteredEntries with all option" {
     }
     try testing.expect(found_visible);
     try testing.expect(found_hidden);
+}
+
+test "entry_collector - globMatch basic patterns" {
+    // Wildcard *
+    try testing.expect(globMatch("*", "anything"));
+    try testing.expect(globMatch("*.txt", "hello.txt"));
+    try testing.expect(!globMatch("*.txt", "hello.md"));
+
+    // Single char ?
+    try testing.expect(globMatch("?.txt", "a.txt"));
+    try testing.expect(!globMatch("?.txt", "ab.txt"));
+
+    // Bracket expressions
+    try testing.expect(globMatch("[abc].txt", "a.txt"));
+    try testing.expect(!globMatch("[abc].txt", "d.txt"));
+
+    // Exact match
+    try testing.expect(globMatch("hello", "hello"));
+    try testing.expect(!globMatch("hello", "world"));
+
+    // Empty
+    try testing.expect(globMatch("", ""));
+    try testing.expect(!globMatch("", "a"));
+    try testing.expect(globMatch("*", ""));
+}
+
+test "entry_collector - hide_backups filters tilde files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f1 = try tmp_dir.dir.createFile("file.txt", .{});
+    f1.close();
+    const f2 = try tmp_dir.dir.createFile("file.txt~", .{});
+    f2.close();
+    const f3 = try tmp_dir.dir.createFile("backup~", .{});
+    f3.close();
+
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+
+    var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{ .hide_backups = true });
+    defer {
+        freeEntries(entries.items, testing.allocator);
+        entries.deinit(testing.allocator);
+    }
+
+    // Should only contain file.txt, not the ~ files
+    try testing.expectEqual(@as(usize, 1), entries.items.len);
+    try testing.expectEqualStrings("file.txt", entries.items[0].name);
+}
+
+test "entry_collector - ignore_pattern filters matching files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f1 = try tmp_dir.dir.createFile("readme.md", .{});
+    f1.close();
+    const f2 = try tmp_dir.dir.createFile("main.c", .{});
+    f2.close();
+    const f3 = try tmp_dir.dir.createFile("test.c", .{});
+    f3.close();
+    const f4 = try tmp_dir.dir.createFile("notes.txt", .{});
+    f4.close();
+
+    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
+    defer test_dir.close();
+
+    var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{ .ignore_pattern = "*.c" });
+    defer {
+        freeEntries(entries.items, testing.allocator);
+        entries.deinit(testing.allocator);
+    }
+
+    // Should not contain .c files
+    try testing.expectEqual(@as(usize, 2), entries.items.len);
+    for (entries.items) |entry| {
+        try testing.expect(!std.mem.endsWith(u8, entry.name, ".c"));
+    }
 }

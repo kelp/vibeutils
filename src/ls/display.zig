@@ -131,6 +131,77 @@ fn sanitizeName(name: []const u8, buf: []u8) []const u8 {
     return buf[0..name.len];
 }
 
+/// Escape non-printable characters using C-style escape sequences.
+/// Produces sequences like \n, \t, \0, \a, \b, \f, \r, \v, or \ooo for others.
+fn escapeName(name: []const u8, buf: []u8) []const u8 {
+    var needs_escape = false;
+    for (name) |c| {
+        if (c < 0x20 or c == 0x7F or c == '\\') {
+            needs_escape = true;
+            break;
+        }
+    }
+    if (!needs_escape) return name;
+
+    var out: usize = 0;
+    for (name) |c| {
+        if (out + 4 > buf.len) break; // ensure room for worst case \ooo
+        if (c == '\\') {
+            buf[out] = '\\';
+            buf[out + 1] = '\\';
+            out += 2;
+        } else if (c < 0x20 or c == 0x7F) {
+            buf[out] = '\\';
+            out += 1;
+            switch (c) {
+                0x00 => {
+                    buf[out] = '0';
+                    out += 1;
+                },
+                0x07 => {
+                    buf[out] = 'a';
+                    out += 1;
+                },
+                0x08 => {
+                    buf[out] = 'b';
+                    out += 1;
+                },
+                0x09 => {
+                    buf[out] = 't';
+                    out += 1;
+                },
+                0x0A => {
+                    buf[out] = 'n';
+                    out += 1;
+                },
+                0x0B => {
+                    buf[out] = 'v';
+                    out += 1;
+                },
+                0x0C => {
+                    buf[out] = 'f';
+                    out += 1;
+                },
+                0x0D => {
+                    buf[out] = 'r';
+                    out += 1;
+                },
+                else => {
+                    // Octal escape \ooo
+                    buf[out] = '0' + (c >> 6);
+                    buf[out + 1] = '0' + ((c >> 3) & 0o7);
+                    buf[out + 2] = '0' + (c & 0o7);
+                    out += 3;
+                },
+            }
+        } else {
+            buf[out] = c;
+            out += 1;
+        }
+    }
+    return buf[0..out];
+}
+
 /// Print entry name with optional icon, color and file type indicator
 pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: LsOptions) !void {
     const show_icons = common.icons.shouldShowIcons(options.icon_mode, options.is_terminal);
@@ -175,8 +246,13 @@ pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: Ls
         try style.setColor(color);
     }
 
+    // Apply -b: C-style escape sequences for non-printable characters
     // Apply -q: replace non-printable characters with '?'
-    if (options.non_printable_as_question) {
+    if (options.escape_non_printable) {
+        var name_buf: [std.fs.max_path_bytes * 4]u8 = undefined;
+        const display_name = escapeName(entry.name, &name_buf);
+        try writer.print("{s}", .{display_name});
+    } else if (options.non_printable_as_question) {
         var name_buf: [std.fs.max_path_bytes]u8 = undefined;
         const display_name = sanitizeName(entry.name, &name_buf);
         try writer.print("{s}", .{display_name});
@@ -277,4 +353,64 @@ test "display - isExecutable" {
     // Test directory (not considered executable for our purposes)
     const dir_entry = Entry{ .name = "testdir", .kind = .directory };
     try testing.expect(!isExecutable(dir_entry));
+}
+
+test "display - escapeName basic" {
+    var buf: [256]u8 = undefined;
+
+    // Normal string passes through unchanged
+    const normal = escapeName("hello.txt", &buf);
+    try testing.expectEqualStrings("hello.txt", normal);
+
+    // Newline -> \n
+    const with_nl = escapeName("hello\nworld", &buf);
+    try testing.expectEqualStrings("hello\\nworld", with_nl);
+
+    // Tab -> \t
+    const with_tab = escapeName("hello\tworld", &buf);
+    try testing.expectEqualStrings("hello\\tworld", with_tab);
+
+    // Null -> \0
+    const with_null = escapeName("hello\x00world", &buf);
+    try testing.expectEqualStrings("hello\\0world", with_null);
+
+    // Backslash -> \\
+    const with_bs = escapeName("hello\\world", &buf);
+    try testing.expectEqualStrings("hello\\\\world", with_bs);
+}
+
+test "display - escapeName special chars" {
+    var buf: [256]u8 = undefined;
+
+    // Bell -> \a
+    const with_bell = escapeName("hello\x07world", &buf);
+    try testing.expectEqualStrings("hello\\aworld", with_bell);
+
+    // Carriage return -> \r
+    const with_cr = escapeName("hello\rworld", &buf);
+    try testing.expectEqualStrings("hello\\rworld", with_cr);
+
+    // Form feed -> \f
+    const with_ff = escapeName("hello\x0Cworld", &buf);
+    try testing.expectEqualStrings("hello\\fworld", with_ff);
+
+    // Vertical tab -> \v
+    const with_vt = escapeName("hello\x0Bworld", &buf);
+    try testing.expectEqualStrings("hello\\vworld", with_vt);
+}
+
+test "display - sanitizeName" {
+    var buf: [256]u8 = undefined;
+
+    // Normal string passes through unchanged
+    const normal = sanitizeName("hello.txt", &buf);
+    try testing.expectEqualStrings("hello.txt", normal);
+
+    // Non-printable -> ?
+    const with_ctrl = sanitizeName("hello\x01world", &buf);
+    try testing.expectEqualStrings("hello?world", with_ctrl);
+
+    // DEL -> ?
+    const with_del = sanitizeName("hello\x7Fworld", &buf);
+    try testing.expectEqualStrings("hello?world", with_del);
 }

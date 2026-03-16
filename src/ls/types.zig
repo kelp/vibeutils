@@ -53,6 +53,14 @@ pub const LsOptions = struct {
     full_time: bool = false, // -T: show full time with seconds and year
     follow_all_symlinks: bool = false, // -L: follow all symlinks
     follow_cmdline_symlinks: bool = false, // -H: follow symlinks on command line
+    escape_non_printable: bool = false, // -b: C-style escape sequences for non-printable chars
+    hide_backups: bool = false, // -B: hide entries ending with ~
+    ignore_pattern: ?[]const u8 = null, // -I PATTERN: ignore entries matching glob pattern
+    no_follow_symlinks: bool = false, // -P: don't follow symlinks (show link info)
+    unsorted: bool = false, // -U: no sort, directory order (without implying -a)
+    version_sort: bool = false, // -v: natural version sort
+    sort_by_extension: bool = false, // -X: sort by file extension
+    thousands_grouping: bool = false, // -,: format sizes with comma grouping
 };
 
 /// Represents a directory entry with metadata
@@ -160,6 +168,8 @@ pub const SortConfig = struct {
     reverse: bool = false,
     use_atime: bool = false, // -u: sort by access time instead of mtime
     use_ctime: bool = false, // -c: sort by status change time instead of mtime
+    by_extension: bool = false, // -X: sort by file extension
+    version_sort: bool = false, // -v: natural version sort
 };
 
 /// Parse color mode from string argument

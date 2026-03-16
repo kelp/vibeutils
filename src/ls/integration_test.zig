@@ -763,3 +763,124 @@ test "follow_cmdline: -H flag is accepted" {
 
     try LsAssertions.expectContainsFile(env.getStdout(), "test.txt");
 }
+
+// ============================================================================
+// -B flag: hide backup files
+// ============================================================================
+
+test "hide_backups: -B hides files ending with ~" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("document.txt", "content");
+    try env.createFile("document.txt~", "old content");
+    try env.createFile("notes~", "backup");
+
+    try env.runLs(.{ .hide_backups = true, .one_per_line = true });
+
+    try LsAssertions.expectContainsFile(env.getStdout(), "document.txt");
+    try LsAssertions.expectNotContainsFile(env.getStdout(), "document.txt~");
+    try LsAssertions.expectNotContainsFile(env.getStdout(), "notes~");
+}
+
+// ============================================================================
+// -I PATTERN flag: ignore pattern
+// ============================================================================
+
+test "ignore_pattern: -I filters entries matching glob" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("main.c", "");
+    try env.createFile("test.c", "");
+    try env.createFile("readme.md", "");
+    try env.createFile("notes.txt", "");
+
+    try env.runLs(.{ .ignore_pattern = "*.c", .one_per_line = true });
+
+    try LsAssertions.expectNotContainsFile(env.getStdout(), "main.c");
+    try LsAssertions.expectNotContainsFile(env.getStdout(), "test.c");
+    try LsAssertions.expectContainsFile(env.getStdout(), "readme.md");
+    try LsAssertions.expectContainsFile(env.getStdout(), "notes.txt");
+}
+
+// ============================================================================
+// -U flag: unsorted (directory order)
+// ============================================================================
+
+test "unsorted: -U disables sorting" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("zebra.txt", "");
+    try env.createFile("alpha.txt", "");
+
+    // -U should not error; we verify at least the files appear
+    try env.runLs(.{ .unsorted = true, .one_per_line = true });
+
+    try LsAssertions.expectContainsFile(env.getStdout(), "zebra.txt");
+    try LsAssertions.expectContainsFile(env.getStdout(), "alpha.txt");
+}
+
+// ============================================================================
+// -v flag: version sort
+// ============================================================================
+
+test "version_sort: -v sorts version numbers naturally" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("file1", "");
+    try env.createFile("file10", "");
+    try env.createFile("file2", "");
+    try env.createFile("file20", "");
+
+    try env.runLs(.{ .version_sort = true, .one_per_line = true });
+
+    // Should be file1, file2, file10, file20
+    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "file1", "file2", "file10", "file20" });
+}
+
+// ============================================================================
+// -X flag: sort by extension
+// ============================================================================
+
+test "sort_by_extension: -X sorts by file extension" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("readme.md", "");
+    try env.createFile("main.c", "");
+    try env.createFile("notes.txt", "");
+
+    try env.runLs(.{ .sort_by_extension = true, .one_per_line = true });
+
+    // Sorted by extension: .c, .md, .txt
+    try LsAssertions.expectOnePerLineOrder(env.getStdout(), &.{ "main.c", "readme.md", "notes.txt" });
+}
+
+// ============================================================================
+// -w WIDTH flag: output width
+// ============================================================================
+
+test "output_width: -w overrides terminal width" {
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    try env.createFile("file1", "");
+    try env.createFile("file2", "");
+    try env.createFile("file3", "");
+
+    // Very narrow width should force single column
+    try env.runLs(.{ .terminal_width = 10 });
+
+    const output = env.getStdout();
+    // Count non-empty lines
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| {
+        if (line.len > 0) count += 1;
+    }
+    // With 10-char width, each file takes its own line
+    try testing.expectEqual(@as(usize, 3), count);
+}
