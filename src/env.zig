@@ -24,6 +24,12 @@ const EnvOptions = struct {
     chdir: ?[]const u8 = null,
     /// Use NUL instead of newline as output delimiter
     null_delimiter: bool = false,
+    /// Alternate PATH to search for utility
+    alt_path: ?[]const u8 = null,
+    /// Split string argument (stub)
+    split_string: ?[]const u8 = null,
+    /// Verbose mode
+    verbose: bool = false,
     /// Show help
     help: bool = false,
     /// Show version
@@ -105,12 +111,41 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
         return 0;
     }
 
+    // Handle -S stub warning
+    if (options.split_string != null) {
+        common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "-S flag not yet fully implemented", .{});
+    }
+
     // Build the environment
     var env_map = buildEnvMap(allocator, options) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "failed to build environment: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer env_map.deinit();
+
+    // Verbose output for environment modifications
+    if (options.verbose) {
+        if (options.ignore_environment) {
+            stderr_writer.writeAll("env: clearing environment\n") catch {};
+        }
+        for (options.unsets) |name| {
+            stderr_writer.print("env: unsetenv {s}\n", .{name}) catch {};
+        }
+        for (options.assignments) |assignment| {
+            stderr_writer.print("env: setenv {s}={s}\n", .{ assignment.name, assignment.value }) catch {};
+        }
+    }
+
+    // Handle -P: set alternate PATH for command search
+    if (options.alt_path) |alt| {
+        if (options.verbose) {
+            stderr_writer.print("env: using alternate PATH: {s}\n", .{alt}) catch {};
+        }
+        env_map.put("PATH", alt) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "failed to set alternate PATH", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
 
     // Handle -C/--chdir
     if (options.chdir) |dir| {
@@ -196,6 +231,12 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
                 i += 1;
                 if (i >= args.len) return error.MissingValue;
                 options.chdir = args[i];
+            } else if (std.mem.startsWith(u8, arg, "--split-string=")) {
+                options.split_string = arg["--split-string=".len..];
+            } else if (std.mem.eql(u8, arg, "--split-string")) {
+                i += 1;
+                if (i >= args.len) return error.MissingValue;
+                options.split_string = args[i];
             } else {
                 return error.UnknownFlag;
             }
@@ -243,6 +284,31 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
                         }
                         break;
                     },
+                    'P' => {
+                        // -P requires a path value
+                        if (j + 1 < arg.len) {
+                            options.alt_path = arg[j + 1 ..];
+                            j = arg.len;
+                        } else {
+                            i += 1;
+                            if (i >= args.len) return error.MissingValue;
+                            options.alt_path = args[i];
+                        }
+                        break;
+                    },
+                    'S' => {
+                        // -S requires a string value (stub)
+                        if (j + 1 < arg.len) {
+                            options.split_string = arg[j + 1 ..];
+                            j = arg.len;
+                        } else {
+                            i += 1;
+                            if (i >= args.len) return error.MissingValue;
+                            options.split_string = args[i];
+                        }
+                        break;
+                    },
+                    'v' => options.verbose = true,
                     else => return error.UnknownFlag,
                 }
             }
@@ -335,6 +401,10 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -0, --null                end each output line with NUL, not newline
         \\  -u, --unset=NAME          remove variable from the environment
         \\  -C, --chdir=DIR           change working directory to DIR
+        \\  -P PATH                   search PATH for utility instead of $PATH
+        \\  -S STRING, --split-string=STRING
+        \\                            split STRING into arguments (stub)
+        \\  -v                        verbose: show env modifications on stderr
         \\  -h, --help                display this help and exit
         \\  -V, --version             output version information and exit
         \\
@@ -741,4 +811,99 @@ test "env runEnv: invalid chdir" {
     const exit_code = runEnv(testing.allocator, &.{ "-C", "/nonexistent_dir_12345" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 125), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot change directory") != null);
+}
+
+test "env parseArgs: -P flag" {
+    const options = try parseArgs(testing.allocator, &.{ "-P", "/usr/local/bin:/usr/bin" });
+    defer options.deinit(testing.allocator);
+    try testing.expectEqualStrings("/usr/local/bin:/usr/bin", options.alt_path.?);
+}
+
+test "env parseArgs: -P inline value" {
+    const options = try parseArgs(testing.allocator, &.{"-P/usr/bin"});
+    defer options.deinit(testing.allocator);
+    try testing.expectEqualStrings("/usr/bin", options.alt_path.?);
+}
+
+test "env parseArgs: -P missing value" {
+    const result = parseArgs(testing.allocator, &.{"-P"});
+    try testing.expectError(error.MissingValue, result);
+}
+
+test "env parseArgs: -S flag" {
+    const options = try parseArgs(testing.allocator, &.{ "-S", "VAR=val cmd" });
+    defer options.deinit(testing.allocator);
+    try testing.expectEqualStrings("VAR=val cmd", options.split_string.?);
+}
+
+test "env parseArgs: --split-string=VALUE" {
+    const options = try parseArgs(testing.allocator, &.{"--split-string=VAR=val cmd"});
+    defer options.deinit(testing.allocator);
+    try testing.expectEqualStrings("VAR=val cmd", options.split_string.?);
+}
+
+test "env parseArgs: --split-string VALUE" {
+    const options = try parseArgs(testing.allocator, &.{ "--split-string", "VAR=val cmd" });
+    defer options.deinit(testing.allocator);
+    try testing.expectEqualStrings("VAR=val cmd", options.split_string.?);
+}
+
+test "env parseArgs: -S missing value" {
+    const result = parseArgs(testing.allocator, &.{"-S"});
+    try testing.expectError(error.MissingValue, result);
+}
+
+test "env parseArgs: -v flag" {
+    const options = try parseArgs(testing.allocator, &.{"-v"});
+    defer options.deinit(testing.allocator);
+    try testing.expect(options.verbose);
+}
+
+test "env runEnv: -P sets alternate PATH in environment" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Environment should contain the alternate PATH
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "PATH=/custom/path\n") != null);
+    // And the assignment
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar\n") != null);
+}
+
+test "env runEnv: -S prints stub warning" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{ "-i", "-S", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-S flag not yet fully implemented") != null);
+}
+
+test "env runEnv: -v verbose with -i" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{ "-iv", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Verbose should mention clearing and setting
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "clearing environment") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "setenv FOO=bar") != null);
+}
+
+test "env runEnv: -v verbose with -u" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{ "-v", "-u", "NONEXISTENT_VAR_TEST" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unsetenv NONEXISTENT_VAR_TEST") != null);
 }

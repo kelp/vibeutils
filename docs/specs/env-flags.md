@@ -6,9 +6,9 @@
 | -u | -- | yes | yes | yes | yes | MUST |
 | -0 | -- | yes | -- | yes | yes | SHOULD |
 | -C | -- | yes | -- | yes | yes | SHOULD |
-| -P | -- | yes | -- | -- | -- | SHOULD |
-| -S | -- | yes | -- | yes | -- | SHOULD |
-| -v | -- | yes | -- | yes | -- | SHOULD |
+| -P | -- | yes | -- | -- | yes | SHOULD |
+| -S | -- | yes | -- | yes | yes | SHOULD |
+| -v | -- | yes | -- | yes | yes | SHOULD |
 | -a | -- | -- | -- | yes | -- | WONT |
 | --block-signal | -- | -- | -- | yes | -- | WONT |
 | --default-signal | -- | -- | -- | yes | -- | WONT |
