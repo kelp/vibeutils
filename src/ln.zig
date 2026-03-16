@@ -17,6 +17,8 @@ const LnArgs = struct {
     interactive: bool = false,
     L: bool = false,
     no_dereference: bool = false,
+    /// Alias for no_dereference: -h is POSIX for no-dereference
+    no_deref_h: bool = false,
     P: bool = false,
     relative: bool = false,
     symbolic: bool = false,
@@ -26,12 +28,13 @@ const LnArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .force = .{ .short = 'f', .desc = "Remove existing destination files" },
         .interactive = .{ .short = 'i', .desc = "Prompt whether to remove destinations" },
         .L = .{ .short = 'L', .desc = "Follow symbolic links when creating hard links" },
         .no_dereference = .{ .short = 'n', .desc = "Treat LINK_NAME as a normal file if it is a symbolic link to a directory" },
+        .no_deref_h = .{ .short = 'h', .desc = "Same as --no-dereference" },
         .P = .{ .short = 'P', .desc = "Create hard link to symbolic link itself" },
         .relative = .{ .short = 'r', .desc = "With -s, create links relative to link location" },
         .symbolic = .{ .short = 's', .desc = "Make symbolic links instead of hard links" },
@@ -191,11 +194,11 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Create options
+    // Create options (-h and -n are both aliases for --no-dereference)
     const options = LinkOptions{
         .force = parsed_args.force,
         .interactive = parsed_args.interactive,
-        .no_dereference = parsed_args.no_dereference,
+        .no_dereference = parsed_args.no_dereference or parsed_args.no_deref_h,
         .physical = parsed_args.P,
         .relative = parsed_args.relative,
         .symbolic = parsed_args.symbolic,
@@ -233,7 +236,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\  -f, --force                 remove existing destination files
         \\  -i, --interactive           prompt whether to remove destinations
-        \\  -n, --no-dereference        treat LINK_NAME as a normal file if
+        \\  -h, -n, --no-dereference    treat LINK_NAME as a normal file if
         \\                                 it is a symbolic link to a directory
         \\  -r, --relative              with -s, create links relative to link location
         \\  -s, --symbolic              make symbolic links instead of hard links
@@ -782,6 +785,25 @@ test "dangling symlink produces warning via createSingleLink" {
 
     // Should contain a dangling symlink warning
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+}
+
+test "ln: -h flag is parsed as no_dereference" {
+    const args = [_][]const u8{"-h"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    // -h should map to no_deref_h (alias for no_dereference), not help
+    try testing.expect(parsed.no_deref_h);
+    try testing.expect(!parsed.help);
+}
+
+test "ln: --help still works as long-only flag" {
+    const args = [_][]const u8{"--help"};
+    const parsed = try common.argparse.ArgParser.parse(LnArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.help);
+    try testing.expect(!parsed.no_dereference);
 }
 
 test "ln: -L flag is parsed" {

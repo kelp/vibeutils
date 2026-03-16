@@ -4,7 +4,7 @@
 |------|-------|-------|---------|-----|------|------|
 | -c   |       |       |         | yes | yes  | SHOULD |
 | -f   |       | yes   |         | yes | yes  | SHOULD |
-| -h   |       | yes   | yes     | yes |      | MUST |
+| -h   |       | yes   | yes     | yes | yes  | MUST |
 | -H   |       | yes   | yes     | yes | yes  | MUST |
 | -L   |       | yes   | yes     | yes | yes  | MUST |
 | -P   |       | yes   | yes     | yes | yes  | MUST |

@@ -15,6 +15,7 @@ const ChmodArgs = struct {
     changes: bool = false,
     silent: bool = false,
     verbose: bool = false,
+    no_dereference: bool = false,
     recursive: bool = false,
     H: bool = false,
     L: bool = false,
@@ -23,11 +24,12 @@ const ChmodArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
+        .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .changes = .{ .short = 'c', .desc = "Like verbose but report only when a change is made" },
         .silent = .{ .short = 'f', .desc = "Suppress most error messages" },
         .verbose = .{ .short = 'v', .desc = "Output a diagnostic for every file processed" },
+        .no_dereference = .{ .short = 'h', .desc = "Do not follow symbolic links (change link itself)" },
         .recursive = .{ .short = 'R', .desc = "Change files and directories recursively" },
         .H = .{ .short = 'H', .desc = "Traverse symlinks given on the command line" },
         .L = .{ .short = 'L', .desc = "Traverse every symbolic link to a directory encountered" },
@@ -83,6 +85,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         .changes_only = parsed_args.changes,
         .quiet = parsed_args.silent,
         .verbose = parsed_args.verbose,
+        .no_dereference = parsed_args.no_dereference,
         .recursive = parsed_args.recursive,
         .traverse_cmdline_symlinks = parsed_args.H,
         .traverse_all_symlinks = parsed_args.L,
@@ -147,6 +150,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  -c, --changes          like verbose but report only when a change is made
         \\  -f, --silent           suppress most error messages
         \\  -v, --verbose          output a diagnostic for every file processed
+        \\  -h, --no-dereference   do not follow symbolic links (change link itself)
         \\  -R, --recursive        change files and directories recursively
         \\      --reference=RFILE  use RFILE's mode instead of MODE values
         \\      --help             display this help and exit
@@ -182,6 +186,7 @@ const ChmodOptions = struct {
     changes_only: bool = false,
     quiet: bool = false,
     verbose: bool = false,
+    no_dereference: bool = false,
     recursive: bool = false,
     traverse_cmdline_symlinks: bool = false,
     traverse_all_symlinks: bool = false,
@@ -711,9 +716,28 @@ fn errorToMessage(err: anytype) []const u8 {
 
 /// Apply a mode specification to a single file
 /// Reports changes if verbose or changes_only flags are set
+/// When no_dereference is set, operates on symlinks themselves via fchmodat
 fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anytype, options: ChmodOptions) !void {
-    // Get file stats
-    const stat = std.fs.cwd().statFile(file_path) catch |err| switch (err) {
+    // Get file stats - use lstat when no_dereference to get symlink info
+    const stat = if (options.no_dereference) blk: {
+        const info = common.file.FileInfo.lstat(file_path) catch |err| {
+            return switch (err) {
+                error.FileNotFound => error.FileNotFound,
+                else => err,
+            };
+        };
+        // If it's a symlink with -h, the mode change may be a no-op
+        // on most systems, but we accept the flag per POSIX
+        break :blk std.fs.File.Stat{
+            .size = 0,
+            .mode = @intCast(info.mode),
+            .mtime = 0,
+            .atime = 0,
+            .ctime = 0,
+            .kind = info.kind,
+            .inode = info.inode,
+        };
+    } else std.fs.cwd().statFile(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => std.fs.File.Stat{ .size = 0, .mode = 0, .mtime = 0, .atime = 0, .ctime = 0, .kind = .file, .inode = 0 },
         else => return err,
@@ -736,17 +760,37 @@ fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anyty
         },
     };
 
-    // Use path-based chmod system call
+    // Use fchmodat with AT_SYMLINK_NOFOLLOW when no_dereference is set,
+    // otherwise use regular chmod
     const path_z = try std.posix.toPosixPath(file_path);
-    const result = std.c.chmod(&path_z, @as(std.c.mode_t, @intCast(new_mode)));
-    if (result != 0) {
-        const errno = std.c._errno().*;
-        return switch (errno) {
-            @intFromEnum(std.c.E.NOENT) => error.FileNotFound,
-            @intFromEnum(std.c.E.ACCES) => error.PermissionDenied,
-            @intFromEnum(std.c.E.PERM) => error.PermissionDenied,
-            else => error.Unexpected,
-        };
+    const c = std.c;
+    if (options.no_dereference) {
+        const result = c.fchmodat(c.AT.FDCWD, &path_z, @as(c.mode_t, @intCast(new_mode)), c.AT.SYMLINK_NOFOLLOW);
+        if (result != 0) {
+            const errno = c._errno().*;
+            // EOPNOTSUPP is expected on many systems for symlink chmod
+            // Silently accept it per POSIX behavior
+            if (errno == @intFromEnum(c.E.OPNOTSUPP)) {
+                return;
+            }
+            return switch (errno) {
+                @intFromEnum(c.E.NOENT) => error.FileNotFound,
+                @intFromEnum(c.E.ACCES) => error.PermissionDenied,
+                @intFromEnum(c.E.PERM) => error.PermissionDenied,
+                else => error.Unexpected,
+            };
+        }
+    } else {
+        const result = c.chmod(&path_z, @as(c.mode_t, @intCast(new_mode)));
+        if (result != 0) {
+            const errno = c._errno().*;
+            return switch (errno) {
+                @intFromEnum(c.E.NOENT) => error.FileNotFound,
+                @intFromEnum(c.E.ACCES) => error.PermissionDenied,
+                @intFromEnum(c.E.PERM) => error.PermissionDenied,
+                else => error.Unexpected,
+            };
+        }
     }
 
     // Report changes if requested
@@ -1649,4 +1693,29 @@ test "ChmodOptions symlink traversal defaults to false" {
     try testing.expect(!options.traverse_cmdline_symlinks);
     try testing.expect(!options.traverse_all_symlinks);
     try testing.expect(!options.no_traverse_symlinks);
+}
+
+test "chmod: -h flag is parsed as no_dereference" {
+    const args = [_][]const u8{ "-h", "755", "file.txt" };
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    // -h should map to no_dereference, not help
+    try testing.expect(parsed.no_dereference);
+    try testing.expect(!parsed.help);
+}
+
+test "chmod: --help still works as long-only flag" {
+    const args = [_][]const u8{"--help"};
+    const parsed = try common.argparse.ArgParser.parse(ChmodArgs, testing.allocator, &args);
+    defer testing.allocator.free(parsed.positionals);
+
+    try testing.expect(parsed.help);
+}
+
+test "ChmodOptions has no_dereference field" {
+    const options = ChmodOptions{
+        .no_dereference = true,
+    };
+    try testing.expect(options.no_dereference);
 }
