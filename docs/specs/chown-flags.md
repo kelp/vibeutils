@@ -13,7 +13,7 @@
 | -v   |       | yes   |         | yes | yes  | SHOULD |
 | -x   |       | yes   |         |     | yes  | SHOULD |
 | --from |     |       |         | yes |      | WONT |
-| --reference |  |     |         | yes |      | WONT |
+| --reference |  |     |         | yes | yes  | SHOULD |
 | --dereference |  |   |         | yes | yes  | SHOULD |
 | --no-preserve-root | |  |     | yes | yes  | SHOULD |
 | --preserve-root |  |  |       | yes | yes  | SHOULD |

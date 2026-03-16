@@ -37,4 +37,4 @@ file-system mode. BSD `-t timefmt` sets time format; GNU
 | -f / --file-system | - | - | yes | yes | SHOULD |
 | -t / --terse | - | - | yes | yes | SHOULD |
 | --cached | - | - | yes | - | WONT |
-| --printf | - | - | yes | - | WONT |
+| --printf | - | - | yes | yes | SHOULD |

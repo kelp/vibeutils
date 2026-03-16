@@ -8,10 +8,10 @@ assignments.
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
 | MUST | 288 | 288 | 0 |
-| SHOULD | 220 | 220 | 0 |
+| SHOULD | 221 | 221 | 0 |
 | KEEP | 16 | 16 | 0 |
-| WONT | 115 | 0 | 115 |
-| **Total** | **694** | **524** | **170** |
+| WONT | 114 | 0 | 114 |
+| **Total** | **732** | **525** | **207** |
 
 ## MUST Flags — Not Yet Implemented
 
@@ -42,5 +42,5 @@ assignments.
 
 ## WONT — Excluded Flags
 
-**115 flags** excluded (obscure GNU-only or OpenBSD-only).
+**114 flags** excluded (obscure GNU-only or OpenBSD-only).
 

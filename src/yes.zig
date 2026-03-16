@@ -9,6 +9,11 @@ const YesArgs = struct {
     help: bool = false,
     version: bool = false,
     positionals: []const []const u8 = &.{},
+
+    pub const meta = .{
+        .help = .{ .short = 'h', .desc = "display this help and exit" },
+        .version = .{ .short = 'V', .desc = "output version information and exit" },
+    };
 };
 
 /// Main function for the yes utility.

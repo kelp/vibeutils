@@ -18,8 +18,8 @@ const WhoamiArgs = struct {
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
-        .help = .{ .short = 'h', .desc = "Display this help and exit" },
-        .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .help = .{ .short = 'h', .desc = "display this help and exit" },
+        .version = .{ .short = 'V', .desc = "output version information and exit" },
     };
 };
 
