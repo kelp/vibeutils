@@ -22,6 +22,8 @@ const WcOptions = struct {
     version: bool = false,
     /// Colorize the output
     color: ?[]const u8 = null,
+    /// libxo structured output format (not supported)
+    libxo: ?[]const u8 = null,
     /// Positional arguments (files)
     positionals: []const []const u8 = &.{},
 
@@ -34,6 +36,7 @@ const WcOptions = struct {
         .chars = .{ .short = 'm', .desc = "Print the character counts" },
         .max_line_length = .{ .short = 'L', .desc = "Print the maximum line length" },
         .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
+        .libxo = .{ .short = 0, .desc = "Generate output via libxo (not supported)", .value_name = "FORMAT" },
     };
 };
 
@@ -167,6 +170,12 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     if (options.version) {
         try printVersion(stdout_writer);
         return 0;
+    }
+
+    // Handle --libxo: not supported, print error and exit
+    if (options.libxo != null) {
+        common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "libxo output is not supported", .{});
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Handle -c/-m mutual exclusion: "last flag wins" behavior (GNU wc compatibility)
@@ -847,6 +856,19 @@ test "applyWcColumnColor none: no output" {
     const s = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
     try applyWcColumnColor(s, .lines);
     try testing.expectEqual(@as(usize, 0), buffer.items.len);
+}
+
+test "wc --libxo prints error and exits with code 1" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "--libxo=xml", "-l" };
+    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "libxo output is not supported") != null);
 }
 
 test "wc --color=invalid exits with code 2" {

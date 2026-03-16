@@ -11,5 +11,5 @@
 | --files0-from=F | - | -  | -   | yes | -    | WONT |
 | --total=WHEN | - | - | -       | yes | -    | WONT |
 | --debug | -  | -     | -       | yes | -    | WONT |
-| --libxo | -  | yes   | -       | -   | -    | SHOULD |
+| --libxo | -  | yes   | -       | -   | yes  | SHOULD |
 | --color | -  | -     | -       | -   | yes  | KEEP |
