@@ -408,4 +408,9 @@ test_readlink() {
         print_test_result "readlink -f chain resolves to end" "FAIL" \
             "Expected '$chain_expected', got '$chain_f_out'"
     fi
+
+    # Regression test: readlink -m with .. past root should return /
+    echo -e "${CYAN}Testing .. past root regression...${NC}"
+    test_command_output "readlink -m .. past root returns /" "/" \
+        "$binary" -m /tmp/nonexistent/../../../..
 }

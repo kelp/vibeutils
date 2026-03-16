@@ -487,7 +487,10 @@ fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []
 
     // Handle force overwrite if needed
     if (fileExists(dest_path) and options.force) {
-        handleForceOverwrite(dest_path) catch {};
+        handleForceOverwrite(dest_path) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+            return false;
+        };
     }
 
     if (options.preserve) {
@@ -515,7 +518,10 @@ fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []cons
 
     // Handle force overwrite if needed
     if (fileExists(dest_path) and options.force) {
-        handleForceOverwrite(dest_path) catch {};
+        handleForceOverwrite(dest_path) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+            return false;
+        };
     }
 
     // Create the symlink
@@ -2131,4 +2137,53 @@ test "cp: -v verbose message format matches GNU cp" {
     const expected = try std.fmt.allocPrint(testing.allocator, "'{s}' -> '{s}'\n", .{ source_path, dest_path });
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, stdout_buffer.items);
+}
+
+test "cp: -f reports error when force-remove of destination fails" {
+    // Bug: handleForceOverwrite swallows all errors with `catch {}`
+    // When the destination cannot be removed (e.g., parent dir is read-only),
+    // the user should see an error message on stderr about the failed removal.
+    //
+    // Setup: dest file is read-only, parent dir is read-only.
+    // With -f, cp should try to unlink dest first, but unlink fails because
+    // the directory has no write permission. The error from the failed removal
+    // should be reported to stderr, not silently swallowed.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createDir("readonly_dir");
+    try test_dir.createFile("readonly_dir/dest.txt", "old content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("readonly_dir/dest.txt");
+    defer testing.allocator.free(dest_path);
+
+    // Make dest file read-only, then make directory read-only so unlink fails
+    const dest_path_z = try std.posix.toPosixPath(dest_path);
+    _ = std.c.chmod(&dest_path_z, 0o444);
+
+    const dir_path = try test_dir.getPath("readonly_dir");
+    defer testing.allocator.free(dir_path);
+    const dir_path_z = try std.posix.toPosixPath(dir_path);
+    _ = std.c.chmod(&dir_path_z, 0o555);
+
+    // Restore permissions for cleanup
+    defer {
+        _ = std.c.chmod(&dir_path_z, 0o755);
+        _ = std.c.chmod(&dest_path_z, 0o644);
+    }
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", source_path, dest_path };
+    _ = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // stderr should mention the force-removal failure for the destination.
+    // Currently this fails because `catch {}` silently discards the error
+    // from handleForceOverwrite, so stderr has no mention of the removal failure.
+    const stderr_output = stderr_buffer.items;
+    try testing.expect(std.mem.indexOf(u8, stderr_output, "cannot remove") != null);
 }

@@ -565,9 +565,10 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Handle -v stub: print diagnostic and continue with normal behavior
+    // Handle -v stub: not yet implemented, exit with error
     if (opts.v_adjust != null) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "-v adjustment not yet implemented", .{});
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Resolve the timestamp to format
@@ -1267,9 +1268,9 @@ test "date -v flag accepts value and prints diagnostic" {
 
     const args = [_][]const u8{ "-v", "+1d", "-u", "-d", "@0", "+%Y" };
     const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 0), result);
-    // Should still produce output (normal behavior continues)
-    try testing.expectEqualStrings("1970\n", stdout_buffer.items);
+    try testing.expectEqual(@as(u8, 1), result);
+    // -v is unimplemented so no stdout output is produced
+    try testing.expectEqualStrings("", stdout_buffer.items);
     // Should print diagnostic to stderr
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-v adjustment not yet implemented") != null);
 }
@@ -1297,4 +1298,42 @@ test "date -v missing argument returns misuse" {
     const args = [_][]const u8{"-v"};
     const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
+}
+
+test "date -v should exit with non-zero code" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", "+1d", "-u", "-d", "@0", "+%Y" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    // -v is not yet implemented, so it should return a non-zero exit code
+    // rather than silently producing today's date as if -v was ignored
+    try testing.expect(result != 0);
+}
+
+test "date -v should not produce stdout output" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", "+1d", "-u", "-d", "@0", "+%Y" };
+    _ = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    // When -v is unimplemented, no date output should appear on stdout
+    // because it would be misleading (showing unadjusted date)
+    try testing.expectEqualStrings("", stdout_buffer.items);
+}
+
+test "date -v stderr should contain error message" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", "+1d", "-u", "-d", "@0", "+%Y" };
+    _ = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    // stderr should contain a message about -v not being implemented
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "not yet implemented") != null);
 }

@@ -398,10 +398,20 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
 fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name: []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype, test_mode: bool) !void {
     const prog_name = "ln";
 
-    // Check if link already exists - only catch FileNotFound, propagate permission errors
+    // Check if link already exists - only catch FileNotFound, propagate permission errors.
+    // Use readLink as fallback to detect dangling symlinks, since access() follows
+    // symlinks and reports FileNotFound when the symlink target is missing.
     const link_exists = blk: {
         std.fs.cwd().access(link_name, .{}) catch |err| switch (err) {
-            error.FileNotFound => break :blk false,
+            error.FileNotFound => {
+                // access follows symlinks; a dangling symlink looks like FileNotFound.
+                // Check whether link_name itself is a symlink (even if its target is gone).
+                var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+                _ = std.fs.cwd().readLink(link_name, &readlink_buf) catch {
+                    break :blk false; // Neither a file nor a symlink
+                };
+                break :blk true; // Dangling symlink exists
+            },
             else => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ link_name, @errorName(err) });
                 return err;
@@ -410,7 +420,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         break :blk true;
     };
 
-    if (link_exists and !options.force) {
+    if (link_exists and !options.force and !options.backup) {
         if (options.interactive) {
             if (test_mode) {
                 // Test mode: assume 'no' for interactive prompts
@@ -445,7 +455,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
     }
 
     // Create backup of destination if it exists and backup mode is enabled
-    if (link_exists and options.backup and (options.force or options.interactive)) {
+    if (link_exists and options.backup) {
         const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{link_name});
         defer allocator.free(backup_name);
         std.posix.rename(link_name, backup_name) catch |backup_err| {
@@ -1095,4 +1105,49 @@ test "ln: -w flag enables dangling symlink warning" {
 
     // Should warn about dangling symlink
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+}
+
+test "ln: -sb without -f creates backup and replaces symlink" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create two target files
+    try createTestFile(tmp_dir.dir, "old_target.txt", "old content");
+    try createTestFile(tmp_dir.dir, "new_target.txt", "new content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    // Create an existing symlink pointing to old_target.txt
+    const link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "mylink" });
+    defer testing.allocator.free(link_abs);
+    const new_target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "new_target.txt" });
+    defer testing.allocator.free(new_target_abs);
+
+    try tmp_dir.dir.symLink("old_target.txt", "mylink", .{});
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -sb new_target.txt mylink (backup + symbolic, NO force)
+    // GNU ln -b creates backup regardless of -f
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-s", "-b", new_target_abs, link_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Backup file mylink~ should exist (the old symlink was renamed)
+    tmp_dir.dir.access("mylink~", .{}) catch |err| {
+        std.debug.print("backup file mylink~ not found: {s}\n", .{@errorName(err)});
+        return error.TestExpectedEqual;
+    };
+
+    // The new mylink should be a symlink to new_target.txt
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const link_target = try tmp_dir.dir.readLink("mylink", &buffer);
+    try testing.expectEqualStrings(new_target_abs, link_target);
 }

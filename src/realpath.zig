@@ -174,6 +174,8 @@ fn resolveMissing(allocator: Allocator, path: []const u8) ![]u8 {
                 if (std.mem.lastIndexOfScalar(u8, remaining.items, '/')) |last_slash| {
                     if (last_slash > 0) {
                         remaining.shrinkRetainingCapacity(last_slash);
+                    } else {
+                        remaining.shrinkRetainingCapacity(1); // keep just "/"
                     }
                 }
             } else {
@@ -709,4 +711,47 @@ test "realpath: relative-base path equals base" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings(".\n", stdout_buffer.items);
+}
+
+test "realpath: canonicalize-missing .. past root returns root" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // /usr exists, so resolveMissing resolves it, then appends the remaining
+    // nonexistent component and two "..". The second ".." goes past root.
+    // Bug: `if (last_slash > 0)` in resolveMissing prevents shrinking to "/"
+    // when last_slash is 0, so the result is "/usr" instead of "/".
+    const args = [_][]const u8{ "-m", "/usr/nonexistent_vibeutils_test/../.." };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/\n", stdout_buffer.items);
+}
+
+test "realpath: canonicalize-missing multiple .. past root returns root" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // /usr exists as a prefix. After resolving it, the remaining components
+    // include a nonexistent dir and three "..". The third ".." exceeds root.
+    // Bug: the guard `if (last_slash > 0)` prevents reaching "/" (position 0).
+    const args = [_][]const u8{ "-m", "/usr/nonexistent_vibeutils_test/../../.." };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/\n", stdout_buffer.items);
+}
+
+test "realpath: canonicalize-missing deeper path .. past root returns root" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // /usr/bin exists as a prefix. Remaining: nonexistent + three ".."
+    // The third ".." should reach "/" but the `if (last_slash > 0)` guard
+    // prevents it, leaving the result as "/usr" instead of "/".
+    const args = [_][]const u8{ "-m", "/usr/bin/nonexistent_vibeutils_test/../../.." };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/\n", stdout_buffer.items);
 }

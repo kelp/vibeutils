@@ -560,4 +560,32 @@ test_ln() {
     # POSIX: exit >0 on failure
     test_command_exit_code "ln POSIX failure exit code" 1 \
         "$binary" "/nonexistent/posix/target" "$TEMP_DIR/posix_fail"
+
+    # Regression test: ln -sb should create backup~ and new link without -f
+    echo -e "${CYAN}Testing -b backup without -f regression...${NC}"
+
+    local backup_target=$(create_temp_file "backup target content")
+    local backup_link="$TEMP_DIR/backup_link"
+    ln -s "/some/original/target" "$backup_link"
+
+    test_command_exit_code "ln -sb creates backup and new link" 0 \
+        "$binary" -sb "$backup_target" "$backup_link"
+
+    # Verify the backup file exists
+    if [[ -e "${backup_link}~" ]]; then
+        print_test_result "ln -sb backup file created" "PASS"
+    else
+        print_test_result "ln -sb backup file created" "FAIL" \
+            "Expected ${backup_link}~ to exist"
+    fi
+
+    # Verify the new link exists and is a symlink
+    if [[ -L "$backup_link" ]]; then
+        print_test_result "ln -sb new symlink created" "PASS"
+    else
+        print_test_result "ln -sb new symlink created" "FAIL" \
+            "Expected $backup_link to be a symlink"
+    fi
+
+    rm -f "$backup_link" "${backup_link}~"
 }

@@ -175,4 +175,20 @@ test_printf() {
     # No arguments exits with code 2
     test_command_exit_code "printf no args exits 2" 2 \
         "$binary"
+
+    # Regression test: write errors propagated (smoke test)
+    # The actual write-error path is hard to exercise in shell, so verify
+    # that escape sequences produce correct output end-to-end (the fix
+    # ensures flush/write errors are not silently swallowed).
+    echo -e "${CYAN}Testing escape sequence output end-to-end...${NC}"
+
+    local nl_output
+    nl_output=$("$binary" 'line1\nline2')
+    local nl_expected=$'line1\nline2'
+    if [[ "$nl_output" == "$nl_expected" ]]; then
+        print_test_result "printf backslash-n produces newline" "PASS"
+    else
+        print_test_result "printf backslash-n produces newline" "FAIL" \
+            "Expected 'line1<NL>line2', got '$nl_output'"
+    fi
 }

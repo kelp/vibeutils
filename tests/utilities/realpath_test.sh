@@ -264,4 +264,9 @@ test_realpath() {
     fi
 
     rm -rf "$rb_dir"
+
+    # Regression test: realpath -m with .. past root should return /
+    echo -e "${CYAN}Testing .. past root regression...${NC}"
+    test_command_output "realpath -m .. past root returns /" "/" \
+        "$binary" -m /tmp/nonexistent/../../../..
 }

@@ -819,4 +819,32 @@ test_cp() {
     else
         print_test_result "cp -v no arrow on stderr" "FAIL" "Unexpected '->' on stderr: '$v_err'"
     fi
+
+    # Regression test: cp -f to a file in a read-only directory reports error
+    # Create dir with a dest file, chmod 555 the dir, then cp -f should fail
+    # with an error message rather than silently proceeding.
+    echo -e "${CYAN}Testing force-overwrite error in read-only directory...${NC}"
+
+    local ro_dir=$(create_temp_dir)
+    local ro_src=$(create_temp_file "force overwrite source")
+    create_temp_file "existing dest" "$ro_dir/dest.txt"
+    chmod 555 "$ro_dir"
+
+    local ro_cmd ro_out ro_err ro_exit
+    run_command ro_cmd ro_out ro_err ro_exit "$binary" -f "$ro_src" "$ro_dir/dest.txt"
+    if [[ $ro_exit -ne 0 ]]; then
+        print_test_result "cp -f read-only dir exits non-zero" "PASS"
+    else
+        print_test_result "cp -f read-only dir exits non-zero" "FAIL" \
+            "Expected non-zero exit, got 0"
+    fi
+    if [[ -n "$ro_err" ]]; then
+        print_test_result "cp -f read-only dir reports error on stderr" "PASS"
+    else
+        print_test_result "cp -f read-only dir reports error on stderr" "FAIL" \
+            "Expected error message on stderr, got nothing"
+    fi
+
+    # Restore for cleanup
+    chmod 755 "$ro_dir"
 }

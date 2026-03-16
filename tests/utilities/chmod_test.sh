@@ -475,4 +475,35 @@ test_chmod() {
     else
         print_test_result "chmod a-t sticky bit removed" "FAIL" "Expected 755, got: $sticky_perms"
     fi
+
+    # Regression test: AccessDenied propagated correctly
+    # chmod on a file inside a directory with no execute permission
+    # should report "Permission denied", not silently apply wrong mode
+    echo -e "${CYAN}Testing AccessDenied propagation...${NC}"
+
+    local ad_dir=$(create_temp_dir)
+    local ad_file="$ad_dir/target"
+    create_temp_file "access denied test" "$ad_file"
+    chmod 644 "$ad_file"
+    # Remove execute permission on the parent directory so the file
+    # becomes inaccessible
+    chmod 644 "$ad_dir"
+
+    local ad_cmd ad_out ad_err ad_exit
+    run_command ad_cmd ad_out ad_err ad_exit "$binary" 755 "$ad_file"
+    if [[ $ad_exit -ne 0 ]]; then
+        print_test_result "chmod inaccessible dir exits non-zero" "PASS"
+    else
+        print_test_result "chmod inaccessible dir exits non-zero" "FAIL" \
+            "Expected non-zero exit, got 0"
+    fi
+    if [[ "$ad_err" == *"ermission denied"* || "$ad_err" == *"Permission denied"* ]]; then
+        print_test_result "chmod inaccessible dir reports Permission denied" "PASS"
+    else
+        print_test_result "chmod inaccessible dir reports Permission denied" "FAIL" \
+            "Expected 'Permission denied' in stderr, got: '$ad_err'"
+    fi
+
+    # Restore for cleanup
+    chmod 755 "$ad_dir"
 }

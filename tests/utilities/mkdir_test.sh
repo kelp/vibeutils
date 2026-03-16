@@ -400,4 +400,45 @@ test_mkdir() {
             "Expected 'File exists' in stderr, got: '$mkdir_err_stderr'"
     fi
     rm -rf "$mkdir_dup_dir"
+
+    # Regression test: mkdir -p -m 700 applies mode to intermediate dirs
+    # All created directories (including intermediates) should have mode 700,
+    # not just the leaf directory.
+    echo -e "${CYAN}Testing -p -m mode on intermediate directories...${NC}"
+
+    if [[ "$PLATFORM" != "windows" ]]; then
+        local pm_base="$TEMP_DIR/pm_mode_test"
+        rm -rf "$pm_base" 2>/dev/null || true
+        test_command_succeeds "mkdir -p -m 700 creates tree" \
+            "$binary" -p -m 700 "$pm_base/a/b/c"
+
+        # Check leaf directory
+        local pm_leaf_perms=$(get_file_permissions "$pm_base/a/b/c")
+        if [[ "$pm_leaf_perms" == "700" ]]; then
+            print_test_result "mkdir -p -m 700 leaf dir mode" "PASS"
+        else
+            print_test_result "mkdir -p -m 700 leaf dir mode" "FAIL" \
+                "Expected 700, got $pm_leaf_perms"
+        fi
+
+        # Check intermediate directory
+        local pm_mid_perms=$(get_file_permissions "$pm_base/a/b")
+        if [[ "$pm_mid_perms" == "700" ]]; then
+            print_test_result "mkdir -p -m 700 intermediate dir mode" "PASS"
+        else
+            print_test_result "mkdir -p -m 700 intermediate dir mode" "FAIL" \
+                "Expected 700, got $pm_mid_perms"
+        fi
+
+        # Check top-level created directory
+        local pm_top_perms=$(get_file_permissions "$pm_base/a")
+        if [[ "$pm_top_perms" == "700" ]]; then
+            print_test_result "mkdir -p -m 700 top dir mode" "PASS"
+        else
+            print_test_result "mkdir -p -m 700 top dir mode" "FAIL" \
+                "Expected 700, got $pm_top_perms"
+        fi
+
+        rm -rf "$pm_base"
+    fi
 }

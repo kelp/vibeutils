@@ -271,7 +271,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         // Directory was created successfully
         // Set mode if specified
         if (options.mode) |mode| {
-            setDirectoryMode(current_path, mode, prog_name, stderr_writer, allocator) catch {};
+            try setDirectoryMode(current_path, mode, prog_name, stderr_writer, allocator);
         }
 
         // Print verbose message for each directory created
@@ -591,6 +591,34 @@ test "mkdir -pm sets mode on intermediate directories" {
     const stat_mid = try std.fs.cwd().statFile("test_pm_mode/sub");
     const mode_mid = stat_mid.mode & 0o777;
     try testing.expectEqual(@as(u32, 0o700), mode_mid);
+}
+
+test "mkdir -pm sets mode on all directories including first parent" {
+    if (builtin.os.tag == .windows) return;
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    defer std.fs.cwd().deleteTree("test_pm_all_levels") catch {};
+
+    const args = [_][]const u8{ "-pm", "700", "test_pm_all_levels/mid/leaf" };
+    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Verify mode on the first (root) parent directory
+    const stat_root = try std.fs.cwd().statFile("test_pm_all_levels");
+    const mode_root = stat_root.mode & 0o777;
+    try testing.expectEqual(@as(u32, 0o700), mode_root);
+
+    // Verify mode on the middle intermediate directory
+    const stat_mid = try std.fs.cwd().statFile("test_pm_all_levels/mid");
+    const mode_mid = stat_mid.mode & 0o777;
+    try testing.expectEqual(@as(u32, 0o700), mode_mid);
+
+    // Verify mode on the leaf directory
+    const stat_leaf = try std.fs.cwd().statFile("test_pm_all_levels/mid/leaf");
+    const mode_leaf = stat_leaf.mode & 0o777;
+    try testing.expectEqual(@as(u32, 0o700), mode_leaf);
 }
 
 test "mkdir -p handles absolute-like paths" {

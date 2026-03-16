@@ -74,4 +74,23 @@ test_date() {
 
     # -u (UTC) exits 0
     test_command_exit_code "date -u exits 0" 0 "$binary" -u
+
+    # Regression test: date -v exits non-zero (not yet implemented)
+    # Should fail cleanly with no misleading date output on stdout
+    echo -e "${CYAN}Testing unimplemented -v flag...${NC}"
+
+    local dv_cmd dv_out dv_err dv_exit
+    run_command dv_cmd dv_out dv_err dv_exit "$binary" -v +1d
+    if [[ $dv_exit -ne 0 ]]; then
+        print_test_result "date -v exits non-zero" "PASS"
+    else
+        print_test_result "date -v exits non-zero" "FAIL" \
+            "Expected non-zero exit for unimplemented -v flag, got 0"
+    fi
+    if [[ -z "$dv_out" ]]; then
+        print_test_result "date -v produces no stdout" "PASS"
+    else
+        print_test_result "date -v produces no stdout" "FAIL" \
+            "Expected empty stdout, got: '$dv_out'"
+    fi
 }

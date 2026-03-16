@@ -1711,7 +1711,7 @@ fn evaluate(
         },
         .false_expr => return false,
         .ipath => return globMatchInsensitive(expr.data.pattern, path),
-        .regex_stub, .iregex_stub => return true,
+        .regex_stub, .iregex_stub => return false,
         .bmin_stub, .bnewer_stub, .btime_stub => return true,
         .newerxy_stub => return true,
         .acl_stub => return false,
@@ -3818,7 +3818,7 @@ test "find: -iwholename is alias for -ipath" {
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Test.TXT") != null);
 }
 
-test "find: -regex stub accepted (always true)" {
+test "find: -regex stub returns no matches" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -3836,11 +3836,10 @@ test "find: -regex stub accepted (always true)" {
 
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-regex", ".*\\.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    // Stub matches everything
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
 }
 
-test "find: -iregex stub accepted (always true)" {
+test "find: -iregex stub returns no matches" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -3858,7 +3857,7 @@ test "find: -iregex stub accepted (always true)" {
 
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
 }
 
 test "find: -Bmin stub accepted (always true)" {
@@ -4470,4 +4469,56 @@ test "find: -false -o -true evaluates to true" {
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "(", "-false", "-o", "-true", ")" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+}
+
+test "find: -regex stub should not match everything" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("hello.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Use an impossible pattern that should match nothing.
+    // The stub currently returns true for all files, so this test
+    // will FAIL until the stub is fixed to return false.
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-regex", "^impossible_pattern_that_matches_nothing$" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // No files should match an impossible regex pattern
+    try testing.expectEqualStrings("", stdout_buf.items);
+}
+
+test "find: -iregex stub should not match everything" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("hello.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Use an impossible pattern that should match nothing.
+    // The stub currently returns true for all files, so this test
+    // will FAIL until the stub is fixed to return false.
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-iregex", "^impossible_pattern_that_matches_nothing$" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // No files should match an impossible regex pattern
+    try testing.expectEqualStrings("", stdout_buf.items);
 }

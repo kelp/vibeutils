@@ -101,7 +101,7 @@ fn processFormat(
     while (i < format.len) {
         if (format[i] == '\\') {
             // Escape sequence in format string
-            const result = processEscape(format, i, writer);
+            const result = try processEscape(format, i, writer);
             i = result.new_pos;
         } else if (format[i] == '%') {
             if (i + 1 < format.len and format[i + 1] == '%') {
@@ -127,44 +127,44 @@ const EscapeResult = struct {
 
 /// Process a backslash escape sequence in the format string.
 /// Handles \n, \t, \r, \a, \b, \f, \v, \\, \0NNN, \xHH.
-fn processEscape(format: []const u8, pos: usize, writer: anytype) EscapeResult {
+fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult {
     if (pos + 1 >= format.len) {
         // Trailing backslash, output literally
-        writer.writeByte('\\') catch {};
+        try writer.writeByte('\\');
         return .{ .new_pos = pos + 1 };
     }
 
     switch (format[pos + 1]) {
         'a' => {
-            writer.writeByte('\x07') catch {};
+            try writer.writeByte('\x07');
             return .{ .new_pos = pos + 2 };
         },
         'b' => {
-            writer.writeByte('\x08') catch {};
+            try writer.writeByte('\x08');
             return .{ .new_pos = pos + 2 };
         },
         'f' => {
-            writer.writeByte('\x0c') catch {};
+            try writer.writeByte('\x0c');
             return .{ .new_pos = pos + 2 };
         },
         'n' => {
-            writer.writeByte('\n') catch {};
+            try writer.writeByte('\n');
             return .{ .new_pos = pos + 2 };
         },
         'r' => {
-            writer.writeByte('\r') catch {};
+            try writer.writeByte('\r');
             return .{ .new_pos = pos + 2 };
         },
         't' => {
-            writer.writeByte('\t') catch {};
+            try writer.writeByte('\t');
             return .{ .new_pos = pos + 2 };
         },
         'v' => {
-            writer.writeByte('\x0b') catch {};
+            try writer.writeByte('\x0b');
             return .{ .new_pos = pos + 2 };
         },
         '\\' => {
-            writer.writeByte('\\') catch {};
+            try writer.writeByte('\\');
             return .{ .new_pos = pos + 2 };
         },
         '0' => {
@@ -178,7 +178,7 @@ fn processEscape(format: []const u8, pos: usize, writer: anytype) EscapeResult {
             }) {
                 value = value *% 8 +% (format[j] - '0');
             }
-            writer.writeByte(value) catch {};
+            try writer.writeByte(value);
             return .{ .new_pos = j };
         },
         'x' => {
@@ -200,18 +200,18 @@ fn processEscape(format: []const u8, pos: usize, writer: anytype) EscapeResult {
                 value = value * 16 + digit;
             }
             if (hex_digits > 0) {
-                writer.writeByte(value) catch {};
+                try writer.writeByte(value);
                 return .{ .new_pos = j };
             } else {
                 // No hex digits, output \x literally
-                writer.writeByte('\\') catch {};
-                writer.writeByte('x') catch {};
+                try writer.writeByte('\\');
+                try writer.writeByte('x');
                 return .{ .new_pos = pos + 2 };
             }
         },
         else => {
             // Unknown escape, output backslash literally
-            writer.writeByte('\\') catch {};
+            try writer.writeByte('\\');
             return .{ .new_pos = pos + 1 };
         },
     }
@@ -1544,4 +1544,28 @@ test "printf float zero" {
     const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.000000", buffer.items);
+}
+
+test "processEscape should propagate write errors not swallow them" {
+    // A writer that always fails with BrokenPipe, simulating a broken
+    // pipe or disk-full condition.  processEscape currently swallows
+    // all write errors via `catch {}`, so this test documents the bug:
+    // printf reports success (exit 0) even though output was lost.
+    const failing_write_fn = struct {
+        fn f(_: void, _: []const u8) error{BrokenPipe}!usize {
+            return error.BrokenPipe;
+        }
+    }.f;
+    const FailingWriter = std.Io.GenericWriter(void, error{BrokenPipe}, failing_write_fn);
+    var fw = FailingWriter{ .context = {} };
+
+    // Format string "\\n" is a single escape sequence with no literal
+    // characters, so all output goes through processEscape.  If write
+    // errors propagated, runPrintf would return a non-zero exit code.
+    const args = [_][]const u8{"\\n"};
+    const result = try runPrintf(testing.allocator, &args, &fw, common.null_writer);
+
+    // The write failed, so printf should report an error.
+    // BUG: processEscape swallows the error, so result is 0.
+    try testing.expect(result != 0);
 }

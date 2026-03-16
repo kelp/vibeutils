@@ -784,7 +784,7 @@ fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anyty
         };
     } else std.fs.cwd().statFile(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
-        error.AccessDenied => std.fs.File.Stat{ .size = 0, .mode = 0, .mtime = 0, .atime = 0, .ctime = 0, .kind = .file, .inode = 0 },
+        error.AccessDenied => return error.AccessDenied,
         else => return err,
     };
 
@@ -1921,4 +1921,102 @@ test "u-t removes sticky bit from file with mode 01644" {
     try applySymbolicMode(&mode, "u-t", false, null);
     try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
     try testing.expect(!mode.sticky);
+}
+
+// Tests: AccessDenied from statFile should propagate, not substitute zeroed Stat
+
+test "chmod stat AccessDenied produces correct Permission denied message" {
+    // Skip if running as root (root bypasses permission checks)
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a subdirectory with a file inside
+    try tmp_dir.dir.makeDir("noaccess");
+    const inner_file = try tmp_dir.dir.createFile("noaccess/target.txt", .{});
+    inner_file.close();
+
+    // Get the full path to the file inside
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/target.txt", .{dir_path});
+    defer testing.allocator.free(inner_path);
+
+    // Remove execute permission from the directory, making the file inaccessible
+    const noaccess_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess", .{dir_path});
+    defer testing.allocator.free(noaccess_path);
+    const noaccess_z = std.posix.toPosixPath(noaccess_path) catch return;
+    _ = std.c.chmod(&noaccess_z, 0o000);
+
+    // Ensure we restore permissions for cleanup
+    defer _ = std.c.chmod(&noaccess_z, 0o755);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const files = [_][]const u8{inner_path};
+    const options = ChmodOptions{};
+
+    // chmodFiles should return FileOperationFailed since the file is inaccessible
+    _ = chmodFiles(testing.allocator, "755", &files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch |err| {
+        try testing.expect(err == ChmodError.FileOperationFailed);
+
+        // BUG: When statFile returns AccessDenied, the code substitutes a zeroed
+        // Stat instead of propagating the error. This causes the error to flow
+        // through the chmod() syscall path instead, which returns PermissionDenied.
+        // errorToMessage maps AccessDenied -> "Permission denied" (with space),
+        // but PermissionDenied falls through to @errorName -> "PermissionDenied"
+        // (camelCase, no space). The message should say "Permission denied".
+        try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Permission denied") != null);
+        return;
+    };
+
+    // Should not reach here -- chmodFiles should have returned an error
+    try testing.expect(false);
+}
+
+test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
+    // Skip if running as root (root bypasses permission checks)
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a subdirectory with a file inside
+    try tmp_dir.dir.makeDir("noaccess");
+    const inner_file = try tmp_dir.dir.createFile("noaccess/target.txt", .{});
+    inner_file.close();
+
+    // Get the full path to the file inside
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/target.txt", .{dir_path});
+    defer testing.allocator.free(inner_path);
+
+    // Remove execute permission from the directory
+    const noaccess_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess", .{dir_path});
+    defer testing.allocator.free(noaccess_path);
+    const noaccess_z = std.posix.toPosixPath(noaccess_path) catch return;
+    _ = std.c.chmod(&noaccess_z, 0o000);
+
+    // Ensure we restore permissions for cleanup
+    defer _ = std.c.chmod(&noaccess_z, 0o755);
+
+    var output_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer output_buffer.deinit(testing.allocator);
+
+    const mode = Mode.fromOctal(0o755);
+    const mode_spec = ModeSpec{ .octal = mode };
+    const options = ChmodOptions{};
+
+    // BUG: applyModeSpecToFile should propagate error.AccessDenied from statFile,
+    // but instead it substitutes a zeroed Stat (mode=0) and continues. The
+    // subsequent chmod() syscall also fails, but returns error.PermissionDenied
+    // instead of the original error.AccessDenied.
+    // This test expects AccessDenied to be propagated directly from stat.
+    const result = applyModeSpecToFile(inner_path, mode_spec, output_buffer.writer(testing.allocator), options);
+    try testing.expectError(error.AccessDenied, result);
 }

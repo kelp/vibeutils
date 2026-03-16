@@ -529,4 +529,14 @@ test_find() {
         print_test_result "find -path */sub/*" "FAIL" "Got: $out"
     fi
     rm -rf "$path_dir"
+
+    # Regression test: -regex stubs should reject all files (return no matches)
+    echo -e "${CYAN}Testing -regex stub regression...${NC}"
+    run_command cmd out err exit_code "$binary" /tmp "-regex" "impossible_pattern"
+    if [[ $exit_code -eq 0 && -z "$out" ]]; then
+        print_test_result "find -regex stub returns no matches" "PASS"
+    else
+        print_test_result "find -regex stub returns no matches" "FAIL" \
+            "Expected empty output, got: '$out' (exit: $exit_code)"
+    fi
 }

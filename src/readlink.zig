@@ -242,6 +242,8 @@ fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
                 if (std.mem.lastIndexOfScalar(u8, remaining.items, '/')) |last_slash| {
                     if (last_slash > 0) {
                         remaining.shrinkRetainingCapacity(last_slash);
+                    } else {
+                        remaining.shrinkRetainingCapacity(1); // keep just "/"
                     }
                 }
             } else {
@@ -735,4 +737,84 @@ test "readlink canonicalize-missing with dangling symlink (-m)" {
     // -m should succeed even for dangling symlinks
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(stdout_buf.items.len > 0);
+}
+
+test "readlink -m dotdot past root returns root" {
+    // Use a real tmp directory so the prefix resolves, then traverse past root.
+    // e.g. /real/dir/nonexistent/../../../.. should eventually resolve to /
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    // Count the depth of the resolved directory so we can go past root.
+    // e.g. "/private/tmp/zig-XXXX" has depth 3, so we need 4+ ".." after
+    // the nonexistent component (which adds 1 to depth).
+    var depth: usize = 0;
+    for (dir_path) |c| {
+        if (c == '/') depth += 1;
+    }
+    // Build: {dir_path}/nonexistent/../../..(depth+1 times)
+    // nonexistent adds 1 level, so total ".." needed = depth + 1
+    var path_buf = std.ArrayListUnmanaged(u8){};
+    defer path_buf.deinit(testing.allocator);
+    try path_buf.appendSlice(testing.allocator, dir_path);
+    try path_buf.appendSlice(testing.allocator, "/nonexistent");
+    for (0..depth + 1) |_| {
+        try path_buf.appendSlice(testing.allocator, "/..");
+    }
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-m", path_buf.items };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/\n", stdout_buf.items);
+}
+
+test "readlink -m multi-level dotdot past root returns root" {
+    // Test with two nonexistent components followed by enough ".." to pass root.
+    // e.g. /real/dir/a/b/../../../../.. -> /
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    var depth: usize = 0;
+    for (dir_path) |c| {
+        if (c == '/') depth += 1;
+    }
+    // Two nonexistent components add 2 to depth, so we need depth + 2 + 1 ".."
+    // to go one level past root (but root clamps to /).
+    var path_buf = std.ArrayListUnmanaged(u8){};
+    defer path_buf.deinit(testing.allocator);
+    try path_buf.appendSlice(testing.allocator, dir_path);
+    try path_buf.appendSlice(testing.allocator, "/a/b");
+    for (0..depth + 3) |_| {
+        try path_buf.appendSlice(testing.allocator, "/..");
+    }
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-m", path_buf.items };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/\n", stdout_buf.items);
+}
+
+test "readlink -m single component dotdot returns root" {
+    // Test /nonexistent/.. -> /
+    // Since /nonexistent doesn't exist, this goes through the "else" branch
+    // of canonicalizeMissing (no resolved prefix). Verify it still works.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-m", "/nonexistent_vibeutils_test/.." };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/\n", stdout_buf.items);
 }

@@ -76,7 +76,7 @@ test_tee() {
     
     # POSIX: dash means stdout (already written), not a file named "-"
     rm -f ./-
-    test_command_output "tee with dash argument (stdout)" "stdout_data" bash -c "echo 'stdout_data' | '$binary' -"
+    test_command_output "tee with dash argument (stdout)" $'stdout_data\nstdout_data' bash -c "echo 'stdout_data' | '$binary' -"
     # Verify no file named "-" was created
     if [[ ! -f ./ ]]; then
         print_test_result "tee dash is stdout not file" "PASS"
@@ -86,11 +86,11 @@ test_tee() {
     fi
 
     # Mix of files and dash - dash goes to stdout, file gets content
-    test_command_output "tee file and dash (stdout)" "mixed_output" bash -c "echo 'mixed_output' | '$binary' '$test_file1' -"
+    test_command_output "tee file and dash (stdout)" $'mixed_output\nmixed_output' bash -c "echo 'mixed_output' | '$binary' '$test_file1' -"
     test_command_output "tee file and dash (file content)" "mixed_output" cat "$test_file1"
 
     # Multiple dash arguments
-    test_command_output "tee multiple dash args (stdout)" "dash_test" bash -c "echo 'dash_test' | '$binary' - -"
+    test_command_output "tee multiple dash args (stdout)" $'dash_test\ndash_test\ndash_test' bash -c "echo 'dash_test' | '$binary' - -"
     
     # File creation in subdirectories
     local subdir="$TEMP_DIR/subdir"
@@ -250,6 +250,11 @@ test_tee() {
     local long_filename="$TEMP_DIR/$(printf 'a%.0s' {1..100}).txt"
     test_command_exit_code "tee long filename" 0 bash -c "echo 'long_name' | '$binary' '$long_filename' >/dev/null"
     
+    # Regression test: echo hello | tee - should output "hello" twice
+    echo -e "${CYAN}Testing tee - writes stdout twice regression...${NC}"
+    test_command_output "tee - outputs hello twice" $'hello\nhello' \
+        bash -c "echo 'hello' | '$binary' -"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}tee tests completed${NC}"
