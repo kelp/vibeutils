@@ -54,6 +54,7 @@ pub fn sortEntriesFromOptions(entries: []Entry, options: LsOptions) void {
         .dirs_first = options.group_directories_first,
         .reverse = options.reverse_sort,
         .use_atime = options.use_atime,
+        .use_ctime = options.use_ctime,
     };
     sorter.sortEntries(entries, sort_config);
 }

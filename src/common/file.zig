@@ -38,11 +38,17 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
     else
         stat_buf.mtim.sec * std.time.ns_per_s + stat_buf.mtim.nsec;
 
+    const ctime_ns = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+        stat_buf.ctimespec.sec * std.time.ns_per_s + stat_buf.ctimespec.nsec
+    else
+        stat_buf.ctim.sec * std.time.ns_per_s + stat_buf.ctim.nsec;
+
     return FileInfo{
         .size = @intCast(stat_buf.size),
         .mode = @intCast(stat_buf.mode),
         .atime = atime_ns,
         .mtime = mtime_ns,
+        .ctime = ctime_ns,
         .kind = kind,
         .inode = stat_buf.ino,
         .uid = @intCast(stat_buf.uid),
@@ -57,6 +63,7 @@ pub const FileInfo = struct {
     mode: std.fs.File.Mode,
     atime: i128, // nanoseconds since epoch
     mtime: i128, // nanoseconds since epoch
+    ctime: i128 = 0, // nanoseconds since epoch (inode change time)
     kind: std.fs.File.Kind,
     inode: std.fs.File.INode,
     uid: u32,
@@ -463,6 +470,7 @@ test "FileInfo.stat basic" {
     try testing.expectEqual(@as(u64, 13), info.size); // "Hello, World!" is 13 bytes
     try testing.expectEqual(std.fs.File.Kind.file, info.kind);
     try testing.expect(info.mtime > 0);
+    try testing.expect(info.ctime > 0);
 }
 
 test "formatTime recent file" {

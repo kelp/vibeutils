@@ -43,6 +43,7 @@ const LsArgs = struct {
     no_sort: bool = false,
     show_blocks: bool = false,
     use_atime: bool = false,
+    use_ctime: bool = false,
     multi_column: bool = false,
     columns_across: bool = false,
     full_time: bool = false,
@@ -82,6 +83,7 @@ const LsArgs = struct {
         .no_sort = .{ .short = 'f', .desc = "Do not sort; list entries in directory order (implies -a)" },
         .show_blocks = .{ .short = 's', .desc = "Display number of filesystem blocks" },
         .use_atime = .{ .short = 'u', .desc = "Use access time instead of modification time" },
+        .use_ctime = .{ .short = 'c', .desc = "Use status change time instead of modification time" },
         .multi_column = .{ .short = 'C', .desc = "Force multi-column output sorted down columns" },
         .columns_across = .{ .short = 'x', .desc = "Multi-column output sorted across rows" },
         .full_time = .{ .short = 'T', .desc = "With -l, show complete time including seconds" },
@@ -278,6 +280,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .no_sort = args.no_sort,
         .show_blocks = args.show_blocks,
         .use_atime = args.use_atime,
+        .use_ctime = args.use_ctime,
         .columns_across = args.columns_across,
         .full_time = args.full_time,
         .follow_all_symlinks = args.follow_all_symlinks,
@@ -323,6 +326,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\  -a, --all                  do not ignore entries starting with .
         \\  -A, --almost-all           do not list implied . and ..
+        \\  -c, --use-ctime            use status change time instead of modification time
         \\  -C, --multi-column         force multi-column output sorted down columns
         \\      --color=WHEN           when to use colors (valid: always, auto, never)
         \\  -m, --comma-format         fill width with a comma separated list of entries

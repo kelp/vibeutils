@@ -62,6 +62,7 @@ pub fn listDirectoryTest(
             .dirs_first = test_options.group_directories_first,
             .reverse = test_options.reverse_sort,
             .use_atime = test_options.use_atime,
+            .use_ctime = test_options.use_ctime,
         };
 
         sorter.sortEntries(entries.items, sort_config);

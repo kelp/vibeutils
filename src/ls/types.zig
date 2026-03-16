@@ -48,6 +48,7 @@ pub const LsOptions = struct {
     no_sort: bool = false, // -f: list entries in directory order
     show_blocks: bool = false, // -s: show filesystem blocks
     use_atime: bool = false, // -u: use access time instead of mtime
+    use_ctime: bool = false, // -c: use status change time instead of mtime
     columns_across: bool = false, // -x: sort across rows instead of down columns
     full_time: bool = false, // -T: show full time with seconds and year
     follow_all_symlinks: bool = false, // -L: follow all symlinks
@@ -158,6 +159,7 @@ pub const SortConfig = struct {
     dirs_first: bool = false,
     reverse: bool = false,
     use_atime: bool = false, // -u: sort by access time instead of mtime
+    use_ctime: bool = false, // -c: sort by status change time instead of mtime
 };
 
 /// Parse color mode from string argument

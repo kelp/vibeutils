@@ -5,7 +5,7 @@
 | -1   | yes   | yes   | yes     | yes | yes  | MUST |
 | -a   | yes   | yes   | yes     | yes | yes  | MUST |
 | -A   | yes   | yes   | yes     | yes | yes  | MUST |
-| -c   | yes   | yes   | yes     | yes | no   | MUST |
+| -c   | yes   | yes   | yes     | yes | yes  | MUST |
 | -C   | yes   | yes   | yes     | yes | yes  | MUST |
 | -d   | yes   | yes   | yes     | yes | yes  | MUST |
 | -f   | yes   | yes   | yes     | yes | yes  | MUST |

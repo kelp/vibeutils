@@ -18,10 +18,10 @@ pub fn compareEntries(config: SortConfig, a: Entry, b: Entry) bool {
 
     // Primary sort criteria
     const result: bool = if (config.by_time) blk: {
-        // Sort by time (mtime by default, atime with -u)
+        // Sort by time (mtime by default, atime with -u, ctime with -c)
         if (a.stat != null and b.stat != null) {
-            const a_time = if (config.use_atime) a.stat.?.atime else a.stat.?.mtime;
-            const b_time = if (config.use_atime) b.stat.?.atime else b.stat.?.mtime;
+            const a_time = if (config.use_ctime) a.stat.?.ctime else if (config.use_atime) a.stat.?.atime else a.stat.?.mtime;
+            const b_time = if (config.use_ctime) b.stat.?.ctime else if (config.use_atime) b.stat.?.atime else b.stat.?.mtime;
             if (a_time != b_time) {
                 break :blk a_time > b_time; // Newest first by default
             }
@@ -155,4 +155,40 @@ test "sorter - atime sorting with use_atime" {
     try testing.expectEqualStrings("new_access.txt", entries[0].name);
     try testing.expectEqualStrings("mid_access.txt", entries[1].name);
     try testing.expectEqualStrings("old_access.txt", entries[2].name);
+}
+
+test "sorter - ctime sorting with use_ctime" {
+    const common = @import("common");
+
+    // Files with different ctime values (ctime order differs from mtime order)
+    var entries = [_]Entry{
+        .{ .name = "old_change.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 3000, .ctime = 1000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "new_change.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 1000, .ctime = 3000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "mid_change.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 0, .mtime = 2000, .ctime = 2000, .mode = 0, .kind = .file, .inode = 3, .nlink = 1, .uid = 1000, .gid = 1000 } },
+    };
+
+    const config = SortConfig{ .by_time = true, .use_ctime = true };
+    sortEntries(&entries, config);
+
+    // Should be sorted by ctime, newest first
+    try testing.expectEqualStrings("new_change.txt", entries[0].name);
+    try testing.expectEqualStrings("mid_change.txt", entries[1].name);
+    try testing.expectEqualStrings("old_change.txt", entries[2].name);
+}
+
+test "sorter - ctime takes precedence over atime" {
+    const common = @import("common");
+
+    // When both use_ctime and use_atime are set, ctime should take precedence
+    var entries = [_]Entry{
+        .{ .name = "a.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 3000, .mtime = 0, .ctime = 1000, .mode = 0, .kind = .file, .inode = 1, .nlink = 1, .uid = 1000, .gid = 1000 } },
+        .{ .name = "b.txt", .kind = .file, .stat = common.file.FileInfo{ .size = 100, .atime = 1000, .mtime = 0, .ctime = 3000, .mode = 0, .kind = .file, .inode = 2, .nlink = 1, .uid = 1000, .gid = 1000 } },
+    };
+
+    const config = SortConfig{ .by_time = true, .use_ctime = true, .use_atime = true };
+    sortEntries(&entries, config);
+
+    // ctime should take priority: b.txt (ctime=3000) before a.txt (ctime=1000)
+    try testing.expectEqualStrings("b.txt", entries[0].name);
+    try testing.expectEqualStrings("a.txt", entries[1].name);
 }

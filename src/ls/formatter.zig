@@ -381,7 +381,7 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     // Date/time (padded to max_time_width for alignment)
     if (entry.stat) |stat| {
         var time_buf: [128]u8 = undefined;
-        const time_field = if (options.use_atime) stat.atime else stat.mtime;
+        const time_field = if (options.use_ctime) stat.ctime else if (options.use_atime) stat.atime else stat.mtime;
         const effective_time_style = if (options.full_time) TimeStyle.full else options.time_style;
         const time_str = try formatTimeWithStyle(time_field, effective_time_style, allocator, &time_buf);
         try writeDateColored(style, writer, time_str, time_field, max_time_width);
@@ -621,7 +621,7 @@ pub fn printEntries(
         for (entries) |entry| {
             if (entry.stat) |stat| {
                 var tbuf: [128]u8 = undefined;
-                const time_field = if (options.use_atime) stat.atime else stat.mtime;
+                const time_field = if (options.use_ctime) stat.ctime else if (options.use_atime) stat.atime else stat.mtime;
                 const eff_ts = if (options.full_time) TimeStyle.full else options.time_style;
                 const ts = formatTimeWithStyle(time_field, eff_ts, allocator, &tbuf) catch continue;
                 max_time_width = @max(max_time_width, ts.len);

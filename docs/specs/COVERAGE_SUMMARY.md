@@ -7,45 +7,15 @@ assignments.
 
 | Tier | Total | Implemented | Missing |
 |------|-------|-------------|---------|
-| MUST | 288 | 279 | 9 |
+| MUST | 288 | 288 | 0 |
 | SHOULD | 220 | 75 | 145 |
 | KEEP | 16 | 16 | 0 |
 | WONT | 115 | 0 | 115 |
-| **Total** | **694** | **370** | **324** |
+| **Total** | **694** | **379** | **315** |
 
 ## MUST Flags — Not Yet Implemented
 
-**9 flags** across 7 utilities.
-
-### chmod
-
-- `-h`
-
-### date
-
-- `-f`
-- `-j`
-- `-z`
-
-### df
-
-- `-n`
-
-### grep
-
-- `-Z`
-
-### id
-
-- `-p`
-
-### ln
-
-- `-h`
-
-### ls
-
-- `-c`
+**0 flags** across 0 utilities.
 
 ## SHOULD Flags — Not Yet Implemented
 
