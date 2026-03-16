@@ -141,6 +141,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\Usage: rm [OPTION]... [FILE]...
         \\Remove (unlink) the FILE(s).
         \\
+        \\  -d, --remove-empty-dirs  remove empty directories
         \\  -f, --force           ignore nonexistent files and arguments, never prompt
         \\  -i                    prompt before every removal
         \\  -I                    prompt once before removing more than three files,
