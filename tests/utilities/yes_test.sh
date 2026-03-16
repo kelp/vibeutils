@@ -71,4 +71,19 @@ test_yes() {
         print_test_result "yes clean exit on broken pipe" "FAIL" \
             "Expected exit code 0, got $exit_code"
     fi
+
+    # Regression test: strings > 8192 bytes must produce output
+    echo -e "${CYAN}Testing large string output...${NC}"
+
+    local large_string
+    large_string=$(printf 'A%.0s' $(seq 1 9000))
+    set +o pipefail
+    output=$("$binary" "$large_string" | head -n 1)
+    set -o pipefail
+    if [[ ${#output} -eq 9000 && "$output" == "$large_string" ]]; then
+        print_test_result "yes large string (9000 chars)" "PASS"
+    else
+        print_test_result "yes large string (9000 chars)" "FAIL" \
+            "Expected 9000 chars, got ${#output} chars"
+    fi
 }

@@ -238,4 +238,30 @@ test_realpath() {
 
     # Double dash separator
     test_command_exit_code "double dash with path" 0 "$binary" -s -- /usr/bin
+
+    # Regression test: --relative-base must check path boundary, not just prefix
+    echo -e "${CYAN}Testing --relative-base path boundary...${NC}"
+
+    local rb_dir="$TEMP_DIR/realpath_rb_test"
+    mkdir -p "$rb_dir/usr" "$rb_dir/usr2/bin"
+
+    # Path under base: should produce relative output
+    local rb_under
+    rb_under=$("$binary" -s --relative-base="$rb_dir/usr" "$rb_dir/usr/lib" 2>/dev/null)
+    if [[ "$rb_under" == "lib" ]]; then
+        print_test_result "--relative-base under base is relative" "PASS"
+    else
+        print_test_result "--relative-base under base is relative" "FAIL" "Expected 'lib', got '$rb_under'"
+    fi
+
+    # Path with similar prefix but different directory: should produce absolute output
+    local rb_outside
+    rb_outside=$("$binary" -s --relative-base="$rb_dir/usr" "$rb_dir/usr2/bin" 2>/dev/null)
+    if [[ "$rb_outside" == /* ]]; then
+        print_test_result "--relative-base prefix mismatch is absolute" "PASS"
+    else
+        print_test_result "--relative-base prefix mismatch is absolute" "FAIL" "Expected absolute path, got '$rb_outside'"
+    fi
+
+    rm -rf "$rb_dir"
 }

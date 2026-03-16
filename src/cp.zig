@@ -238,7 +238,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
     // Execute copy operations
     var hinted_overwrite = false;
-    const success = try executeCopyOperations(allocator, stderr_writer, config.positionals, config.runtime(), &hinted_overwrite);
+    const success = try executeCopyOperations(allocator, stdout_writer, stderr_writer, config.positionals, config.runtime(), &hinted_overwrite);
 
     return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
 }
@@ -315,7 +315,7 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
 }
 
 /// Execute all copy operations
-fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
+fn executeCopyOperations(allocator: Allocator, stdout_writer: anytype, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
     const dest = args[args.len - 1];
 
     // --parents requires destination to be a directory
@@ -366,10 +366,10 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
             }
 
             // Copy source directly to the constructed destination path
-            const result = copySingleFile(allocator, stderr_writer, source, parents_dest, options, hinted_overwrite, true) catch false;
+            const result = copySingleFile(allocator, stdout_writer, stderr_writer, source, parents_dest, options, hinted_overwrite, true) catch false;
             if (!result) success = false;
         } else {
-            const result = copySingleFile(allocator, stderr_writer, source, dest, options, hinted_overwrite, true) catch false;
+            const result = copySingleFile(allocator, stdout_writer, stderr_writer, source, dest, options, hinted_overwrite, true) catch false;
             if (!result) success = false;
         }
     }
@@ -378,7 +378,7 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 }
 
 /// Copy a single file or directory
-fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool, is_toplevel: bool) !bool {
+fn copySingleFile(allocator: Allocator, stdout_writer: anytype, stderr_writer: anytype, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool, is_toplevel: bool) !bool {
     // Determine whether to follow symlinks based on mode and position
     const follow_symlinks = switch (options.symlink_mode) {
         .follow_all => true,
@@ -449,7 +449,7 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
 
     // Print verbose message if requested
     if (options.verbose) {
-        stderr_writer.print("'{s}' -> '{s}'\n", .{ source, final_dest_path }) catch {};
+        stdout_writer.print("'{s}' -> '{s}'\n", .{ source, final_dest_path }) catch {};
     }
 
     // For regular files, handle hard link and symbolic link modes
@@ -469,7 +469,7 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
             copySymlink(allocator, stderr_writer, source, final_dest_path, options)
         else
             copyRegularFile(allocator, stderr_writer, source, final_dest_path, options),
-        .directory => copyDirectory(allocator, stderr_writer, source, final_dest_path, options, hinted_overwrite),
+        .directory => copyDirectory(allocator, stdout_writer, stderr_writer, source, final_dest_path, options, hinted_overwrite),
         .special => blk: {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "'{s}': unsupported file type", .{source});
             break :blk false;
@@ -551,7 +551,7 @@ fn createSymbolicLink(allocator: Allocator, stderr_writer: anytype, source_path:
 }
 
 /// Copy a directory recursively
-fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) bool {
+fn copyDirectory(allocator: Allocator, stdout_writer: anytype, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) bool {
     // Create destination directory
     std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -639,7 +639,7 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
         defer allocator.free(dest_child_path);
 
         // Recursively copy child
-        const result = copySingleFile(allocator, stderr_writer, source_child_path, dest_child_path, options, hinted_overwrite, false) catch false;
+        const result = copySingleFile(allocator, stdout_writer, stderr_writer, source_child_path, dest_child_path, options, hinted_overwrite, false) catch false;
         if (!result) success = false;
     }
 
@@ -1621,7 +1621,7 @@ test "cp: -n flag creates file when destination does not exist" {
     try test_dir.expectFileContent("new_dest.txt", "content");
 }
 
-test "cp: -v flag prints verbose output to stderr" {
+test "cp: -v flag prints verbose output to stdout" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
@@ -1634,18 +1634,18 @@ test "cp: -v flag prints verbose output to stderr" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
     defer testing.allocator.free(dest_path);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-v", source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain 'source' -> 'dest' pattern
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "->") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "->") != null);
 }
 
-test "cp: -v flag with recursive prints each copied file" {
+test "cp: -v flag with recursive prints each copied file to stdout" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
@@ -1660,17 +1660,17 @@ test "cp: -v flag with recursive prints each copied file" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_dir", .{base_path});
     defer testing.allocator.free(dest_path);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-Rv", source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have multiple -> entries (one per file)
     var count: usize = 0;
     var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, stderr_buffer.items, pos, "->")) |idx| {
+    while (std.mem.indexOfPos(u8, stdout_buffer.items, pos, "->")) |idx| {
         count += 1;
         pos = idx + 2;
     }
@@ -2051,4 +2051,84 @@ test "cp: -b -S sets backup with custom suffix" {
     const rt = config.runtime();
     try testing.expect(rt.backup);
     try testing.expectEqualStrings(".orig", rt.backup_suffix);
+}
+
+test "cp: -v verbose output goes to stdout not stderr" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Verbose message should appear in stdout
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "->") != null);
+}
+
+test "cp: -v stderr empty after successful verbose copy" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // stderr should have no verbose output after a successful copy
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "->") == null);
+}
+
+test "cp: -v verbose message format matches GNU cp" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Verbose message format should be: 'source' -> 'dest'\n in stdout
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}' -> '{s}'\n", .{ source_path, dest_path });
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
 }

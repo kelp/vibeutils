@@ -27,16 +27,18 @@ const SignalEntry = struct {
 };
 
 /// Supported signal names (POSIX subset)
+/// Signal numbers come from std.posix.SIG to ensure platform-correct
+/// values (e.g., USR1 is 30 on macOS but 10 on Linux).
 const signal_table = [_]SignalEntry{
-    .{ .name = "HUP", .number = 1 },
-    .{ .name = "INT", .number = 2 },
-    .{ .name = "QUIT", .number = 3 },
-    .{ .name = "ABRT", .number = 6 },
-    .{ .name = "KILL", .number = 9 },
-    .{ .name = "ALRM", .number = 14 },
-    .{ .name = "TERM", .number = 15 },
-    .{ .name = "USR1", .number = 30 },
-    .{ .name = "USR2", .number = 31 },
+    .{ .name = "HUP", .number = @intCast(std.posix.SIG.HUP) },
+    .{ .name = "INT", .number = @intCast(std.posix.SIG.INT) },
+    .{ .name = "QUIT", .number = @intCast(std.posix.SIG.QUIT) },
+    .{ .name = "ABRT", .number = @intCast(std.posix.SIG.ABRT) },
+    .{ .name = "KILL", .number = @intCast(std.posix.SIG.KILL) },
+    .{ .name = "ALRM", .number = @intCast(std.posix.SIG.ALRM) },
+    .{ .name = "TERM", .number = @intCast(std.posix.SIG.TERM) },
+    .{ .name = "USR1", .number = @intCast(std.posix.SIG.USR1) },
+    .{ .name = "USR2", .number = @intCast(std.posix.SIG.USR2) },
 };
 
 /// Command-line arguments for the timeout utility
@@ -659,4 +661,53 @@ test "runTimeout - preserve-status on timeout" {
     const result = try runTimeout(testing.allocator, &.{ "--preserve-status", "1", "sleep", "100" }, common.null_writer, common.null_writer);
     // With preserve-status, exit code is 128 + signal (15 for TERM = 143)
     try testing.expectEqual(@as(u8, 143), result);
+}
+
+test "signal_table - USR1 matches platform signal number" {
+    // The signal_table must use platform-correct values, not hardcoded
+    // BSD/macOS numbers. On Linux SIGUSR1=10, on macOS SIGUSR1=30.
+    // Compare against std.posix.SIG which provides OS-correct constants.
+    const expected: u8 = @intCast(std.posix.SIG.USR1);
+    var found = false;
+    for (signal_table) |entry| {
+        if (std.mem.eql(u8, entry.name, "USR1")) {
+            try testing.expectEqual(expected, entry.number);
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "signal_table - USR2 matches platform signal number" {
+    // On Linux SIGUSR2=12, on macOS SIGUSR2=31.
+    const expected: u8 = @intCast(std.posix.SIG.USR2);
+    var found = false;
+    for (signal_table) |entry| {
+        if (std.mem.eql(u8, entry.name, "USR2")) {
+            try testing.expectEqual(expected, entry.number);
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "parseSignal - USR1 returns platform-correct value" {
+    // parseSignal must return the OS-defined signal number, not a
+    // hardcoded constant. This catches the bug where USR1=30 (macOS)
+    // is returned on Linux where USR1 should be 10.
+    const expected: u8 = @intCast(std.posix.SIG.USR1);
+    try testing.expectEqual(@as(?u8, expected), parseSignal("USR1"));
+    try testing.expectEqual(@as(?u8, expected), parseSignal("SIGUSR1"));
+    try testing.expectEqual(@as(?u8, expected), parseSignal("usr1"));
+    try testing.expectEqual(@as(?u8, expected), parseSignal("sigusr1"));
+}
+
+test "parseSignal - USR2 returns platform-correct value" {
+    const expected: u8 = @intCast(std.posix.SIG.USR2);
+    try testing.expectEqual(@as(?u8, expected), parseSignal("USR2"));
+    try testing.expectEqual(@as(?u8, expected), parseSignal("SIGUSR2"));
+    try testing.expectEqual(@as(?u8, expected), parseSignal("usr2"));
+    try testing.expectEqual(@as(?u8, expected), parseSignal("sigusr2"));
 }

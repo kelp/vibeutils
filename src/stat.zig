@@ -907,8 +907,16 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
             continue;
         }
 
-        const stat_buf = doStat(path, opts.dereference) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot stat '{s}': No such file or directory", .{path});
+        const stat_buf = doStat(path, opts.dereference) catch |err| {
+            const msg = switch (err) {
+                error.AccessDenied => "Permission denied",
+                error.FileNotFound => "No such file or directory",
+                error.NotDir => "Not a directory",
+                error.NameTooLong => "File name too long",
+                error.SymLinkLoop => "Too many levels of symbolic links",
+                else => "Cannot access",
+            };
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot stat '{s}': {s}", .{ path, msg });
             has_error = true;
             continue;
         };
@@ -1717,4 +1725,64 @@ test "stat -- separator" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n", stdout_buffer.items);
+}
+
+test "stat nonexistent file error message says No such file" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/no/such/path/at/all"};
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 1), result);
+    // Error message should contain the filename
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "/no/such/path/at/all") != null);
+    // Error message should say "No such file or directory" for ENOENT
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+}
+
+test "stat permission denied error message is not No such file" {
+    // Skip if running as root (root bypasses permission checks)
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a subdirectory with a file inside
+    try tmp_dir.dir.makeDir("noaccess");
+    const inner_file = try tmp_dir.dir.createFile("noaccess/secret.txt", .{});
+    inner_file.close();
+
+    // Get the full path to the file inside
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/secret.txt", .{dir_path});
+    defer testing.allocator.free(inner_path);
+
+    // Remove execute permission from the directory, making the file inaccessible
+    const noaccess_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess", .{dir_path});
+    defer testing.allocator.free(noaccess_path);
+    const noaccess_z = std.posix.toPosixPath(noaccess_path) catch return;
+    _ = std.c.chmod(&noaccess_z, 0o000);
+
+    // Ensure we restore permissions for cleanup
+    defer _ = std.c.chmod(&noaccess_z, 0o755);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{inner_path};
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should fail
+    try testing.expectEqual(@as(u8, 1), result);
+    // Error message should contain the filename
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "noaccess/secret.txt") != null);
+    // BUG: The error message should NOT say "No such file or directory"
+    // for an AccessDenied error. It should say "Permission denied".
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Permission denied") != null);
 }

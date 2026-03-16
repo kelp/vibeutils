@@ -267,6 +267,32 @@ test_cut() {
         print_test_result "cut comprehensive test count" "FAIL" "Only executed $TESTS_RUN tests, expected 40+"
     fi
 
+    echo -e "${CYAN}Testing error diagnostics on bad files...${NC}"
+
+    # Regression test: cut must print error message for nonexistent files
+    local cut_err_cmd cut_err_out cut_err_stderr cut_err_exit
+    run_command cut_err_cmd cut_err_out cut_err_stderr cut_err_exit "$binary" -f1 /nonexistent/file
+    if [[ $cut_err_exit -ne 0 ]]; then
+        print_test_result "cut nonexistent file exits non-zero" "PASS"
+    else
+        print_test_result "cut nonexistent file exits non-zero" "FAIL" \
+            "Expected non-zero exit, got $cut_err_exit"
+    fi
+
+    if [[ -n "$cut_err_stderr" ]]; then
+        print_test_result "cut nonexistent file prints error" "PASS"
+    else
+        print_test_result "cut nonexistent file prints error" "FAIL" \
+            "Expected non-empty stderr"
+    fi
+
+    if [[ "$cut_err_stderr" == *"/nonexistent/file"* ]]; then
+        print_test_result "cut error mentions filename" "PASS"
+    else
+        print_test_result "cut error mentions filename" "FAIL" \
+            "Expected stderr to contain '/nonexistent/file', got: '$cut_err_stderr'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}cut tests completed${NC}"

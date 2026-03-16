@@ -466,7 +466,6 @@ fn processFile(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) u8 {
-    _ = stderr_writer;
     var read_buf: [8192]u8 = undefined;
     var reader = file.reader(&read_buf);
 
@@ -478,7 +477,8 @@ fn processFile(
         line_buf.clearRetainingCapacity();
 
         // Read until line terminator or EOF
-        const eof = readLine(&reader.interface, &line_buf, allocator, line_terminator) catch {
+        const eof = readLine(&reader.interface, &line_buf, allocator, line_terminator) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "read error: {s}", .{@errorName(err)});
             return @intFromEnum(common.ExitCode.general_error);
         };
 
@@ -487,10 +487,12 @@ fn processFile(
         // Process the line
         switch (mode) {
             .bytes, .characters => {
-                cutBytesOrChars(line_buf.items, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch {
+                cutBytesOrChars(line_buf.items, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "write error: {s}", .{@errorName(err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
-                stdout_writer.writeAll(&.{line_terminator}) catch {
+                stdout_writer.writeAll(&.{line_terminator}) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "write error: {s}", .{@errorName(err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
             },
@@ -503,10 +505,12 @@ fn processFile(
                         output_delim,
                         only_delimited,
                         stdout_writer,
-                    ) catch {
+                    ) catch |err| {
+                        common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "write error: {s}", .{@errorName(err)});
                         return @intFromEnum(common.ExitCode.general_error);
                     };
-                    stdout_writer.writeAll(&.{line_terminator}) catch {
+                    stdout_writer.writeAll(&.{line_terminator}) catch |err| {
+                        common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "write error: {s}", .{@errorName(err)});
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                 } else {
@@ -523,10 +527,12 @@ fn processFile(
                             output_delim,
                             only_delimited,
                             stdout_writer,
-                        ) catch {
+                        ) catch |err| {
+                            common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "write error: {s}", .{@errorName(err)});
                             return @intFromEnum(common.ExitCode.general_error);
                         };
-                        stdout_writer.writeAll(&.{line_terminator}) catch {
+                        stdout_writer.writeAll(&.{line_terminator}) catch |err| {
+                            common.printErrorWithProgram(allocator, stderr_writer, "cut", false, "write error: {s}", .{@errorName(err)});
                             return @intFromEnum(common.ExitCode.general_error);
                         };
                     }
@@ -1268,4 +1274,55 @@ test "cut: -n without -b has no effect on field mode" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("a\n", stdout_buffer.items);
+}
+
+// ============================================================================
+//                  processFile stderr diagnostic tests (RED)
+// ============================================================================
+
+test "cut: processFile reports read errors to stderr" {
+    // Create a valid file, then close its handle so reads will fail.
+    // processFile should write a diagnostic message to stderr, but
+    // the bug (line 469: _ = stderr_writer) means stderr stays empty.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_file = try tmp_dir.dir.createFile("readable.txt", .{ .read = true });
+    try tmp_file.writeAll("hello\n");
+    // Close the handle to make subsequent reads fail
+    tmp_file.close();
+
+    // Create a File struct with the now-invalid handle
+    const bad_file = std.fs.File{ .handle = tmp_file.handle };
+
+    const ranges = try parseRangeList(testing.allocator, "1");
+    defer testing.allocator.free(ranges);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const result = processFile(
+        testing.allocator,
+        bad_file,
+        ranges,
+        .bytes,
+        '\t',
+        "\t",
+        false,
+        false,
+        false,
+        false,
+        '\n',
+        stdout_buffer.writer(testing.allocator),
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    // Should return non-zero exit code
+    try testing.expectEqual(@as(u8, 1), result);
+    // Should have written a diagnostic message to stderr
+    // This assertion will FAIL because processFile discards stderr_writer
+    try testing.expect(stderr_buffer.items.len > 0);
 }

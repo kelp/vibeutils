@@ -385,4 +385,19 @@ test_mkdir() {
     test_command_succeeds "mkdir very deep path" "$binary" -p "$deep_path"
     test_command_exit_code "mkdir deep path exists" 0 bash -c "[ -d '$deep_path' ]"
     rm -rf deep
+
+    echo -e "${CYAN}Testing POSIX-style error messages...${NC}"
+
+    # Regression test: mkdir error messages use POSIX strings
+    local mkdir_dup_dir
+    mkdir_dup_dir=$(create_temp_dir)
+    local mkdir_err_cmd mkdir_err_out mkdir_err_stderr mkdir_err_exit
+    run_command mkdir_err_cmd mkdir_err_out mkdir_err_stderr mkdir_err_exit "$binary" "$mkdir_dup_dir"
+    if [[ "$mkdir_err_stderr" == *"File exists"* ]]; then
+        print_test_result "mkdir duplicate shows 'File exists'" "PASS"
+    else
+        print_test_result "mkdir duplicate shows 'File exists'" "FAIL" \
+            "Expected 'File exists' in stderr, got: '$mkdir_err_stderr'"
+    fi
+    rm -rf "$mkdir_dup_dir"
 }

@@ -427,4 +427,52 @@ test_chmod() {
     else
         print_test_result "files 644, directories 755 (proper pattern)" "FAIL" "File: $file_perms, Dir: $dir_perms"
     fi
+
+    # Regression test: sticky bit must work with any who specifier (u+t, g+t), not just o+t
+    echo -e "${CYAN}Testing sticky bit with various who specifiers...${NC}"
+
+    local sticky_file=$(create_temp_file "sticky test")
+    chmod 755 "$sticky_file"
+
+    # u+t should set the sticky bit
+    test_command_succeeds "chmod u+t sets sticky bit" "$binary" u+t "$sticky_file"
+    local sticky_perms=""
+    sticky_perms=$(stat -c %a "$sticky_file" 2>/dev/null)
+    if [[ -z "$sticky_perms" ]]; then
+        sticky_perms=$(stat -f %A "$sticky_file" 2>/dev/null)
+    fi
+    if [[ "$sticky_perms" == "1755" ]]; then
+        print_test_result "chmod u+t sticky bit verification" "PASS"
+    else
+        print_test_result "chmod u+t sticky bit verification" "FAIL" "Expected 1755, got: $sticky_perms"
+    fi
+
+    # Remove sticky bit for next test
+    chmod 0755 "$sticky_file"
+
+    # g+t should also set the sticky bit
+    test_command_succeeds "chmod g+t sets sticky bit" "$binary" g+t "$sticky_file"
+    sticky_perms=""
+    sticky_perms=$(stat -c %a "$sticky_file" 2>/dev/null)
+    if [[ -z "$sticky_perms" ]]; then
+        sticky_perms=$(stat -f %A "$sticky_file" 2>/dev/null)
+    fi
+    if [[ "$sticky_perms" == "1755" ]]; then
+        print_test_result "chmod g+t sticky bit verification" "PASS"
+    else
+        print_test_result "chmod g+t sticky bit verification" "FAIL" "Expected 1755, got: $sticky_perms"
+    fi
+
+    # a-t should remove the sticky bit
+    test_command_succeeds "chmod a-t removes sticky bit" "$binary" a-t "$sticky_file"
+    sticky_perms=""
+    sticky_perms=$(stat -c %a "$sticky_file" 2>/dev/null)
+    if [[ -z "$sticky_perms" ]]; then
+        sticky_perms=$(stat -f %A "$sticky_file" 2>/dev/null)
+    fi
+    if [[ "$sticky_perms" == "755" ]]; then
+        print_test_result "chmod a-t sticky bit removed" "PASS"
+    else
+        print_test_result "chmod a-t sticky bit removed" "FAIL" "Expected 755, got: $sticky_perms"
+    fi
 }

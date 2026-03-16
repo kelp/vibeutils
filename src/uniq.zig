@@ -161,8 +161,6 @@ fn runUniqWithInput(
     out_writer: anytype,
     stderr_writer: anytype,
 ) !u8 {
-    _ = stderr_writer;
-
     const delimiter: u8 = if (opts.zero_terminated) 0 else '\n';
 
     var input_buffer: [8192]u8 = undefined;
@@ -176,8 +174,14 @@ fn runUniqWithInput(
 
     while (true) {
         const line = readLine(allocator, input, delimiter) catch |err| switch (err) {
-            error.OutOfMemory => return @intFromEnum(common.ExitCode.general_error),
-            else => return @intFromEnum(common.ExitCode.general_error),
+            error.OutOfMemory => {
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "read error: {s}", .{@errorName(err)});
+                return @intFromEnum(common.ExitCode.general_error);
+            },
+            else => {
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", std.fs.File.stderr().isTty(), "read error: {s}", .{@errorName(err)});
+                return @intFromEnum(common.ExitCode.general_error);
+            },
         };
 
         if (line == null) {
@@ -770,4 +774,41 @@ test "uniq extra operand returns misuse" {
     const result = try runUniq(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+}
+
+test "uniq read errors print diagnostic to stderr" {
+    // Create a valid file, then close its handle so reads will fail.
+    // runUniqWithInput should write a diagnostic to stderr, but
+    // the bug (line 164: _ = stderr_writer) means stderr stays empty.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const tmp_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try tmp_file.writeAll("hello\n");
+    // Close the handle to make subsequent reads fail
+    tmp_file.close();
+
+    // Create a File struct with the now-invalid handle
+    const bad_file = std.fs.File{ .handle = tmp_file.handle };
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const parsed_args = UniqArgs{};
+    const result = try runUniqWithInput(
+        testing.allocator,
+        parsed_args,
+        bad_file,
+        stdout_buffer.writer(testing.allocator),
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    // Should return non-zero exit code
+    try testing.expectEqual(@as(u8, 1), result);
+    // Should have written a diagnostic message to stderr.
+    // This assertion will FAIL because runUniqWithInput discards stderr_writer.
+    try testing.expect(stderr_buffer.items.len > 0);
 }

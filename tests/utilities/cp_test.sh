@@ -801,4 +801,22 @@ test_cp() {
     else
         print_test_result "cp no hint for new destination" "FAIL" "Unexpected hint: $hint_new_stderr"
     fi
+
+    # Regression test: cp -v must write verbose output to stdout, not stderr
+    echo -e "${CYAN}Testing verbose output goes to stdout...${NC}"
+
+    local v_src=$(create_temp_file "verbose stdout test")
+    local v_dst="$TEMP_DIR/verbose_stdout_dest.txt"
+    local v_out="" v_err="" v_exit=""
+    run_command v_cmd v_out v_err v_exit "$binary" -v "$v_src" "$v_dst"
+    if [[ "$v_out" =~ "->" ]]; then
+        print_test_result "cp -v output on stdout" "PASS"
+    else
+        print_test_result "cp -v output on stdout" "FAIL" "Expected '->' on stdout, got stdout: '$v_out'"
+    fi
+    if [[ "$v_err" != *"->"* ]]; then
+        print_test_result "cp -v no arrow on stderr" "PASS"
+    else
+        print_test_result "cp -v no arrow on stderr" "FAIL" "Unexpected '->' on stderr: '$v_err'"
+    fi
 }

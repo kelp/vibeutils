@@ -89,4 +89,37 @@ test_timeout() {
 
     # Test with fractional duration
     test_command_exit_code "timeout with fractional duration" 0 "$binary" 0.5 true
+
+    echo -e "${CYAN}Testing platform-correct signal names...${NC}"
+
+    # Regression test: signal names resolve to platform-correct numbers
+    # USR1 should be a valid signal name that timeout accepts
+    local sig_cmd sig_out sig_stderr sig_exit
+    run_command sig_cmd sig_out sig_stderr sig_exit "$binary" -s USR1 0.5 sleep 60
+    # Exit code should indicate signal termination, not an invalid-signal error (125)
+    if [[ $sig_exit -ne 125 ]]; then
+        print_test_result "timeout -s USR1 is accepted" "PASS"
+    else
+        print_test_result "timeout -s USR1 is accepted" "FAIL" \
+            "Expected signal delivery (not 125), got exit $sig_exit. Stderr: $sig_stderr"
+    fi
+
+    # Regression test: USR2 is also accepted as a valid signal name
+    run_command sig_cmd sig_out sig_stderr sig_exit "$binary" -s USR2 0.5 sleep 60
+    if [[ $sig_exit -ne 125 ]]; then
+        print_test_result "timeout -s USR2 is accepted" "PASS"
+    else
+        print_test_result "timeout -s USR2 is accepted" "FAIL" \
+            "Expected signal delivery (not 125), got exit $sig_exit. Stderr: $sig_stderr"
+    fi
+
+    # Verify --help documents the --signal flag
+    local help_out
+    help_out=$("$binary" --help 2>&1) || true
+    if [[ "$help_out" == *"--signal"* ]]; then
+        print_test_result "timeout --help documents --signal flag" "PASS"
+    else
+        print_test_result "timeout --help documents --signal flag" "FAIL" \
+            "Expected --help to mention --signal"
+    fi
 }

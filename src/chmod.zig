@@ -739,13 +739,12 @@ fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
     }
 
     if (perms & 16 != 0) { // 't' bit (sticky)
-        if (who & 4 != 0) { // sticky for other
-            switch (op) {
-                '+' => mode.sticky = true,
-                '-' => mode.sticky = false,
-                '=' => mode.sticky = true,
-                else => {},
-            }
+        // POSIX: sticky bit ignores who-bits — always applied
+        switch (op) {
+            '+' => mode.sticky = true,
+            '-' => mode.sticky = false,
+            '=' => mode.sticky = true,
+            else => {},
         }
     }
 }
@@ -1877,4 +1876,49 @@ test "chmod ChmodOptions has preserve_root field" {
 test "chmod ChmodOptions preserve_root defaults to false" {
     const options = ChmodOptions{};
     try testing.expect(!options.preserve_root);
+}
+
+// Tests: Sticky bit should apply regardless of who-bits (POSIX bug)
+
+test "a+t sets sticky bit on file with mode 0644" {
+    var mode = Mode.fromOctal(0o644);
+    try applySymbolicMode(&mode, "a+t", false, null);
+    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
+    try testing.expect(mode.sticky);
+}
+
+test "u+t sets sticky bit on file with mode 0644" {
+    var mode = Mode.fromOctal(0o644);
+    try applySymbolicMode(&mode, "u+t", false, null);
+    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
+    try testing.expect(mode.sticky);
+}
+
+test "g+t sets sticky bit on file with mode 0644" {
+    var mode = Mode.fromOctal(0o644);
+    try applySymbolicMode(&mode, "g+t", false, null);
+    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
+    try testing.expect(mode.sticky);
+}
+
+test "o+t sets sticky bit on file with mode 0644" {
+    // This case already works because the code checks who & 4 (other)
+    var mode = Mode.fromOctal(0o644);
+    try applySymbolicMode(&mode, "o+t", false, null);
+    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
+    try testing.expect(mode.sticky);
+}
+
+test "a-t removes sticky bit from file with mode 01644" {
+    var mode = Mode.fromOctal(0o1644);
+    try applySymbolicMode(&mode, "a-t", false, null);
+    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+    try testing.expect(!mode.sticky);
+}
+
+test "u-t removes sticky bit from file with mode 01644" {
+    var mode = Mode.fromOctal(0o1644);
+    try applySymbolicMode(&mode, "u-t", false, null);
+    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+    try testing.expect(!mode.sticky);
 }

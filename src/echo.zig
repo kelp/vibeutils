@@ -217,13 +217,25 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
                     try writer.writeByte('\\'); // Backslash
                     i += 2;
                 },
-                '0'...'7' => {
-                    // Octal sequence: \0NNN or \NNN (up to 3 octal digits)
+                '0' => {
+                    // Octal with \0 prefix: \0NNN (up to 3 octal digits after the 0 introducer)
+                    var octal_value: u8 = 0;
+                    var j: usize = 2; // skip past \ and 0 introducer
+                    var count: usize = 0;
+                    while (count < 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : ({
+                        j += 1;
+                        count += 1;
+                    }) {
+                        octal_value = octal_value *% 8 +% (s[i + j] - '0');
+                    }
+                    try writer.writeByte(octal_value);
+                    i += j;
+                },
+                '1'...'7' => {
+                    // Octal sequence: \NNN (up to 3 octal digits, first digit is part of value)
                     var octal_value: u8 = 0;
                     var j: usize = 1;
                     while (j <= 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : (j += 1) {
-                        // Convert octal digit to value and accumulate
-                        // Use wrapping arithmetic to match GNU behavior for overflow
                         octal_value = octal_value *% 8 +% (s[i + j] - '0');
                     }
                     try writer.writeByte(octal_value);
@@ -493,4 +505,63 @@ test "echo -n with lone dash and text" {
     const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("- hello", buffer.items);
+}
+
+// Tests for \0NNN octal introducer bug:
+// GNU echo -e treats \0 as a prefix introducer followed by up to 3 octal digits,
+// distinct from \NNN where the first digit is part of the value.
+
+test "echo -e backslash-zero-NNN: \\0077 produces ? (octal 077 = 63)" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \0077: \0 is introducer, 077 is the value = 63 = '?'
+    const args = [_][]const u8{ "-e", "\\0077" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("?\n", buffer.items);
+}
+
+test "echo -e backslash-zero-NNN: \\0101 produces A (octal 101 = 65)" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \0101: \0 is introducer, 101 is the value = 65 = 'A'
+    const args = [_][]const u8{ "-e", "\\0101" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("A\n", buffer.items);
+}
+
+test "echo -e backslash-zero alone: \\0 produces NUL" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \0 alone = NUL byte
+    const args = [_][]const u8{ "-e", "\\0" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\x00\n", buffer.items);
+}
+
+test "echo -e backslash-zero-zero: \\00 produces NUL" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \00 = NUL byte (introducer \0, value 0)
+    const args = [_][]const u8{ "-e", "\\00" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\x00\n", buffer.items);
+}
+
+test "echo -e backslash-NNN without zero prefix: \\077 produces ?" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \077: no introducer, 077 is the value = 63 = '?'
+    const args = [_][]const u8{ "-e", "\\077" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("?\n", buffer.items);
 }

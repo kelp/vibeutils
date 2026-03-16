@@ -193,13 +193,27 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     return @intCast(mode);
 }
 
+/// Convert system error to user-friendly POSIX-style message
+fn errorToMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.PathAlreadyExists => "File exists",
+        error.AccessDenied => "Permission denied",
+        error.FileNotFound => "No such file or directory",
+        error.NoSuchFileOrDirectory => "No such file or directory",
+        error.NotDir => "Not a directory",
+        error.ReadOnlyFileSystem => "Read-only file system",
+        error.NameTooLong => "File name too long",
+        else => @errorName(err),
+    };
+}
+
 /// Create directory with specified options
 fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     if (options.parents) {
         try createPathComponents(path, options, prog_name, stdout_writer, stderr_writer, allocator);
     } else {
         std.fs.cwd().makeDir(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ path, errorToMessage(err) });
             return err;
         };
 
@@ -249,7 +263,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         std.fs.cwd().makeDir(current_path) catch |err| switch (err) {
             error.PathAlreadyExists => continue, // -p: silently skip existing
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ current_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ current_path, errorToMessage(err) });
                 return err;
             },
         };
@@ -354,7 +368,7 @@ test "mkdir fails for existing directory without parents flag" {
     const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "PathAlreadyExists") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "File exists") != null);
 }
 
 test "mkdir with parents flag succeeds for existing directory" {
@@ -620,4 +634,28 @@ test "mkdir -p with trailing slashes" {
         return err;
     };
     test_dir.close();
+}
+
+test "mkdir error for existing directory uses POSIX-style message" {
+    // Create directory first
+    try std.fs.cwd().makeDir("test_posix_err");
+    defer std.fs.cwd().deleteDir("test_posix_err") catch {};
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"test_posix_err"};
+    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // Should fail with non-zero exit code
+    try testing.expectEqual(@as(u8, 1), result);
+
+    const stderr_output = stderr_buffer.items;
+
+    // Error message should use POSIX-style "File exists" not Zig-style "PathAlreadyExists"
+    try testing.expect(std.mem.indexOf(u8, stderr_output, "File exists") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_output, "PathAlreadyExists") == null);
+
+    // Should follow project error format: "mkdir: cannot create directory 'test_posix_err': File exists"
+    try testing.expect(std.mem.indexOf(u8, stderr_output, "cannot create directory 'test_posix_err'") != null);
 }

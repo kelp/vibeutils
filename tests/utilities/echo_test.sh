@@ -121,4 +121,28 @@ test_echo() {
         print_test_result "echo >> file appends (issue #5)" "FAIL" \
             "Expected 'existing\\nnew', got '$actual'"
     fi
+
+    # Regression test: \0NNN octal parsing treats 0 as introducer prefix
+    echo -e "${CYAN}Testing \\0NNN octal escape parsing...${NC}"
+
+    output=$("$binary" -e '\0101')
+    if [[ "$output" == "A" ]]; then
+        print_test_result "echo -e \\0101 produces A" "PASS"
+    else
+        print_test_result "echo -e \\0101 produces A" "FAIL" "Expected 'A', got '$output'"
+    fi
+
+    output=$("$binary" -e '\0077')
+    if [[ "$output" == "?" ]]; then
+        print_test_result "echo -e \\0077 produces ?" "PASS"
+    else
+        print_test_result "echo -e \\0077 produces ?" "FAIL" "Expected '?', got '$output'"
+    fi
+
+    output=$("$binary" -e '\077')
+    if [[ "$output" == "?" ]]; then
+        print_test_result "echo -e \\077 produces ?" "PASS"
+    else
+        print_test_result "echo -e \\077 produces ?" "FAIL" "Expected '?', got '$output'"
+    fi
 }

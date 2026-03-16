@@ -252,7 +252,9 @@ fn processPath(
 
         if (opts.relative_base != null and opts.relative_to == null) {
             // --relative-base only: print relative if under base, absolute otherwise
-            if (std.mem.startsWith(u8, resolved, resolved_base)) {
+            if (std.mem.startsWith(u8, resolved, resolved_base) and
+                (resolved.len == resolved_base.len or resolved[resolved_base.len] == '/'))
+            {
                 const rel = std.fs.path.relative(allocator, resolved_base, resolved) catch {
                     break :blk try allocator.dupe(u8, resolved);
                 };
@@ -668,4 +670,43 @@ test "realpath: relative-base not under base" {
     try testing.expectEqual(@as(u8, 0), result);
     // Should output absolute path since /etc/hosts is not under /usr
     try testing.expectEqualStrings("/etc/hosts\n", stdout_buffer.items);
+}
+
+test "realpath: relative-base path correctly under base" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // /usr/bin is genuinely under /usr, so output should be relative
+    const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr/bin" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("bin\n", stdout_buffer.items);
+}
+
+test "realpath: relative-base prefix false positive" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // /usr2/bin starts with the string "/usr" but is NOT under /usr.
+    // The bug: startsWith prefix match treats /usr2/bin as relative to /usr.
+    // Correct behavior: output the absolute path /usr2/bin.
+    const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr2/bin" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Must output absolute path because /usr2/bin is NOT under /usr
+    try testing.expectEqualStrings("/usr2/bin\n", stdout_buffer.items);
+}
+
+test "realpath: relative-base path equals base" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // When path equals base exactly, output should be "."
+    const args = [_][]const u8{ "-s", "--relative-base=/usr", "/usr" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(".\n", stdout_buffer.items);
 }

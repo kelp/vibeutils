@@ -133,6 +133,33 @@ test_stat() {
     test_command_exit_code "stat nonexistent file exits 1" 1 \
         "$binary" /nonexistent/path/file
 
+    echo -e "${CYAN}Testing correct error messages...${NC}"
+
+    # Regression test: stat must show correct error for each error type
+    local stat_err_cmd stat_err_out stat_err_stderr stat_err_exit
+    run_command stat_err_cmd stat_err_out stat_err_stderr stat_err_exit "$binary" /nonexistent
+    if [[ "$stat_err_stderr" == *"No such file"* ]]; then
+        print_test_result "stat nonexistent shows 'No such file'" "PASS"
+    else
+        print_test_result "stat nonexistent shows 'No such file'" "FAIL" \
+            "Expected 'No such file' in stderr, got: '$stat_err_stderr'"
+    fi
+
+    # Regression test: stat permission denied shows correct message
+    local stat_perm_dir
+    stat_perm_dir=$(create_temp_dir)
+    touch "$stat_perm_dir/secret"
+    chmod 000 "$stat_perm_dir"
+    run_command stat_err_cmd stat_err_out stat_err_stderr stat_err_exit "$binary" "$stat_perm_dir/secret"
+    if [[ "$stat_err_stderr" == *"Permission denied"* ]]; then
+        print_test_result "stat permission denied shows correct message" "PASS"
+    else
+        print_test_result "stat permission denied shows correct message" "FAIL" \
+            "Expected 'Permission denied' in stderr, got: '$stat_err_stderr'"
+    fi
+    chmod 755 "$stat_perm_dir"
+    rm -rf "$stat_perm_dir"
+
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
 }

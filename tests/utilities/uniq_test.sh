@@ -137,6 +137,25 @@ test_uniq() {
     long_line=$(printf 'A%.0s' {1..1000})
     test_command_exit_code "uniq very long line" 0 bash -c "printf '%s\n%s\n' '$long_line' '$long_line' | '$binary' >/dev/null"
 
+    echo -e "${CYAN}Testing error diagnostics...${NC}"
+
+    # Regression test: uniq must print error message for nonexistent files
+    local uniq_err_cmd uniq_err_out uniq_err_stderr uniq_err_exit
+    run_command uniq_err_cmd uniq_err_out uniq_err_stderr uniq_err_exit "$binary" /nonexistent/file
+    if [[ $uniq_err_exit -ne 0 ]]; then
+        print_test_result "uniq nonexistent file exits non-zero" "PASS"
+    else
+        print_test_result "uniq nonexistent file exits non-zero" "FAIL" \
+            "Expected non-zero exit, got $uniq_err_exit"
+    fi
+
+    if [[ -n "$uniq_err_stderr" ]]; then
+        print_test_result "uniq nonexistent file prints error" "PASS"
+    else
+        print_test_result "uniq nonexistent file prints error" "FAIL" \
+            "Expected non-empty stderr"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}uniq tests completed${NC}"
