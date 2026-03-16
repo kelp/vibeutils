@@ -54,6 +54,9 @@ const DateOptions = struct {
     date_string: ?[]const u8 = null,
     reference_file: ?[]const u8 = null,
     format: ?[]const u8 = null,
+    no_set_date: bool = false,
+    input_fmt: ?[]const u8 = null,
+    output_zone: ?[]const u8 = null,
     help: bool = false,
     version: bool = false,
 };
@@ -175,6 +178,33 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
                         opts.reference_file = args[i];
                     } else {
                         err_msg = "option '-r' requires an argument";
+                        return .{ .opts = opts, .err = err_msg };
+                    }
+                },
+                'j' => opts.no_set_date = true,
+                'f' => {
+                    // -f takes the rest of this arg or next arg
+                    if (j + 1 < flags.len) {
+                        opts.input_fmt = flags[j + 1 ..];
+                        j = flags.len; // consume rest
+                    } else if (i + 1 < args.len) {
+                        i += 1;
+                        opts.input_fmt = args[i];
+                    } else {
+                        err_msg = "option '-f' requires an argument";
+                        return .{ .opts = opts, .err = err_msg };
+                    }
+                },
+                'z' => {
+                    // -z takes the rest of this arg or next arg
+                    if (j + 1 < flags.len) {
+                        opts.output_zone = flags[j + 1 ..];
+                        j = flags.len; // consume rest
+                    } else if (i + 1 < args.len) {
+                        i += 1;
+                        opts.output_zone = args[i];
+                    } else {
+                        err_msg = "option '-z' requires an argument";
                         return .{ .opts = opts, .err = err_msg };
                     }
                 },
@@ -592,6 +622,9 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -I[FMT], --iso-8601[=FMT]  output date/time in ISO 8601 format
         \\                           FMT='date','hours','minutes','seconds','ns'
         \\                           (default: 'date')
+        \\  -f input_fmt            use input_fmt to parse date string (with -j)
+        \\  -j                      do not try to set the date
+        \\  -z output_zone          set timezone for output display
         \\  -u, --utc, --universal  print or set Coordinated Universal Time (UTC)
         \\  -h, --help              display this help and exit
         \\  -V, --version           output version information and exit
@@ -1099,4 +1132,85 @@ test "date -r with nonexistent file" {
     const args = [_][]const u8{ "-r", "/tmp/nonexistent_file_date_test_xyz" };
     const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
+}
+
+test "date -j flag is accepted (no-op)" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-j", "-u", "-d", "@0", "+%Y" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970\n", stdout_buffer.items);
+}
+
+test "date -f flag accepts input format" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -f requires an argument; accept it without error
+    const args = [_][]const u8{ "-j", "-f", "%Y-%m-%d", "-u", "-d", "@0", "+%Y" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970\n", stdout_buffer.items);
+}
+
+test "date -f missing argument returns misuse" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-f"};
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 2), result);
+}
+
+test "date -z flag accepts output timezone" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -z takes a timezone argument; accept it without error
+    const args = [_][]const u8{ "-z", "UTC", "-u", "-d", "@0", "+%Y" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970\n", stdout_buffer.items);
+}
+
+test "date -z missing argument returns misuse" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-z"};
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 2), result);
+}
+
+test "date parseArgs -j sets no_set_date" {
+    const args = [_][]const u8{"-j"};
+    const parsed = parseArgs(&args);
+    try testing.expect(parsed.err == null);
+    try testing.expect(parsed.opts.no_set_date);
+}
+
+test "date parseArgs -f stores input_fmt" {
+    const args = [_][]const u8{ "-f", "%Y-%m-%d" };
+    const parsed = parseArgs(&args);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqualStrings("%Y-%m-%d", parsed.opts.input_fmt.?);
+}
+
+test "date parseArgs -z stores output_zone" {
+    const args = [_][]const u8{ "-z", "America/New_York" };
+    const parsed = parseArgs(&args);
+    try testing.expect(parsed.err == null);
+    try testing.expectEqualStrings("America/New_York", parsed.opts.output_zone.?);
 }
