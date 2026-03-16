@@ -37,6 +37,7 @@ const CutArgs = struct {
     output_delimiter: ?[]const u8 = null,
     no_split: bool = false,
     zero_terminated: bool = false,
+    whitespace_delim: bool = false,
     positionals: []const []const u8 = &.{},
 
     pub const meta = .{
@@ -50,6 +51,7 @@ const CutArgs = struct {
         .complement = .{ .short = 0, .desc = "Complement the set of selected bytes/chars/fields" },
         .output_delimiter = .{ .short = 0, .desc = "Use STRING as output delimiter", .value_name = "STRING" },
         .no_split = .{ .short = 'n', .desc = "Do not split multi-byte characters (with -b)" },
+        .whitespace_delim = .{ .short = 'w', .desc = "Use whitespace (spaces and tabs) as field delimiter" },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
     };
 };
@@ -226,6 +228,51 @@ fn cutFields(
     }
 }
 
+/// Cut fields from a line using whitespace as delimiter.
+/// Multiple consecutive whitespace characters count as a single delimiter.
+/// Leading whitespace is skipped.
+fn cutFieldsWhitespace(
+    line: []const u8,
+    ranges: []const Range,
+    do_complement: bool,
+    output_delim: []const u8,
+    only_delimited: bool,
+    writer: anytype,
+) !void {
+    // Check if line contains any whitespace
+    var has_whitespace = false;
+    for (line) |ch| {
+        if (ch == ' ' or ch == '\t') {
+            has_whitespace = true;
+            break;
+        }
+    }
+
+    if (!has_whitespace) {
+        if (!only_delimited) {
+            try writer.writeAll(line);
+        }
+        return;
+    }
+
+    // Tokenize by whitespace (spaces and tabs), which automatically
+    // handles multiple consecutive delimiters and leading whitespace
+    var field_num: usize = 1;
+    var first_output = true;
+    var iter = std.mem.tokenizeAny(u8, line, " \t");
+
+    while (iter.next()) |field| {
+        if (isSelected(ranges, field_num, do_complement)) {
+            if (!first_output) {
+                try writer.writeAll(output_delim);
+            }
+            try writer.writeAll(field);
+            first_output = false;
+        }
+        field_num += 1;
+    }
+}
+
 /// Main entry point for cut utility
 pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
@@ -288,6 +335,18 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // -w is only valid with -f
+    if (parsed.whitespace_delim and mode != .fields) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "-w may only be used with -f\nTry 'cut --help' for more information.", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // -w and -d are mutually exclusive
+    if (parsed.whitespace_delim and parsed.delimiter != null) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", std.fs.File.stderr().isTty(), "-w and -d may not both be specified\nTry 'cut --help' for more information.", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
     // Parse the range list
     const list_str = parsed.bytes orelse parsed.characters orelse parsed.fields.?;
     const ranges = parseRangeList(allocator, list_str) catch {
@@ -312,6 +371,8 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
     // Determine output delimiter
     const output_delim: []const u8 = if (parsed.output_delimiter) |od|
         od
+    else if (parsed.whitespace_delim)
+        " "
     else switch (mode) {
         .fields => &.{delimiter},
         .bytes, .characters => "",
@@ -332,6 +393,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
             parsed.only_delimited,
             parsed.complement,
             parsed.no_split,
+            parsed.whitespace_delim,
             line_terminator,
             stdout_writer,
             stderr_writer,
@@ -352,6 +414,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
                 parsed.only_delimited,
                 parsed.complement,
                 parsed.no_split,
+                parsed.whitespace_delim,
                 line_terminator,
                 stdout_writer,
                 stderr_writer,
@@ -375,6 +438,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
                 parsed.only_delimited,
                 parsed.complement,
                 parsed.no_split,
+                parsed.whitespace_delim,
                 line_terminator,
                 stdout_writer,
                 stderr_writer,
@@ -397,6 +461,7 @@ fn processFile(
     only_delimited: bool,
     do_complement: bool,
     no_split: bool,
+    whitespace_delim: bool,
     line_terminator: u8,
     stdout_writer: anytype,
     stderr_writer: anytype,
@@ -430,19 +495,11 @@ fn processFile(
                 };
             },
             .fields => {
-                const had_output_before = true;
-                _ = had_output_before;
-
-                const line_has_delim = std.mem.indexOfScalar(u8, line_buf.items, delimiter) != null;
-
-                if (!line_has_delim and only_delimited) {
-                    // Skip this line
-                } else {
-                    cutFields(
+                if (whitespace_delim) {
+                    cutFieldsWhitespace(
                         line_buf.items,
                         ranges,
                         do_complement,
-                        delimiter,
                         output_delim,
                         only_delimited,
                         stdout_writer,
@@ -452,6 +509,27 @@ fn processFile(
                     stdout_writer.writeAll(&.{line_terminator}) catch {
                         return @intFromEnum(common.ExitCode.general_error);
                     };
+                } else {
+                    const line_has_delim = std.mem.indexOfScalar(u8, line_buf.items, delimiter) != null;
+
+                    if (!line_has_delim and only_delimited) {
+                        // Skip this line
+                    } else {
+                        cutFields(
+                            line_buf.items,
+                            ranges,
+                            do_complement,
+                            delimiter,
+                            output_delim,
+                            only_delimited,
+                            stdout_writer,
+                        ) catch {
+                            return @intFromEnum(common.ExitCode.general_error);
+                        };
+                        stdout_writer.writeAll(&.{line_terminator}) catch {
+                            return @intFromEnum(common.ExitCode.general_error);
+                        };
+                    }
                 }
             },
         }
@@ -1004,6 +1082,169 @@ test "cut: -n -b preserves multi-byte characters" {
     // Since only byte 4 is selected (not 5), the character is partial
     // and should be excluded entirely, giving "caf".
     try testing.expectEqualStrings("caf\n", stdout_buffer.items);
+}
+
+// ============================================================================
+//                          -w FLAG TESTS
+// ============================================================================
+
+test "cut: -w splits on whitespace" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("one two three\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-w", "-f", "2", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("two\n", stdout_buffer.items);
+}
+
+test "cut: -w handles multiple consecutive spaces" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("one   two\t\tthree\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-w", "-f", "1,3", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("one three\n", stdout_buffer.items);
+}
+
+test "cut: -w skips leading whitespace" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("  leading space\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-w", "-f", "1", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("leading\n", stdout_buffer.items);
+}
+
+test "cut: -w with no whitespace prints whole line" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("nowhitespace\n");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-w", "-f", "1", test_path };
+    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("nowhitespace\n", stdout_buffer.items);
+}
+
+test "cut: -w and -d are mutually exclusive" {
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-w", "-f", "1", "-d", ":" };
+    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-w and -d") != null);
+}
+
+test "cut: -w without -f returns error" {
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-w", "-b", "1" };
+    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-w may only be used with -f") != null);
+}
+
+test "cutFieldsWhitespace basic" {
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    const ranges = try parseRangeList(testing.allocator, "2");
+    defer testing.allocator.free(ranges);
+
+    try cutFieldsWhitespace("one two three", ranges, false, " ", false, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("two", buffer.items);
+}
+
+test "cutFieldsWhitespace multiple spaces" {
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    const ranges = try parseRangeList(testing.allocator, "1-2");
+    defer testing.allocator.free(ranges);
+
+    try cutFieldsWhitespace("a    b    c", ranges, false, " ", false, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("a b", buffer.items);
+}
+
+test "cutFieldsWhitespace tabs and spaces" {
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    const ranges = try parseRangeList(testing.allocator, "3");
+    defer testing.allocator.free(ranges);
+
+    try cutFieldsWhitespace("x\t y\t z", ranges, false, " ", false, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("z", buffer.items);
+}
+
+test "cutFieldsWhitespace no whitespace prints line" {
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    const ranges = try parseRangeList(testing.allocator, "1");
+    defer testing.allocator.free(ranges);
+
+    try cutFieldsWhitespace("solid", ranges, false, " ", false, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("solid", buffer.items);
+}
+
+test "cutFieldsWhitespace no whitespace with -s suppresses" {
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    const ranges = try parseRangeList(testing.allocator, "1");
+    defer testing.allocator.free(ranges);
+
+    try cutFieldsWhitespace("solid", ranges, false, " ", true, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("", buffer.items);
 }
 
 test "cut: -n without -b has no effect on field mode" {

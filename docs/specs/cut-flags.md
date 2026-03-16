@@ -8,7 +8,7 @@
 | -f   | yes   | yes   | yes     | yes | yes  | MUST |
 | -n   | yes   | yes   | yes     | yes | yes  | MUST |
 | -s   | yes   | yes   | yes     | yes | yes  | MUST |
-| -w   |       | yes   |         |     |      | SHOULD |
+| -w   |       | yes   |         |     | yes  | SHOULD |
 | -z   |       |       |         | yes | yes  | SHOULD |
 | --complement |  |    |         | yes | yes  | SHOULD |
 | --output-delimiter | | |      | yes | yes  | SHOULD |
