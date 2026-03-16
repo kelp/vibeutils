@@ -33,6 +33,17 @@ const CpConfig = struct {
     no_clobber: bool = false,
     verbose: bool = false,
 
+    // SHOULD flags
+    backup: bool = false,
+    clone: bool = false,
+    hard_link: bool = false,
+    N: bool = false,
+    symbolic: bool = false,
+    backup_suffix: ?[]const u8 = null,
+    one_file_system: bool = false,
+    X: bool = false,
+    parents: bool = false,
+
     /// Extract runtime-only configuration
     pub fn runtime(self: CpConfig) RuntimeOptions {
         const is_archive = self.archive;
@@ -40,20 +51,23 @@ const CpConfig = struct {
         const is_preserve = self.preserve or is_archive;
 
         // Resolve symlink mode from flags:
-        // -L → follow_all, -H → follow_cmdline, -P or -d → follow_none
+        // -L → follow_all, -H → follow_cmdline, -P or -d or -N → follow_none
         // -a implies -P (follow_none)
         // Default: follow_all without -R, follow_none with -R
-        // Priority: -L > -H > -P/-d > default (resolveConflicts ensures last-wins)
+        // Priority: -L > -H > -P/-d/-N > default (resolveConflicts ensures last-wins)
         const symlink_mode: SymlinkMode = if (self.L)
             .follow_all
         else if (self.H)
             .follow_cmdline
-        else if (self.P or self.no_dereference or is_archive)
+        else if (self.P or self.no_dereference or self.N or is_archive)
             .follow_none
         else if (is_recursive)
             .follow_none
         else
             .follow_all;
+
+        // Resolve backup suffix: -S value, or default "~"
+        const suffix = self.backup_suffix orelse "~";
 
         return RuntimeOptions{
             .force = self.force,
@@ -63,6 +77,12 @@ const CpConfig = struct {
             .symlink_mode = symlink_mode,
             .no_clobber = self.no_clobber,
             .verbose = self.verbose,
+            .hard_link = self.hard_link,
+            .symbolic = self.symbolic,
+            .one_file_system = self.one_file_system,
+            .parents = self.parents,
+            .backup = self.backup,
+            .backup_suffix = suffix,
         };
     }
 
@@ -81,6 +101,14 @@ const CpConfig = struct {
         .no_clobber = .{ .short = 'n', .desc = "Do not overwrite existing files" },
         .verbose = .{ .short = 'v', .desc = "Explain what is being done" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
+        .backup = .{ .short = 'b', .desc = "Make backup of each existing destination file" },
+        .clone = .{ .short = 'c', .desc = "Copy using clonefile (no-op)" },
+        .hard_link = .{ .short = 'l', .desc = "Hard link files instead of copying" },
+        .N = .{ .short = 'N', .desc = "Do not follow symbolic links in source" },
+        .symbolic = .{ .short = 's', .desc = "Create symbolic links instead of copying" },
+        .backup_suffix = .{ .short = 'S', .desc = "Override the backup suffix" },
+        .one_file_system = .{ .short = 'x', .desc = "Stay on one file system" },
+        .X = .{ .short = 'X', .desc = "Do not copy extended attributes (no-op)" },
     };
 };
 
@@ -93,6 +121,12 @@ const RuntimeOptions = struct {
     symlink_mode: SymlinkMode = .follow_all,
     no_clobber: bool = false,
     verbose: bool = false,
+    hard_link: bool = false,
+    symbolic: bool = false,
+    one_file_system: bool = false,
+    parents: bool = false,
+    backup: bool = false,
+    backup_suffix: []const u8 = "~",
 };
 
 /// File type enumeration for copy operations
@@ -144,8 +178,24 @@ pub fn main() !void {
 pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "cp";
 
+    // Pre-filter args: remove --backup[=TYPE] and --preserve[=ATTRS]
+    // which need special handling (boolean + optional value)
+    var filtered_args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer filtered_args.deinit(allocator);
+    var pre_backup = false;
+    var pre_preserve = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--backup") or std.mem.startsWith(u8, arg, "--backup=")) {
+            pre_backup = true;
+        } else if (std.mem.eql(u8, arg, "--preserve") or std.mem.startsWith(u8, arg, "--preserve=")) {
+            pre_preserve = true;
+        } else {
+            try filtered_args.append(allocator, arg);
+        }
+    }
+
     // Parse command line arguments
-    var config = common.argparse.ArgParser.parse(CpConfig, allocator, args) catch |err| {
+    var config = common.argparse.ArgParser.parse(CpConfig, allocator, filtered_args.items) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
@@ -159,6 +209,10 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         }
     };
     defer allocator.free(config.positionals);
+
+    // Apply pre-filtered flags
+    if (pre_backup) config.backup = true;
+    if (pre_preserve) config.preserve = true;
 
     resolveConflicts(&config, args);
 
@@ -191,6 +245,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
 /// Resolve POSIX "last flag wins" for mutually exclusive options.
 /// Scans raw args to determine which flag was specified last.
+/// Also handles --backup[=TYPE] and --preserve[=ATTRS] flags.
 fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
     for (args) |arg| {
         if (arg.len < 2 or arg[0] != '-') continue;
@@ -206,6 +261,12 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
                 config.no_dereference = true;
                 config.H = false;
                 config.L = false;
+            } else if (std.mem.eql(u8, arg, "--backup") or std.mem.startsWith(u8, arg, "--backup=")) {
+                // --backup or --backup=TYPE: enable backup mode
+                config.backup = true;
+            } else if (std.mem.eql(u8, arg, "--preserve") or std.mem.startsWith(u8, arg, "--preserve=")) {
+                // --preserve or --preserve=ATTRS: enable preserve mode
+                config.preserve = true;
             }
             continue;
         }
@@ -216,14 +277,21 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
                     config.H = true;
                     config.L = false;
                     config.P = false;
+                    config.N = false;
                 },
                 'L' => {
                     config.L = true;
                     config.H = false;
                     config.P = false;
+                    config.N = false;
                 },
                 'P' => {
                     config.P = true;
+                    config.H = false;
+                    config.L = false;
+                },
+                'N' => {
+                    config.N = true;
                     config.H = false;
                     config.L = false;
                 },
@@ -250,6 +318,18 @@ fn resolveConflicts(config: *CpConfig, args: []const []const u8) void {
 fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []const []const u8, options: RuntimeOptions, hinted_overwrite: *bool) !bool {
     const dest = args[args.len - 1];
 
+    // --parents requires destination to be a directory
+    if (options.parents) {
+        const dest_type = getFileTypeAtomic(dest, false) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{dest});
+            return false;
+        };
+        if (dest_type != .directory) {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "target '{s}' is not a directory", .{dest});
+            return false;
+        }
+    }
+
     // If multiple sources, destination must be a directory
     if (args.len > 2) {
         const dest_type = getFileTypeAtomic(dest, false) catch {
@@ -267,8 +347,31 @@ fn executeCopyOperations(allocator: Allocator, stderr_writer: anytype, args: []c
 
     // Process each source
     for (args[0 .. args.len - 1]) |source| {
-        const result = copySingleFile(allocator, stderr_writer, source, dest, options, hinted_overwrite, true) catch false;
-        if (!result) success = false;
+        if (options.parents) {
+            // --parents: construct dest path preserving full source path
+            const parents_dest = std.fs.path.join(allocator, &.{ dest, source }) catch |err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot construct path: {s}", .{getStandardErrorName(err)});
+                success = false;
+                continue;
+            };
+            defer allocator.free(parents_dest);
+
+            // Create intermediate directories
+            if (std.fs.path.dirname(parents_dest)) |parent_dir| {
+                std.fs.cwd().makePath(parent_dir) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot create directory '{s}': {s}", .{ parent_dir, getStandardErrorName(err) });
+                    success = false;
+                    continue;
+                };
+            }
+
+            // Copy source directly to the constructed destination path
+            const result = copySingleFile(allocator, stderr_writer, source, parents_dest, options, hinted_overwrite, true) catch false;
+            if (!result) success = false;
+        } else {
+            const result = copySingleFile(allocator, stderr_writer, source, dest, options, hinted_overwrite, true) catch false;
+            if (!result) success = false;
+        }
     }
 
     return success;
@@ -330,9 +433,33 @@ fn copySingleFile(allocator: Allocator, stderr_writer: anytype, source: []const 
         hinted_overwrite.* = true;
     }
 
+    // Create backup of destination if it exists and backup mode is enabled
+    if (options.backup and dest_exists) {
+        const backup_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ final_dest_path, options.backup_suffix }) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot create backup path: {s}", .{getStandardErrorName(err)});
+            return false;
+        };
+        defer allocator.free(backup_path);
+
+        std.fs.cwd().rename(final_dest_path, backup_path) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot create backup of '{s}': {s}", .{ final_dest_path, getStandardErrorName(err) });
+            return false;
+        };
+    }
+
     // Print verbose message if requested
     if (options.verbose) {
         stderr_writer.print("'{s}' -> '{s}'\n", .{ source, final_dest_path }) catch {};
+    }
+
+    // For regular files, handle hard link and symbolic link modes
+    if (source_type == .regular_file or (source_type == .symlink and follow_symlinks)) {
+        if (options.hard_link) {
+            return createHardLink(allocator, stderr_writer, source, final_dest_path, options);
+        }
+        if (options.symbolic) {
+            return createSymbolicLink(allocator, stderr_writer, source, final_dest_path);
+        }
     }
 
     // Execute the copy based on source type
@@ -400,6 +527,29 @@ fn copySymlink(allocator: Allocator, stderr_writer: anytype, source_path: []cons
     return true;
 }
 
+/// Create a hard link instead of copying
+fn createHardLink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions) bool {
+    // Handle force overwrite if needed
+    if (fileExists(dest_path) and options.force) {
+        handleForceOverwrite(dest_path) catch {};
+    }
+
+    std.posix.link(source_path, dest_path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot create hard link '{s}' to '{s}': {s}", .{ dest_path, source_path, getStandardErrorName(err) });
+        return false;
+    };
+    return true;
+}
+
+/// Create a symbolic link instead of copying
+fn createSymbolicLink(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8) bool {
+    std.fs.cwd().symLink(source_path, dest_path, .{}) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot create symbolic link '{s}' to '{s}': {s}", .{ dest_path, source_path, getStandardErrorName(err) });
+        return false;
+    };
+    return true;
+}
+
 /// Copy a directory recursively
 fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) bool {
     // Create destination directory
@@ -437,6 +587,14 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
     };
     defer source_dir.close();
 
+    // Get source directory device ID for one-file-system mode
+    const source_dev: ?u64 = if (options.one_file_system) blk: {
+        const dir_file = std.fs.cwd().openFile(source_path, .{}) catch break :blk null;
+        defer dir_file.close();
+        const fstat = std.posix.fstat(dir_file.handle) catch break :blk null;
+        break :blk @intCast(fstat.dev);
+    } else null;
+
     var success = true;
 
     // Iterate through directory entries
@@ -457,6 +615,21 @@ fn copyDirectory(allocator: Allocator, stderr_writer: anytype, source_path: []co
             continue;
         };
         defer allocator.free(source_child_path);
+
+        // Check one-file-system: skip entries on different devices
+        if (source_dev) |dev| {
+            const child_dev: ?u64 = blk: {
+                const child_file = std.fs.cwd().openFile(source_child_path, .{}) catch break :blk null;
+                defer child_file.close();
+                const cs = std.posix.fstat(child_file.handle) catch break :blk null;
+                break :blk @intCast(cs.dev);
+            };
+            if (child_dev) |cd| {
+                if (cd != dev) {
+                    continue; // Different filesystem, skip
+                }
+            }
+        }
 
         const dest_child_path = std.fs.path.join(allocator, &.{ dest_path, entry.name }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", std.fs.File.stderr().isTty(), "cannot allocate memory for path: {s}", .{getStandardErrorName(err)});
@@ -676,24 +849,37 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.
         \\
         \\  -a, --archive            same as -RpP
+        \\  -b                       make backup of each existing destination file
+        \\  -c                       copy using clonefile (no-op)
         \\  -d, --no-dereference     never follow symbolic links in SOURCE
         \\  -f, --force              force overwrite without prompting
         \\  -h, --help               display this help and exit
         \\  -H                       follow symlinks on the command line
         \\  -i, --interactive        prompt before overwrite
+        \\  -l, --hard-link          hard link files instead of copying
         \\  -L                       follow all symbolic links
         \\  -n, --no-clobber         do not overwrite existing files
+        \\  -N                       do not follow symbolic links in source
         \\  -p, --preserve           preserve mode, ownership, timestamps
         \\  -P                       do not follow symbolic links
         \\  -r, -R, --recursive      copy directories recursively
+        \\  -s, --symbolic           create symbolic links instead of copying
+        \\  -S, --backup-suffix      override the backup suffix
         \\  -v, --verbose            explain what is being done
         \\  -V, --version            output version information and exit
+        \\  -x, --one-file-system    stay on one file system
+        \\  -X                       do not copy extended attributes (no-op)
+        \\      --backup[=TYPE]      like -b but accepts a backup type
+        \\      --parents            use full source path under directory
+        \\      --preserve[=ATTR]    preserve specified attributes
         \\
         \\Examples:
         \\  cp foo.txt bar.txt    Copy foo.txt to bar.txt
         \\  cp -R dir1 dir2       Copy dir1 and its contents to dir2
         \\  cp -a dir1 dir2       Archive copy (preserve all attributes)
         \\  cp file1 file2 dir/   Copy multiple files into dir/
+        \\  cp -l file1 file2     Hard link file2 to file1
+        \\  cp -b file1 file2     Copy with backup of file2 as file2~
         \\
     );
 }
@@ -1520,4 +1706,349 @@ test "cp: -n -i last flag wins" {
     // -i came last, should override -n
     try testing.expect(rt.interactive);
     try testing.expect(!rt.no_clobber);
+}
+
+// Tests for SHOULD flags
+
+test "cp: -b creates backup of existing destination" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-b", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // New content in destination
+    try test_dir.expectFileContent("dest.txt", "new content");
+    // Backup file exists with old content
+    try test_dir.expectFileContent("dest.txt~", "old content");
+}
+
+test "cp: -b does nothing when destination does not exist" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/new_dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-b", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("new_dest.txt", "content");
+}
+
+test "cp: -S changes backup suffix" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-b", "-S", ".bak", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "new content");
+    try test_dir.expectFileContent("dest.txt.bak", "old content");
+}
+
+test "cp: -c flag accepted silently (no-op)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "content");
+}
+
+test "cp: -X flag accepted silently (no-op)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-X", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "content");
+}
+
+test "cp: -l creates hard link instead of copy" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "link content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-l", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "link content");
+
+    // Verify it's a hard link by checking inode equality
+    try testing.expect(isSameFile(source_path, dest_path));
+}
+
+test "cp: -s creates symbolic link instead of copy" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "symlink content", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest_link.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-s", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify it's a symlink
+    try testing.expect(try test_dir.isSymlink("dest_link.txt"));
+}
+
+test "cp: -N flag sets follow_none (alias for -P)" {
+    const args = [_][]const u8{ "-N", "/tmp/src", "/tmp/dst" };
+    var config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    resolveConflicts(&config, &args);
+    const rt = config.runtime();
+    try testing.expectEqual(SymlinkMode.follow_none, rt.symlink_mode);
+}
+
+test "cp: --parents creates intermediate directories" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("src_tree");
+    try test_dir.createDir("src_tree/sub");
+    try test_dir.createFile("src_tree/sub/file.txt", "parents content", null);
+    try test_dir.createDir("dest_dir");
+
+    const source_path = try test_dir.getPath("src_tree/sub/file.txt");
+    defer testing.allocator.free(source_path);
+    const dest_dir_path = try test_dir.getPath("dest_dir");
+    defer testing.allocator.free(dest_dir_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--parents", source_path, dest_dir_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The file should exist at dest_dir/<full_source_path>
+    // Since source_path is absolute, verify it was created
+    const expected_dest = try std.fs.path.join(testing.allocator, &.{ dest_dir_path, source_path });
+    defer testing.allocator.free(expected_dest);
+    const content = try std.fs.cwd().readFileAlloc(testing.allocator, expected_dest, 1024);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("parents content", content);
+}
+
+test "cp: --backup flag enables backup" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new", null);
+    try test_dir.createFile("dest.txt", "old", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--backup", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "new");
+    try test_dir.expectFileContent("dest.txt~", "old");
+}
+
+test "cp: --backup=simple accepted" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new", null);
+    try test_dir.createFile("dest.txt", "old", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("dest.txt");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--backup=simple", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "new");
+    try test_dir.expectFileContent("dest.txt~", "old");
+}
+
+test "cp: --preserve flag enables preserve mode" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "preserved", 0o644);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--preserve", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "preserved");
+}
+
+test "cp: --preserve=mode accepted" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "preserved", 0o644);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "--preserve=mode", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dest.txt", "preserved");
+}
+
+test "cp: -x flag config sets one_file_system" {
+    const args = [_][]const u8{ "-Rx", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    const rt = config.runtime();
+    try testing.expect(rt.one_file_system);
+    try testing.expect(rt.recursive);
+}
+
+test "cp: -l flag config sets hard_link" {
+    const args = [_][]const u8{ "-l", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    const rt = config.runtime();
+    try testing.expect(rt.hard_link);
+}
+
+test "cp: -s flag config sets symbolic" {
+    const args = [_][]const u8{ "-s", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    const rt = config.runtime();
+    try testing.expect(rt.symbolic);
+}
+
+test "cp: -b flag config sets backup" {
+    const args = [_][]const u8{ "-b", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    const rt = config.runtime();
+    try testing.expect(rt.backup);
+    try testing.expectEqualStrings("~", rt.backup_suffix);
+}
+
+test "cp: -b -S sets backup with custom suffix" {
+    const args = [_][]const u8{ "-b", "-S", ".orig", "/tmp/src", "/tmp/dst" };
+    const config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
+    defer testing.allocator.free(config.positionals);
+    const rt = config.runtime();
+    try testing.expect(rt.backup);
+    try testing.expectEqualStrings(".orig", rt.backup_suffix);
 }

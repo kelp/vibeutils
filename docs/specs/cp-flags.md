@@ -3,33 +3,33 @@
 | Flag | POSIX | macOS | OpenBSD | GNU | Ours | Tier |
 |------|-------|-------|---------|-----|------|------|
 | -a   |       | yes   | yes     | yes | yes  | MUST |
-| -b   |       |       |         | yes |      | SHOULD |
-| -c   |       | yes   |         |     |      | SHOULD |
+| -b   |       |       |         | yes | yes  | SHOULD |
+| -c   |       | yes   |         |     | yes  | SHOULD |
 | -d   |       |       |         | yes | yes  | SHOULD |
 | -f   | yes   | yes   | yes     | yes | yes  | MUST |
 | -H   | yes   | yes   | yes     | yes | yes  | MUST |
 | -i   | yes   | yes   | yes     | yes | yes  | MUST |
-| -l   |       | yes   |         | yes |      | SHOULD |
+| -l   |       | yes   |         | yes | yes  | SHOULD |
 | -L   | yes   | yes   | yes     | yes | yes  | MUST |
 | -n   |       | yes   |         | yes | yes  | SHOULD |
-| -N   |       | yes   |         |     |      | SHOULD |
+| -N   |       | yes   |         |     | yes  | SHOULD |
 | -p   | yes   | yes   | yes     | yes | yes  | MUST |
 | -P   | yes   | yes   | yes     | yes | yes  | MUST |
 | -R   | yes   | yes   | yes     | yes | yes  | MUST |
-| -s   |       | yes   |         | yes |      | SHOULD |
-| -S   |       | yes   |         | yes |      | SHOULD |
+| -s   |       | yes   |         | yes | yes  | SHOULD |
+| -S   |       | yes   |         | yes | yes  | SHOULD |
 | -u   |       |       |         | yes |      | WONT |
 | -v   |       | yes   | yes     | yes | yes  | MUST |
-| -x   |       | yes   |         | yes |      | SHOULD |
-| -X   |       | yes   |         |     |      | SHOULD |
+| -x   |       | yes   |         | yes | yes  | SHOULD |
+| -X   |       | yes   |         |     | yes  | SHOULD |
 | -Z   |       |       |         | yes |      | WONT |
 | --attributes-only |  |  |     | yes |      | WONT |
 | --copy-contents |  |  |       | yes |      | WONT |
 | --debug |    |       |         | yes |      | WONT |
 | --keep-directory-symlink | | | | yes |     | WONT |
 | --no-preserve |  |   |         | yes |      | WONT |
-| --parents |  |       |         | yes |      | SHOULD |
-| --preserve | |       |         | yes |      | SHOULD |
+| --parents |  |       |         | yes | yes  | SHOULD |
+| --preserve | |       |         | yes | yes  | SHOULD |
 | --reflink |  |       |         | yes |      | WONT |
 | --remove-destination | |  |   | yes |      | WONT |
 | --sparse |   |       |         | yes |      | WONT |
@@ -37,5 +37,5 @@
 | -t   |       |       |         | yes |      | WONT |
 | -T   |       |       |         | yes |      | WONT |
 | --update |   |       |         | yes |      | WONT |
-| --backup |   |       |         | yes |      | SHOULD |
+| --backup |   |       |         | yes | yes  | SHOULD |
 | --context |  |       |         | yes |      | WONT |
