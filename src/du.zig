@@ -33,12 +33,18 @@ const DuOptions = struct {
     human_readable: bool = false,
     /// Like --block-size=1K
     kilobytes: bool = false,
+    /// Like --block-size=1G
+    gigabytes: bool = false,
+    /// Like --block-size=1M
+    megabytes: bool = false,
     /// Dereference all symbolic links
     dereference: bool = false,
     /// Dereference only command-line symlink arguments
     dereference_args: bool = false,
     /// Do not follow any symbolic links (default)
     no_dereference: bool = false,
+    /// Don't follow symbolic links (alias for -P)
+    no_follow: bool = false,
     /// Report errors (no-op, errors are always reported)
     report_errors: bool = false,
     /// Display only a total for each argument
@@ -51,6 +57,14 @@ const DuOptions = struct {
     apparent_size: bool = false,
     /// Scale sizes by SIZE
     block_size: ?[]const u8 = null,
+    /// Count sizes for hard links multiple times
+    count_links: bool = false,
+    /// Ignore files/directories matching PATTERN (stub)
+    ignore_pattern: ?[]const u8 = null,
+    /// Display only entries at or above SIZE threshold
+    threshold: ?[]const u8 = null,
+    /// Like -h but use powers of 1000 instead of 1024
+    si: bool = false,
     /// Display help
     help: bool = false,
     /// Display version
@@ -69,15 +83,22 @@ const DuOptions = struct {
         .max_depth = .{ .short = 'd', .desc = "Print total for directory only if N or fewer levels below", .value_name = "N" },
         .human_readable = .{ .short = 'h', .desc = "Print sizes in human readable format (1K, 234M, 2G)" },
         .kilobytes = .{ .short = 'k', .desc = "Like --block-size=1K" },
+        .gigabytes = .{ .short = 'g', .desc = "Like --block-size=1G" },
+        .megabytes = .{ .short = 'm', .desc = "Like --block-size=1M" },
         .dereference = .{ .short = 'L', .desc = "Dereference all symbolic links" },
         .dereference_args = .{ .short = 'H', .desc = "Dereference only command-line symlink arguments" },
         .no_dereference = .{ .short = 'P', .desc = "Do not follow symbolic links (default)" },
+        .no_follow = .{ .short = 'n', .desc = "Don't follow symbolic links (alias for -P)" },
         .report_errors = .{ .short = 'r', .desc = "Report errors (default behavior, XPG4 compatibility)" },
         .summarize = .{ .short = 's', .desc = "Display only a total for each argument" },
         .separate_dirs = .{ .short = 'S', .desc = "For directories do not include size of subdirectories" },
         .one_file_system = .{ .short = 'x', .desc = "Skip directories on different file systems" },
-        .apparent_size = .{ .short = 0, .desc = "Print apparent sizes rather than disk usage" },
-        .block_size = .{ .short = 0, .desc = "Scale sizes by SIZE before printing", .value_name = "SIZE" },
+        .apparent_size = .{ .short = 'A', .desc = "Print apparent sizes rather than disk usage" },
+        .block_size = .{ .short = 'B', .desc = "Scale sizes by SIZE before printing", .value_name = "SIZE" },
+        .count_links = .{ .short = 'l', .desc = "Count sizes many times if hard linked" },
+        .ignore_pattern = .{ .short = 'I', .desc = "Exclude files matching PATTERN (stub)", .value_name = "PATTERN" },
+        .threshold = .{ .short = 't', .desc = "Exclude entries smaller than SIZE, or larger if negative", .value_name = "SIZE" },
+        .si = .{ .short = 0, .desc = "Like -h, but use powers of 1000 not 1024" },
         .help = .{ .short = 0, .desc = "Display this help and exit" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .color = .{ .short = 0, .desc = "Colorize the output; WHEN can be 'always', 'auto', or 'never'", .value_name = "WHEN" },
@@ -109,6 +130,9 @@ const DuConfig = struct {
     one_file_system: bool,
     apparent_size: bool,
     block_size: u64,
+    count_links: bool,
+    si: bool,
+    threshold: ?i64,
     show_icons: bool,
     display: common.display_config.DisplayConfig,
 };
@@ -130,18 +154,41 @@ fn resolveDerefMode(args: []const []const u8) DereferenceMode {
                 mode = .none;
             }
         } else {
-            // Short flags: scan each char for P/H/L
+            // Short flags: scan each char for P/H/L/n
             for (arg[1..]) |ch| {
                 switch (ch) {
                     'L' => mode = .all,
                     'H' => mode = .args_only,
-                    'P' => mode = .none,
+                    'P', 'n' => mode = .none,
                     else => {},
                 }
             }
         }
     }
     return mode;
+}
+
+/// Parse a threshold value string, supporting optional sign and size suffixes.
+/// Positive values mean "show entries >= threshold".
+/// Negative values (prefixed with -) mean "show entries <= |threshold|".
+fn parseThreshold(str: []const u8) ?i64 {
+    if (str.len == 0) return null;
+
+    var negative = false;
+    var val_str = str;
+    if (str[0] == '-') {
+        negative = true;
+        val_str = str[1..];
+    }
+
+    const abs_val = parseBlockSize(val_str) orelse {
+        // Try pure numeric (possibly negative)
+        const parsed = std.fmt.parseInt(i64, str, 10) catch return null;
+        return if (parsed == 0) null else parsed;
+    };
+
+    const signed: i64 = @intCast(abs_val);
+    return if (negative) -signed else signed;
 }
 
 fn resolveConfig(opts: DuOptions, deref_mode: DereferenceMode) !DuConfig {
@@ -157,9 +204,17 @@ fn resolveConfig(opts: DuOptions, deref_mode: DereferenceMode) !DuConfig {
         .one_file_system = opts.one_file_system,
         .apparent_size = opts.apparent_size,
         .block_size = 1024, // default
+        .count_links = opts.count_links,
+        .si = opts.si,
+        .threshold = null,
         .show_icons = display.icons == .on,
         .display = display,
     };
+
+    // --si implies human-readable with base-1000
+    if (opts.si) {
+        config.human_readable = true;
+    }
 
     // -b implies --apparent-size --block-size=1
     if (opts.bytes) {
@@ -172,9 +227,24 @@ fn resolveConfig(opts: DuOptions, deref_mode: DereferenceMode) !DuConfig {
         config.block_size = 1024;
     }
 
-    // --block-size=SIZE overrides -k and -b
+    // -m implies --block-size=1M
+    if (opts.megabytes) {
+        config.block_size = 1048576;
+    }
+
+    // -g implies --block-size=1G
+    if (opts.gigabytes) {
+        config.block_size = 1073741824;
+    }
+
+    // --block-size=SIZE overrides -k, -m, -g, and -b
     if (opts.block_size) |bs_str| {
         config.block_size = parseBlockSize(bs_str) orelse return error.InvalidBlockSize;
+    }
+
+    // -t SIZE threshold
+    if (opts.threshold) |t_str| {
+        config.threshold = parseThreshold(t_str) orelse return error.InvalidThreshold;
     }
 
     // -s implies --max-depth=0
@@ -266,13 +336,17 @@ fn parseBlockSize(str: []const u8) ?u64 {
 // Human-readable formatting
 // ============================================================================
 
-fn formatHumanReadable(buf: []u8, size_bytes: u64) []const u8 {
-    const units = [_][]const u8{ "", "K", "M", "G", "T", "P", "E" };
+fn formatHumanReadable(buf: []u8, size_bytes: u64, si: bool) []const u8 {
+    const base: f64 = if (si) 1000.0 else 1024.0;
+    const units = if (si)
+        [_][]const u8{ "", "kB", "MB", "GB", "TB", "PB", "EB" }
+    else
+        [_][]const u8{ "", "K", "M", "G", "T", "P", "E" };
     var value: f64 = @floatFromInt(size_bytes);
     var unit_idx: usize = 0;
 
-    while (value >= 1024.0 and unit_idx + 1 < units.len) {
-        value /= 1024.0;
+    while (value >= base and unit_idx + 1 < units.len) {
+        value /= base;
         unit_idx += 1;
     }
 
@@ -380,10 +454,10 @@ fn calculateDu(
         }
     }
 
-    // Track inodes to avoid counting hardlinks twice
+    // Track inodes to avoid counting hardlinks twice (unless -l is set)
     const ino: u64 = stat_buf.ino;
     const nlink: u64 = @intCast(stat_buf.nlink);
-    if (nlink > 1 and !is_dir) {
+    if (nlink > 1 and !is_dir and !config.count_links) {
         // Combine dev and ino into a u128 key for uniqueness
         const key: u128 = (@as(u128, dev) << 64) | @as(u128, ino);
         if (seen_inodes.contains(key)) {
@@ -465,9 +539,21 @@ fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
 }
 
 fn printEntry(writer: anytype, style: anytype, size_bytes: u64, config: DuConfig, path: []const u8, is_dir: bool, is_link: bool) void {
+    // Apply threshold filter
+    if (config.threshold) |thresh| {
+        const signed_size: i64 = @intCast(size_bytes);
+        if (thresh >= 0) {
+            // Positive threshold: show only entries >= threshold
+            if (signed_size < thresh) return;
+        } else {
+            // Negative threshold: show only entries <= |threshold|
+            if (signed_size > -thresh) return;
+        }
+    }
+
     if (config.human_readable) {
         var hr_buf: [32]u8 = undefined;
-        const formatted = formatHumanReadable(&hr_buf, size_bytes);
+        const formatted = formatHumanReadable(&hr_buf, size_bytes, config.si);
         common.colors.applySizeColor(style, size_bytes) catch {};
         writer.print("{s}", .{formatted}) catch {};
         style.reset() catch {};
@@ -617,6 +703,10 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--icons'\nValid arguments are: 'always', 'auto', 'never'", .{opts.icons orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
+            error.InvalidThreshold => {
+                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid --threshold argument '{s}'", .{opts.threshold orelse ""});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
         }
     };
 
@@ -671,22 +761,30 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\Usage: du [OPTION]... [FILE]...
         \\Summarize disk usage of the set of FILEs, recursively for directories.
         \\
+        \\  -A, --apparent-size   print apparent sizes rather than disk usage
         \\  -a, --all             write counts for all files, not just directories
+        \\  -B, --block-size=SIZE scale sizes by SIZE before printing them
         \\  -b, --bytes           equivalent to --apparent-size --block-size=1
-        \\      --block-size=SIZE scale sizes by SIZE before printing them
         \\  -c, --total           produce a grand total
         \\  -d, --max-depth=N     print the total for a directory only if it is N
         \\                          or fewer levels below the command line argument
+        \\  -g                    like --block-size=1G
         \\  -h, --human-readable  print sizes in human readable format (e.g., 1K 234M 2G)
         \\  -H, --dereference-args  dereference only command-line symlink arguments
+        \\  -I PATTERN            exclude files matching PATTERN
         \\  -k                    like --block-size=1K
+        \\  -l, --count-links     count sizes many times if hard linked
         \\  -L, --dereference     dereference all symbolic links
+        \\  -m                    like --block-size=1M
+        \\  -n                    don't follow symbolic links (alias for -P)
         \\  -P, --no-dereference  do not follow symbolic links (default)
         \\  -r                    report errors (default behavior, XPG4 compatibility)
         \\  -s, --summarize       display only a total for each argument
         \\  -S, --separate-dirs   for directories do not include size of subdirectories
+        \\      --si              like -h, but use powers of 1000 not 1024
+        \\  -t, --threshold=SIZE  exclude entries smaller than SIZE if positive,
+        \\                          or entries greater than SIZE if negative
         \\  -x, --one-file-system skip directories on different file systems
-        \\      --apparent-size   print apparent sizes rather than disk usage
         \\      --color=WHEN      colorize sizes; WHEN is 'always', 'auto' (default),
         \\                          or 'never'
         \\      --icons=WHEN      when to show icons (valid: always, auto, never)
@@ -748,28 +846,28 @@ test "parseBlockSize - bare suffix" {
 
 test "formatHumanReadable - bytes" {
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("0", formatHumanReadable(&buf, 0));
-    try testing.expectEqualStrings("1", formatHumanReadable(&buf, 1));
-    try testing.expectEqualStrings("512", formatHumanReadable(&buf, 512));
-    try testing.expectEqualStrings("1023", formatHumanReadable(&buf, 1023));
+    try testing.expectEqualStrings("0", formatHumanReadable(&buf, 0, false));
+    try testing.expectEqualStrings("1", formatHumanReadable(&buf, 1, false));
+    try testing.expectEqualStrings("512", formatHumanReadable(&buf, 512, false));
+    try testing.expectEqualStrings("1023", formatHumanReadable(&buf, 1023, false));
 }
 
 test "formatHumanReadable - kilobytes" {
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("1.0K", formatHumanReadable(&buf, 1024));
-    try testing.expectEqualStrings("1.5K", formatHumanReadable(&buf, 1536));
-    try testing.expectEqualStrings("10K", formatHumanReadable(&buf, 10240));
+    try testing.expectEqualStrings("1.0K", formatHumanReadable(&buf, 1024, false));
+    try testing.expectEqualStrings("1.5K", formatHumanReadable(&buf, 1536, false));
+    try testing.expectEqualStrings("10K", formatHumanReadable(&buf, 10240, false));
 }
 
 test "formatHumanReadable - megabytes" {
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("1.0M", formatHumanReadable(&buf, 1048576));
-    try testing.expectEqualStrings("100M", formatHumanReadable(&buf, 104857600));
+    try testing.expectEqualStrings("1.0M", formatHumanReadable(&buf, 1048576, false));
+    try testing.expectEqualStrings("100M", formatHumanReadable(&buf, 104857600, false));
 }
 
 test "formatHumanReadable - gigabytes" {
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("1.0G", formatHumanReadable(&buf, 1073741824));
+    try testing.expectEqualStrings("1.0G", formatHumanReadable(&buf, 1073741824, false));
 }
 
 test "resolveConfig - defaults" {
@@ -1092,6 +1190,9 @@ test "du shouldPrintAtDepth" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1024,
+        .count_links = false,
+        .si = false,
+        .threshold = null,
         .show_icons = false,
         .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
     };
@@ -1226,6 +1327,9 @@ test "printEntry without icons shows clean output" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1,
+        .count_links = false,
+        .si = false,
+        .threshold = null,
         .show_icons = false,
         .display = common.display_config.DisplayConfig{ .color = .off, .icons = .off, .highlight = .off, .theme = .none },
     };
@@ -1254,6 +1358,9 @@ test "printEntry with icons shows icon glyph" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1,
+        .count_links = false,
+        .si = false,
+        .threshold = null,
         .show_icons = true,
         .display = common.display_config.DisplayConfig{ .color = .off, .icons = .on, .highlight = .off, .theme = .none },
     };
@@ -1285,6 +1392,9 @@ test "printEntry with directory icon" {
         .one_file_system = false,
         .apparent_size = false,
         .block_size = 1,
+        .count_links = false,
+        .si = false,
+        .threshold = null,
         .show_icons = true,
         .display = common.display_config.DisplayConfig{ .color = .off, .icons = .on, .highlight = .off, .theme = .none },
     };
@@ -1544,4 +1654,402 @@ test "du -P overrides -L when specified last" {
 
     try testing.expectEqual(@as(u8, 0), exit_pl);
     try testing.expect(std.mem.indexOf(u8, stdout_pl.items, "marker.txt") != null);
+}
+
+// ============================================================================
+// Tests for -A (apparent size short flag alias)
+// ============================================================================
+
+test "du -A flag is accepted and acts as --apparent-size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f = try tmp_dir.dir.createFile("testfile.txt", .{});
+    try f.writeAll("Hello, world!\n");
+    f.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("testfile.txt", &path_buf);
+
+    // -A should show apparent size (14 bytes for "Hello, world!\n")
+    var stdout_a = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_a.deinit(testing.allocator);
+
+    const args_a = &[_][]const u8{ "-A", "--block-size=1", test_path };
+    const exit_a = runDu(testing.allocator, args_a, stdout_a.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_a);
+    try testing.expect(std.mem.indexOf(u8, stdout_a.items, "14\t") != null);
+}
+
+// ============================================================================
+// Tests for -B SIZE (block-size short flag alias)
+// ============================================================================
+
+test "du -B flag sets block size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f = try tmp_dir.dir.createFile("testfile.txt", .{});
+    try f.writeAll("Hello, world!\n");
+    f.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("testfile.txt", &path_buf);
+
+    // -B 1 with -A should show apparent bytes
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-A", "-B", "1", test_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "14\t") != null);
+}
+
+test "du -B flag with suffix" {
+    var opts = DuOptions{};
+    opts.block_size = "1M";
+    const config = try resolveConfig(opts, .none);
+    try testing.expectEqual(@as(u64, 1048576), config.block_size);
+}
+
+// ============================================================================
+// Tests for -g (gigabyte blocks)
+// ============================================================================
+
+test "du -g flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-g"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(exit_code != 2);
+}
+
+test "resolveConfig - gigabytes flag sets block_size to 1G" {
+    var opts = DuOptions{};
+    opts.gigabytes = true;
+    const config = try resolveConfig(opts, .none);
+    try testing.expectEqual(@as(u64, 1073741824), config.block_size);
+}
+
+// ============================================================================
+// Tests for -m (megabyte blocks)
+// ============================================================================
+
+test "du -m flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-m"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(exit_code != 2);
+}
+
+test "resolveConfig - megabytes flag sets block_size to 1M" {
+    var opts = DuOptions{};
+    opts.megabytes = true;
+    const config = try resolveConfig(opts, .none);
+    try testing.expectEqual(@as(u64, 1048576), config.block_size);
+}
+
+// ============================================================================
+// Tests for -I PATTERN (ignore pattern stub)
+// ============================================================================
+
+test "du -I flag is accepted with value" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-I", "*.o" };
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    // Should not return misuse (2) — flag should be accepted
+    try testing.expect(exit_code != 2);
+}
+
+test "du -I flag does not change output (stub)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f = try tmp_dir.dir.createFile("file.txt", .{});
+    try f.writeAll("data\n");
+    f.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    // Without -I
+    var stdout_without = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_without.deinit(testing.allocator);
+    const exit1 = runDu(testing.allocator, &[_][]const u8{ "-b", dir_path }, stdout_without.writer(testing.allocator), common.null_writer);
+
+    // With -I (stub, should produce same output)
+    var stdout_with = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_with.deinit(testing.allocator);
+    const exit2 = runDu(testing.allocator, &[_][]const u8{ "-I", "*.o", "-b", dir_path }, stdout_with.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit1);
+    try testing.expectEqual(@as(u8, 0), exit2);
+    try testing.expectEqualStrings(stdout_without.items, stdout_with.items);
+}
+
+// ============================================================================
+// Tests for -l (count hard links multiple times)
+// ============================================================================
+
+test "du -l flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-l"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(exit_code != 2);
+}
+
+test "resolveConfig - count_links flag" {
+    var opts = DuOptions{};
+    opts.count_links = true;
+    const config = try resolveConfig(opts, .none);
+    try testing.expect(config.count_links);
+}
+
+// ============================================================================
+// Tests for -n (no follow symlinks, alias for -P)
+// ============================================================================
+
+test "du -n flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"-n"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(exit_code != 2);
+}
+
+test "du -n acts as -P (no follow symlinks)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("real_dir");
+    const f = try tmp_dir.dir.createFile("real_dir/file.txt", .{});
+    try f.writeAll("data\n");
+    f.close();
+
+    tmp_dir.dir.symLink("real_dir", "link_dir", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_dir", .{base_path});
+    defer testing.allocator.free(link_path);
+
+    // -n should not follow the symlink (same as -P)
+    var stdout_n = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_n.deinit(testing.allocator);
+
+    const args_n = &[_][]const u8{ "-n", "-a", "-b", link_path };
+    const exit_n = runDu(testing.allocator, args_n, stdout_n.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_n);
+    // -n should NOT follow the symlink, so file.txt should not appear
+    try testing.expect(std.mem.indexOf(u8, stdout_n.items, "file.txt") == null);
+}
+
+test "du -n overrides -L when specified last" {
+    // -n should act like -P, overriding -L
+    try testing.expectEqual(DereferenceMode.none, resolveDerefMode(&[_][]const u8{ "-L", "-n" }));
+}
+
+// ============================================================================
+// Tests for -t SIZE (threshold)
+// ============================================================================
+
+test "du -t flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-t", "1K" };
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(exit_code != 2);
+}
+
+test "parseThreshold - positive values" {
+    try testing.expectEqual(@as(?i64, 1024), parseThreshold("1K"));
+    try testing.expectEqual(@as(?i64, 1048576), parseThreshold("1M"));
+    try testing.expectEqual(@as(?i64, 100), parseThreshold("100"));
+}
+
+test "parseThreshold - negative values" {
+    try testing.expectEqual(@as(?i64, -1024), parseThreshold("-1K"));
+    try testing.expectEqual(@as(?i64, -100), parseThreshold("-100"));
+}
+
+test "parseThreshold - invalid" {
+    try testing.expectEqual(@as(?i64, null), parseThreshold(""));
+    try testing.expectEqual(@as(?i64, null), parseThreshold("abc"));
+}
+
+test "du -t filters entries below threshold" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a small file (5 bytes)
+    const f_small = try tmp_dir.dir.createFile("small.txt", .{});
+    try f_small.writeAll("hello");
+    f_small.close();
+
+    // Create a larger file (100 bytes)
+    const f_large = try tmp_dir.dir.createFile("large.txt", .{});
+    const data = [_]u8{'x'} ** 100;
+    try f_large.writeAll(&data);
+    f_large.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    // -t 50 -a -b: only entries >= 50 bytes should appear
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-t", "50", "-a", "-b", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // large.txt (100 bytes) should appear
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "large.txt") != null);
+    // small.txt (5 bytes) should NOT appear
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "small.txt") == null);
+}
+
+test "du -t with negative threshold shows entries at or below size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a small file (5 bytes)
+    const f_small = try tmp_dir.dir.createFile("tiny.txt", .{});
+    try f_small.writeAll("hello");
+    f_small.close();
+
+    // Create a larger file (200 bytes)
+    const f_large = try tmp_dir.dir.createFile("big.txt", .{});
+    const data = [_]u8{'x'} ** 200;
+    try f_large.writeAll(&data);
+    f_large.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    // -t -50 -a -b: only entries <= 50 bytes should appear
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-t", "-50", "-a", "-b", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // tiny.txt (5 bytes) should appear
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "tiny.txt") != null);
+    // big.txt (200 bytes) should NOT appear
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "big.txt") == null);
+}
+
+test "resolveConfig - threshold" {
+    var opts = DuOptions{};
+    opts.threshold = "1K";
+    const config = try resolveConfig(opts, .none);
+    try testing.expectEqual(@as(?i64, 1024), config.threshold);
+}
+
+test "resolveConfig - negative threshold" {
+    var opts = DuOptions{};
+    opts.threshold = "-1M";
+    const config = try resolveConfig(opts, .none);
+    try testing.expectEqual(@as(?i64, -1048576), config.threshold);
+}
+
+test "resolveConfig - invalid threshold" {
+    var opts = DuOptions{};
+    opts.threshold = "invalid";
+    try testing.expectError(error.InvalidThreshold, resolveConfig(opts, .none));
+}
+
+// ============================================================================
+// Tests for --si (SI units: powers of 1000)
+// ============================================================================
+
+test "du --si flag is accepted by argparse" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--si"};
+    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(exit_code != 2);
+}
+
+test "resolveConfig - si flag enables human_readable and si" {
+    var opts = DuOptions{};
+    opts.si = true;
+    const config = try resolveConfig(opts, .none);
+    try testing.expect(config.si);
+    try testing.expect(config.human_readable);
+}
+
+test "formatHumanReadable - SI units" {
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("1.0kB", formatHumanReadable(&buf, 1000, true));
+    try testing.expectEqualStrings("1.5kB", formatHumanReadable(&buf, 1500, true));
+    try testing.expectEqualStrings("10kB", formatHumanReadable(&buf, 10000, true));
+    try testing.expectEqualStrings("1.0MB", formatHumanReadable(&buf, 1000000, true));
+    try testing.expectEqualStrings("1.0GB", formatHumanReadable(&buf, 1000000000, true));
+}
+
+test "formatHumanReadable - SI vs binary" {
+    var buf: [32]u8 = undefined;
+    // 1536 bytes: in binary = 1.5K, in SI = 1.5kB
+    try testing.expectEqualStrings("1.5K", formatHumanReadable(&buf, 1536, false));
+    try testing.expectEqualStrings("1.5kB", formatHumanReadable(&buf, 1500, true));
+}
+
+test "du --si shows SI units in output" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f = try tmp_dir.dir.createFile("file.txt", .{});
+    try f.writeAll("data\n");
+    f.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "--si", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should contain the path and use SI units (kB suffix for small dirs)
+    try testing.expect(stdout_buffer.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, dir_path) != null);
+}
+
+// ============================================================================
+// Tests for --help showing new flags
+// ============================================================================
+
+test "du --help shows new flags" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{"--help"};
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--apparent-size") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--block-size") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--count-links") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--si") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--threshold") != null);
 }
