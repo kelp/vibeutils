@@ -309,7 +309,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         if (is_specified_user) {
             // For specified user, we just show the primary group
             // (getgroups only works for current process)
-            return printSingleGroup(allocator, gid, parsed.name, group_separator, delimiter, stdout_writer, stderr_writer);
+            return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
         }
 
         // Get supplementary groups for current user
@@ -321,7 +321,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
         if (ngroups == 0) {
             // No supplementary groups, just print primary group
-            return printSingleGroup(allocator, gid, parsed.name, group_separator, delimiter, stdout_writer, stderr_writer);
+            return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
         }
 
         const group_list = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
@@ -366,12 +366,10 @@ fn printSingleGroup(
     allocator: Allocator,
     target_gid: common.user_group.gid_t,
     print_name: bool,
-    group_separator: u8,
     delimiter: u8,
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !u8 {
-    _ = group_separator;
     if (print_name) {
         const info = common.user_group.getGroupById(target_gid, allocator) catch {
             common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find name for group ID {d}", .{target_gid});
@@ -1100,4 +1098,30 @@ test "id -P output contains current username" {
     defer testing.allocator.free(user_info.name);
 
     try testing.expect(std.mem.startsWith(u8, stdout_buffer.items, user_info.name));
+}
+
+test "printSingleGroup outputs numeric GID with delimiter" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const gid = @as(common.user_group.gid_t, @intCast(getegid()));
+    const result = try printSingleGroup(
+        testing.allocator,
+        gid,
+        false, // print_name = false → numeric output
+        '\n', // delimiter
+        stdout_buffer.writer(testing.allocator),
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("", stderr_buffer.items);
+
+    // Output should be the numeric GID followed by a newline
+    const expected = try std.fmt.allocPrint(testing.allocator, "{d}\n", .{gid});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
 }

@@ -751,4 +751,21 @@ test_rm() {
     else
         print_test_result "rm test cleanup verification" "FAIL" "$remaining_files test files remain"
     fi
+
+    # Regression test: symlink to directory removed without -r
+    local symlink_target_dir=$(create_temp_dir)
+    create_temp_file "content" "$symlink_target_dir/file.txt"
+    local dir_symlink="$TEMP_DIR/symlink_to_dir"
+    ln -s "$symlink_target_dir" "$dir_symlink"
+    test_command_exit_code "rm symlink to directory without -r" 0 "$binary" "$dir_symlink"
+    if [[ ! -L "$dir_symlink" && -d "$symlink_target_dir" ]]; then
+        print_test_result "rm symlink to dir: link gone, target remains" "PASS"
+    else
+        if [[ -L "$dir_symlink" ]]; then
+            print_test_result "rm symlink to dir: link gone, target remains" "FAIL" "Symlink still exists"
+        else
+            print_test_result "rm symlink to dir: link gone, target remains" "FAIL" "Target directory was removed"
+        fi
+    fi
+    rm -rf "$symlink_target_dir"
 }

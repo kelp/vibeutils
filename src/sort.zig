@@ -579,26 +579,51 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Read lines from a file into the lines list
+/// Read lines from a file into the lines list.
+/// Line data is embedded in the ArrayList backing allocation so that
+/// lines.deinit(allocator) frees both descriptors and string data.
 fn readLines(allocator: Allocator, file: std.fs.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8) !void {
     const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return,
     };
+    defer allocator.free(content);
 
     if (content.len == 0) return;
 
-    // Split by delimiter
+    // First pass: count lines
+    var num_lines: usize = 0;
+    for (content) |c| {
+        if (c == delimiter) num_lines += 1;
+    }
+    if (content[content.len - 1] != delimiter) num_lines += 1;
+
+    // Calculate capacity needed: existing items + new line descriptors +
+    // enough extra slots to hold the raw string data.
+    const bytes_per_slot = @sizeOf([]const u8);
+    const total_items = lines.items.len + num_lines;
+    const string_slots = (content.len + bytes_per_slot - 1) / bytes_per_slot;
+    const needed_capacity = total_items + string_slots;
+
+    try lines.ensureTotalCapacity(allocator, needed_capacity);
+
+    // Copy string data into the tail of the backing array, past all
+    // descriptor slots.  The backing is capacity * bytes_per_slot bytes.
+    const backing: [*]u8 = @ptrCast(lines.items.ptr);
+    const string_offset = total_items * bytes_per_slot;
+    @memcpy(backing[string_offset..][0..content.len], content);
+
+    // Second pass: build descriptors pointing into the embedded data
+    const string_base = backing + string_offset;
     var start: usize = 0;
     for (content, 0..) |c, idx| {
         if (c == delimiter) {
-            try lines.append(allocator, content[start..idx]);
+            lines.appendAssumeCapacity(string_base[start..idx]);
             start = idx + 1;
         }
     }
-    // Handle trailing content without final delimiter
     if (start < content.len) {
-        try lines.append(allocator, content[start..]);
+        lines.appendAssumeCapacity(string_base[start..content.len]);
     }
 }
 
@@ -1817,3 +1842,37 @@ test "parseArgs --parallel invalid returns null" {
 
 // files0-from integration test removed: calls runSort which
 // reads stdin in the test environment, causing hangs.
+
+test "readLines does not leak the content buffer" {
+    const allocator = testing.allocator;
+
+    // Create a temporary file with known content
+    const tmp_path = "/tmp/sort_test_readlines_leak.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("alpha\nbeta\ngamma\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    // Open the file and call readLines with testing.allocator
+    const file = try std.fs.cwd().openFile(tmp_path, .{});
+    defer file.close();
+
+    var lines = std.ArrayListUnmanaged([]const u8){};
+    defer lines.deinit(allocator);
+
+    try readLines(allocator, file, &lines, '\n');
+
+    // Verify readLines produced the expected lines
+    try testing.expectEqual(@as(usize, 3), lines.items.len);
+    try testing.expectEqualStrings("alpha", lines.items[0]);
+    try testing.expectEqualStrings("beta", lines.items[1]);
+    try testing.expectEqualStrings("gamma", lines.items[2]);
+
+    // testing.allocator will detect that the content buffer
+    // allocated by readToEndAlloc was never freed.
+}

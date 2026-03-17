@@ -142,6 +142,13 @@ test_sort() {
 
     test_command_output "sort dash means stdin" $'apple\nbanana' bash -c "printf 'banana\napple\n' | '$binary' -"
 
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression: sort should handle multi-line files correctly
+    # (Internal fix: readLines memory leak - verify sort still works end-to-end)
+    test_command_output "sort multi-line file (readLines regression)" $'apple\nbanana\ncherry' \
+        bash -c "printf 'banana\napple\ncherry\n' | '$binary'"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}sort tests completed${NC}"

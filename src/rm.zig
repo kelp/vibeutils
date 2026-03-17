@@ -299,8 +299,10 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
 
 /// Remove a single file or symlink.
 fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
-    // Get file info to check if we need to prompt
-    const stat_result = std.fs.cwd().statFile(file_path) catch |err| switch (err) {
+    // Use lstat so symlinks are examined directly (not their targets).
+    // statFile follows symlinks, which misclassifies symlinks-to-directories
+    // as directories and incorrectly requires -r.
+    const stat_result = common.file.FileInfo.lstat(file_path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         error.AccessDenied => return error.AccessDenied,
         else => return err,
@@ -1184,6 +1186,52 @@ test "rm: -W still removes files normally" {
     // File should still be removed
     const stat = tmp.dir.statFile("undelete_test.txt");
     try testing.expect(stat == error.FileNotFound);
+}
+
+// ============================================================
+// Tests for rm on symlinks to directories (POSIX compliance)
+// ============================================================
+
+test "rm: symlink to directory removed without -r" {
+    // POSIX requires `rm symlink-to-dir` to unlink the symlink itself,
+    // not require -r just because the target is a directory.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a real directory
+    try tmp.dir.makeDir("target_dir");
+
+    // Create a symlink pointing to the directory
+    tmp.dir.symLink("target_dir", "link_to_dir", .{}) catch |err| {
+        if (err == error.AccessDenied) return; // skip on platforms that disallow symlinks
+        return err;
+    };
+
+    // Build absolute path to the symlink WITHOUT resolving it.
+    // realpathAlloc would follow the symlink and return the target path.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_path = try tmp.dir.realpath(".", &path_buf);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/link_to_dir", .{base_path});
+    defer testing.allocator.free(link_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // rm (without -r) on a symlink to a directory should succeed
+    const args = [_][]const u8{link_path};
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The symlink should be gone
+    const link_stat = tmp.dir.statFile("link_to_dir");
+    try testing.expect(link_stat == error.FileNotFound);
+
+    // The target directory should still exist
+    const target_stat = try tmp.dir.statFile("target_dir");
+    try testing.expectEqual(std.fs.File.Kind.directory, target_stat.kind);
 }
 
 test "rm: getDeviceId returns consistent results" {

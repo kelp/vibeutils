@@ -584,4 +584,30 @@ test_mv() {
     else
         print_test_result "mv no hint for new destination" "FAIL" "Unexpected hint: $hint_new_stderr"
     fi
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression: mv -v should output arrow to stdout, not stderr
+    local reg_verbose_src=$(create_temp_file "Verbose regression")
+    local reg_verbose_dst="$TEMP_DIR/reg_verbose_dest.txt"
+    local reg_stdout_file="$TEMP_DIR/reg_mv_stdout"
+    local reg_stderr_file="$TEMP_DIR/reg_mv_stderr"
+    "$binary" -v "$reg_verbose_src" "$reg_verbose_dst" >"$reg_stdout_file" 2>"$reg_stderr_file"
+    local reg_stdout_content
+    reg_stdout_content=$(<"$reg_stdout_file")
+    local reg_stderr_content
+    reg_stderr_content=$(<"$reg_stderr_file")
+    if [[ "$reg_stdout_content" == *"->"* ]]; then
+        print_test_result "mv -v arrow on stdout (regression)" "PASS"
+    else
+        print_test_result "mv -v arrow on stdout (regression)" "FAIL" \
+            "stdout: '$reg_stdout_content', stderr: '$reg_stderr_content'"
+    fi
+    if [[ "$reg_stderr_content" != *"->"* ]]; then
+        print_test_result "mv -v arrow not on stderr (regression)" "PASS"
+    else
+        print_test_result "mv -v arrow not on stderr (regression)" "FAIL" \
+            "stderr unexpectedly contains '->': '$reg_stderr_content'"
+    fi
+    rm -f "$reg_stdout_file" "$reg_stderr_file"
 }

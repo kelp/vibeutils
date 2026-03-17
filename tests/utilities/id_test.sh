@@ -119,4 +119,28 @@ test_id() {
     # Nonexistent user exits with code 1
     test_command_exit_code "id nonexistent user exits 1" 1 \
         "$binary" nonexistent_user_12345
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression: id -g should print numeric GID
+    # (Safety net after dead parameter removal)
+    local reg_gid_output
+    reg_gid_output=$("$binary" -g 2>/dev/null)
+    if [[ "$reg_gid_output" =~ ^[0-9]+$ ]]; then
+        print_test_result "id -g numeric GID (regression)" "PASS"
+    else
+        print_test_result "id -g numeric GID (regression)" "FAIL" \
+            "Expected numeric GID, got '$reg_gid_output'"
+    fi
+
+    # Regression: id -gn should print group name (non-numeric string)
+    local reg_gn_output
+    reg_gn_output=$("$binary" -gn 2>/dev/null)
+    local reg_gn_exit=$?
+    if [[ $reg_gn_exit -eq 0 && -n "$reg_gn_output" && ! "$reg_gn_output" =~ ^[0-9]+$ ]]; then
+        print_test_result "id -gn group name (regression)" "PASS"
+    else
+        print_test_result "id -gn group name (regression)" "FAIL" \
+            "Exit code: $reg_gn_exit, output: '$reg_gn_output'"
+    fi
 }

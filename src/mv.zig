@@ -452,12 +452,12 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         try copyDirectoryRecursive(allocator, source, dest, options, stdout_writer, stderr_writer);
     } else {
         // Handle regular file
-        try copyFile(allocator, source, dest, source_stat, options, stderr_writer);
+        try copyFile(allocator, source, dest, source_stat, options, stdout_writer, stderr_writer);
     }
 
     // If copy succeeded, remove the source
     if (options.verbose) {
-        try stderr_writer.print("mv: removing source '{s}'\n", .{source});
+        try stdout_writer.print("mv: removing source '{s}'\n", .{source});
     }
 
     if (source_stat.kind == .directory) {
@@ -475,14 +475,14 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
     }
 
     if (options.verbose) {
-        try stderr_writer.print("mv: completed cross-filesystem move\n", .{});
+        try stdout_writer.print("mv: completed cross-filesystem move\n", .{});
     }
 }
 
 /// Copy a single file across filesystems with attribute preservation
-fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, options: MoveOptions, stderr_writer: anytype) !void {
+fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     if (options.verbose) {
-        try stderr_writer.print("mv: copying file '{s}' to '{s}'\n", .{ source_path, dest_path });
+        try stdout_writer.print("mv: copying file '{s}' to '{s}'\n", .{ source_path, dest_path });
     }
 
     // Open source file
@@ -521,7 +521,7 @@ fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []
     dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
         // Non-critical error - log but continue
         if (options.verbose) {
-            try stderr_writer.print("mv: warning: could not preserve timestamps for '{s}': {}\n", .{ dest_path, err });
+            try stdout_writer.print("mv: warning: could not preserve timestamps for '{s}': {}\n", .{ dest_path, err });
         }
     };
 }
@@ -529,7 +529,7 @@ fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []
 /// Recursively copy directory across filesystems
 fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     if (options.verbose) {
-        try stderr_writer.print("mv: copying directory '{s}' to '{s}'\n", .{ source_path, dest_path });
+        try stdout_writer.print("mv: copying directory '{s}' to '{s}'\n", .{ source_path, dest_path });
     }
 
     // Get source directory stat for permissions
@@ -566,7 +566,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 
     dest_dir.chmod(source_stat.mode) catch |err| {
         if (options.verbose) {
-            try stderr_writer.print("mv: warning: could not set permissions on '{s}': {}\n", .{ dest_path, err });
+            try stdout_writer.print("mv: warning: could not set permissions on '{s}': {}\n", .{ dest_path, err });
         }
     };
 
@@ -595,7 +595,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
                     common.printErrorWithProgram(allocator, stderr_writer, "mv", std.fs.File.stderr().isTty(), "cannot stat file '{s}': {}", .{ entry_source, err });
                     return err;
                 };
-                try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stderr_writer);
+                try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stdout_writer, stderr_writer);
             },
             .directory => {
                 try copyDirectoryRecursive(allocator, entry_source, entry_dest, options, stdout_writer, stderr_writer);
@@ -616,7 +616,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
             else => {
                 // Skip other file types (block devices, character devices, etc.)
                 if (options.verbose) {
-                    try stderr_writer.print("mv: skipping special file '{s}'\n", .{entry_source});
+                    try stdout_writer.print("mv: skipping special file '{s}'\n", .{entry_source});
                 }
             },
         }
@@ -625,7 +625,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
     // Preserve directory timestamps if possible
     // Note: On some systems, directory timestamp preservation may not be supported
     if (options.verbose) {
-        try stderr_writer.print("mv: note: directory timestamp preservation not implemented for cross-filesystem moves\n", .{});
+        try stdout_writer.print("mv: note: directory timestamp preservation not implemented for cross-filesystem moves\n", .{});
     }
 }
 
@@ -1284,4 +1284,69 @@ test "mv: --help still works as long-only flag" {
     defer testing.allocator.free(parsed.positionals);
     try testing.expect(parsed.help);
     try testing.expect(!parsed.no_follow_symlink);
+}
+
+test "mv: verbose move prints arrow to stdout" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("vsrc", "verbose test");
+    defer testing.allocator.free(source_name);
+
+    const dest_name = try test_utils.uniqueTestName(testing.allocator, "vdst");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getPath(".");
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verbose arrow message should appear in stdout
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "->") != null);
+    // Verify source and dest appear in the stdout message
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, source_path) != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, dest_path) != null);
+}
+
+test "mv: verbose move does not print arrow to stderr" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("esrc", "stderr test");
+    defer testing.allocator.free(source_name);
+
+    const dest_name = try test_utils.uniqueTestName(testing.allocator, "edst");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getPath(".");
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-v", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // stderr should NOT contain the verbose arrow message
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "->") == null);
 }

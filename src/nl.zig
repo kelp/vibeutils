@@ -391,22 +391,6 @@ fn writeNumberedLine(writer: anytype, number: i64, line: []const u8, opts: NlOpt
     try writer.writeAll("\n");
 }
 
-/// Count the number of characters needed to display a number
-fn countDigits(n: i64) u32 {
-    if (n == 0) return 1;
-    var count: u32 = 0;
-    var val: i64 = n;
-    if (val < 0) {
-        count += 1; // for the minus sign
-        val = -val;
-    }
-    while (val > 0) {
-        count += 1;
-        val = @divTrunc(val, 10);
-    }
-    return count;
-}
-
 /// Write an unnumbered line (spaces for the number field, separator, then content)
 fn writeUnnumberedLine(writer: anytype, line: []const u8, opts: NlOptions) !void {
     // Fill number field with spaces
@@ -670,15 +654,6 @@ test "nl parseNumberFormat" {
     try testing.expect(parseNumberFormat("") == null);
 }
 
-test "nl countDigits" {
-    try testing.expectEqual(@as(u32, 1), countDigits(0));
-    try testing.expectEqual(@as(u32, 1), countDigits(1));
-    try testing.expectEqual(@as(u32, 2), countDigits(10));
-    try testing.expectEqual(@as(u32, 3), countDigits(100));
-    try testing.expectEqual(@as(u32, 2), countDigits(-1));
-    try testing.expectEqual(@as(u32, 3), countDigits(-10));
-}
-
 test "nl isSectionDelimiter" {
     const delim = [2]u8{ '\\', ':' };
     try testing.expectEqual(Section.footer, isSectionDelimiter("\\:", delim).?);
@@ -931,4 +906,38 @@ test "nl no final newline" {
     const exit_code = try runNl(testing.allocator, &.{file_path}, stdout_buf.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("     1\thello\n", stdout_buf.items);
+}
+
+test "formatNumber right-justified default width" {
+    var buf: [64]u8 = undefined;
+
+    // Default width=6, right-justified: single digit gets 5 spaces of padding
+    const result1 = formatNumber(&buf, 1, .right, 6);
+    try testing.expectEqualStrings("     1", result1);
+
+    // Two-digit number gets 4 spaces of padding
+    const result2 = formatNumber(&buf, 42, .right, 6);
+    try testing.expectEqualStrings("    42", result2);
+
+    // Number wider than width field: no truncation
+    const result3 = formatNumber(&buf, 1234567, .right, 6);
+    try testing.expectEqualStrings("1234567", result3);
+}
+
+test "formatNumber left-justified" {
+    var buf: [64]u8 = undefined;
+
+    const result = formatNumber(&buf, 1, .left, 6);
+    try testing.expectEqualStrings("1     ", result);
+}
+
+test "formatNumber right-zero" {
+    var buf: [64]u8 = undefined;
+
+    const result = formatNumber(&buf, 1, .right_zero, 6);
+    try testing.expectEqualStrings("000001", result);
+
+    // Negative number with leading zeros
+    const neg_result = formatNumber(&buf, -1, .right_zero, 6);
+    try testing.expectEqualStrings("-00001", neg_result);
 }

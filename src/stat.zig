@@ -315,15 +315,6 @@ fn fileTypeString(mode: u32) []const u8 {
     };
 }
 
-fn fileTypeStringEmpty(mode: u32) []const u8 {
-    const ft = fileTypeString(mode);
-    if (std.mem.eql(u8, ft, "regular file")) {
-        const size_check_mode = mode & c.S.IFMT;
-        if (size_check_mode == c.S.IFREG) return "regular file";
-    }
-    return ft;
-}
-
 // ============================================================================
 // Permission string (like ls -l): -rwxr-xr-x
 // ============================================================================
@@ -1704,6 +1695,13 @@ test "fileTypeString" {
     try testing.expectEqualStrings("block special file", fileTypeString(c.S.IFBLK));
     try testing.expectEqualStrings("fifo", fileTypeString(c.S.IFIFO));
     try testing.expectEqualStrings("socket", fileTypeString(c.S.IFSOCK));
+}
+
+test "fileTypeString unknown mode" {
+    // Mode with zeroed type bits does not match any known file type.
+    try testing.expectEqualStrings("unknown", fileTypeString(0));
+    // Mode with only permission bits (no type bits set) is also unknown.
+    try testing.expectEqualStrings("unknown", fileTypeString(0o777));
 }
 
 test "stat -- separator" {

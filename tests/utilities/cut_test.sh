@@ -293,6 +293,16 @@ test_cut() {
             "Expected stderr to contain '/nonexistent/file', got: '$cut_err_stderr'"
     fi
 
+    # Regression test: --version output contains project name
+    local cut_ver_out="" cut_ver_err="" cut_ver_exit=""
+    run_command cut_ver_cmd cut_ver_out cut_ver_err cut_ver_exit "$binary" --version
+    if [[ "$cut_ver_out" == *"vibeutils"* ]]; then
+        print_test_result "cut --version contains vibeutils" "PASS"
+    else
+        print_test_result "cut --version contains vibeutils" "FAIL" \
+            "Expected 'vibeutils' in version output, got: '$cut_ver_out'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}cut tests completed${NC}"

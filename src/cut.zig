@@ -637,7 +637,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 
 /// Print version information
 fn printVersion(writer: anytype) !void {
-    try writer.print("cut (vibeutils) {s}\n", .{common.version});
+    try writer.print("cut ({s}) {s}\n", .{ common.name, common.version });
 }
 
 // ============================================================================
@@ -1279,6 +1279,18 @@ test "cut: -n without -b has no effect on field mode" {
 // ============================================================================
 //                  processFile stderr diagnostic tests (RED)
 // ============================================================================
+
+test "cut --version output contains common.name" {
+    // The version string must use common.name (not a hardcoded project name).
+    // This ensures the output stays consistent if common.name ever changes.
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--version"};
+    const result = try runCut(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, buffer.items, common.name) != null);
+}
 
 test "cut: processFile reports read errors to stderr" {
     // Create a valid file, then close its handle so reads will fail.

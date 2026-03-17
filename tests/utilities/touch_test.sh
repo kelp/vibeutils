@@ -705,4 +705,15 @@ test_touch() {
     else
         print_test_result "touch test cleanup" "FAIL" "Too many test files remain: $remaining_files"
     fi
+
+    # Regression test: -A flag should exit non-zero (unimplemented)
+    local a_adjust_file="$TEMP_DIR/a_adjust_test.txt"
+    echo "test" > "$a_adjust_file"
+    local a_out="" a_err="" a_exit=""
+    run_command a_cmd a_out a_err a_exit "$binary" -A 01 "$a_adjust_file"
+    if [[ $a_exit -ne 0 ]]; then
+        print_test_result "touch -A exits non-zero" "PASS"
+    else
+        print_test_result "touch -A exits non-zero" "FAIL" "Expected non-zero exit, got $a_exit"
+    fi
 }

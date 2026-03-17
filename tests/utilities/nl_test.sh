@@ -203,6 +203,17 @@ test_nl() {
         print_test_result "nl POSIX default tab separator" "FAIL" "Expected tab separator"
     fi
 
+    # Regression test: nl produces correctly numbered and padded output
+    local nl_pad_file=$(create_temp_file $'alpha\nbeta\ngamma')
+    test_command_output "nl number padding format" "     1	alpha
+     2	beta
+     3	gamma" "$binary" "$nl_pad_file"
+
+    # Regression test: nl -n rz zero-pads to correct width
+    test_command_output "nl -n rz zero pad format" "000001	alpha
+000002	beta
+000003	gamma" "$binary" -n rz "$nl_pad_file"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}nl tests completed${NC}"

@@ -160,6 +160,32 @@ test_stat() {
     chmod 755 "$stat_perm_dir"
     rm -rf "$stat_perm_dir"
 
+    # Regression test: stat reports "regular file" for a regular file
+    local stat_reg_file
+    stat_reg_file=$(create_temp_file "regular file test")
+    local stat_reg_out="" stat_reg_err="" stat_reg_exit=""
+    run_command stat_reg_cmd stat_reg_out stat_reg_err stat_reg_exit "$binary" "$stat_reg_file"
+    if [[ "$stat_reg_out" == *"regular file"* ]]; then
+        print_test_result "stat regular file type string" "PASS"
+    else
+        print_test_result "stat regular file type string" "FAIL" \
+            "Expected 'regular file' in output"
+    fi
+    rm -f "$stat_reg_file"
+
+    # Regression test: stat reports "directory" for a directory
+    local stat_test_dir
+    stat_test_dir=$(create_temp_dir)
+    local stat_dir_out="" stat_dir_err="" stat_dir_exit=""
+    run_command stat_dir_cmd stat_dir_out stat_dir_err stat_dir_exit "$binary" "$stat_test_dir"
+    if [[ "$stat_dir_out" == *"directory"* ]]; then
+        print_test_result "stat directory type string" "PASS"
+    else
+        print_test_result "stat directory type string" "FAIL" \
+            "Expected 'directory' in output"
+    fi
+    rm -rf "$stat_test_dir"
+
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
 }

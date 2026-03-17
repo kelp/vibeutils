@@ -100,9 +100,10 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Warn about unimplemented -A flag
+    // -A flag is not yet implemented; exit with error
     if (parsed_args.adjust != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "warning: -A flag is not yet implemented, ignoring adjustment value", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "-A adjustment not yet implemented", .{});
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Map long form aliases to short form
@@ -892,17 +893,13 @@ test "touch: -A flag is accepted with warning" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    // -A should be accepted and produce a warning, but still succeed
+    // -A should be accepted and produce an error, exiting non-zero
     const args = [_][]const u8{ "-A", "0130", test_file };
     const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(exit_code != 0);
 
-    // Should contain a warning about -A not being implemented
+    // Should contain a message about -A not being implemented
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "not yet implemented") != null);
-
-    // File should still be created (normal touch behavior)
-    const file = try tmp_dir.dir.openFile("adjust_test.txt", .{});
-    file.close();
 }
 
 // ==================== -d (date string) tests ====================
@@ -1016,4 +1013,81 @@ test "touch: -d with space-separated datetime" {
     // 2024-06-15 14:30:00 UTC = 1718461800 seconds since epoch
     const expected_ns: i128 = 1718461800 * std.time.ns_per_s;
     try testing.expectEqual(expected_ns, stat.mtime);
+}
+
+// ==================== -A (adjust) should fail as unimplemented ====================
+
+test "touch: -A flag should exit non-zero because it is unimplemented" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_nonzero.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-A", "0130", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // An unimplemented flag must not silently succeed
+    try testing.expect(exit_code != 0);
+}
+
+test "touch: -A flag stderr mentions unimplemented or unsupported" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_msg.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-A", "01", test_file };
+    _ = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    const stderr_output = stderr_buffer.items;
+    // Stderr should mention unimplemented or unsupported
+    const has_unimplemented = std.mem.indexOf(u8, stderr_output, "not yet implemented") != null;
+    const has_unsupported = std.mem.indexOf(u8, stderr_output, "unsupported") != null;
+    try testing.expect(has_unimplemented or has_unsupported);
+}
+
+test "touch: -A flag should not modify file timestamps" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a file first so it has known timestamps
+    const file = try tmp_dir.dir.createFile("adjust_nomod.txt", .{});
+    file.close();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_nomod.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    // Record timestamps before the -A invocation
+    const stat_before = try common.file.FileInfo.stat(test_file);
+
+    // Wait to ensure any modification would be detectable
+    std.Thread.sleep(1_100_000_000); // 1.1 seconds
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-A", "0130", test_file };
+    _ = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // Timestamps should remain unchanged -- an unimplemented flag must not touch the file
+    const stat_after = try common.file.FileInfo.stat(test_file);
+    try testing.expectEqual(stat_before.atime, stat_after.atime);
+    try testing.expectEqual(stat_before.mtime, stat_after.mtime);
 }
