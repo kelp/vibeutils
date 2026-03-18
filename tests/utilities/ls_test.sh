@@ -435,4 +435,16 @@ test_ls() {
     else
         print_test_result "ls NO_COLOR suppresses escapes" "PASS"
     fi
+
+    # Regression test: NO_COLOR respected even with --color=always
+    echo -e "${CYAN}Testing NO_COLOR overrides --color=always...${NC}"
+
+    local nc_always_output
+    nc_always_output=$(NO_COLOR=1 "$binary" --color=always -1 "$icon_dir" 2>/dev/null)
+    if echo "$nc_always_output" | grep -q $'\x1b\['; then
+        print_test_result "ls NO_COLOR overrides --color=always" "FAIL" \
+            "Found ESC sequences despite NO_COLOR=1 with --color=always"
+    else
+        print_test_result "ls NO_COLOR overrides --color=always" "PASS"
+    fi
 }

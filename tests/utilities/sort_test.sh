@@ -149,6 +149,12 @@ test_sort() {
     test_command_output "sort multi-line file (readLines regression)" $'apple\nbanana\ncherry' \
         bash -c "printf 'banana\napple\ncherry\n' | '$binary'"
 
+    # Regression test: basic sort operation safety net after argsFree change
+    echo -e "${CYAN}Testing basic sort (argsFree regression)...${NC}"
+
+    test_command_output "sort basic b-a to a-b (argsFree safety net)" $'a\nb' \
+        bash -c "printf 'b\na\n' | '$binary'"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}sort tests completed${NC}"

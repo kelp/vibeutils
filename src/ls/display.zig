@@ -12,8 +12,10 @@ pub fn initStyle(allocator: std.mem.Allocator, writer: anytype, color_mode: Colo
     if (color_mode == .never) {
         style.color_mode = .none;
     } else if (color_mode == .always) {
-        // Keep the detected mode but ensure it's at least basic
-        if (style.color_mode == .none) {
+        if (std.posix.getenv("NO_COLOR") != null) {
+            // NO_COLOR takes precedence per no-color.org standard
+            style.color_mode = .none;
+        } else if (style.color_mode == .none) {
             style.color_mode = .basic;
         }
     }
@@ -413,4 +415,77 @@ test "display - sanitizeName" {
     // DEL -> ?
     const with_del = sanitizeName("hello\x7Fworld", &buf);
     try testing.expectEqualStrings("hello?world", with_del);
+}
+
+// C library functions for environment manipulation in tests
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern fn unsetenv(name: [*:0]const u8) c_int;
+
+test "display - initStyle color=always with NO_COLOR must not emit ANSI codes" {
+    // The NO_COLOR standard (https://no-color.org/) says:
+    // "when set, [compliant software] SHOULD NOT output ANSI color escape codes"
+    // regardless of any other flag. --color=always must NOT override NO_COLOR.
+
+    // Save original env state
+    const saved_term = std.posix.getenv("TERM");
+    const saved_no_color = std.posix.getenv("NO_COLOR");
+
+    // Set up: capable terminal BUT NO_COLOR is set
+    _ = setenv("TERM", "xterm-256color", 1);
+    _ = setenv("NO_COLOR", "1", 1);
+    defer {
+        if (saved_term) |v| {
+            _ = setenv("TERM", v.ptr, 1);
+        } else {
+            _ = unsetenv("TERM");
+        }
+        if (saved_no_color) |v| {
+            _ = setenv("NO_COLOR", v.ptr, 1);
+        } else {
+            _ = unsetenv("NO_COLOR");
+        }
+    }
+
+    var output_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer output_buf.deinit(testing.allocator);
+
+    const style = try initStyle(testing.allocator, output_buf.writer(testing.allocator), .always);
+
+    // With NO_COLOR set, color_mode must be .none even when --color=always
+    try testing.expectEqual(
+        common.style.Style(std.ArrayList(u8).Writer).ColorMode.none,
+        style.color_mode,
+    );
+}
+
+test "display - initStyle color=always without NO_COLOR produces colors" {
+    // Complementary test: --color=always without NO_COLOR should enable colors.
+
+    // Save original env state
+    const saved_term = std.posix.getenv("TERM");
+    const saved_no_color = std.posix.getenv("NO_COLOR");
+
+    // Set up: capable terminal, NO_COLOR unset
+    _ = setenv("TERM", "xterm-256color", 1);
+    _ = unsetenv("NO_COLOR");
+    defer {
+        if (saved_term) |v| {
+            _ = setenv("TERM", v.ptr, 1);
+        } else {
+            _ = unsetenv("TERM");
+        }
+        if (saved_no_color) |v| {
+            _ = setenv("NO_COLOR", v.ptr, 1);
+        } else {
+            _ = unsetenv("NO_COLOR");
+        }
+    }
+
+    var output_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer output_buf.deinit(testing.allocator);
+
+    const style = try initStyle(testing.allocator, output_buf.writer(testing.allocator), .always);
+
+    // Without NO_COLOR, --color=always should enable colors (at least basic)
+    try testing.expect(style.color_mode != .none);
 }

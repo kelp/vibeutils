@@ -122,4 +122,18 @@ test_timeout() {
         print_test_result "timeout --help documents --signal flag" "FAIL" \
             "Expected --help to mention --signal"
     fi
+
+    # Regression test: arg errors exit 2, not 125
+    echo -e "${CYAN}Testing arg errors exit with code 2...${NC}"
+
+    test_command_exit_code "timeout no args exits 2" 2 "$binary"
+
+    "$binary" --bad-flag 2>/dev/null
+    exit_code=$?
+    if [[ $exit_code -eq 2 ]]; then
+        print_test_result "timeout --bad-flag exits 2" "PASS"
+    else
+        print_test_result "timeout --bad-flag exits 2" "FAIL" \
+            "Expected exit 2, got $exit_code"
+    fi
 }

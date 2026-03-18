@@ -37,4 +37,9 @@ test_sleep() {
 
     # Missing operand (no arguments)
     test_command_fails "sleep missing operand" "$binary"
+
+    # Regression test: basic operation safety net after arena allocator change
+    echo -e "${CYAN}Testing sleep 0 exits immediately (arena regression)...${NC}"
+
+    test_command_exit_code "sleep 0 exits 0 (arena safety net)" 0 "$binary" 0
 }

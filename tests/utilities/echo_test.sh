@@ -145,4 +145,28 @@ test_echo() {
     else
         print_test_result "echo -e \\077 produces ?" "FAIL" "Expected '?', got '$output'"
     fi
+
+    # Regression test: --help documents 1-2 hex digits for \x escape
+    echo -e "${CYAN}Testing --help documents hex digit count...${NC}"
+
+    local help_output
+    help_output=$("$binary" --help 2>&1) || true
+    if [[ "$help_output" == *"1 to 2"* ]]; then
+        print_test_result "echo --help mentions '1 to 2' for \\x" "PASS"
+    else
+        print_test_result "echo --help mentions '1 to 2' for \\x" "FAIL" \
+            "Expected '1 to 2' in help output"
+    fi
+
+    # Regression test: single hex digit accepted
+    echo -e "${CYAN}Testing single hex digit \\x escape...${NC}"
+
+    output=$("$binary" -e '\x9')
+    local tab_expected=$'\t'
+    if [[ "$output" == "$tab_expected" ]]; then
+        print_test_result "echo -e \\x9 produces tab" "PASS"
+    else
+        print_test_result "echo -e \\x9 produces tab" "FAIL" \
+            "Expected tab character, got '$output'"
+    fi
 }

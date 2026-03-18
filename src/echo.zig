@@ -124,7 +124,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\  \\e  escape                 \\t  horizontal tab
         \\  \\f  form feed              \\v  vertical tab
         \\  \\\\  backslash              \\0NNN  byte with octal value NNN
-        \\  \\xHH  byte with hex value HH
+        \\  \\xHH  byte with hex value (1 to 2 digits)
         \\
     );
 }
@@ -564,4 +564,36 @@ test "echo -e backslash-NNN without zero prefix: \\077 produces ?" {
     const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("?\n", buffer.items);
+}
+
+test "echo help text documents \\x as accepting 1 or 2 hex digits" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"--help"};
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    // The help text should indicate that \x accepts 1 or 2 hex digits,
+    // not imply exactly 2 with "HH". Currently says "byte with hex value HH".
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "1 to 2") != null);
+}
+
+test "echo -e hex escape with 2 digits: \\x41 produces A" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-e", "\\x41" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("A\n", buffer.items);
+}
+
+test "echo -e hex escape with 1 digit: \\x9 produces byte 0x09" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-e", "\\x9" };
+    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\x09\n", buffer.items);
 }

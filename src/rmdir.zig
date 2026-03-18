@@ -177,6 +177,14 @@ fn removeDirectories(allocator: std.mem.Allocator, directories: []const []const 
     var had_error = false;
 
     for (directories) |dir| {
+        // Refuse to remove "." or ".." to avoid EINVAL crash and match GNU behavior
+        const base = std.fs.path.basename(dir);
+        if (std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
+            common.printErrorWithProgram(allocator, stderr_writer, "rmdir", std.fs.File.stderr().isTty(), "refusing to remove '.' or '..' component from '{s}'", .{dir});
+            had_error = true;
+            continue;
+        }
+
         if (options.parents) {
             if (removeDirectoryWithParents(allocator, dir, stdout_writer, stderr_writer, options)) |_| {
                 // Success
@@ -532,4 +540,40 @@ test "rmdir: error message consistency" {
     try testing.expectEqualStrings("Not a directory", formatError(error.NotDir));
     try testing.expectEqualStrings("Permission denied", formatError(error.AccessDenied));
     try testing.expectEqualStrings("No such file or directory", formatError(error.FileNotFound));
+}
+
+test "rmdir: -p dotdot should fail with refusing message" {
+    const allocator = testing.allocator;
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buffer.deinit(allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stderr_buffer.deinit(allocator);
+
+    const args = [_][]const u8{ "-p", ".." };
+    const exit_code = try runRmdir(allocator, &args, stdout_buffer.writer(allocator), stderr_buffer.writer(allocator));
+
+    // Should fail with non-zero exit code
+    try testing.expect(exit_code != 0);
+
+    // Should print an error about refusing to remove '.' or '..'
+    const stderr_output = stderr_buffer.items;
+    try testing.expect(std.mem.indexOf(u8, stderr_output, "refusing to remove") != null);
+}
+
+test "rmdir: -p dot should fail with refusing message" {
+    const allocator = testing.allocator;
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stdout_buffer.deinit(allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer stderr_buffer.deinit(allocator);
+
+    const args = [_][]const u8{ "-p", "." };
+    const exit_code = try runRmdir(allocator, &args, stdout_buffer.writer(allocator), stderr_buffer.writer(allocator));
+
+    // Should fail with non-zero exit code
+    try testing.expect(exit_code != 0);
+
+    // Should print an error about refusing to remove '.' or '..'
+    const stderr_output = stderr_buffer.items;
+    try testing.expect(std.mem.indexOf(u8, stderr_output, "refusing to remove") != null);
 }

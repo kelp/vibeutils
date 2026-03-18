@@ -132,13 +132,12 @@ fn runTeeWithInput(
 
 /// Main entry point for the tee command
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // Parse process arguments
     const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
 
     // Set up buffered writers for stdout and stderr
     var stdout_buffer: [8192]u8 = undefined;
@@ -541,6 +540,27 @@ test "tee dash with file writes stdout twice and to file" {
     const file_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
     defer testing.allocator.free(file_content);
     try testing.expectEqualStrings("hello\n", file_content);
+}
+
+test "tee with no files copies stdin to stdout only" {
+    const input_file = try createTempInput("piped data\n");
+    defer input_file.close();
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed_args = TeeArgs{};
+
+    const result = try runTeeWithInput(
+        testing.allocator,
+        parsed_args,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("piped data\n", stdout_buffer.items);
 }
 
 /// Helper to create a temporary file with given content, seeked

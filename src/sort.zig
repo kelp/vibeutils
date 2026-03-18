@@ -408,6 +408,7 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
@@ -1842,6 +1843,31 @@ test "parseArgs --parallel invalid returns null" {
 
 // files0-from integration test removed: calls runSort which
 // reads stdin in the test environment, causing hangs.
+
+test "runSort basic alphabetical sort" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    const tmp_path = "/tmp/sort_test_basic_alpha.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("b\na\nc\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{tmp_path};
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    try testing.expectEqualStrings("a\nb\nc\n", buffer.items);
+}
 
 test "readLines does not leak the content buffer" {
     const allocator = testing.allocator;

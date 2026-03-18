@@ -867,6 +867,7 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
 
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
@@ -1962,4 +1963,34 @@ test "runDd - iseek skips input blocks" {
     const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BBBB", content);
+}
+
+test "runDd - multi-block copy with bs and count" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // 5 blocks of 4 bytes each = 20 bytes; copy only first 3 blocks
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "AAAABBBBCCCCddddeeee");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    const args = [_][]const u8{ if_arg, of_arg, "bs=4", "count=3", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    defer testing.allocator.free(content);
+    try testing.expectEqual(@as(usize, 12), content.len);
+    try testing.expectEqualStrings("AAAABBBBCCCC", content);
 }

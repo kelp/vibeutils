@@ -843,62 +843,9 @@ fn formatFloat(writer: anytype, val: f64, conv: u8, spec: FormatSpec) !void {
 }
 
 /// Format a floating-point number in fixed notation (%f).
+/// Delegates to std.fmt.float.render (Ryu algorithm) for correct rounding.
 fn formatFixedFloat(buf: []u8, val: f64, precision: usize) ![]const u8 {
-    const negative = val < 0;
-    const abs_val = @abs(val);
-    const int_part = @as(u64, @intFromFloat(abs_val));
-    const frac = abs_val - @as(f64, @floatFromInt(int_part));
-
-    var pos: usize = 0;
-    if (negative) {
-        buf[pos] = '-';
-        pos += 1;
-    }
-
-    // Format integer part
-    var int_buf: [64]u8 = undefined;
-    const int_str = std.fmt.bufPrint(&int_buf, "{d}", .{int_part}) catch "0";
-    @memcpy(buf[pos .. pos + int_str.len], int_str);
-    pos += int_str.len;
-
-    if (precision > 0) {
-        buf[pos] = '.';
-        pos += 1;
-
-        // Compute fractional digits
-        var f = frac;
-        var i: usize = 0;
-        while (i < precision) : (i += 1) {
-            f *= 10.0;
-            const digit: u8 = @intFromFloat(@mod(f, 10.0));
-            buf[pos] = '0' + digit;
-            pos += 1;
-        }
-
-        // Round last digit
-        const next_f = f * 10.0;
-        const next_digit: u8 = @intFromFloat(@mod(next_f, 10.0));
-        if (next_digit >= 5 and pos > 0) {
-            // Carry
-            var carry_pos = pos - 1;
-            while (true) {
-                if (buf[carry_pos] == '.') {
-                    if (carry_pos == 0) break;
-                    carry_pos -= 1;
-                    continue;
-                }
-                if (buf[carry_pos] < '9') {
-                    buf[carry_pos] += 1;
-                    break;
-                }
-                buf[carry_pos] = '0';
-                if (carry_pos == 0 or (negative and carry_pos == 1)) break;
-                carry_pos -= 1;
-            }
-        }
-    }
-
-    return buf[0..pos];
+    return std.fmt.float.render(buf, val, .{ .mode = .decimal, .precision = precision });
 }
 
 /// Format a floating-point number in scientific notation (%e/%E).
@@ -1568,4 +1515,54 @@ test "processEscape should propagate write errors not swallow them" {
     // The write failed, so printf should report an error.
     // BUG: processEscape swallows the error, so result is 0.
     try testing.expect(result != 0);
+}
+
+test "printf float carry propagation past decimal: 9.995 -> 10.00" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%.2f", "9.995" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("10.00", buffer.items);
+}
+
+test "printf float carry propagation past decimal: 9.95 -> 10.0" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%.1f", "9.95" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("10.0", buffer.items);
+}
+
+test "printf float carry propagation zero precision: 9.5 -> 10" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%.0f", "9.5" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("10", buffer.items);
+}
+
+test "printf float carry propagation multi-digit integer: 99.999 -> 100.00" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%.2f", "99.999" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("100.00", buffer.items);
+}
+
+test "printf float simple rounding no carry overflow: 1.005 -> 1.01" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%.2f", "1.005" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1.01", buffer.items);
 }

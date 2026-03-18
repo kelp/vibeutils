@@ -656,7 +656,7 @@ fn processFile(
     show_filename: bool,
     use_color: bool,
 ) bool {
-    const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch return false;
+    const content = file.readToEndAlloc(allocator, 512 * 1024 * 1024) catch return false;
     defer allocator.free(content);
 
     var found_match = false;
@@ -2064,4 +2064,52 @@ test "runGrep -cZ uses NUL after filename in count output" {
     // Output should have NUL after filename: "path\02\n"
     const expected = try std.fmt.allocPrint(allocator, "{s}\x002\n", .{tmp_path});
     try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+// --- readToEndAlloc safety-net tests (line 659 code path) ---
+
+test "processFile reads multi-line file and returns correct matches" {
+    const content =
+        \\alpha one
+        \\beta two
+        \\alpha three
+        \\gamma four
+        \\alpha five
+        \\
+    ;
+    const result = try testRunGrepOutput(content, &.{"alpha"});
+    defer result.arena.deinit();
+
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    // Should match exactly the three "alpha" lines
+    try testing.expectEqualStrings(
+        "alpha one\nalpha three\nalpha five\n",
+        result.output,
+    );
+}
+
+test "processFile reads file with many lines and matches selectively" {
+    // Build a file with 200 lines; every 10th line contains "NEEDLE"
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buf = std.ArrayListUnmanaged(u8){};
+    var expected = std.ArrayListUnmanaged(u8){};
+    for (0..200) |i| {
+        if (i % 10 == 0) {
+            const line = try std.fmt.allocPrint(allocator, "NEEDLE line {d}\n", .{i});
+            try buf.appendSlice(allocator, line);
+            try expected.appendSlice(allocator, line);
+        } else {
+            const line = try std.fmt.allocPrint(allocator, "filler line {d}\n", .{i});
+            try buf.appendSlice(allocator, line);
+        }
+    }
+
+    const result = try testRunGrepOutput(buf.items, &.{"NEEDLE"});
+    defer result.arena.deinit();
+
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings(expected.items, result.output);
 }

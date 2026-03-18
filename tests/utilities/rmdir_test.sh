@@ -344,4 +344,29 @@ test_rmdir() {
 
     # POSIX: exit >0 on failure
     test_command_exit_code "rmdir POSIX failure exit code" 1 "$binary" "$TEMP_DIR/posix_nonexistent_$$"
+
+    # Regression test: rmdir refuses to remove . and ..
+    echo -e "${CYAN}Testing rmdir refuses . and .. removal...${NC}"
+
+    local dot_out=""
+    local dot_err=""
+    local dot_exit=""
+    run_command dot_cmd dot_out dot_err dot_exit "$binary" .
+    if [[ $dot_exit -ne 0 && "$dot_err" =~ "refusing" ]]; then
+        print_test_result "rmdir . refused with message" "PASS"
+    else
+        print_test_result "rmdir . refused with message" "FAIL" \
+            "Expected non-zero exit and 'refusing' in stderr, got exit=$dot_exit stderr='$dot_err'"
+    fi
+
+    local dotdot_out=""
+    local dotdot_err=""
+    local dotdot_exit=""
+    run_command dotdot_cmd dotdot_out dotdot_err dotdot_exit "$binary" ..
+    if [[ $dotdot_exit -ne 0 && "$dotdot_err" =~ "refusing" ]]; then
+        print_test_result "rmdir .. refused with message" "PASS"
+    else
+        print_test_result "rmdir .. refused with message" "FAIL" \
+            "Expected non-zero exit and 'refusing' in stderr, got exit=$dotdot_exit stderr='$dotdot_err'"
+    fi
 }

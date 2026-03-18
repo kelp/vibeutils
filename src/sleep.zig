@@ -220,9 +220,9 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
 /// Standard main function
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -429,6 +429,22 @@ test "runSleep - multiple time arguments" {
     // We use very small times to keep tests fast
     const result = try runSleep(testing.allocator, &.{ "0.001", "0.001s" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
+}
+
+test "runSleep - zero sleep with captured output" {
+    // Safety-net test: exercises runSleep with both writers captured,
+    // verifying allocator correctness through the full argparse path.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const result = try runSleep(testing.allocator, &.{"0"}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
 }
 
 test "TimeUnit.toNanos - verify unit conversions" {

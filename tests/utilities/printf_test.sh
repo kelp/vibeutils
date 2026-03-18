@@ -191,4 +191,31 @@ test_printf() {
         print_test_result "printf backslash-n produces newline" "FAIL" \
             "Expected 'line1<NL>line2', got '$nl_output'"
     fi
+
+    # Regression test: carry propagation in float formatting
+    echo -e "${CYAN}Testing float rounding carry propagation...${NC}"
+
+    output=$("$binary" '%.2f' 9.995)
+    if [[ "$output" == "10.00" ]]; then
+        print_test_result "printf %.2f 9.995 rounds to 10.00" "PASS"
+    else
+        print_test_result "printf %.2f 9.995 rounds to 10.00" "FAIL" \
+            "Expected '10.00', got '$output'"
+    fi
+
+    output=$("$binary" '%.0f' 9.5)
+    if [[ "$output" == "10" ]]; then
+        print_test_result "printf %.0f 9.5 rounds to 10" "PASS"
+    else
+        print_test_result "printf %.0f 9.5 rounds to 10" "FAIL" \
+            "Expected '10', got '$output'"
+    fi
+
+    output=$("$binary" '%.2f' 99.999)
+    if [[ "$output" == "100.00" ]]; then
+        print_test_result "printf %.2f 99.999 rounds to 100.00" "PASS"
+    else
+        print_test_result "printf %.2f 99.999 rounds to 100.00" "FAIL" \
+            "Expected '100.00', got '$output'"
+    fi
 }

@@ -194,4 +194,17 @@ test_dd() {
 
     # Failure exit code for bad input
     test_command_exit_code "dd failure exit code" 1 "$binary" if=/nonexistent/path of=/dev/null status=none 2>/dev/null || true
+
+    # Regression test: basic copy safety net after argsFree change
+    echo -e "${CYAN}Testing dd basic copy (argsFree regression)...${NC}"
+
+    local args_input=$(create_temp_file "ABCDE")
+    local args_result
+    args_result=$("$binary" bs=1 count=5 status=none < "$args_input" 2>/dev/null)
+    if [[ "$args_result" == "ABCDE" ]]; then
+        print_test_result "dd bs=1 count=5 copies 5 bytes (argsFree safety net)" "PASS"
+    else
+        print_test_result "dd bs=1 count=5 copies 5 bytes (argsFree safety net)" "FAIL" \
+            "Expected 'ABCDE', got '$args_result'"
+    fi
 }
