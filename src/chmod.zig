@@ -2020,3 +2020,22 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
     const result = applyModeSpecToFile(inner_path, mode_spec, output_buffer.writer(testing.allocator), options);
     try testing.expectError(error.AccessDenied, result);
 }
+
+// Tests: parseMode returns correct ModeSpec variant for symbolic vs octal input
+// Safety-net tests to ensure the working code path is preserved during dead-code cleanup
+
+test "parseMode with symbolic string routes through symbolic fallback" {
+    // parseMode("u+x") falls through octal parsing and reaches parseSymbolicModeString.
+    // It returns a Mode (not an error), proving the symbolic fallback path works.
+    const mode = try parseMode("u+x");
+    // parseSymbolicModeString starts from mode 0 and applies u+x → user execute only
+    try testing.expectEqual(@as(u3, 1), mode.user);
+    try testing.expectEqual(@as(u3, 0), mode.group);
+    try testing.expectEqual(@as(u3, 0), mode.other);
+}
+
+test "parseMode with octal string returns correct mode" {
+    // Verify the octal path still works as expected
+    const mode = try parseMode("0644");
+    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+}

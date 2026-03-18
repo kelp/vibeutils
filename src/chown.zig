@@ -1238,6 +1238,39 @@ test "chown -x flag is accepted" {
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
+test "runChown production path with valid file and owner spec" {
+    // Safety net: exercises the full production path (runChown -> chownSingle)
+    // using the file's current uid:gid so no actual ownership change occurs.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    file.close();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/test.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    // Get current ownership so the spec matches (no actual change)
+    const stat_info = try common.file.FileInfo.stat(test_file);
+    const owner_spec = try std.fmt.allocPrint(testing.allocator, "{d}:{d}", .{
+        @as(common.user_group.uid_t, @intCast(stat_info.uid)),
+        @as(common.user_group.gid_t, @intCast(stat_info.gid)),
+    });
+    defer testing.allocator.free(owner_spec);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ owner_spec, test_file };
+    const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
 test "chown help text includes new flags" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
