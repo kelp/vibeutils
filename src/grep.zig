@@ -67,6 +67,7 @@ const GrepOptions = struct {
     exclude_globs: std.ArrayListUnmanaged([]const u8) = .{},
     exclude_dirs: std.ArrayListUnmanaged([]const u8) = .{},
     patterns: std.ArrayListUnmanaged([]const u8) = .{},
+    pattern_file_contents: std.ArrayListUnmanaged([]const u8) = .{},
     files: std.ArrayListUnmanaged([]const u8) = .{},
     help: bool = false,
     version: bool = false,
@@ -75,6 +76,10 @@ const GrepOptions = struct {
         self.include_globs.deinit(allocator);
         self.exclude_globs.deinit(allocator);
         self.exclude_dirs.deinit(allocator);
+        for (self.pattern_file_contents.items) |buf| {
+            allocator.free(buf);
+        }
+        self.pattern_file_contents.deinit(allocator);
         self.patterns.deinit(allocator);
         self.files.deinit(allocator);
     }
@@ -178,7 +183,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 try opts.patterns.append(allocator, flag["regexp=".len..]);
             } else if (std.mem.startsWith(u8, flag, "file=")) {
                 const pattern_file = flag["file=".len..];
-                try loadPatternsFromFile(allocator, &opts.patterns, pattern_file, stderr_writer);
+                try loadPatternsFromFile(allocator, &opts.patterns, &opts.pattern_file_contents, pattern_file, stderr_writer);
             } else if (std.mem.startsWith(u8, flag, "max-count=")) {
                 const val_str = flag["max-count=".len..];
                 opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch {
@@ -311,7 +316,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'f'", .{});
                             return null;
                         };
-                        try loadPatternsFromFile(allocator, &opts.patterns, value, stderr_writer);
+                        try loadPatternsFromFile(allocator, &opts.patterns, &opts.pattern_file_contents, value, stderr_writer);
                         break;
                     },
                     'm' => {
@@ -431,11 +436,12 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
 }
 
 /// Load patterns from a file, one per line
-fn loadPatternsFromFile(allocator: Allocator, patterns: *std.ArrayListUnmanaged([]const u8), path: []const u8, stderr_writer: anytype) !void {
+fn loadPatternsFromFile(allocator: Allocator, patterns: *std.ArrayListUnmanaged([]const u8), pattern_file_contents: *std.ArrayListUnmanaged([]const u8), path: []const u8, stderr_writer: anytype) !void {
     const content = std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024) catch {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}: No such file or directory", .{path});
         return;
     };
+    try pattern_file_contents.append(allocator, content);
 
     var start: usize = 0;
     for (content, 0..) |ch, idx| {
@@ -485,6 +491,7 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
     if (!opts.only_matching and !opts.word_regexp and opts.color == .off) cflags |= c.REG_NOSUB;
 
     const pattern_z = allocator.dupeZ(u8, actual_pattern) catch return null;
+    defer allocator.free(pattern_z);
 
     const regex = if (comptime is_linux)
         (regex_c.regex_heap_alloc() orelse return null)
@@ -2112,4 +2119,31 @@ test "processFile reads file with many lines and matches selectively" {
 
     try testing.expectEqual(@as(u8, 0), result.exit_code);
     try testing.expectEqualStrings(expected.items, result.output);
+}
+
+test "runGrep -f pattern file does not leak file contents buffer" {
+    // Create a temp dir with a pattern file and a data file
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Write pattern file containing one pattern per line
+    const pattern_file = try tmp_dir.dir.createFile("patterns.txt", .{});
+    try pattern_file.writeAll("hello\nworld\n");
+    pattern_file.close();
+
+    // Write data file to search
+    const data_file = try tmp_dir.dir.createFile("data.txt", .{});
+    try data_file.writeAll("hello there\ngoodbye now\nworld peace\n");
+    data_file.close();
+
+    const pattern_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "patterns.txt");
+    defer testing.allocator.free(pattern_path);
+
+    const data_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "data.txt");
+    defer testing.allocator.free(data_path);
+
+    // Use testing.allocator directly (not arena) so leaks are detected
+    const args = [_][]const u8{ "--color=never", "-f", pattern_path, data_path };
+    const exit_code = runGrep(testing.allocator, &args, common.null_writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
 }

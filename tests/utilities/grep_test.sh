@@ -260,6 +260,16 @@ test_grep() {
         print_test_result "grep -s suppresses errors" "FAIL" "Got stderr: $err"
     fi
 
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: grep -f pattern_file data_file should work correctly
+    # Verifies -f flag doesn't leak file descriptors or misread patterns
+    local reg_pattern_file="$TEMP_DIR/grep_reg_patterns.txt"
+    local reg_data_file="$TEMP_DIR/grep_reg_data.txt"
+    printf 'hello\n' > "$reg_pattern_file"
+    printf 'hello world\nfoo bar\nhello again\n' > "$reg_data_file"
+    test_command_output "grep -f with data file (regression)" $'hello world\nhello again' "$binary" --color=never -f "$reg_pattern_file" "$reg_data_file"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}grep tests completed${NC}"

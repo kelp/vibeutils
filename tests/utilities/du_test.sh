@@ -172,6 +172,24 @@ test_du() {
     test_command_exit_code "du --color=invalid exits 2" 2 \
         "$binary" --color=invalid
 
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: du on a temp directory should produce output
+    # Safety net for allocator change (arena allocator migration)
+    local reg_tmpdir
+    reg_tmpdir=$(mktemp -d)
+    echo "regression test data" > "$reg_tmpdir/regfile.txt"
+    local reg_output
+    reg_output=$("$binary" "$reg_tmpdir" 2>/dev/null)
+    local reg_exit=$?
+    if [[ $reg_exit -eq 0 && -n "$reg_output" ]]; then
+        print_test_result "du basic operation after allocator change (regression)" "PASS"
+    else
+        print_test_result "du basic operation after allocator change (regression)" "FAIL" \
+            "Exit code: $reg_exit, output: '$reg_output'"
+    fi
+    rm -rf "$reg_tmpdir"
+
     # Cleanup
     rm -rf "$tmpdir"
 }

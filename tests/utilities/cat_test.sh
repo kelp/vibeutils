@@ -190,4 +190,18 @@ test_cat() {
     # Test exit codes
     test_command_exit_code "cat success exit code" 0 "$binary" "$test_file1"
     test_command_exit_code "cat failure exit code" 1 "$binary" "/nonexistent/file" 2>/dev/null || true
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: cat -v should show non-printing characters
+    # Safety net for dead code removal in cat utility
+    local reg_special_file=$(create_temp_file $'\x01\x02\x03')
+    local reg_v_output
+    reg_v_output=$("$binary" -v "$reg_special_file" 2>/dev/null)
+    if [[ "$reg_v_output" =~ "^A" && "$reg_v_output" =~ "^B" && "$reg_v_output" =~ "^C" ]]; then
+        print_test_result "cat -v shows non-printing chars (regression)" "PASS"
+    else
+        print_test_result "cat -v shows non-printing chars (regression)" "FAIL" \
+            "Expected ^A^B^C, got: '$reg_v_output'"
+    fi
 }

@@ -257,4 +257,17 @@ test_head() {
     # Test zero values explicitly
     test_command_output "head -n 0 non-empty file" "" "$binary" -n 0 "$test_file2"
     test_command_output "head -c 0 non-empty file" "" "$binary" -c 0 "$byte_file"
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: head --help should not advertise [-]NUM or "all but last"
+    # Feature was not implemented but was falsely advertised in help text
+    local help_output
+    help_output=$("$binary" --help 2>&1)
+    if [[ "$help_output" != *'[-]NUM'* && "$help_output" != *'all but last'* ]]; then
+        print_test_result "head --help no false [-]NUM advertising (regression)" "PASS"
+    else
+        print_test_result "head --help no false [-]NUM advertising (regression)" "FAIL" \
+            "Help text advertises unimplemented feature"
+    fi
 }

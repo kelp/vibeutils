@@ -303,6 +303,24 @@ test_test() {
     else
         print_test_result "error handling consistency" "FAIL" "test: $test_error_exit, [: $bracket_error_exit"
     fi
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: test -ef compares device AND inode (same file)
+    local ef_file1=$(create_temp_file "ef test content")
+    local ef_file2=$(create_temp_file "different content")
+    test_command_exit_code "test file1 -ef file1 same file (regression)" 0 \
+        "$binary" "$ef_file1" -ef "$ef_file1"
+    test_command_exit_code "test file1 -ef file2 different files (regression)" 1 \
+        "$binary" "$ef_file1" -ef "$ef_file2"
+
+    # Regression test: -o/-a left-to-right evaluation
+    # 1 -eq 1 -o 1 -eq 2 should succeed (first condition true)
+    test_command_exit_code "test -o left-to-right eval (regression)" 0 \
+        "$binary" 1 -eq 1 -o 1 -eq 2
+    # 1 -eq 2 -a 1 -eq 1 should fail (first condition false, -a requires both)
+    test_command_exit_code "test -a left-to-right eval (regression)" 1 \
+        "$binary" 1 -eq 2 -a 1 -eq 1
 }
 
 # Export the test function

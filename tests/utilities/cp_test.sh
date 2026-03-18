@@ -847,4 +847,19 @@ test_cp() {
 
     # Restore for cleanup
     chmod 755 "$ro_dir"
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: cp with --backup should still work after argparse change
+    local backup_src=$(create_temp_file "backup regression source")
+    local backup_dst=$(create_temp_file "backup regression existing")
+    test_command_exit_code "cp --backup still works (regression)" 0 \
+        "$binary" --backup "$backup_src" "$backup_dst"
+    # Verify backup file was created
+    if [[ -f "${backup_dst}~" ]]; then
+        print_test_result "cp --backup creates backup file (regression)" "PASS"
+    else
+        print_test_result "cp --backup creates backup file (regression)" "FAIL" \
+            "Expected ${backup_dst}~ to exist"
+    fi
 }

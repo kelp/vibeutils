@@ -610,4 +610,19 @@ test_mv() {
             "stderr unexpectedly contains '->': '$reg_stderr_content'"
     fi
     rm -f "$reg_stdout_file" "$reg_stderr_file"
+
+    # Regression test: mv symlink should move the link, not dereference it
+    # Verifies symlink is preserved as a symlink at new location
+    local reg_link_target=$(create_temp_file "regression link target")
+    local reg_symlink="$TEMP_DIR/reg_mv_symlink"
+    ln -s "$reg_link_target" "$reg_symlink"
+    local reg_symlink_dest="$TEMP_DIR/reg_mv_symlink_moved"
+    test_command_exit_code "mv symlink preserved (regression)" 0 \
+        "$binary" "$reg_symlink" "$reg_symlink_dest"
+    if [[ -L "$reg_symlink_dest" ]]; then
+        print_test_result "mv symlink is still symlink (regression)" "PASS"
+    else
+        print_test_result "mv symlink is still symlink (regression)" "FAIL" \
+            "Moved symlink became a regular file"
+    fi
 }

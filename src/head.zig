@@ -198,8 +198,8 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\
         \\With no FILE, or when FILE is -, read standard input.
         \\
-        \\  -c, --bytes=[-]NUM       print the first NUM bytes of each file
-        \\  -n, --lines=[-]NUM       print the first NUM lines instead of the first 10
+        \\  -c, --bytes=NUM          print the first NUM bytes of each file
+        \\  -n, --lines=NUM          print the first NUM lines instead of the first 10
         \\  -q, --quiet, --silent    never print headers giving file names
         \\  -v, --verbose            always print headers giving file names
         \\      --help               display this help and exit

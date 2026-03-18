@@ -221,4 +221,26 @@ test_env() {
         print_test_result "env FOO= sets empty value" "FAIL" \
             "Expected 'FOO=', got: '$cmd_output'"
     fi
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: env exit code should be valid (0-255)
+    # Safety net for signal exit code capping at 255
+    "$binary" sh -c 'exit 0' 2>/dev/null
+    exit_code=$?
+    if [[ $exit_code -eq 0 ]]; then
+        print_test_result "env exit code 0 passthrough (regression)" "PASS"
+    else
+        print_test_result "env exit code 0 passthrough (regression)" "FAIL" \
+            "Expected exit 0, got: $exit_code"
+    fi
+
+    "$binary" sh -c 'exit 255' 2>/dev/null
+    exit_code=$?
+    if [[ $exit_code -eq 255 ]]; then
+        print_test_result "env exit code 255 passthrough (regression)" "PASS"
+    else
+        print_test_result "env exit code 255 passthrough (regression)" "FAIL" \
+            "Expected exit 255, got: $exit_code"
+    fi
 }

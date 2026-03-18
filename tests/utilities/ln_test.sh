@@ -588,4 +588,20 @@ test_ln() {
     fi
 
     rm -f "$backup_link" "${backup_link}~"
+
+    echo -e "${CYAN}Testing regression fixes...${NC}"
+
+    # Regression test: ln error messages should use readable names, not raw errno
+    # stderr should say "No such file or directory" not "errno(123)" or similar
+    local reg_err_out=""
+    local reg_err_err=""
+    local reg_err_exit=""
+    run_command reg_err_cmd reg_err_out reg_err_err reg_err_exit \
+        "$binary" "/nonexistent/dir/target" "$TEMP_DIR/reg_err_link"
+    if [[ "$reg_err_err" =~ "No such file" && ! "$reg_err_err" =~ "errno(" ]]; then
+        print_test_result "ln readable error message (regression)" "PASS"
+    else
+        print_test_result "ln readable error message (regression)" "FAIL" \
+            "Expected readable error, got: $reg_err_err"
+    fi
 }
