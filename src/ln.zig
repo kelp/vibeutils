@@ -565,7 +565,20 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
         const result = c.linkat(c.AT.FDCWD, target_z, c.AT.FDCWD, link_name_z, flags);
         if (result == -1) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @tagName(std.posix.errno(result)) });
+            const errno = std.posix.errno(result);
+            const err = switch (errno) {
+                .ACCES, .PERM => error.AccessDenied,
+                .EXIST => error.PathAlreadyExists,
+                .LOOP => error.SymLinkLoop,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOENT => error.FileNotFound,
+                .NOSPC => error.NoSpaceLeft,
+                .NOTDIR => error.NotDir,
+                .ROFS => error.ReadOnlyFileSystem,
+                .XDEV => error.RenameAcrossMountPoints,
+                else => error.LinkFailed,
+            };
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
             return error.LinkFailed;
         }
     }

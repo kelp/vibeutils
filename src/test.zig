@@ -293,13 +293,16 @@ const ExpressionParser = struct {
         return self.evaluateLogicalExpression(processed_args.items);
     }
 
-    /// Evaluate logical expressions with proper operator precedence
+    /// Evaluate logical expressions with POSIX operator precedence.
+    /// -a binds tighter than -o; both evaluate left-to-right.
     fn evaluateLogicalExpression(self: *ExpressionParser, args: []const []const u8) ParseError!bool {
-        // Find rightmost -o (lowest precedence, left-associative)
+        // Scan left-to-right for -o (lowest precedence).
+        // Splitting at the leftmost -o keeps the left operand
+        // minimal and recurses into the right remainder, which
+        // mirrors POSIX left-to-right evaluation order.
         {
-            var i: usize = args.len;
-            while (i > 0) {
-                i -= 1;
+            var i: usize = 0;
+            while (i < args.len) : (i += 1) {
                 if (std.mem.eql(u8, args[i], "-o")) {
                     if (i == 0 or i == args.len - 1) return error.InvalidExpression;
                     const left = try self.evaluateLogicalExpression(args[0..i]);
@@ -309,11 +312,10 @@ const ExpressionParser = struct {
             }
         }
 
-        // Find rightmost -a (higher precedence, left-associative)
+        // Scan left-to-right for -a (higher precedence than -o).
         {
-            var i: usize = args.len;
-            while (i > 0) {
-                i -= 1;
+            var i: usize = 0;
+            while (i < args.len) : (i += 1) {
                 if (std.mem.eql(u8, args[i], "-a")) {
                     if (i == 0 or i == args.len - 1) return error.InvalidExpression;
                     const left = try self.evaluateLogicalExpression(args[0..i]);

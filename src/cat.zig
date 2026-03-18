@@ -344,7 +344,7 @@ fn writeWithSpecialChars(writer: anytype, line: []const u8, options: CatOptions)
     for (line) |ch| {
         if (ch == '\t' and options.show_tabs) {
             try writer.writeAll("^I");
-        } else if (options.show_nonprinting and ch < 32 and ch != '\t' and ch != '\n') {
+        } else if (options.show_nonprinting and ch < 32 and ch != '\t') {
             // Control characters
             try writer.print("^{c}", .{ch + 64});
         } else if (options.show_nonprinting and ch == ASCII_DEL) {

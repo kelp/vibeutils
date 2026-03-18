@@ -178,20 +178,20 @@ pub fn main() !void {
 pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "cp";
 
-    // Pre-filter args: remove --backup[=TYPE] and --preserve[=ATTRS]
-    // which need special handling (boolean + optional value)
+    // Pre-filter args: strip --backup[=TYPE] and --preserve[=ATTRS]
+    // before argparse because they are bool fields that optionally
+    // accept a =VALUE suffix. Argparse returns TooManyValues for
+    // bool fields with =VALUE. resolveConflicts handles setting
+    // these flags from the original unfiltered args.
     var filtered_args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
     defer filtered_args.deinit(allocator);
-    var pre_backup = false;
-    var pre_preserve = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--backup") or std.mem.startsWith(u8, arg, "--backup=")) {
-            pre_backup = true;
+            continue;
         } else if (std.mem.eql(u8, arg, "--preserve") or std.mem.startsWith(u8, arg, "--preserve=")) {
-            pre_preserve = true;
-        } else {
-            try filtered_args.append(allocator, arg);
+            continue;
         }
+        try filtered_args.append(allocator, arg);
     }
 
     // Parse command line arguments
@@ -209,10 +209,6 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         }
     };
     defer allocator.free(config.positionals);
-
-    // Apply pre-filtered flags
-    if (pre_backup) config.backup = true;
-    if (pre_preserve) config.preserve = true;
 
     resolveConflicts(&config, args);
 
