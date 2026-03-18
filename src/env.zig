@@ -385,9 +385,9 @@ fn execCommand(allocator: Allocator, command: []const []const u8, env_map: *cons
 
     return switch (result) {
         .Exited => |code| code,
-        .Signal => |signal| @as(u8, @intCast(signal + 128)),
-        .Stopped => |signal| @as(u8, @intCast(signal + 128)),
-        .Unknown => |code| @as(u8, @intCast(code)),
+        .Signal => |signal| @as(u8, @intCast(@min(signal + 128, 255))),
+        .Stopped => |signal| @as(u8, @intCast(@min(signal + 128, 255))),
+        .Unknown => |code| @as(u8, @intCast(@min(code, 255))),
     };
 }
 

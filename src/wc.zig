@@ -57,9 +57,9 @@ const WcConfig = struct {
     display: common.display_config.DisplayConfig,
 };
 
-fn resolveConfig(opts: WcOptions) !WcConfig {
+fn resolveConfig(allocator: Allocator, opts: WcOptions) !WcConfig {
     var config = WcConfig{
-        .display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator),
+        .display = common.display_config.DisplayConfig.resolve(allocator),
     };
 
     // Parse explicit --color mode (overrides DisplayConfig)
@@ -215,7 +215,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     }
 
     // Resolve display configuration
-    const config = resolveConfig(opts) catch |err| switch (err) {
+    const config = resolveConfig(allocator, opts) catch |err| switch (err) {
         error.InvalidColorMode => {
             common.printErrorWithProgram(allocator, stderr_writer, "wc", std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
             return @intFromEnum(common.ExitCode.misuse);
@@ -757,23 +757,23 @@ extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_
 extern fn unsetenv(name: [*:0]const u8) c_int;
 
 test "resolveConfig defaults: color off in test (no TTY)" {
-    const config = try resolveConfig(.{});
+    const config = try resolveConfig(testing.allocator, .{});
     // In test environment (no TTY), color should default to off
     try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig --color=always sets display.color on" {
-    const config = try resolveConfig(.{ .color = "always" });
+    const config = try resolveConfig(testing.allocator, .{ .color = "always" });
     try testing.expectEqual(common.display_config.ResolvedMode.on, config.display.color);
 }
 
 test "resolveConfig --color=never sets display.color off" {
-    const config = try resolveConfig(.{ .color = "never" });
+    const config = try resolveConfig(testing.allocator, .{ .color = "never" });
     try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig --color=invalid returns error" {
-    const result = resolveConfig(.{ .color = "invalid" });
+    const result = resolveConfig(testing.allocator, .{ .color = "invalid" });
     try testing.expectError(error.InvalidColorMode, result);
 }
 

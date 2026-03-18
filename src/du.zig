@@ -191,8 +191,8 @@ fn parseThreshold(str: []const u8) ?i64 {
     return if (negative) -signed else signed;
 }
 
-fn resolveConfig(opts: DuOptions, deref_mode: DereferenceMode) !DuConfig {
-    const display = common.display_config.DisplayConfig.resolve(std.heap.c_allocator);
+fn resolveConfig(allocator: Allocator, opts: DuOptions, deref_mode: DereferenceMode) !DuConfig {
+    const display = common.display_config.DisplayConfig.resolve(allocator);
     var config = DuConfig{
         .all = opts.all,
         .total = opts.total,
@@ -685,7 +685,7 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     }
 
     const deref_mode = resolveDerefMode(args);
-    const config = resolveConfig(opts, deref_mode) catch |err| {
+    const config = resolveConfig(allocator, opts, deref_mode) catch |err| {
         switch (err) {
             error.InvalidBlockSize => {
                 common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid --block-size argument", .{});
@@ -872,7 +872,7 @@ test "formatHumanReadable - gigabytes" {
 
 test "resolveConfig - defaults" {
     const opts = DuOptions{};
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1024), config.block_size);
     try testing.expect(!config.apparent_size);
     try testing.expect(!config.human_readable);
@@ -883,7 +883,7 @@ test "resolveConfig - defaults" {
 test "resolveConfig - bytes flag" {
     var opts = DuOptions{};
     opts.bytes = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1), config.block_size);
     try testing.expect(config.apparent_size);
 }
@@ -891,41 +891,41 @@ test "resolveConfig - bytes flag" {
 test "resolveConfig - kilobytes flag" {
     var opts = DuOptions{};
     opts.kilobytes = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1024), config.block_size);
 }
 
 test "resolveConfig - summarize implies max-depth=0" {
     var opts = DuOptions{};
     opts.summarize = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(?u64, 0), config.max_depth);
 }
 
 test "resolveConfig - max-depth" {
     var opts = DuOptions{};
     opts.max_depth = "3";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(?u64, 3), config.max_depth);
 }
 
 test "resolveConfig - invalid max-depth" {
     var opts = DuOptions{};
     opts.max_depth = "abc";
-    try testing.expectError(error.InvalidMaxDepth, resolveConfig(opts, .none));
+    try testing.expectError(error.InvalidMaxDepth, resolveConfig(testing.allocator, opts, .none));
 }
 
 test "resolveConfig - block-size option" {
     var opts = DuOptions{};
     opts.block_size = "1M";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1048576), config.block_size);
 }
 
 test "resolveConfig - invalid block-size" {
     var opts = DuOptions{};
     opts.block_size = "invalid";
-    try testing.expectError(error.InvalidBlockSize, resolveConfig(opts, .none));
+    try testing.expectError(error.InvalidBlockSize, resolveConfig(testing.allocator, opts, .none));
 }
 
 test "du --help shows usage" {
@@ -1234,27 +1234,27 @@ test "du getFileSize apparent vs disk" {
 test "resolveConfig - color mode always" {
     var opts = DuOptions{};
     opts.color = "always";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(common.display_config.ResolvedMode.on, config.display.color);
 }
 
 test "resolveConfig - color mode never" {
     var opts = DuOptions{};
     opts.color = "never";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig - color mode default" {
     const opts = DuOptions{};
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(common.display_config.ResolvedMode.off, config.display.color);
 }
 
 test "resolveConfig - invalid color mode" {
     var opts = DuOptions{};
     opts.color = "invalid";
-    try testing.expectError(error.InvalidColorMode, resolveConfig(opts, .none));
+    try testing.expectError(error.InvalidColorMode, resolveConfig(testing.allocator, opts, .none));
 }
 
 test "du --color=invalid exits with code 2" {
@@ -1284,7 +1284,7 @@ test "resolveConfig - show_icons defaults to false" {
     }
 
     const opts = DuOptions{};
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     // With no env overrides and no TTY, display.icons resolves to .off
     try testing.expect(!config.show_icons);
 }
@@ -1292,21 +1292,21 @@ test "resolveConfig - show_icons defaults to false" {
 test "resolveConfig - icons=always enables show_icons" {
     var opts = DuOptions{};
     opts.icons = "always";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expect(config.show_icons);
 }
 
 test "resolveConfig - icons=never disables show_icons" {
     var opts = DuOptions{};
     opts.icons = "never";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expect(!config.show_icons);
 }
 
 test "resolveConfig - invalid icon mode" {
     var opts = DuOptions{};
     opts.icons = "invalid";
-    try testing.expectError(error.InvalidIconMode, resolveConfig(opts, .none));
+    try testing.expectError(error.InvalidIconMode, resolveConfig(testing.allocator, opts, .none));
 }
 
 test "printEntry without icons shows clean output" {
@@ -1709,7 +1709,7 @@ test "du -B flag sets block size" {
 test "du -B flag with suffix" {
     var opts = DuOptions{};
     opts.block_size = "1M";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1048576), config.block_size);
 }
 
@@ -1729,7 +1729,7 @@ test "du -g flag is accepted by argparse" {
 test "resolveConfig - gigabytes flag sets block_size to 1G" {
     var opts = DuOptions{};
     opts.gigabytes = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1073741824), config.block_size);
 }
 
@@ -1749,7 +1749,7 @@ test "du -m flag is accepted by argparse" {
 test "resolveConfig - megabytes flag sets block_size to 1M" {
     var opts = DuOptions{};
     opts.megabytes = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(u64, 1048576), config.block_size);
 }
 
@@ -1809,7 +1809,7 @@ test "du -l flag is accepted by argparse" {
 test "resolveConfig - count_links flag" {
     var opts = DuOptions{};
     opts.count_links = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expect(config.count_links);
 }
 
@@ -1958,21 +1958,21 @@ test "du -t with negative threshold shows entries at or below size" {
 test "resolveConfig - threshold" {
     var opts = DuOptions{};
     opts.threshold = "1K";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(?i64, 1024), config.threshold);
 }
 
 test "resolveConfig - negative threshold" {
     var opts = DuOptions{};
     opts.threshold = "-1M";
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expectEqual(@as(?i64, -1048576), config.threshold);
 }
 
 test "resolveConfig - invalid threshold" {
     var opts = DuOptions{};
     opts.threshold = "invalid";
-    try testing.expectError(error.InvalidThreshold, resolveConfig(opts, .none));
+    try testing.expectError(error.InvalidThreshold, resolveConfig(testing.allocator, opts, .none));
 }
 
 // ============================================================================
@@ -1991,7 +1991,7 @@ test "du --si flag is accepted by argparse" {
 test "resolveConfig - si flag enables human_readable and si" {
     var opts = DuOptions{};
     opts.si = true;
-    const config = try resolveConfig(opts, .none);
+    const config = try resolveConfig(testing.allocator, opts, .none);
     try testing.expect(config.si);
     try testing.expect(config.human_readable);
 }
