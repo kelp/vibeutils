@@ -532,7 +532,10 @@ test_find() {
 
     # Regression test: -regex stubs should reject all files (return no matches)
     echo -e "${CYAN}Testing -regex stub regression...${NC}"
-    run_command cmd out err exit_code "$binary" /tmp "-regex" "impossible_pattern"
+    local regex_dir=$(create_temp_dir)
+    touch "$regex_dir/a" "$regex_dir/b"
+    run_command cmd out err exit_code "$binary" "$regex_dir" "-regex" "impossible_pattern"
+    rm -rf "$regex_dir"
     if [[ $exit_code -eq 0 && -z "$out" ]]; then
         print_test_result "find -regex stub returns no matches" "PASS"
     else
