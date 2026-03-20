@@ -31,15 +31,15 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     const parsed_args = common.argparse.ArgParser.parse(PwdArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", std.fs.File.stderr().isTty(), "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "pwd", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "pwd", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -58,7 +58,7 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     }
 
     const cwd = getWorkingDirectory(allocator, parsed_args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "pwd", std.fs.File.stderr().isTty(), "failed to get current directory: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(cwd);

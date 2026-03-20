@@ -67,7 +67,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const parsed_args = common.argparse.ArgParser.parse(ChmodArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "invalid argument\nTry 'chmod --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid argument\nTry 'chmod --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -91,12 +91,12 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     const using_reference = parsed_args.reference != null;
     if (using_reference) {
         if (positionals.len < 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "missing file operand\nTry 'chmod --help' for more information.", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "missing file operand\nTry 'chmod --help' for more information.", .{});
             return @intFromEnum(common.ExitCode.misuse);
         }
     } else {
         if (positionals.len < 2) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "missing operand\nTry 'chmod --help' for more information.", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "missing operand\nTry 'chmod --help' for more information.", .{});
             return @intFromEnum(common.ExitCode.misuse);
         }
     }
@@ -122,7 +122,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     if (options.preserve_root and options.recursive) {
         for (files) |file_path| {
             if (std.mem.eql(u8, file_path, "/")) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "it is dangerous to operate recursively on '/'\nUse --no-preserve-root to override this failsafe.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "it is dangerous to operate recursively on '/'\nUse --no-preserve-root to override this failsafe.", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             }
         }
@@ -135,7 +135,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             },
             else => {
                 if (!options.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "operation failed: {s}", .{errorToMessage(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "operation failed: {s}", .{errorToMessage(err)});
                 }
             },
         }
@@ -301,7 +301,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
     if (options.reference_file) |ref_file| {
         const ref_stat = std.fs.cwd().statFile(ref_file) catch |err| {
             if (!options.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access reference file '{s}': {s}", .{ ref_file, errorToMessage(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, errorToMessage(err) });
             }
             return err;
         };
@@ -328,7 +328,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
 
         // Warn if a numeric mode contains non-octal digits (8 or 9)
         if (!is_symbolic and hasNonOctalDigits(mode_str)) {
-            common.printWarningWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "'{s}' contains non-octal digits; numeric modes use octal (0-7)", .{mode_str});
+            common.printWarningWithProgram(allocator, stderr_writer, "chmod", "'{s}' contains non-octal digits; numeric modes use octal (0-7)", .{mode_str});
         }
 
         // Pre-parse octal mode if it's not symbolic
@@ -336,7 +336,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             parsed_octal_mode = parseMode(mode_str) catch |err| switch (err) {
                 ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
                     if (!options.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "invalid mode: '{s}'", .{mode_str});
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
                     }
                     return err;
                 },
@@ -361,7 +361,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             // Use lstat to check if the command-line arg is a symlink
             const lstat_result = common.file.FileInfo.lstat(file_path) catch |err| {
                 if (!options.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
                 }
                 had_errors = true;
                 continue;
@@ -374,7 +374,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
                 // Follow the symlink to check the target type
                 const target_stat = std.fs.cwd().statFile(file_path) catch |err| {
                     if (!options.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
                     }
                     had_errors = true;
                     continue;
@@ -415,13 +415,13 @@ fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_spe
             switch (err) {
                 ChmodError.InvalidMode => {
                     if (mode_spec == .symbolic) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "invalid mode: '{s}'", .{mode_spec.symbolic});
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_spec.symbolic});
                     } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
                     }
                 },
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
                 },
             }
         }
@@ -437,7 +437,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
     // This ensures we can access the directory contents even if the new permissions would block access
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         if (!options.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ dir_path, errorToMessage(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, errorToMessage(err) });
         }
         return err;
     };

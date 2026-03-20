@@ -479,10 +479,10 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     const config = parseOperands(args) catch |err| {
         switch (err) {
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "invalid operand value", .{});
+                common.printErrorWithProgram(allocator, stderr, "dd", "invalid operand value", .{});
             },
             error.UnknownOperand => {
-                common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "unrecognized operand", .{});
+                common.printErrorWithProgram(allocator, stderr, "dd", "unrecognized operand", .{});
             },
         }
         return @intFromEnum(common.ExitCode.misuse);
@@ -500,7 +500,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 
     // lcase and ucase are mutually exclusive
     if (config.conv_lcase and config.conv_ucase) {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=lcase and conv=ucase are mutually exclusive", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "conv=lcase and conv=ucase are mutually exclusive", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -509,19 +509,19 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         @as(u8, @intFromBool(config.conv_ebcdic)) +
         @as(u8, @intFromBool(config.conv_ibm));
     if (charset_count > 1) {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // block and unblock are mutually exclusive
     if (config.conv_block and config.conv_unblock) {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=block and conv=unblock are mutually exclusive", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "conv=block and conv=unblock are mutually exclusive", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // block and unblock require cbs
     if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "conv=block/unblock requires cbs operand", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "conv=block/unblock requires cbs operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -530,19 +530,19 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     const obs = if (config.bs) |bs| bs else config.obs;
 
     if (ibs == 0 or obs == 0) {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "block size cannot be zero", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Allocate input and output buffers
     const in_buf = allocator.alloc(u8, ibs) catch {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "failed to allocate input buffer", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate input buffer", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(in_buf);
 
     const out_buf = allocator.alloc(u8, obs) catch {
-        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "failed to allocate output buffer", .{});
+        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate output buffer", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(out_buf);
@@ -550,7 +550,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // Open input
     const input_file: std.fs.File = if (config.input_file) |path| blk: {
         break :blk std.fs.cwd().openFile(path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, @errorName(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
     } else std.fs.File.stdin();
@@ -562,7 +562,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             .truncate = !config.conv_notrunc,
         };
         break :blk std.fs.cwd().createFile(path, flags) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, @errorName(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
     } else std.fs.File.stdout();
@@ -573,7 +573,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         var skipped: usize = 0;
         while (skipped < config.skip) : (skipped += 1) {
             const bytes_read = input_file.read(in_buf) catch |err| {
-                common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "error skipping input: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{@errorName(err)});
                 return @intFromEnum(common.ExitCode.general_error);
             };
             if (bytes_read == 0) break; // EOF before all skips done
@@ -589,7 +589,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             @memset(out_buf, 0);
             while (seeked < config.seek) : (seeked += 1) {
                 output_file.writeAll(out_buf) catch |write_err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "error seeking output: {s}", .{@errorName(write_err)});
+                    common.printErrorWithProgram(allocator, stderr, "dd", "error seeking output: {s}", .{@errorName(write_err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
             }
@@ -602,7 +602,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     var cbs_pos: usize = 0;
     if (config.conv_block) {
         cbs_buf = allocator.alloc(u8, cbs) catch {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "failed to allocate cbs buffer", .{});
+            common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate cbs buffer", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
@@ -632,7 +632,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         const bytes_read = input_file.read(in_buf) catch |err| {
             if (config.conv_noerror) {
                 // Continue after read errors
-                common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "read error: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{@errorName(err)});
                 if (config.conv_sync) {
                     // Fill with NULs when sync is specified
                     @memset(in_buf, 0);
@@ -642,7 +642,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                     if (simple_copy) {
                         // Write the NUL-filled block
                         output_file.writeAll(in_buf) catch |werr| {
-                            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(werr)});
+                            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(werr)});
                             return @intFromEnum(common.ExitCode.general_error);
                         };
                         stats.full_blocks_out += 1;
@@ -651,7 +651,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 }
                 continue;
             }
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "read error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -689,7 +689,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                         @memset(record_buf[cbs_pos..], config.fillchar);
                     }
                     output_file.writeAll(record_buf[0..cbs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
@@ -726,12 +726,12 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                     var end: usize = cbs;
                     while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
                     output_file.writeAll(out_buf[0..end]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                     output_file.writeAll("\n") catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
@@ -750,7 +750,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 @memcpy(out_buf[0..data.len], data);
                 @memset(out_buf[data.len..obs], 0);
                 output_file.writeAll(out_buf[0..obs]) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
                     printStats(stderr, stats, config.status);
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -758,7 +758,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 stats.full_blocks_out += 1;
             } else {
                 output_file.writeAll(data) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
                     printStats(stderr, stats, config.status);
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -782,7 +782,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 if (out_pos == obs) {
                     // Output buffer is full, write it
                     output_file.writeAll(out_buf[0..obs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
@@ -799,7 +799,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         const record_buf = cbs_buf.?;
         @memset(record_buf[cbs_pos..], config.fillchar);
         output_file.writeAll(record_buf[0..cbs]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -812,12 +812,12 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         var end: usize = unblock_pos;
         while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
         output_file.writeAll(out_buf[0..end]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
         output_file.writeAll("\n") catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -833,7 +833,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             break :blk obs;
         } else out_pos;
         output_file.writeAll(out_buf[0..write_len]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -849,7 +849,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // fsync the output file if requested
     if (config.conv_fsync) {
         output_file.sync() catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", std.fs.File.stderr().isTty(), "fsync error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "fsync error: {s}", .{@errorName(err)});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }

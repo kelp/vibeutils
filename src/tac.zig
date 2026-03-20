@@ -66,15 +66,15 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
     const parsed = common.argparse.ArgParser.parse(TacArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tac", std.fs.File.stderr().isTty(), "unrecognized option\nTry 'tac --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tac", "unrecognized option\nTry 'tac --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tac", std.fs.File.stderr().isTty(), "option requires an argument\nTry 'tac --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tac", "option requires an argument\nTry 'tac --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tac", std.fs.File.stderr().isTty(), "invalid option value\nTry 'tac --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tac", "invalid option value\nTry 'tac --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -93,7 +93,7 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
     }
 
     if (parsed.regex) {
-        common.printErrorWithProgram(allocator, stderr_writer, "tac", std.fs.File.stderr().isTty(), "-r (--regex) is not supported", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "tac", "-r (--regex) is not supported", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -124,7 +124,7 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
 /// Process a named file
 fn runTacOnFile(allocator: Allocator, file_path: []const u8, separator: []const u8, before: bool, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "tac", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "tac", "{s}: {s}", .{ file_path, @errorName(err) });
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer file.close();

@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const glob = common.glob;
 const testing = std.testing;
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -208,137 +209,6 @@ const FindConfig = struct {
     xdev: bool = false,
     xargs_safe: bool = false,
 };
-
-// ============================================================================
-// Glob matching
-// ============================================================================
-
-/// Match a string against a shell glob pattern.
-/// Supports *, ?, [abc], [a-z], [!abc], and \ escaping.
-fn globMatch(pattern: []const u8, string: []const u8) bool {
-    return globMatchImpl(pattern, string, false);
-}
-
-/// Case-insensitive glob matching.
-fn globMatchInsensitive(pattern: []const u8, string: []const u8) bool {
-    return globMatchImpl(pattern, string, true);
-}
-
-fn globMatchImpl(pattern: []const u8, string: []const u8, case_insensitive: bool) bool {
-    var pi: usize = 0;
-    var si: usize = 0;
-    var star_pi: ?usize = null;
-    var star_si: ?usize = null;
-
-    while (si < string.len or pi < pattern.len) {
-        if (pi < pattern.len) {
-            switch (pattern[pi]) {
-                '*' => {
-                    star_pi = pi;
-                    star_si = si;
-                    pi += 1;
-                    continue;
-                },
-                '?' => {
-                    if (si < string.len) {
-                        pi += 1;
-                        si += 1;
-                        continue;
-                    }
-                },
-                '[' => {
-                    if (si < string.len) {
-                        if (matchBracket(pattern, pi, string[si], case_insensitive)) |new_pi| {
-                            pi = new_pi;
-                            si += 1;
-                            continue;
-                        }
-                    }
-                },
-                '\\' => {
-                    if (pi + 1 < pattern.len) {
-                        pi += 1;
-                        if (si < string.len and charEq(pattern[pi], string[si], case_insensitive)) {
-                            pi += 1;
-                            si += 1;
-                            continue;
-                        }
-                    }
-                },
-                else => {
-                    if (si < string.len and charEq(pattern[pi], string[si], case_insensitive)) {
-                        pi += 1;
-                        si += 1;
-                        continue;
-                    }
-                },
-            }
-        }
-
-        // Backtrack to star
-        if (star_pi) |sp| {
-            pi = sp + 1;
-            star_si = star_si.? + 1;
-            si = star_si.?;
-            if (si > string.len) return false;
-            continue;
-        }
-
-        return false;
-    }
-
-    return true;
-}
-
-fn charEq(a: u8, b: u8, case_insensitive: bool) bool {
-    if (case_insensitive) {
-        return std.ascii.toLower(a) == std.ascii.toLower(b);
-    }
-    return a == b;
-}
-
-/// Match a bracket expression [abc], [a-z], [!abc].
-/// Returns the new pattern index past ']' on match, null otherwise.
-fn matchBracket(pattern: []const u8, start: usize, ch: u8, case_insensitive: bool) ?usize {
-    var pi = start + 1; // skip '['
-    if (pi >= pattern.len) return null;
-
-    var negate = false;
-    if (pattern[pi] == '!' or pattern[pi] == '^') {
-        negate = true;
-        pi += 1;
-    }
-
-    var matched = false;
-    var first = true;
-
-    while (pi < pattern.len and (first or pattern[pi] != ']')) {
-        first = false;
-        if (pi + 2 < pattern.len and pattern[pi + 1] == '-' and pattern[pi + 2] != ']') {
-            // Range
-            const lo = if (case_insensitive) std.ascii.toLower(pattern[pi]) else pattern[pi];
-            const hi = if (case_insensitive) std.ascii.toLower(pattern[pi + 2]) else pattern[pi + 2];
-            const test_ch = if (case_insensitive) std.ascii.toLower(ch) else ch;
-            if (test_ch >= lo and test_ch <= hi) {
-                matched = true;
-            }
-            pi += 3;
-        } else {
-            if (charEq(pattern[pi], ch, case_insensitive)) {
-                matched = true;
-            }
-            pi += 1;
-        }
-    }
-
-    if (pi < pattern.len and pattern[pi] == ']') {
-        pi += 1; // skip ']'
-        if (negate) matched = !matched;
-        if (matched) return pi;
-    }
-
-    return null;
-}
 
 // ============================================================================
 // Size parsing
@@ -621,21 +491,21 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     while (i < args.len) {
         if (std.mem.eql(u8, args[i], "-maxdepth")) {
             if (i + 1 >= args.len) {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "missing argument to '-maxdepth'", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-maxdepth'", .{});
                 return error.MissingArgument;
             }
             maxdepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' to '-maxdepth'", .{args[i + 1]});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-maxdepth'", .{args[i + 1]});
                 return error.InvalidExpression;
             };
             i += 2;
         } else if (std.mem.eql(u8, args[i], "-mindepth")) {
             if (i + 1 >= args.len) {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "missing argument to '-mindepth'", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "missing argument to '-mindepth'", .{});
                 return error.MissingArgument;
             }
             mindepth = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' to '-mindepth'", .{args[i + 1]});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' to '-mindepth'", .{args[i + 1]});
                 return error.InvalidExpression;
             };
             i += 2;
@@ -677,7 +547,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     var pctx = ParseContext{ .allocator = allocator };
     const expr = parseOr(allocator, args, &pos, &has_action, &pctx) catch |err| {
         if (pctx.error_msg) |msg| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "{s}", .{msg});
+            common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
         }
         return err;
     };
@@ -1540,9 +1410,9 @@ fn evaluate(
 ) bool {
     switch (expr.tag) {
         .true_expr => return true,
-        .name => return globMatch(expr.data.pattern, basename),
-        .iname => return globMatchInsensitive(expr.data.pattern, basename),
-        .path_match => return globMatch(expr.data.pattern, path),
+        .name => return glob.globMatch(expr.data.pattern, basename),
+        .iname => return glob.globMatchInsensitive(expr.data.pattern, basename),
+        .path_match => return glob.globMatch(expr.data.pattern, path),
         .file_type => return kind == expr.data.file_type,
         .size => {
             const sz = expr.data.size;
@@ -1710,7 +1580,7 @@ fn evaluate(
             return true;
         },
         .false_expr => return false,
-        .ipath => return globMatchInsensitive(expr.data.pattern, path),
+        .ipath => return glob.globMatchInsensitive(expr.data.pattern, path),
         .regex_stub, .iregex_stub => return false,
         .bmin_stub, .bnewer_stub, .btime_stub => return true,
         .newerxy_stub => return true,
@@ -1815,19 +1685,19 @@ fn matchSymlinkTarget(allocator: Allocator, path: []const u8, pattern: []const u
     _ = allocator;
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const target = std.fs.cwd().readLink(path, &link_buf) catch return false;
-    return globMatchImpl(pattern, target, case_insensitive);
+    return if (case_insensitive) glob.globMatchInsensitive(pattern, target) else glob.globMatch(pattern, target);
 }
 
 fn doDelete(allocator: Allocator, path: []const u8, kind: FileType, stderr: anytype, had_error: *bool) bool {
     if (kind == .directory) {
         std.fs.cwd().deleteDir(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot delete '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, @errorName(err) });
             had_error.* = true;
             return false;
         };
     } else {
         std.fs.cwd().deleteFile(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot delete '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, @errorName(err) });
             had_error.* = true;
             return false;
         };
@@ -2175,16 +2045,16 @@ fn walkPath(
     const stat_buf = doStat(path, follow) catch |err| {
         switch (err) {
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': Permission denied", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
             },
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': No such file or directory", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': No such file or directory", .{path});
             },
             error.SymLinkLoop => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': Too many levels of symbolic links", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Too many levels of symbolic links", .{path});
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
             },
         }
         had_error.* = true;
@@ -2204,7 +2074,7 @@ fn walkPath(
     // -X: warn about and skip xargs-unsafe filenames
     if (config.xargs_safe and depth > 0) {
         if (isXargsUnsafe(basename)) {
-            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "warning: file name '{s}' is not safe for use with xargs", .{basename});
+            common.printErrorWithProgram(allocator, stderr, prog_name, "warning: file name '{s}' is not safe for use with xargs", .{basename});
             return;
         }
     }
@@ -2242,10 +2112,10 @@ fn walkPath(
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
         switch (err) {
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': Permission denied", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
             },
         }
         had_error.* = true;
@@ -2260,7 +2130,7 @@ fn walkPath(
     var iterator = dir.iterate();
     while (true) {
         const maybe_entry = iterator.next() catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "'{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
             had_error.* = true;
             break;
         };
@@ -2417,58 +2287,6 @@ fn printVersion(writer: anytype) void {
 // ============================================================================
 // TESTS
 // ============================================================================
-
-test "glob: basic star" {
-    try testing.expect(globMatch("*", "anything"));
-    try testing.expect(globMatch("*.txt", "hello.txt"));
-    try testing.expect(!globMatch("*.txt", "hello.md"));
-    try testing.expect(globMatch("hello*", "helloworld"));
-    try testing.expect(globMatch("he*ld", "helloworld"));
-    try testing.expect(!globMatch("he*ld", "helloworlds"));
-}
-
-test "glob: question mark" {
-    try testing.expect(globMatch("?.txt", "a.txt"));
-    try testing.expect(!globMatch("?.txt", "ab.txt"));
-    try testing.expect(globMatch("a?c", "abc"));
-    try testing.expect(!globMatch("a?c", "ac"));
-}
-
-test "glob: bracket expression" {
-    try testing.expect(globMatch("[abc].txt", "a.txt"));
-    try testing.expect(globMatch("[abc].txt", "b.txt"));
-    try testing.expect(!globMatch("[abc].txt", "d.txt"));
-    try testing.expect(globMatch("[a-z].txt", "m.txt"));
-    try testing.expect(!globMatch("[a-z].txt", "M.txt"));
-    try testing.expect(globMatch("[!abc].txt", "d.txt"));
-    try testing.expect(!globMatch("[!abc].txt", "a.txt"));
-}
-
-test "glob: escape" {
-    try testing.expect(globMatch("\\*.txt", "*.txt"));
-    try testing.expect(!globMatch("\\*.txt", "a.txt"));
-}
-
-test "glob: empty pattern and string" {
-    try testing.expect(globMatch("", ""));
-    try testing.expect(!globMatch("", "a"));
-    try testing.expect(!globMatch("a", ""));
-    try testing.expect(globMatch("*", ""));
-}
-
-test "glob: case insensitive" {
-    try testing.expect(globMatchInsensitive("*.TXT", "hello.txt"));
-    try testing.expect(globMatchInsensitive("*.txt", "hello.TXT"));
-    try testing.expect(globMatchInsensitive("Hello*", "helloworld"));
-    try testing.expect(globMatchInsensitive("[A-Z]", "a"));
-}
-
-test "glob: complex patterns" {
-    try testing.expect(globMatch("*.[ch]", "main.c"));
-    try testing.expect(globMatch("*.[ch]", "main.h"));
-    try testing.expect(!globMatch("*.[ch]", "main.o"));
-    try testing.expect(globMatch("*.tar.gz", "archive.tar.gz"));
-}
 
 test "parseSize: basic sizes" {
     const s1 = try parseSize("100c");

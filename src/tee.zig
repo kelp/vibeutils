@@ -32,15 +32,15 @@ pub fn runTee(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     const parsed_args = common.argparse.ArgParser.parse(TeeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -91,7 +91,7 @@ fn runTeeWithInput(
     // to stdout instead of opening a file (GNU tee behavior).
     const MultiWriter = MultiWriterGeneric(@TypeOf(stdout_writer));
     var multi_writer = MultiWriter.init(allocator, stdout_writer, args.positionals, args.append) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "failed to open files: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "tee", "failed to open files: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer multi_writer.deinit();
@@ -101,7 +101,7 @@ fn runTeeWithInput(
 
     while (true) {
         const bytes_read = input_file.read(&buffer) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "read error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error: {s}", .{@errorName(err)});
             has_error = true;
             break;
         };
@@ -112,7 +112,7 @@ fn runTeeWithInput(
 
         multi_writer.write(buffer[0..bytes_read]) catch |err| {
             if (args.diagnose_errors) {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "write error: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "write error: {s}", .{@errorName(err)});
             }
             has_error = true;
             // Continue processing even if some writes fail
@@ -122,7 +122,7 @@ fn runTeeWithInput(
     // Flush all outputs
     multi_writer.flush() catch |err| {
         if (args.diagnose_errors) {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", std.fs.File.stderr().isTty(), "flush error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "flush error: {s}", .{@errorName(err)});
         }
         has_error = true;
     };

@@ -1,5 +1,6 @@
 const std = @import("std");
 const common = @import("common");
+const glob = common.glob;
 const types = @import("types.zig");
 
 const Entry = types.Entry;
@@ -45,7 +46,7 @@ pub fn collectFilteredEntries(
 
         // -I PATTERN: skip entries matching glob pattern
         if (options.ignore_pattern) |pattern| {
-            if (globMatch(pattern, entry.name)) {
+            if (glob.globMatch(pattern, entry.name)) {
                 continue;
             }
         }
@@ -79,7 +80,7 @@ fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []cons
         error.NotLink => return null,
         // For all other errors, use OS error message directly - no custom categories
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "symlink {s}: {s}", .{ name, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "symlink {s}: {s}", .{ name, @errorName(err) });
             return null; // Continue processing other entries rather than failing completely
         },
     };
@@ -197,19 +198,19 @@ pub fn processSubdirectoriesRecursively(
 
         // Open the subdirectory relative to the current directory
         var sub_dir = dir.openDir(subdir.name, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "{s}: {}", .{ subdir.path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ subdir.path, err });
             continue;
         };
         defer sub_dir.close();
 
         // Atomically check for cycles and mark as visited (TOCTOU-safe)
         const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "{s}: unable to check for cycles: {}", .{ subdir.path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: unable to check for cycles: {}", .{ subdir.path, err });
             continue;
         };
 
         if (is_cycle) {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "{s}: not following symlink cycle", .{subdir.path});
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: not following symlink cycle", .{subdir.path});
             continue;
         }
 
@@ -217,111 +218,6 @@ pub fn processSubdirectoriesRecursively(
         const recursive = @import("recursive.zig");
         try recursive.recurseIntoSubdirectory(sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context);
     }
-}
-
-/// Simple shell glob pattern matching for -I flag.
-/// Supports *, ?, and [abc] bracket expressions.
-fn globMatch(pattern: []const u8, string: []const u8) bool {
-    var pi: usize = 0;
-    var si: usize = 0;
-    var star_pi: ?usize = null;
-    var star_si: ?usize = null;
-
-    while (si < string.len or pi < pattern.len) {
-        if (pi < pattern.len) {
-            switch (pattern[pi]) {
-                '*' => {
-                    star_pi = pi;
-                    star_si = si;
-                    pi += 1;
-                    continue;
-                },
-                '?' => {
-                    if (si < string.len) {
-                        pi += 1;
-                        si += 1;
-                        continue;
-                    }
-                },
-                '[' => {
-                    if (si < string.len) {
-                        if (matchBracket(pattern, pi, string[si])) |new_pi| {
-                            pi = new_pi;
-                            si += 1;
-                            continue;
-                        }
-                    }
-                },
-                '\\' => {
-                    if (pi + 1 < pattern.len) {
-                        pi += 1;
-                        if (si < string.len and pattern[pi] == string[si]) {
-                            pi += 1;
-                            si += 1;
-                            continue;
-                        }
-                    }
-                },
-                else => {
-                    if (si < string.len and pattern[pi] == string[si]) {
-                        pi += 1;
-                        si += 1;
-                        continue;
-                    }
-                },
-            }
-        }
-
-        // Backtrack to star
-        if (star_pi) |sp| {
-            pi = sp + 1;
-            star_si = star_si.? + 1;
-            si = star_si.?;
-            if (si > string.len) return false;
-            continue;
-        }
-
-        return false;
-    }
-
-    return true;
-}
-
-/// Match a bracket expression [abc], [a-z], [!abc].
-/// Returns the new pattern index past ']' on match, null otherwise.
-fn matchBracket(pattern: []const u8, start: usize, ch: u8) ?usize {
-    var pi = start + 1; // skip '['
-    if (pi >= pattern.len) return null;
-
-    var negate = false;
-    if (pattern[pi] == '!' or pattern[pi] == '^') {
-        negate = true;
-        pi += 1;
-    }
-
-    var matched = false;
-    var first = true;
-    while (pi < pattern.len and (first or pattern[pi] != ']')) {
-        first = false;
-        // Range: a-z
-        if (pi + 2 < pattern.len and pattern[pi + 1] == '-' and pattern[pi + 2] != ']') {
-            if (ch >= pattern[pi] and ch <= pattern[pi + 2]) {
-                matched = true;
-            }
-            pi += 3;
-        } else {
-            if (ch == pattern[pi]) {
-                matched = true;
-            }
-            pi += 1;
-        }
-    }
-
-    if (pi >= pattern.len) return null; // No closing ]
-    pi += 1; // skip ']'
-
-    if (negate) matched = !matched;
-    return if (matched) pi else null;
 }
 
 /// Free allocated memory for entries
@@ -432,30 +328,6 @@ test "entry_collector - collectFilteredEntries with all option" {
     }
     try testing.expect(found_visible);
     try testing.expect(found_hidden);
-}
-
-test "entry_collector - globMatch basic patterns" {
-    // Wildcard *
-    try testing.expect(globMatch("*", "anything"));
-    try testing.expect(globMatch("*.txt", "hello.txt"));
-    try testing.expect(!globMatch("*.txt", "hello.md"));
-
-    // Single char ?
-    try testing.expect(globMatch("?.txt", "a.txt"));
-    try testing.expect(!globMatch("?.txt", "ab.txt"));
-
-    // Bracket expressions
-    try testing.expect(globMatch("[abc].txt", "a.txt"));
-    try testing.expect(!globMatch("[abc].txt", "d.txt"));
-
-    // Exact match
-    try testing.expect(globMatch("hello", "hello"));
-    try testing.expect(!globMatch("hello", "world"));
-
-    // Empty
-    try testing.expect(globMatch("", ""));
-    try testing.expect(!globMatch("", "a"));
-    try testing.expect(globMatch("*", ""));
 }
 
 test "entry_collector - hide_backups filters tilde files" {

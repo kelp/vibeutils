@@ -29,15 +29,15 @@ pub fn runWhoami(allocator: Allocator, args: []const []const u8, stdout_writer: 
     const parsed_args = common.argparse.ArgParser.parse(WhoamiArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "whoami", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "whoami", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "whoami", std.fs.File.stderr().isTty(), "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "whoami", "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "whoami", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "whoami", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -59,14 +59,14 @@ pub fn runWhoami(allocator: Allocator, args: []const []const u8, stdout_writer: 
 
     // Reject extra positional arguments
     if (parsed_args.positionals.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "whoami", std.fs.File.stderr().isTty(), "extra operand '{s}'", .{parsed_args.positionals[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, "whoami", "extra operand '{s}'", .{parsed_args.positionals[0]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Look up the current user
     const uid = common.user_group.getCurrentUserId();
     const user_info = common.user_group.getUserById(uid, allocator) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "whoami", std.fs.File.stderr().isTty(), "cannot find name for user ID {d}", .{uid});
+        common.printErrorWithProgram(allocator, stderr_writer, "whoami", "cannot find name for user ID {d}", .{uid});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(user_info.name);

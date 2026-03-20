@@ -14,23 +14,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const c = std.c;
-
-// C library bindings for time conversion
-const c_tm = extern struct {
-    tm_sec: c_int,
-    tm_min: c_int,
-    tm_hour: c_int,
-    tm_mday: c_int,
-    tm_mon: c_int,
-    tm_year: c_int,
-    tm_wday: c_int,
-    tm_yday: c_int,
-    tm_isdst: c_int,
-    tm_gmtoff: c_long,
-    tm_zone: [*:0]const u8,
-};
-
-extern "c" fn localtime_r(timer: *const c.time_t, result: *c_tm) ?*c_tm;
+const time = common.time;
 extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
 
 // macOS statfs structure
@@ -273,8 +257,8 @@ fn getTimespecNsec(stat_buf: c.Stat, comptime which: enum { atime, mtime, ctime,
 /// Format a timestamp as "YYYY-MM-DD HH:MM:SS.NNNNNNNNN +ZZZZ"
 fn formatTimestamp(sec: i64, nsec: i64, fmt_buf: []u8) ![]const u8 {
     const time_val: c.time_t = @intCast(sec);
-    var tm: c_tm = undefined;
-    if (localtime_r(&time_val, &tm) == null) {
+    var tm: time.c_tm = undefined;
+    if (time.localtime_r(&time_val, &tm) == null) {
         return error.TimeConversion;
     }
 
@@ -867,7 +851,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     defer allocator.free(opts.positionals);
 
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}\nTry 'stat --help' for more information.", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}\nTry 'stat --help' for more information.", .{err_msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -882,7 +866,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     if (opts.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand\nTry 'stat --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand\nTry 'stat --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -891,7 +875,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     for (opts.positionals) |path| {
         if (opts.file_system) {
             printFileSystemInfo(path, stdout_writer) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot statfs '{s}': No such file or directory", .{path});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot statfs '{s}': No such file or directory", .{path});
                 has_error = true;
                 continue;
             };
@@ -907,7 +891,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 error.SymLinkLoop => "Too many levels of symbolic links",
                 else => "Cannot access",
             };
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot stat '{s}': {s}", .{ path, msg });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot stat '{s}': {s}", .{ path, msg });
             has_error = true;
             continue;
         };

@@ -287,80 +287,20 @@ fn resolveConfig(allocator: Allocator, opts: DuOptions, deref_mode: DereferenceM
 }
 
 // ============================================================================
-// Block size parsing
+// Block size parsing and human-readable formatting (delegated to common.format)
 // ============================================================================
+
+const format = common.format;
 
 fn parseBlockSize(str: []const u8) ?u64 {
-    if (str.len == 0) return null;
-
-    // Try pure numeric
-    if (std.fmt.parseInt(u64, str, 10)) |val| {
-        return if (val == 0) null else val;
-    } else |_| {}
-
-    // Try numeric with suffix
-    var num_end: usize = 0;
-    while (num_end < str.len and (std.ascii.isDigit(str[num_end]) or str[num_end] == '.')) : (num_end += 1) {}
-
-    const base_val: u64 = if (num_end == 0)
-        1
-    else
-        std.fmt.parseInt(u64, str[0..num_end], 10) catch return null;
-
-    if (num_end >= str.len) return null;
-
-    const suffix = str[num_end..];
-    const multiplier: u64 = if (std.mem.eql(u8, suffix, "K") or std.mem.eql(u8, suffix, "k"))
-        1024
-    else if (std.mem.eql(u8, suffix, "M") or std.mem.eql(u8, suffix, "m"))
-        1024 * 1024
-    else if (std.mem.eql(u8, suffix, "G") or std.mem.eql(u8, suffix, "g"))
-        1024 * 1024 * 1024
-    else if (std.mem.eql(u8, suffix, "T") or std.mem.eql(u8, suffix, "t"))
-        1024 * 1024 * 1024 * 1024
-    else if (std.mem.eql(u8, suffix, "KB"))
-        1000
-    else if (std.mem.eql(u8, suffix, "MB"))
-        1000 * 1000
-    else if (std.mem.eql(u8, suffix, "GB"))
-        1000 * 1000 * 1000
-    else if (std.mem.eql(u8, suffix, "TB"))
-        1000 * 1000 * 1000 * 1000
-    else
-        return null;
-
-    return base_val * multiplier;
+    return format.parseBlockSize(str);
 }
 
-// ============================================================================
-// Human-readable formatting
-// ============================================================================
-
 fn formatHumanReadable(buf: []u8, size_bytes: u64, si: bool) []const u8 {
-    const base: f64 = if (si) 1000.0 else 1024.0;
-    const units = if (si)
-        [_][]const u8{ "", "kB", "MB", "GB", "TB", "PB", "EB" }
-    else
-        [_][]const u8{ "", "K", "M", "G", "T", "P", "E" };
-    var value: f64 = @floatFromInt(size_bytes);
-    var unit_idx: usize = 0;
-
-    while (value >= base and unit_idx + 1 < units.len) {
-        value /= base;
-        unit_idx += 1;
-    }
-
-    if (unit_idx == 0) {
-        // Plain bytes - no decimal
-        return std.fmt.bufPrint(buf, "{d}", .{size_bytes}) catch "?";
-    } else if (value < 10.0) {
-        // One decimal place for values < 10
-        return std.fmt.bufPrint(buf, "{d:.1}{s}", .{ value, units[unit_idx] }) catch "?";
-    } else {
-        // No decimal for values >= 10
-        const rounded: u64 = @intFromFloat(@round(value));
-        return std.fmt.bufPrint(buf, "{d}{s}", .{ rounded, units[unit_idx] }) catch "?";
-    }
+    return format.formatHumanReadable(buf, size_bytes, .{
+        .si = si,
+        .suffix = if (si) .iec else .short,
+    });
 }
 
 // ============================================================================
@@ -602,7 +542,7 @@ fn printStatError(allocator: Allocator, stderr: anytype, path: []const u8, err: 
         error.SymLinkLoop => "Too many levels of symbolic links",
         else => "Cannot access",
     };
-    common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot access '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot access '{s}': {s}", .{ path, msg });
 }
 
 fn printDirError(allocator: Allocator, stderr: anytype, path: []const u8, err: anyerror) void {
@@ -611,11 +551,11 @@ fn printDirError(allocator: Allocator, stderr: anytype, path: []const u8, err: a
         error.FileNotFound => "No such file or directory",
         else => "Cannot read directory",
     };
-    common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot read directory '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read directory '{s}': {s}", .{ path, msg });
 }
 
 fn printIterError(allocator: Allocator, stderr: anytype, path: []const u8, err: anyerror) void {
-    common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot read directory '{s}': {s}", .{ path, @errorName(err) });
+    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read directory '{s}': {s}", .{ path, @errorName(err) });
 }
 
 // ============================================================================
@@ -649,19 +589,19 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     const opts = common.argparse.ArgParser.parse(DuOptions, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid option\nTry 'du --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid option\nTry 'du --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "option requires an argument\nTry 'du --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "option requires an argument\nTry 'du --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument value\nTry 'du --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument value\nTry 'du --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "argument parsing error", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "argument parsing error", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
         }
@@ -680,7 +620,7 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 
     // Check for conflicting options: -s and -d cannot be combined
     if (opts.summarize and opts.max_depth != null) {
-        common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot both summarize and show each directory's size", .{});
+        common.printErrorWithProgram(allocator, stderr, prog_name, "cannot both summarize and show each directory's size", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -688,23 +628,23 @@ pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     const config = resolveConfig(allocator, opts, deref_mode) catch |err| {
         switch (err) {
             error.InvalidBlockSize => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid --block-size argument", .{});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid --block-size argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidMaxDepth => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid maximum depth '{s}'", .{opts.max_depth orelse ""});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid maximum depth '{s}'", .{opts.max_depth orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidColorMode => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidIconMode => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid argument '{s}' for '--icons'\nValid arguments are: 'always', 'auto', 'never'", .{opts.icons orelse ""});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' for '--icons'\nValid arguments are: 'always', 'auto', 'never'", .{opts.icons orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidThreshold => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "invalid --threshold argument '{s}'", .{opts.threshold orelse ""});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid --threshold argument '{s}'", .{opts.threshold orelse ""});
                 return @intFromEnum(common.ExitCode.misuse);
             },
         }

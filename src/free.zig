@@ -264,23 +264,8 @@ pub fn scaleValue(bytes: u64, unit: Unit, use_si: bool) u64 {
 
 /// Format a human-readable value with appropriate unit suffix
 pub fn formatHumanReadable(buf: []u8, bytes: u64, use_si: bool) []const u8 {
-    const divisor: u64 = if (use_si) 1000 else 1024;
-    const suffixes = if (use_si)
-        [_][]const u8{ "B", "kB", "MB", "GB", "TB" }
-    else
-        [_][]const u8{ "B", "Ki", "Mi", "Gi", "Ti" };
-
-    var value = bytes;
-    var suffix_idx: usize = 0;
-
-    while (value >= divisor and suffix_idx + 1 < suffixes.len) {
-        value = @divTrunc(value, divisor);
-        suffix_idx += 1;
-    }
-
-    const result = std.fmt.bufPrint(buf, "{d}{s}", .{ value, suffixes[suffix_idx] }) catch
-        return "?";
-    return result;
+    const format = common.format;
+    return format.formatHumanReadable(buf, bytes, .{ .si = use_si, .suffix = .iec });
 }
 
 /// Column width for numeric values
@@ -387,19 +372,19 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "argument parsing error", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "argument parsing error", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
         }
@@ -417,7 +402,7 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     if (parsed.positionals.len > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "extra operand '{s}'", .{parsed.positionals[0]});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{parsed.positionals[0]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -457,7 +442,7 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
 fn displayOnce(stdout_writer: anytype, stderr_writer: anytype, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
     const info = getMemInfo() catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to read memory information", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to read memory information", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
 
@@ -549,37 +534,37 @@ test "scaleValue si mode" {
 
 test "formatHumanReadable small values" {
     var buf: [32]u8 = undefined;
-    try testing.expectEqualStrings("0B", formatHumanReadable(&buf, 0, false));
+    try testing.expectEqualStrings("0", formatHumanReadable(&buf, 0, false));
 }
 
 test "formatHumanReadable kibi" {
     var buf: [32]u8 = undefined;
     const result = formatHumanReadable(&buf, 2048, false);
-    try testing.expectEqualStrings("2Ki", result);
+    try testing.expectEqualStrings("2.0Ki", result);
 }
 
 test "formatHumanReadable mebi" {
     var buf: [32]u8 = undefined;
     const result = formatHumanReadable(&buf, 8 * 1024 * 1024, false);
-    try testing.expectEqualStrings("8Mi", result);
+    try testing.expectEqualStrings("8.0Mi", result);
 }
 
 test "formatHumanReadable gibi" {
     var buf: [32]u8 = undefined;
     const result = formatHumanReadable(&buf, 4 * 1024 * 1024 * 1024, false);
-    try testing.expectEqualStrings("4Gi", result);
+    try testing.expectEqualStrings("4.0Gi", result);
 }
 
 test "formatHumanReadable si mode" {
     var buf: [32]u8 = undefined;
     const result = formatHumanReadable(&buf, 5000, true);
-    try testing.expectEqualStrings("5kB", result);
+    try testing.expectEqualStrings("5.0kB", result);
 }
 
 test "formatHumanReadable si mebi" {
     var buf: [32]u8 = undefined;
     const result = formatHumanReadable(&buf, 3 * 1000 * 1000, true);
-    try testing.expectEqualStrings("3MB", result);
+    try testing.expectEqualStrings("3.0MB", result);
 }
 
 test "resolveUnit defaults to kibi" {

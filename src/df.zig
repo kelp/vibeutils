@@ -337,33 +337,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
 
 /// Parse a block size string like "1K", "1M", "1G", or a plain number
 fn parseBlockSize(s: []const u8) ?u64 {
-    if (s.len == 0) return null;
-
-    var num_end: usize = 0;
-    while (num_end < s.len and (s[num_end] >= '0' and s[num_end] <= '9')) {
-        num_end += 1;
-    }
-
-    if (num_end == 0) {
-        // No digits -- just a suffix like "K" means 1K
-        return parseSuffix(s, 1);
-    }
-
-    const num = std.fmt.parseInt(u64, s[0..num_end], 10) catch return null;
-    if (num_end == s.len) return num;
-
-    return parseSuffix(s[num_end..], num);
-}
-
-fn parseSuffix(suffix: []const u8, base: u64) ?u64 {
-    if (suffix.len == 0) return base;
-    return switch (suffix[0]) {
-        'K', 'k' => base * 1024,
-        'M', 'm' => base * 1024 * 1024,
-        'G', 'g' => base * 1024 * 1024 * 1024,
-        'T', 't' => base * 1024 * 1024 * 1024 * 1024,
-        else => null,
-    };
+    return common.format.parseBlockSize(s);
 }
 
 // ============================================================================
@@ -826,33 +800,7 @@ fn groupDarwinVolumes(allocator: Allocator, filesystems: []const FsInfo) ![]FsIn
 // ============================================================================
 
 fn formatHumanReadable(buf: []u8, bytes: u64, use_si: bool) []const u8 {
-    const base: u64 = if (use_si) 1000 else 1024;
-    const suffixes = if (use_si)
-        [_]u8{ 'B', 'k', 'M', 'G', 'T', 'P', 'E' }
-    else
-        [_]u8{ 'B', 'K', 'M', 'G', 'T', 'P', 'E' };
-
-    if (bytes < base) {
-        return std.fmt.bufPrint(buf, "{d}", .{bytes}) catch "?";
-    }
-
-    var value: f64 = @floatFromInt(bytes);
-    var suffix_idx: usize = 0;
-
-    while (value >= @as(f64, @floatFromInt(base)) and suffix_idx < suffixes.len - 1) {
-        value /= @as(f64, @floatFromInt(base));
-        suffix_idx += 1;
-    }
-
-    if (value >= 10.0) {
-        return std.fmt.bufPrint(buf, "{d:.0}{c}", .{
-            value, suffixes[suffix_idx],
-        }) catch "?";
-    } else {
-        return std.fmt.bufPrint(buf, "{d:.1}{c}", .{
-            value, suffixes[suffix_idx],
-        }) catch "?";
-    }
+    return common.format.formatHumanReadable(buf, bytes, .{ .si = use_si });
 }
 
 /// Format a u64 with thousands grouping (commas): 1234567 -> "1,234,567"
@@ -1966,7 +1914,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     const opts = parsed.opts;
 
     if (parsed.err) |msg| {
-        common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "{s}", .{msg});
+        common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
     defer allocator.free(opts.positionals);
@@ -2023,7 +1971,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         owns_fs_strings = true;
         for (opts.positionals) |path| {
             const fs = getFilesystemForPath(allocator, path) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot access '{s}': No such file or directory", .{path});
+                common.printErrorWithProgram(allocator, stderr, prog_name, "cannot access '{s}': No such file or directory", .{path});
                 exit_code = @intFromEnum(common.ExitCode.general_error);
                 continue;
             };
@@ -2035,7 +1983,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         }
     } else {
         const all_fs = getMountedFilesystems(allocator) catch {
-            common.printErrorWithProgram(allocator, stderr, prog_name, std.fs.File.stderr().isTty(), "cannot read table of mounted file systems", .{});
+            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read table of mounted file systems", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
         all_fs_storage = all_fs;
@@ -2180,7 +2128,7 @@ fn printVersion(writer: anytype) !void {
 test "parseBlockSize - plain numbers" {
     try testing.expectEqual(@as(?u64, 512), parseBlockSize("512"));
     try testing.expectEqual(@as(?u64, 1024), parseBlockSize("1024"));
-    try testing.expectEqual(@as(?u64, 0), parseBlockSize("0"));
+    try testing.expectEqual(@as(?u64, null), parseBlockSize("0"));
     try testing.expectEqual(@as(?u64, 1), parseBlockSize("1"));
 }
 

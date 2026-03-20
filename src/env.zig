@@ -86,15 +86,15 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
     const options = parseArgs(allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "unrecognized option\nTry 'env --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "unrecognized option\nTry 'env --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "option requires an argument\nTry 'env --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "option requires an argument\nTry 'env --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.OutOfMemory => {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "out of memory", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
                 return @intFromEnum(common.ExitCode.general_error);
             },
         }
@@ -113,12 +113,12 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // Handle -S stub warning
     if (options.split_string != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "-S flag not yet fully implemented", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "-S flag not yet fully implemented", .{});
     }
 
     // Build the environment
     var env_map = buildEnvMap(allocator, options) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "failed to build environment: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to build environment: {s}", .{@errorName(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer env_map.deinit();
@@ -142,7 +142,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
             stderr_writer.print("env: using alternate PATH: {s}\n", .{alt}) catch {};
         }
         env_map.put("PATH", alt) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "failed to set alternate PATH", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to set alternate PATH", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
@@ -150,7 +150,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
     // Handle -C/--chdir
     if (options.chdir) |dir| {
         std.posix.chdir(dir) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "cannot change directory to '{s}': {s}", .{ dir, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "cannot change directory to '{s}': {s}", .{ dir, @errorName(err) });
             return 125;
         };
     }
@@ -372,12 +372,12 @@ fn execCommand(allocator: Allocator, command: []const []const u8, env_map: *cons
     child.env_map = env_map;
 
     child.spawn() catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "'{s}': {s}", .{ command[0], @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], @errorName(err) });
         return 127;
     };
 
     const result = child.wait() catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", std.fs.File.stderr().isTty(), "'{s}': {s}", .{ command[0], @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], @errorName(err) });
         // FileNotFound means the command was not found (127)
         // Other errors mean it was found but could not be invoked (126)
         return if (err == error.FileNotFound) 127 else 126;

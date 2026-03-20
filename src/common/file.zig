@@ -238,24 +238,8 @@ pub fn formatSize(size: u64, buf: []u8) ![]const u8 {
 
 /// Format file size in human readable format (K, M, G, T)
 pub fn formatSizeHuman(size: u64, buf: []u8) ![]const u8 {
-    const units = [_][]const u8{ "", "K", "M", "G", "T", "P" };
-    var value = @as(f64, @floatFromInt(size));
-    var unit_idx: usize = 0;
-
-    while (value >= 1024.0 and unit_idx < units.len - 1) : (unit_idx += 1) {
-        value /= 1024.0;
-    }
-
-    if (unit_idx == 0) {
-        // Bytes - no decimal places
-        return std.fmt.bufPrint(buf, "{d}", .{size});
-    } else if (value >= 10.0) {
-        // >= 10, show no decimal places
-        return std.fmt.bufPrint(buf, "{d:.0}{s}", .{ value, units[unit_idx] });
-    } else {
-        // < 10, show one decimal place
-        return std.fmt.bufPrint(buf, "{d:.1}{s}", .{ value, units[unit_idx] });
-    }
+    const format = @import("format.zig");
+    return format.formatHumanReadable(buf, size, .{});
 }
 
 /// Format file size in kilobytes (1K blocks)

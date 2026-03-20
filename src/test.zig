@@ -396,7 +396,7 @@ fn evaluateBinary(left: []const u8, op: []const u8, right: []const u8) ParseErro
     if (std.mem.eql(u8, op, ">")) return std.mem.order(u8, left, right) == .gt;
     if (std.mem.eql(u8, op, "-nt")) return isNewerThan(left, right);
     if (std.mem.eql(u8, op, "-ot")) return isOlderThan(left, right);
-    if (std.mem.eql(u8, op, "-ef")) return isSameFile(left, right);
+    if (std.mem.eql(u8, op, "-ef")) return common.file_ops.isSameFile(left, right);
 
     return error.UnknownOperator;
 }
@@ -507,13 +507,6 @@ fn isOlderThan(path1: []const u8, path2: []const u8) bool {
     return stat1.mtime < stat2.mtime;
 }
 
-/// Check if two paths refer to the same file (same device + inode)
-fn isSameFile(path1: []const u8, path2: []const u8) bool {
-    const stat1 = FileAccess.getStat(path1) orelse return false;
-    const stat2 = FileAccess.getStat(path2) orelse return false;
-    return stat1.inode == stat2.inode;
-}
-
 /// Check if string is a unary operator (alphabetized)
 fn isUnaryOperator(str: []const u8) bool {
     const unary_ops = [_][]const u8{ "-b", "-c", "-d", "-e", "-f", "-g", "-G", "-h", "-k", "-L", "-n", "-O", "-p", "-r", "-s", "-S", "-t", "-u", "-w", "-x", "-z" };
@@ -540,7 +533,7 @@ fn evaluateTestArgs(allocator: Allocator, test_args: []const []const u8, stderr_
     const result = parser.parseAndEvaluate(test_args) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid expression", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid expression", .{});
             return @intFromEnum(ExitCode.@"error");
         },
     };
@@ -556,7 +549,7 @@ pub fn runBracketTest(allocator: Allocator, args: []const []const u8, stdout_wri
 
     // Bracket form requires closing ']'
     if (args.len == 0 or !std.mem.eql(u8, args[args.len - 1], "]")) {
-        common.printErrorWithProgram(allocator, stderr_writer, "[", std.fs.File.stderr().isTty(), "missing closing ']'", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "[", "missing closing ']'", .{});
         return @intFromEnum(ExitCode.@"error");
     }
 
@@ -575,7 +568,7 @@ pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Handle bracket form embedded in test command arguments
     if (args.len > 0 and std.mem.eql(u8, args[0], "[")) {
         if (args.len < 2 or !std.mem.eql(u8, args[args.len - 1], "]")) {
-            common.printErrorWithProgram(allocator, stderr_writer, "test", std.fs.File.stderr().isTty(), "missing closing ']'", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "test", "missing closing ']'", .{});
             return @intFromEnum(ExitCode.@"error");
         }
         // Remove '[' and ']' from arguments

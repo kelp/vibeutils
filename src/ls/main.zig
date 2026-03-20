@@ -185,14 +185,14 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
 pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser (same as mainWithAllocator)
     const parsed_args = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "argument parsing failed: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "argument parsing failed: {s}", .{@errorName(err)});
         return 1;
     };
     defer allocator.free(parsed_args.positionals);
 
     // Call the main ls implementation
     runLs(allocator, parsed_args, stdout_writer, stderr_writer) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "execution failed: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "execution failed: {s}", .{@errorName(err)});
         return 1;
     };
 
@@ -495,13 +495,13 @@ fn printIconTest(writer: anytype) !void {
 fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "failed to initialize styling: {}", .{err});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {}", .{err});
         return err;
     };
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
         return;
     };
 
@@ -546,7 +546,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     }
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", std.fs.File.stderr().isTty(), "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
         return err;
     };
     defer dir.close();

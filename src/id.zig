@@ -93,15 +93,15 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const parsed = common.argparse.ArgParser.parse(IdArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -123,13 +123,13 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
     // Handle -A (audit) stub: print diagnostic and exit 1
     if (parsed.audit) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "-A (audit) not supported on this platform", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "-A (audit) not supported on this platform", .{});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Reject extra positional arguments (at most one USERNAME)
     if (parsed.positionals.len > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "extra operand '{s}'", .{parsed.positionals[1]});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "extra operand '{s}'", .{parsed.positionals[1]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -138,11 +138,11 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
     // -n and -r only make sense with -u, -g, or -G
     if (parsed.name and !parsed.user and !parsed.group and !show_groups) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print only names in default format", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print only names in default format", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
     if (parsed.real and !parsed.user and !parsed.group and !show_groups) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print only real IDs in default format", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print only real IDs in default format", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -151,13 +151,13 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         @as(u8, @intFromBool(parsed.group)) +
         @as(u8, @intFromBool(show_groups));
     if (mode_count > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print 'only' of more than one choice", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // -p is mutually exclusive with -u, -g, -G
     if (parsed.pretty and mode_count > 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot print 'only' of more than one choice", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -174,12 +174,12 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         const username = parsed.positionals[0];
         const user_info = common.user_group.getUserById(
             common.user_group.parseUser(username, allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "'{s}': no such user", .{username});
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "'{s}': no such user", .{username});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             allocator,
         ) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "'{s}': no such user", .{username});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "'{s}': no such user", .{username});
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer allocator.free(user_info.name);
@@ -205,7 +205,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             try stdout_writer.writeByte(delimiter);
             return @intFromEnum(common.ExitCode.success);
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find full name for user ID {d}", .{uid});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find full name for user ID {d}", .{uid});
             return @intFromEnum(common.ExitCode.general_error);
         }
     }
@@ -248,7 +248,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             try stdout_writer.writeByte(delimiter);
             return @intFromEnum(common.ExitCode.success);
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find passwd entry for user ID {d}", .{uid});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find passwd entry for user ID {d}", .{uid});
             return @intFromEnum(common.ExitCode.general_error);
         }
     }
@@ -268,7 +268,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
         if (parsed.name) {
             const info = common.user_group.getUserById(target_uid, allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find name for user ID {d}", .{target_uid});
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for user ID {d}", .{target_uid});
                 return @intFromEnum(common.ExitCode.general_error);
             };
             defer allocator.free(info.name);
@@ -290,7 +290,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
         if (parsed.name) {
             const info = common.user_group.getGroupById(target_gid, allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find name for group ID {d}", .{target_gid});
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for group ID {d}", .{target_gid});
                 return @intFromEnum(common.ExitCode.general_error);
             };
             defer allocator.free(info.name);
@@ -315,7 +315,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         // Get supplementary groups for current user
         const ngroups = getgroups(0, undefined);
         if (ngroups < 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot get supplementary group list", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot get supplementary group list", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
 
@@ -325,14 +325,14 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         }
 
         const group_list = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "memory allocation failed", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer allocator.free(group_list);
 
         const actual = getgroups(@intCast(ngroups), group_list.ptr);
         if (actual < 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot get supplementary group list", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot get supplementary group list", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
 
@@ -372,7 +372,7 @@ fn printSingleGroup(
 ) !u8 {
     if (print_name) {
         const info = common.user_group.getGroupById(target_gid, allocator) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "cannot find name for group ID {d}", .{target_gid});
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for group ID {d}", .{target_gid});
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer allocator.free(info.name);
@@ -442,7 +442,7 @@ fn printDefaultGidAndGroups(
     }
 
     const group_list = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", std.fs.File.stderr().isTty(), "memory allocation failed", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(group_list);

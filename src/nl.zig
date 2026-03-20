@@ -172,7 +172,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     const body_val = args.b orelse args.body_numbering;
     if (body_val) |val| {
         opts.body_style = parseNumberingStyle(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid body numbering style: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid body numbering style: '{s}'", .{val});
             return null;
         };
     }
@@ -181,7 +181,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     const header_val = args.h orelse args.header_numbering;
     if (header_val) |val| {
         opts.header_style = parseNumberingStyle(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid header numbering style: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid header numbering style: '{s}'", .{val});
             return null;
         };
     }
@@ -190,7 +190,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     const footer_val = args.f orelse args.footer_numbering;
     if (footer_val) |val| {
         opts.footer_style = parseNumberingStyle(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid footer numbering style: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid footer numbering style: '{s}'", .{val});
             return null;
         };
     }
@@ -199,7 +199,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     const format_val = args.n orelse args.number_format;
     if (format_val) |val| {
         opts.format = parseNumberFormat(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid line number format: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number format: '{s}'", .{val});
             return null;
         };
     }
@@ -209,7 +209,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     if (width_val) |val| {
         const w = parsePositiveInt(val);
         if (w == null or w.? == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid line number field width: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number field width: '{s}'", .{val});
             return null;
         }
         opts.width = w.?;
@@ -225,7 +225,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     const start_val = args.v orelse args.starting_line_number;
     if (start_val) |val| {
         opts.start = parseSignedInt(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid starting line number: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid starting line number: '{s}'", .{val});
             return null;
         };
     }
@@ -234,7 +234,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     const inc_val = args.i orelse args.line_increment;
     if (inc_val) |val| {
         opts.increment = parseSignedInt(val) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid line number increment: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number increment: '{s}'", .{val});
             return null;
         };
     }
@@ -250,7 +250,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
         } else if (val.len == 2) {
             opts.delimiter = .{ val[0], val[1] };
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid section delimiter: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid section delimiter: '{s}'", .{val});
             return null;
         }
     }
@@ -260,7 +260,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     if (join_val) |val| {
         const j = parsePositiveInt(val);
         if (j == null or j.? == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid line number of blank lines: '{s}'", .{val});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number of blank lines: '{s}'", .{val});
             return null;
         }
         opts.join_blank_lines = j.?;
@@ -517,15 +517,15 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const parsed_args = common.argparse.ArgParser.parse(NlArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "unrecognized option\nTry 'nl --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "nl", "unrecognized option\nTry 'nl --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "option requires an argument\nTry 'nl --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "nl", "option requires an argument\nTry 'nl --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "invalid argument value\nTry 'nl --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid argument value\nTry 'nl --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -558,7 +558,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         var stdin_buffer: [8192]u8 = undefined;
         var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
         numberLines(&stdin_reader.interface, stdout_writer, opts, &state) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "stdin: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{@errorName(err)});
             has_error = true;
         };
     } else {
@@ -567,12 +567,12 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var stdin_buffer: [8192]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
                 numberLines(&stdin_reader.interface, stdout_writer, opts, &state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "stdin: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{@errorName(err)});
                     has_error = true;
                 };
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue;
                 };
@@ -581,7 +581,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 numberLines(&file_reader.interface, stdout_writer, opts, &state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                 };
             }

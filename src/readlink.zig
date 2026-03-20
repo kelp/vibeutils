@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
@@ -70,15 +71,15 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
     const parsed = common.argparse.ArgParser.parse(ReadlinkArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -100,7 +101,7 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
 
     // Validate: need at least one operand
     if (parsed.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "readlink", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -130,7 +131,7 @@ pub fn runReadlink(allocator: Allocator, args: []const []const u8, stdout_writer
                     error.NotDir => "Not a directory",
                     else => "cannot read link",
                 };
-                common.printErrorWithProgram(allocator, stderr_writer, "readlink", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, err_msg });
+                common.printErrorWithProgram(allocator, stderr_writer, "readlink", "{s}: {s}", .{ path, err_msg });
             }
         }
     }
@@ -158,131 +159,9 @@ fn resolveLink(allocator: Allocator, path: []const u8, mode: CanonicalizeMode) !
             if (std.fs.cwd().realpathAlloc(allocator, path)) |resolved| {
                 return resolved;
             } else |_| {
-                return try canonicalizeMissing(allocator, path);
+                return try path_utils.canonicalizeMissing(allocator, path);
             }
         },
-    }
-}
-
-/// Canonicalize a path where components need not exist.
-/// Resolves as much as possible, then appends the remaining parts.
-fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
-    if (path.len == 0) {
-        // Empty path: return current directory
-        return try std.fs.cwd().realpathAlloc(allocator, ".");
-    }
-
-    // Get absolute path
-    const abs_path = if (std.fs.path.isAbsolute(path))
-        try allocator.dupe(u8, path)
-    else blk: {
-        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch return error.FileNotFound;
-        break :blk try std.fs.path.join(allocator, &.{ cwd, path });
-    };
-    defer allocator.free(abs_path);
-
-    // Collect all components
-    var all_components = std.ArrayListUnmanaged([]const u8){};
-    defer all_components.deinit(allocator);
-
-    var it = std.mem.tokenizeScalar(u8, abs_path, '/');
-    while (it.next()) |comp| {
-        try all_components.append(allocator, comp);
-    }
-
-    if (all_components.items.len == 0) {
-        return try allocator.dupe(u8, "/");
-    }
-
-    // Try resolving progressively shorter prefixes
-    var resolved_prefix: ?[]u8 = null;
-    var resolved_count: usize = 0;
-
-    var try_count = all_components.items.len;
-    while (try_count > 0) : (try_count -= 1) {
-        // Build prefix path
-        var prefix_len: usize = 0;
-        for (all_components.items[0..try_count]) |comp| {
-            prefix_len += 1 + comp.len;
-        }
-        const prefix = try allocator.alloc(u8, prefix_len);
-        defer allocator.free(prefix);
-        var pos: usize = 0;
-        for (all_components.items[0..try_count]) |comp| {
-            prefix[pos] = '/';
-            pos += 1;
-            @memcpy(prefix[pos .. pos + comp.len], comp);
-            pos += comp.len;
-        }
-
-        if (std.fs.cwd().realpathAlloc(allocator, prefix)) |resolved| {
-            resolved_prefix = resolved;
-            resolved_count = try_count;
-            break;
-        } else |_| {}
-    }
-
-    // Build result: resolved prefix + remaining components (cleaned)
-    if (resolved_prefix) |prefix| {
-        defer allocator.free(prefix);
-        if (resolved_count == all_components.items.len) {
-            return try allocator.dupe(u8, prefix);
-        }
-
-        // Append remaining components, resolving . and ..
-        var remaining = std.ArrayListUnmanaged(u8){};
-        defer remaining.deinit(allocator);
-        try remaining.appendSlice(allocator, prefix);
-
-        for (all_components.items[resolved_count..]) |comp| {
-            if (std.mem.eql(u8, comp, ".")) {
-                continue;
-            } else if (std.mem.eql(u8, comp, "..")) {
-                if (std.mem.lastIndexOfScalar(u8, remaining.items, '/')) |last_slash| {
-                    if (last_slash > 0) {
-                        remaining.shrinkRetainingCapacity(last_slash);
-                    } else {
-                        remaining.shrinkRetainingCapacity(1); // keep just "/"
-                    }
-                }
-            } else {
-                try remaining.append(allocator, '/');
-                try remaining.appendSlice(allocator, comp);
-            }
-        }
-
-        return try allocator.dupe(u8, remaining.items);
-    } else {
-        // Nothing resolved at all, build cleaned absolute path
-        var result = std.ArrayListUnmanaged(u8){};
-        defer result.deinit(allocator);
-
-        var cleaned = std.ArrayListUnmanaged([]const u8){};
-        defer cleaned.deinit(allocator);
-
-        for (all_components.items) |comp| {
-            if (std.mem.eql(u8, comp, ".")) {
-                continue;
-            } else if (std.mem.eql(u8, comp, "..")) {
-                if (cleaned.items.len > 0) {
-                    _ = cleaned.pop();
-                }
-            } else {
-                try cleaned.append(allocator, comp);
-            }
-        }
-
-        if (cleaned.items.len == 0) {
-            return try allocator.dupe(u8, "/");
-        }
-
-        for (cleaned.items) |comp| {
-            try result.append(allocator, '/');
-            try result.appendSlice(allocator, comp);
-        }
-
-        return try allocator.dupe(u8, result.items);
     }
 }
 

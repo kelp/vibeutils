@@ -59,7 +59,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const parsed_args = common.argparse.ArgParser.parse(RmArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "invalid argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "invalid argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -82,7 +82,7 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     const files = parsed_args.positionals;
     if (files.len == 0) {
         if (parsed_args.force) return @intFromEnum(common.ExitCode.success);
-        common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "rm", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -168,41 +168,11 @@ fn printVersion(writer: anytype) !void {
     try writer.print("rm (vibeutils) {s}\n", .{build_options.version});
 }
 
-/// Simple user interaction for prompts.
-fn promptUser(prompt: []const u8, stderr_writer: anytype) !bool {
-    try stderr_writer.print("{s}", .{prompt});
-
-    // Flush stderr to ensure prompt is visible before reading stdin
-    const WriterType = @TypeOf(stderr_writer);
-    const ActualType = if (@typeInfo(WriterType) == .pointer) std.meta.Child(WriterType) else WriterType;
-    if (comptime @hasDecl(ActualType, "flush")) {
-        stderr_writer.flush() catch {};
-    }
-
-    var stdin_buffer: [8192]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-    const stdin = &stdin_reader.interface;
-
-    const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
-        error.EndOfStream => return false,
-        else => return err,
-    };
-
-    if (line.len > 0) {
-        return std.ascii.toLower(line[0]) == 'y';
-    }
-
-    return false;
-}
-
 /// Main file removal function that processes a list of files/directories.
 fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !bool {
     // Handle interactive once mode (-I flag) - but force overrides
     if (!options.force and options.interactive_once and (files.len > 3 or options.recursive)) {
-        const prompt = try std.fmt.allocPrint(allocator, "rm: remove {d} arguments? ", .{files.len});
-        defer allocator.free(prompt);
-
-        if (!try promptUser(prompt, stderr_writer)) {
+        if (!try common.prompt.promptYesNo(stderr_writer, "rm: remove {d} arguments? ", .{files.len})) {
             return true; // User said no, but no error occurred
         }
     }
@@ -212,7 +182,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
     for (files) |file| {
         // Check preserve-root protection before anything else
         if (options.preserve_root and isRootPath(file)) {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "refusing to remove '/'; use --no-preserve-root to override", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "refusing to remove '/'; use --no-preserve-root to override", .{});
             any_errors = true;
             continue;
         }
@@ -220,12 +190,12 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
         // Enhanced path validation using OpenBSD-style basename checking
         if (!isPathSafeToRemove(file)) {
             if (file.len == 0) {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '': No such file or directory", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '': No such file or directory", .{});
             } else if (std.mem.eql(u8, file, "/")) {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "it is dangerous to operate recursively on '/'", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "it is dangerous to operate recursively on '/'", .{});
             } else {
                 // Must be a "." or ".." pattern (including complex paths like "/path/to/.")
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "\".\" and \"..\" may not be removed", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "\".\" and \"..\" may not be removed", .{});
             }
             any_errors = true;
             continue;
@@ -235,12 +205,12 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
         removeItem(allocator, file, stdout_writer, stderr_writer, options) catch |err| switch (err) {
             error.FileNotFound => {
                 if (!options.force) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': No such file or directory", .{file});
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{file});
                     any_errors = true;
                 }
             },
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Permission denied", .{file});
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
                 any_errors = true;
             },
             error.IsDir => {
@@ -249,7 +219,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                         switch (dir_err) {
                             error.InteractiveUserCancelled => {}, // User said no in interactive mode, continue
                             else => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
                                 any_errors = true;
                             },
                         }
@@ -259,15 +229,15 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                     std.fs.cwd().deleteDir(file) catch |dir_err| {
                         switch (dir_err) {
                             error.DirNotEmpty => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Directory not empty", .{file});
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{file});
                                 any_errors = true;
                             },
                             error.AccessDenied => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Permission denied", .{file});
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{file});
                                 any_errors = true;
                             },
                             else => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
                                 any_errors = true;
                             },
                         }
@@ -276,7 +246,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                         try stdout_writer.print("removed directory '{s}'\n", .{file});
                     }
                 } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Is a directory", .{file});
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Is a directory", .{file});
                     any_errors = true;
                 }
             },
@@ -288,7 +258,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                 any_errors = true;
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ file, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
                 any_errors = true;
             },
         };
@@ -298,7 +268,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
 }
 
 /// Remove a single file or symlink.
-fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
+fn removeItem(_: Allocator, file_path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: RmOptions) !void {
     // Use lstat so symlinks are examined directly (not their targets).
     // statFile follows symlinks, which misclassifies symlinks-to-directories
     // as directories and incorrectly requires -r.
@@ -318,10 +288,7 @@ fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytyp
         // Force mode: no prompts, proceed with removal
     } else if (options.interactive) {
         // Interactive mode: always prompt
-        const prompt = try std.fmt.allocPrint(allocator, "rm: remove regular file '{s}'? ", .{file_path});
-        defer allocator.free(prompt);
-
-        if (!try promptUser(prompt, stderr_writer)) {
+        if (!try common.prompt.promptYesNo(stderr_writer, "rm: remove regular file '{s}'? ", .{file_path})) {
             return error.InteractiveUserCancelled;
         }
     } else {
@@ -329,10 +296,7 @@ fn removeItem(allocator: Allocator, file_path: []const u8, stdout_writer: anytyp
         const mode = stat_result.mode;
         const user_write = (mode & 0o200) != 0;
         if (!user_write) {
-            const prompt = try std.fmt.allocPrint(allocator, "rm: remove write-protected regular file '{s}'? ", .{file_path});
-            defer allocator.free(prompt);
-
-            if (!try promptUser(prompt, stderr_writer)) {
+            if (!try common.prompt.promptYesNo(stderr_writer, "rm: remove write-protected regular file '{s}'? ", .{file_path})) {
                 return error.UserCancelled;
             }
         }
@@ -419,7 +383,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
     {
         var iterator = dir.iterate();
         while (iterator.next() catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot read directory '{s}': {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot read directory '{s}': {s}", .{ dir_path, @errorName(err) });
             dir.close();
             return err;
         }) |entry| {
@@ -434,7 +398,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
     // Process entries depth-first
     for (entries.items) |entry| {
         const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot construct path: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot construct path: {s}", .{@errorName(err)});
             had_errors = true;
             continue;
         };
@@ -458,18 +422,18 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
                 },
                 error.FileNotFound => {
                     if (!options.force) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': No such file or directory", .{full_path});
+                        common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{full_path});
                         had_errors = true;
                     }
                     continue;
                 },
                 error.AccessDenied => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Permission denied", .{full_path});
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{full_path});
                     had_errors = true;
                     continue;
                 },
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ full_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ full_path, @errorName(err) });
                     had_errors = true;
                     continue;
                 },
@@ -480,10 +444,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
     // Now remove the (should-be-empty) directory itself
     // Prompt if interactive
     if (!options.force and options.interactive) {
-        const prompt = try std.fmt.allocPrint(allocator, "rm: remove directory '{s}'? ", .{dir_path});
-        defer allocator.free(prompt);
-
-        if (!try promptUser(prompt, stderr_writer)) {
+        if (!try common.prompt.promptYesNo(stderr_writer, "rm: remove directory '{s}'? ", .{dir_path})) {
             return error.InteractiveUserCancelled;
         }
     }
@@ -491,15 +452,15 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
     std.fs.cwd().deleteDir(dir_path) catch |err| switch (err) {
         error.DirNotEmpty => {
             // Some entries may have been skipped (interactive cancel, errors)
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Directory not empty", .{dir_path});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{dir_path});
             had_errors = true;
         },
         error.AccessDenied => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': Permission denied", .{dir_path});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{dir_path});
             had_errors = true;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", std.fs.File.stderr().isTty(), "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
             had_errors = true;
         },
     };

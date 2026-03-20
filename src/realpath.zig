@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const path_utils = common.path;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
@@ -98,99 +99,6 @@ fn resolveLogical(allocator: Allocator, path: []const u8) ![]u8 {
     return result;
 }
 
-/// Resolve a path handling the -m (canonicalize-missing) mode.
-/// Resolves as much of the path as exists, then appends the rest logically.
-fn resolveMissing(allocator: Allocator, path: []const u8) ![]u8 {
-    // First try to resolve the whole thing
-    if (std.fs.cwd().realpathAlloc(allocator, path)) |resolved| {
-        return resolved;
-    } else |_| {}
-
-    // Path doesn't fully exist. Walk from the end, finding the longest
-    // existing prefix, then append remaining components logically.
-    const abs_path = if (std.fs.path.isAbsolute(path))
-        try allocator.dupe(u8, path)
-    else blk: {
-        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch return error.FileNotFound;
-        break :blk try std.fs.path.join(allocator, &.{ cwd, path });
-    };
-    defer allocator.free(abs_path);
-
-    // Collect all components
-    var all_components = std.ArrayListUnmanaged([]const u8){};
-    defer all_components.deinit(allocator);
-
-    var it = std.mem.tokenizeScalar(u8, abs_path, '/');
-    while (it.next()) |comp| {
-        try all_components.append(allocator, comp);
-    }
-
-    // Try resolving progressively shorter prefixes
-    var resolved_prefix: ?[]u8 = null;
-    var resolved_count: usize = 0;
-
-    var try_count = all_components.items.len;
-    while (try_count > 0) : (try_count -= 1) {
-        // Build prefix path
-        var prefix_len: usize = 0;
-        for (all_components.items[0..try_count]) |comp| {
-            prefix_len += 1 + comp.len;
-        }
-        const prefix = try allocator.alloc(u8, prefix_len);
-        defer allocator.free(prefix);
-        var pos: usize = 0;
-        for (all_components.items[0..try_count]) |comp| {
-            prefix[pos] = '/';
-            pos += 1;
-            @memcpy(prefix[pos .. pos + comp.len], comp);
-            pos += comp.len;
-        }
-
-        if (std.fs.cwd().realpathAlloc(allocator, prefix)) |resolved| {
-            resolved_prefix = resolved;
-            resolved_count = try_count;
-            break;
-        } else |_| {}
-    }
-
-    // Build result: resolved prefix + remaining components (cleaned)
-    if (resolved_prefix) |prefix| {
-        defer allocator.free(prefix);
-        if (resolved_count == all_components.items.len) {
-            return try allocator.dupe(u8, prefix);
-        }
-
-        // Append remaining components, resolving . and ..
-        var remaining = std.ArrayListUnmanaged(u8){};
-        defer remaining.deinit(allocator);
-        try remaining.appendSlice(allocator, prefix);
-
-        for (all_components.items[resolved_count..]) |comp| {
-            if (std.mem.eql(u8, comp, ".")) {
-                continue;
-            } else if (std.mem.eql(u8, comp, "..")) {
-                // Remove last component from remaining
-                if (std.mem.lastIndexOfScalar(u8, remaining.items, '/')) |last_slash| {
-                    if (last_slash > 0) {
-                        remaining.shrinkRetainingCapacity(last_slash);
-                    } else {
-                        remaining.shrinkRetainingCapacity(1); // keep just "/"
-                    }
-                }
-            } else {
-                try remaining.append(allocator, '/');
-                try remaining.appendSlice(allocator, comp);
-            }
-        }
-
-        return try allocator.dupe(u8, remaining.items);
-    } else {
-        // Nothing exists, just clean the path logically
-        return resolveLogical(allocator, path);
-    }
-}
-
 /// Process a single path and write the result
 fn processPath(
     allocator: Allocator,
@@ -202,14 +110,14 @@ fn processPath(
     const resolved = if (opts.no_symlinks) blk: {
         break :blk resolveLogical(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
             }
             return false;
         };
     } else if (opts.canonicalize_missing) blk: {
-        break :blk resolveMissing(allocator, path) catch |err| {
+        break :blk path_utils.canonicalizeMissing(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
             }
             return false;
         };
@@ -217,7 +125,7 @@ fn processPath(
         // Default: canonicalize-existing (all components must exist)
         break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
             }
             return false;
         };
@@ -232,21 +140,21 @@ fn processPath(
         const resolved_base = if (opts.no_symlinks)
             resolveLogical(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
                 }
                 return false;
             }
         else if (opts.canonicalize_missing)
-            resolveMissing(allocator, base_dir) catch |err| {
+            path_utils.canonicalizeMissing(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
                 }
                 return false;
             }
         else
             std.fs.cwd().realpathAlloc(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
                 }
                 return false;
             };
@@ -313,15 +221,15 @@ pub fn runRealpath(allocator: Allocator, args: []const []const u8, stdout_writer
     const parsed_args = common.argparse.ArgParser.parse(RealpathArgs, allocator, processed_args.items) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -340,7 +248,7 @@ pub fn runRealpath(allocator: Allocator, args: []const []const u8, stdout_writer
     }
 
     if (parsed_args.positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "realpath", std.fs.File.stderr().isTty(), "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "realpath", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 

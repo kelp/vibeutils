@@ -9,6 +9,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
+const time = common.time;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
@@ -70,87 +71,6 @@ const TimeoutArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
     };
 };
-
-/// Time unit multipliers in nanoseconds
-const TimeUnit = enum {
-    seconds,
-    minutes,
-    hours,
-    days,
-
-    pub fn toNanos(self: TimeUnit) u64 {
-        return switch (self) {
-            .seconds => std.time.ns_per_s,
-            .minutes => std.time.ns_per_min,
-            .hours => std.time.ns_per_hour,
-            .days => std.time.ns_per_day,
-        };
-    }
-};
-
-/// Parse a time string into nanoseconds
-/// Supports: plain numbers (5), unit suffixes (5s, 2.5m, 1h, 3d)
-fn parseTimeString(time_str: []const u8) !u64 {
-    if (time_str.len == 0) {
-        return error.InvalidTimeFormat;
-    }
-
-    var number_part = time_str;
-    var unit = TimeUnit.seconds;
-
-    const last_char = time_str[time_str.len - 1];
-    switch (last_char) {
-        's' => {
-            unit = .seconds;
-            number_part = time_str[0 .. time_str.len - 1];
-        },
-        'm' => {
-            unit = .minutes;
-            number_part = time_str[0 .. time_str.len - 1];
-        },
-        'h' => {
-            unit = .hours;
-            number_part = time_str[0 .. time_str.len - 1];
-        },
-        'd' => {
-            unit = .days;
-            number_part = time_str[0 .. time_str.len - 1];
-        },
-        else => {
-            number_part = time_str;
-            unit = .seconds;
-        },
-    }
-
-    if (number_part.len == 0) {
-        return error.InvalidTimeFormat;
-    }
-
-    if (std.mem.endsWith(u8, number_part, ".")) {
-        return error.InvalidTimeFormat;
-    }
-
-    const parsed_value = std.fmt.parseFloat(f64, number_part) catch {
-        return error.InvalidTimeFormat;
-    };
-
-    if (std.math.isNan(parsed_value) or std.math.isInf(parsed_value)) {
-        return error.InvalidTimeFormat;
-    }
-
-    if (parsed_value < 0) {
-        return error.NegativeTime;
-    }
-
-    const nanos_per_unit = @as(f64, @floatFromInt(unit.toNanos()));
-    const total_nanos = parsed_value * nanos_per_unit;
-
-    if (total_nanos > @as(f64, @floatFromInt(std.math.maxInt(u64)))) {
-        return error.TimeOverflow;
-    }
-
-    return @as(u64, @intFromFloat(total_nanos));
-}
 
 /// Parse signal name or number to signal number
 /// Accepts: "TERM", "SIGTERM", "15", "9", "KILL", etc.
@@ -282,7 +202,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     const parsed = common.argparse.ArgParser.parse(TimeoutArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid argument\nTry 'timeout --help' for more information.", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument\nTry 'timeout --help' for more information.", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -303,24 +223,24 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     // Need at least DURATION and COMMAND
     if (parsed.positionals.len < 2) {
         if (parsed.positionals.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand", .{});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand", .{});
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "missing operand after '{s}'", .{parsed.positionals[0]});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'", .{parsed.positionals[0]});
         }
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "Try 'timeout --help' for more information.", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "Try 'timeout --help' for more information.", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Parse timeout duration
-    const timeout_nanos = parseTimeString(parsed.positionals[0]) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid time interval '{s}'", .{parsed.positionals[0]});
+    const timeout_nanos = time.parseTimeString(parsed.positionals[0]) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid time interval '{s}'", .{parsed.positionals[0]});
         return 125;
     };
 
     // Parse signal
     const timeout_signal: u8 = if (parsed.signal) |sig_str|
         parseSignal(sig_str) orelse {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid signal '{s}'", .{sig_str});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid signal '{s}'", .{sig_str});
             return 125;
         }
     else
@@ -328,8 +248,8 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
 
     // Parse kill-after duration
     const kill_after_nanos: ?u64 = if (parsed.@"kill-after") |ka_str|
-        parseTimeString(ka_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid time interval '{s}'", .{ka_str});
+        time.parseTimeString(ka_str) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid time interval '{s}'", .{ka_str});
             return 125;
         }
     else
@@ -347,15 +267,15 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     child.spawn() catch |err| {
         switch (err) {
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to run command '{s}': No such file or directory", .{cmd_args[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': No such file or directory", .{cmd_args[0]});
                 return 127;
             },
             error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to run command '{s}': Permission denied", .{cmd_args[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': Permission denied", .{cmd_args[0]});
                 return 126;
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "failed to run command '{s}': {s}", .{ cmd_args[0], @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': {s}", .{ cmd_args[0], @errorName(err) });
                 return 125;
             },
         }
@@ -393,7 +313,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
 
     // Timeout expired - send the signal
     if (parsed.verbose) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "sending signal {d} to command '{s}'", .{ timeout_signal, cmd_args[0] });
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal {d} to command '{s}'", .{ timeout_signal, cmd_args[0] });
     }
 
     sendSignal(child_pid, @intCast(timeout_signal), !parsed.foreground);
@@ -418,7 +338,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
 
             // Still running - send KILL
             if (parsed.verbose) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "sending signal KILL to command '{s}'", .{cmd_args[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal KILL to command '{s}'", .{cmd_args[0]});
             }
 
             sendSignal(child_pid, 9, !parsed.foreground); // SIGKILL
@@ -481,35 +401,35 @@ pub fn main() !void {
 // ============================================================================
 
 test "parseTimeString - basic integer seconds" {
-    try testing.expectEqual(@as(u64, 5 * std.time.ns_per_s), try parseTimeString("5"));
-    try testing.expectEqual(@as(u64, 0), try parseTimeString("0"));
-    try testing.expectEqual(@as(u64, 1 * std.time.ns_per_s), try parseTimeString("1"));
-    try testing.expectEqual(@as(u64, 10 * std.time.ns_per_s), try parseTimeString("10"));
+    try testing.expectEqual(@as(u64, 5 * std.time.ns_per_s), try time.parseTimeString("5"));
+    try testing.expectEqual(@as(u64, 0), try time.parseTimeString("0"));
+    try testing.expectEqual(@as(u64, 1 * std.time.ns_per_s), try time.parseTimeString("1"));
+    try testing.expectEqual(@as(u64, 10 * std.time.ns_per_s), try time.parseTimeString("10"));
 }
 
 test "parseTimeString - decimal seconds" {
-    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString("0.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_s)), try parseTimeString("1.5"));
-    try testing.expectEqual(@as(u64, @intFromFloat(2.25 * std.time.ns_per_s)), try parseTimeString("2.25"));
+    try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try time.parseTimeString("0.5"));
+    try testing.expectEqual(@as(u64, @intFromFloat(1.5 * std.time.ns_per_s)), try time.parseTimeString("1.5"));
+    try testing.expectEqual(@as(u64, @intFromFloat(2.25 * std.time.ns_per_s)), try time.parseTimeString("2.25"));
 }
 
 test "parseTimeString - suffixes" {
-    try testing.expectEqual(@as(u64, 5 * std.time.ns_per_s), try parseTimeString("5s"));
-    try testing.expectEqual(@as(u64, 1 * std.time.ns_per_min), try parseTimeString("1m"));
-    try testing.expectEqual(@as(u64, 2 * std.time.ns_per_hour), try parseTimeString("2h"));
-    try testing.expectEqual(@as(u64, 1 * std.time.ns_per_day), try parseTimeString("1d"));
+    try testing.expectEqual(@as(u64, 5 * std.time.ns_per_s), try time.parseTimeString("5s"));
+    try testing.expectEqual(@as(u64, 1 * std.time.ns_per_min), try time.parseTimeString("1m"));
+    try testing.expectEqual(@as(u64, 2 * std.time.ns_per_hour), try time.parseTimeString("2h"));
+    try testing.expectEqual(@as(u64, 1 * std.time.ns_per_day), try time.parseTimeString("1d"));
 }
 
 test "parseTimeString - invalid formats" {
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString(""));
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString("s"));
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString("abc"));
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString("5."));
+    try testing.expectError(error.InvalidTimeFormat, time.parseTimeString(""));
+    try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("s"));
+    try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("abc"));
+    try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("5."));
 }
 
 test "parseTimeString - negative values" {
-    try testing.expectError(error.NegativeTime, parseTimeString("-1"));
-    try testing.expectError(error.NegativeTime, parseTimeString("-5s"));
+    try testing.expectError(error.NegativeTime, time.parseTimeString("-1"));
+    try testing.expectError(error.NegativeTime, time.parseTimeString("-5s"));
 }
 
 test "parseSignal - numeric signals" {

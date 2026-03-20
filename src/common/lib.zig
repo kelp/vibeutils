@@ -66,6 +66,21 @@ pub const colors = @import("colors.zig");
 /// Test directory utilities for managing temporary file systems in tests
 pub const test_dir = @import("test_dir.zig");
 
+/// C time bindings, TimeUnit, and time string parsing
+pub const time = @import("time.zig");
+
+/// Path canonicalization for missing components
+pub const path = @import("path.zig");
+
+/// Glob pattern matching with bracket expressions
+pub const glob = @import("glob.zig");
+
+/// Human-readable size formatting and block size parsing
+pub const format = @import("format.zig");
+
+/// Interactive yes/no prompts for user confirmation
+pub const prompt = @import("prompt.zig");
+
 /// Version information from build configuration
 pub const version = build_options.version;
 
@@ -147,12 +162,25 @@ pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
     @compileError("printWarning() is deprecated - use printWarningWithWriter() with explicit stderr writer instead");
 }
 
+/// Detect whether stderr supports color output.
+///
+/// Checks NO_COLOR env var, whether stderr is a TTY, and whether TERM is "dumb".
+/// Used internally by printErrorWithProgram, printWarningWithProgram, and
+/// printHintWithProgram to decide whether to emit ANSI escape codes.
+fn stderrSupportsColor() bool {
+    if (std.posix.getenv("NO_COLOR") != null) return false;
+    if (!std.posix.isatty(std.fs.File.stderr().handle)) return false;
+    if (std.posix.getenv("TERM")) |term| {
+        if (std.mem.eql(u8, term, "dumb")) return false;
+    }
+    return true;
+}
+
 /// Print error message with custom program name to a specific writer
 ///
-/// This version allows utilities to specify their program name explicitly,
-/// which is useful for consistent error messages across different contexts.
-pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, use_color: bool, comptime fmt: []const u8, fmt_args: anytype) void {
-    if (use_color) {
+/// Color is detected automatically from stderr TTY state and environment.
+pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+    if (stderrSupportsColor()) {
         const StyleType = style.Style(@TypeOf(writer));
         var s = StyleType.init(allocator, writer) catch {
             writer.print("{s}: ", .{prog_name}) catch return;
@@ -172,9 +200,9 @@ pub fn printErrorWithProgram(allocator: std.mem.Allocator, writer: anytype, prog
 /// Print hint message with custom program name to a specific writer
 ///
 /// Hints are informational suggestions for the user, displayed in cyan.
-/// Use for one-time suggestions like "use -i for interactive prompts".
-pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, use_color: bool, comptime fmt: []const u8, fmt_args: anytype) void {
-    if (use_color) {
+/// Color is detected automatically from stderr TTY state and environment.
+pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+    if (stderrSupportsColor()) {
         const StyleType = style.Style(@TypeOf(writer));
         var s = StyleType.init(allocator, writer) catch {
             writer.print("{s}: hint: ", .{prog_name}) catch return;
@@ -193,10 +221,9 @@ pub fn printHintWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_
 
 /// Print warning message with custom program name to a specific writer
 ///
-/// This version allows utilities to specify their program name explicitly,
-/// which is useful for consistent warning messages across different contexts.
-pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, use_color: bool, comptime fmt: []const u8, fmt_args: anytype) void {
-    if (use_color) {
+/// Color is detected automatically from stderr TTY state and environment.
+pub fn printWarningWithProgram(allocator: std.mem.Allocator, writer: anytype, prog_name: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+    if (stderrSupportsColor()) {
         const StyleType = style.Style(@TypeOf(writer));
         var s = StyleType.init(allocator, writer) catch {
             writer.print("{s}: warning: ", .{prog_name}) catch return;
@@ -288,7 +315,7 @@ test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {
     var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buf.deinit(testing.allocator);
 
-    printErrorWithProgram(testing.allocator, buf.writer(testing.allocator), "test", false, "something went wrong", .{});
+    printErrorWithProgram(testing.allocator, buf.writer(testing.allocator), "test", "something went wrong", .{});
 
     const output = buf.items;
     try testing.expect(output.len > 0);
@@ -302,7 +329,7 @@ test "printHintWithProgram - non-tty output must not contain ANSI escapes" {
     var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buf.deinit(testing.allocator);
 
-    printHintWithProgram(testing.allocator, buf.writer(testing.allocator), "test", false, "use -i for interactive", .{});
+    printHintWithProgram(testing.allocator, buf.writer(testing.allocator), "test", "use -i for interactive", .{});
 
     const output = buf.items;
     try testing.expect(output.len > 0);
@@ -316,7 +343,7 @@ test "printWarningWithProgram - non-tty output must not contain ANSI escapes" {
     var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buf.deinit(testing.allocator);
 
-    printWarningWithProgram(testing.allocator, buf.writer(testing.allocator), "test", false, "disk almost full", .{});
+    printWarningWithProgram(testing.allocator, buf.writer(testing.allocator), "test", "disk almost full", .{});
 
     const output = buf.items;
     try testing.expect(output.len > 0);

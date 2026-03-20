@@ -9,35 +9,13 @@
 
 const std = @import("std");
 const common = @import("common");
+const time = common.time;
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
 const TimestampResult = struct { secs: i64, ns: i64, err: ?[]const u8 };
 
-// ============================================================================
-// Libc bindings for time functions
-// ============================================================================
-
 const c = std.c;
-
-const c_tm = extern struct {
-    tm_sec: c_int,
-    tm_min: c_int,
-    tm_hour: c_int,
-    tm_mday: c_int,
-    tm_mon: c_int,
-    tm_year: c_int,
-    tm_wday: c_int,
-    tm_yday: c_int,
-    tm_isdst: c_int,
-    tm_gmtoff: c_long,
-    tm_zone: [*:0]const u8,
-};
-
-extern "c" fn localtime_r(timer: *const c.time_t, result: *c_tm) ?*c_tm;
-extern "c" fn gmtime_r(timer: *const c.time_t, result: *c_tm) ?*c_tm;
-extern "c" fn strftime(s: [*]u8, maxsize: usize, format: [*:0]const u8, tp: *const c_tm) usize;
-extern "c" fn mktime(tp: *c_tm) c.time_t;
 
 // ============================================================================
 // Date utility implementation
@@ -333,7 +311,7 @@ fn parseIso8601(ds: []const u8) TimestampResult {
     }
 
     // Convert to epoch via mktime
-    var tm = c_tm{
+    var tm = time.c_tm{
         .tm_sec = @intCast(second),
         .tm_min = @intCast(minute),
         .tm_hour = @intCast(hour),
@@ -347,7 +325,7 @@ fn parseIso8601(ds: []const u8) TimestampResult {
         .tm_zone = "UTC",
     };
 
-    const result = mktime(&tm);
+    const result = time.mktime(&tm);
     if (result == -1) return err_result;
 
     return .{ .secs = @intCast(result), .ns = 0, .err = null };
@@ -415,7 +393,7 @@ fn validatePrecision(opts: DateOptions) ?[]const u8 {
 }
 
 /// Format a timezone offset as +HH:MM (colon-separated)
-fn formatTzOffset(buf: []u8, tm: *const c_tm) []const u8 {
+fn formatTzOffset(buf: []u8, tm: *const time.c_tm) []const u8 {
     const offset_secs = tm.tm_gmtoff;
     const abs_offset: u64 = if (offset_secs < 0) @intCast(-offset_secs) else @intCast(offset_secs);
     const sign: u8 = if (offset_secs < 0) '-' else '+';
@@ -434,7 +412,7 @@ fn formatTzOffset(buf: []u8, tm: *const c_tm) []const u8 {
 fn formatDate(
     allocator: Allocator,
     format: []const u8,
-    tm: *const c_tm,
+    tm: *const time.c_tm,
     epoch_secs: i64,
     ns: i64,
 ) ![]const u8 {
@@ -526,7 +504,7 @@ fn formatDate(
 
     // Call strftime
     var output_buf: [8192]u8 = undefined;
-    const len = strftime(&output_buf, output_buf.len, fmt_z, tm);
+    const len = time.strftime(&output_buf, output_buf.len, fmt_z, tm);
 
     if (len == 0 and processed.items.len > 1) {
         // strftime returned 0, could mean error or empty output
@@ -542,7 +520,7 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Parse arguments
     const parsed = parseArgs(args);
     if (parsed.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
     const opts = parsed.opts;
@@ -561,34 +539,34 @@ pub fn runDate(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // Validate precision arguments
     if (validatePrecision(opts)) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
     // Handle -v stub: not yet implemented, exit with error
     if (opts.v_adjust != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "-v adjustment not yet implemented", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-v adjustment not yet implemented", .{});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Resolve the timestamp to format
     const ts = resolveTimestamp(opts);
     if (ts.err) |err_msg| {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}", .{err_msg});
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}", .{err_msg});
         return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Convert to broken-down time
     const time_secs: c.time_t = @intCast(ts.secs);
-    var tm: c_tm = undefined;
+    var tm: time.c_tm = undefined;
     if (opts.utc) {
-        if (gmtime_r(&time_secs, &tm) == null) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot convert time", .{});
+        if (time.gmtime_r(&time_secs, &tm) == null) {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot convert time", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
     } else {
-        if (localtime_r(&time_secs, &tm) == null) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot convert time", .{});
+        if (time.localtime_r(&time_secs, &tm) == null) {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot convert time", .{});
             return @intFromEnum(common.ExitCode.general_error);
         }
     }

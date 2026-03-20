@@ -71,15 +71,15 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cat", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "option requires an argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cat", "option requires an argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "cat", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -113,7 +113,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
         processInput(stdin, stdout_writer, options, &line_state) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "stdin: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{@errorName(err)});
             has_error = true;
         };
     } else {
@@ -122,13 +122,13 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
             if (std.mem.eql(u8, file_path, "-")) {
                 // "-" means read from stdin
                 processInput(stdin, stdout_writer, options, &line_state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "stdin: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{@errorName(err)});
                     has_error = true;
                 };
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                     continue; // Continue to next file
                 };
@@ -137,7 +137,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 processInput(&file_reader.interface, stdout_writer, options, &line_state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", std.fs.File.stderr().isTty(), "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                 };
             }

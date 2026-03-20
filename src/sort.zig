@@ -132,7 +132,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "buffer-size=")) {
                 const size_str = flag["buffer-size=".len..];
                 opts.buffer_size = parseBufferSize(size_str) orelse {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid buffer size: '{s}'", .{size_str});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid buffer size: '{s}'", .{size_str});
                     return null;
                 };
             } else if (std.mem.startsWith(u8, flag, "temporary-directory=")) {
@@ -150,14 +150,14 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "key=")) {
                 const keydef_str = flag[4..];
                 const key = parseKeyDef(keydef_str) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid key definition: '{s}'", .{keydef_str});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid key definition: '{s}'", .{keydef_str});
                     return null;
                 };
                 try opts.keys.append(allocator, key);
             } else if (std.mem.startsWith(u8, flag, "field-separator=")) {
                 const sep_str = flag["field-separator=".len..];
                 if (sep_str.len != 1) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "multi-character field separator", .{});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "multi-character field separator", .{});
                     return null;
                 }
                 opts.field_separator = sep_str[0];
@@ -166,7 +166,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "batch-size=")) {
                 const val_str = flag["batch-size=".len..];
                 opts.batch_size = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid number for --batch-size: '{s}'", .{val_str});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid number for --batch-size: '{s}'", .{val_str});
                     return null;
                 };
             } else if (std.mem.startsWith(u8, flag, "compress-program=")) {
@@ -178,7 +178,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.startsWith(u8, flag, "parallel=")) {
                 const val_str = flag["parallel=".len..];
                 opts.parallel = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid number for --parallel: '{s}'", .{val_str});
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid number for --parallel: '{s}'", .{val_str});
                     return null;
                 };
             } else if (std.mem.startsWith(u8, flag, "random-source=")) {
@@ -191,7 +191,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             {
                 // BSD algorithm/mmap flags accepted as no-ops
             } else {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "unrecognized option '--{s}'\nTry 'sort --help' for more information.", .{flag});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'\nTry 'sort --help' for more information.", .{flag});
                 return null;
             }
         } else if (arg.len > 1 and arg[0] == '-') {
@@ -218,11 +218,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'S'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'S'", .{});
                             return null;
                         };
                         opts.buffer_size = parseBufferSize(value) orelse {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid buffer size: '{s}'", .{value});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid buffer size: '{s}'", .{value});
                             return null;
                         };
                         break;
@@ -234,7 +234,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'T'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'T'", .{});
                             return null;
                         };
                         opts.temp_dir = value;
@@ -254,11 +254,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'k'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'k'", .{});
                             return null;
                         };
                         const key = parseKeyDef(value) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid key definition: '{s}'", .{value});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid key definition: '{s}'", .{value});
                             return null;
                         };
                         try opts.keys.append(allocator, key);
@@ -271,11 +271,11 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 't'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 't'", .{});
                             return null;
                         };
                         if (value.len != 1) {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "multi-character tab '{s}'", .{value});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "multi-character tab '{s}'", .{value});
                             return null;
                         }
                         opts.field_separator = value[0];
@@ -288,14 +288,14 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             i += 1;
                             break :blk args[i];
                         } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "option requires an argument -- 'o'", .{});
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'o'", .{});
                             return null;
                         };
                         opts.output_file = value;
                         break;
                     },
                     else => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "invalid option -- '{c}'\nTry 'sort --help' for more information.", .{c});
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option -- '{c}'\nTry 'sort --help' for more information.", .{c});
                         return null;
                     },
                 }
@@ -445,7 +445,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Handle --files0-from: read input filenames from a NUL-delimited file
     if (opts.files0_from) |f0f_path| {
         if (opts.files.items.len > 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "extra operand '{s}'\nfile operands cannot be combined with --files0-from", .{opts.files.items[0]});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'\nfile operands cannot be combined with --files0-from", .{opts.files.items[0]});
             return @intFromEnum(common.ExitCode.misuse);
         }
         const is_stdin = std.mem.eql(u8, f0f_path, "-");
@@ -453,12 +453,12 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
             std.fs.File.stdin()
         else
             std.fs.cwd().openFile(f0f_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot open '{s}' for reading: {s}", .{ f0f_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot open '{s}' for reading: {s}", .{ f0f_path, @errorName(err) });
                 return @intFromEnum(common.ExitCode.misuse);
             };
         defer if (!is_stdin) f0f_file.close();
         const content = f0f_file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot read '{s}': {s}", .{ f0f_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read '{s}': {s}", .{ f0f_path, @errorName(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
         var it = std.mem.splitScalar(u8, content, 0);
@@ -491,7 +491,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 try readLines(allocator, stdin_file, &file_lines, delimiter);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
@@ -513,7 +513,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
         // Write output
         if (opts.output_file) |out_path| {
             const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "open failed: {s}: {s}", .{ out_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, @errorName(err) });
                 return @intFromEnum(common.ExitCode.misuse);
             };
             defer out_file.close();
@@ -544,7 +544,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 try readLines(allocator, stdin_file, &lines, delimiter);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
@@ -564,7 +564,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Determine output target
     if (opts.output_file) |out_path| {
         const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "open failed: {s}: {s}", .{ out_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, @errorName(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
         defer out_file.close();
@@ -1192,7 +1192,7 @@ fn checkSorted(allocator: Allocator, lines: []const []const u8, opts: *const Sor
             if (opts.check == .diagnose_first) {
                 // Get the first file name for the message
                 const file_name = if (opts.files.items.len > 0) opts.files.items[0] else "-";
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, std.fs.File.stderr().isTty(), "{s}:{d}: disorder: {s}", .{ file_name, idx + 2, line });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}:{d}: disorder: {s}", .{ file_name, idx + 2, line });
             }
             return @intFromEnum(common.ExitCode.general_error);
         }

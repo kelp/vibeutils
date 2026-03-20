@@ -299,15 +299,15 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
     const parsed_args = common.argparse.ArgParser.parse(SeqArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "unrecognized option", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "unrecognized option", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "option missing required argument", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "option missing required argument", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid option value", .{});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
             else => return err,
@@ -330,11 +330,11 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
     // Validate positional arguments
     const positionals = parsed_args.positionals;
     if (positionals.len == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "missing operand", .{});
+        common.printErrorWithProgram(allocator, stderr_writer, "seq", "missing operand", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
     if (positionals.len > 3) {
-        common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "extra operand '{s}'", .{positionals[3]});
+        common.printErrorWithProgram(allocator, stderr_writer, "seq", "extra operand '{s}'", .{positionals[3]});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -349,36 +349,36 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
     switch (positionals.len) {
         1 => {
             last = std.fmt.parseFloat(f64, positionals[0]) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid floating point argument: '{s}'", .{positionals[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[0]});
                 return @intFromEnum(common.ExitCode.misuse);
             };
             last_str = positionals[0];
         },
         2 => {
             first = std.fmt.parseFloat(f64, positionals[0]) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid floating point argument: '{s}'", .{positionals[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[0]});
                 return @intFromEnum(common.ExitCode.misuse);
             };
             first_str = positionals[0];
             last = std.fmt.parseFloat(f64, positionals[1]) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid floating point argument: '{s}'", .{positionals[1]});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[1]});
                 return @intFromEnum(common.ExitCode.misuse);
             };
             last_str = positionals[1];
         },
         3 => {
             first = std.fmt.parseFloat(f64, positionals[0]) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid floating point argument: '{s}'", .{positionals[0]});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[0]});
                 return @intFromEnum(common.ExitCode.misuse);
             };
             first_str = positionals[0];
             increment = std.fmt.parseFloat(f64, positionals[1]) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid floating point argument: '{s}'", .{positionals[1]});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[1]});
                 return @intFromEnum(common.ExitCode.misuse);
             };
             incr_str = positionals[1];
             last = std.fmt.parseFloat(f64, positionals[2]) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid floating point argument: '{s}'", .{positionals[2]});
+                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[2]});
                 return @intFromEnum(common.ExitCode.misuse);
             };
             last_str = positionals[2];
@@ -388,7 +388,7 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // Validate increment
     if (increment == 0.0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "seq", std.fs.File.stderr().isTty(), "invalid Zero increment value: '{s}'", .{incr_str});
+        common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid Zero increment value: '{s}'", .{incr_str});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
