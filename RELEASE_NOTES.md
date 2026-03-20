@@ -1,5 +1,39 @@
 # Release Notes
 
+## 0.8.0 — 2026-03-20
+
+Full POSIX flag compliance, massive bug sweep, and 7 new
+shared common modules. All 47 utilities pass smoke tests
+on macOS and Linux.
+
+### Highlights
+- 100% POSIX flag coverage: 288 MUST + 220 SHOULD flags
+- ~50 bugs fixed across 8 audit rounds
+- Unified DisplayConfig system for color/icon output
+- Migrated build system from Makefile to justfile
+- Code coverage via kcov integration
+
+### New common modules
+- time.zig: C time bindings (localtime_r, strftime, etc.)
+- path.zig: canonicalize paths with missing components
+- glob.zig: glob matching with bracket expressions
+- prompt.zig: interactive yes/no prompts for cp/mv/rm
+- format.zig: human-readable sizes (SI/IEC suffixes)
+- file_ops.zig: file content copying and same-file detect
+- lib.zig: internal stderr color detection
+
+### Bug fixes
+- Fix sort multi-file use-after-free in readLines
+- Fix timeout exit code for missing operands (now 125)
+- Fix sort, timeout, and find integration test failures
+- Remove hardcoded isTty, deduplicate common code
+- Fix allocator and overflow bugs across utilities
+
+### Infrastructure
+- Remove duplicate ubuntu-24.04 CI builds
+- Add release notes history (RELEASE_NOTES.md)
+- Remove obsolete Makefile (full justfile parity)
+
 ## 0.7.3 — 2026-03-07
 
 Fix O_APPEND stdout bug that corrupted output when
