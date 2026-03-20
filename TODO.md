@@ -5,7 +5,7 @@
 - **Utilities**: basename, cat, chmod, chown, cp, cut, date, dd, df, dirname, du, echo, env, false, find, free, grep, head, id, ln, ls, mkdir, mktemp, mv, nl, printf, pwd, readlink, realpath, rm, rmdir, seq, sleep, sort, stat, tac, tail, tee, test, timeout, touch, tr, true, uniq, wc, whoami, yes
 - **Flag coverage**: 288/288 MUST, 220/220 SHOULD (100%)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
-- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**
+- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**, **7 shared common modules** (time, path, glob, prompt, format, file_ops, lib color detection)
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
 
 ## Project Goals
@@ -1068,6 +1068,13 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
   - [x] Date/time formatting helpers (smart recent vs old)
   - [x] User/group name lookup (getpwuid/getgrgid via C interop)
   - [x] CI environment detection (isRunningInCI, shouldSkipMacOSCITest)
+  - [x] **Internal stderr color detection** (stderrSupportsColor in lib.zig — removed ~500 hardcoded isTty calls)
+  - [x] **C time bindings** (time.zig — c_tm, localtime_r, gmtime_r, strftime, mktime, TimeUnit, parseTimeString)
+  - [x] **Path canonicalization** (path.zig — canonicalizeMissing for non-existent path components)
+  - [x] **Glob matching** (glob.zig — globMatch/globMatchInsensitive with bracket expressions)
+  - [x] **Interactive prompts** (prompt.zig — promptYesNo for cp/mv/rm confirmation)
+  - [x] **Human-readable formatting** (format.zig — formatHumanReadable with SI/IEC suffixes, parseBlockSize)
+  - [x] **File content copying** (file_ops.zig — copyFileContents, isSameFile)
   - [ ] Terminal width detection for responsive layouts
   - [ ] Parallel I/O utilities for performance
 
