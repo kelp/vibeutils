@@ -418,7 +418,7 @@ test_ls() {
     # should contain truecolor escape sequences (38;2;R;G;B) for the
     # colorized metadata columns (sizes, dates, permissions).
     local tc_output
-    tc_output=$(LS_ICONS=always COLORTERM=truecolor TERM=xterm "$binary" -l "$icon_dir" 2>/dev/null)
+    tc_output=$(LS_ICONS=always COLORTERM=truecolor TERM=xterm "$binary" --color=always -l "$icon_dir" 2>/dev/null)
     if echo "$tc_output" | grep -q '38;2;'; then
         print_test_result "ls truecolor icons emit RGB sequences" "PASS"
     else

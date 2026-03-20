@@ -101,7 +101,7 @@ list_available_utilities() {
     echo -e "\n${CYAN}All built utilities:${NC}"
     if [[ -d "$BIN_DIR" ]]; then
         for binary in "$BIN_DIR"/*; do
-            if [[ -x "$binary" ]]; then
+            if [[ -f "$binary" && -x "$binary" ]]; then
                 local util=$(basename "$binary")
                 local test_file="$TESTS_DIR/utilities/${util}_test.sh"
                 if [[ -f "$test_file" ]]; then
@@ -147,10 +147,10 @@ run_all_utility_tests() {
     
     # Test remaining utilities with automatic tests
     for binary in "$BIN_DIR"/*; do
-        if [[ -x "$binary" ]]; then
+        if [[ -f "$binary" && -x "$binary" ]]; then
             local util=$(basename "$binary")
             local test_file="$TESTS_DIR/utilities/${util}_test.sh"
-            
+
             # Skip if already tested
             if [[ ! -f "$test_file" ]]; then
                 total_utilities=$((total_utilities + 1))

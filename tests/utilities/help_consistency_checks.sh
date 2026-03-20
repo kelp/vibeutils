@@ -13,7 +13,7 @@ test_help_consistency() {
     local util binary help_output
 
     for binary in "$BIN_DIR"/*; do
-        [[ -x "$binary" ]] || continue
+        [[ -f "$binary" && -x "$binary" ]] || continue
         util=$(basename "$binary")
 
         # Skip utilities without standard --help

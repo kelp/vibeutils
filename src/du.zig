@@ -716,7 +716,7 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -l, --count-links     count sizes many times if hard linked
         \\  -L, --dereference     dereference all symbolic links
         \\  -m                    like --block-size=1M
-        \\  -n                    don't follow symbolic links (alias for -P)
+        \\  -n                    do not follow symbolic links (alias for -P)
         \\  -P, --no-dereference  do not follow symbolic links (default)
         \\  -r                    report errors (default behavior, XPG4 compatibility)
         \\  -s, --summarize       display only a total for each argument

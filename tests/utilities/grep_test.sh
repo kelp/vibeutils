@@ -219,7 +219,7 @@ test_grep() {
     test_command_exit_code "grep no pattern exit 2" 2 "$binary" 2>/dev/null
 
     # Invalid option
-    test_command_exit_code "grep invalid option exit 2" 2 "$binary" -Z pattern 2>/dev/null
+    test_command_exit_code "grep invalid option exit 2" 2 "$binary" -Q pattern 2>/dev/null
 
     # Nonexistent file
     test_command_exit_code "grep nonexistent file exit 2" 2 "$binary" --color=never pattern /nonexistent/file 2>/dev/null

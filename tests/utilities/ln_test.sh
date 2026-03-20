@@ -571,8 +571,8 @@ test_ln() {
     test_command_exit_code "ln -sb creates backup and new link" 0 \
         "$binary" -sb "$backup_target" "$backup_link"
 
-    # Verify the backup file exists
-    if [[ -e "${backup_link}~" ]]; then
+    # Verify the backup file exists (use -L since backup may be a broken symlink)
+    if [[ -e "${backup_link}~" || -L "${backup_link}~" ]]; then
         print_test_result "ln -sb backup file created" "PASS"
     else
         print_test_result "ln -sb backup file created" "FAIL" \

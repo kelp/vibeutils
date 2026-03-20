@@ -2223,7 +2223,7 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -H                 follow symbolic links on the command line only
         \\  -L, -follow        follow all symbolic links
         \\  -d, -depth         process directory contents before directory itself
-        \\  -x                 don't descend into other filesystems (same as -xdev)
+        \\  -x                 do not descend into other filesystems (same as -xdev)
         \\  -X                 warn about and skip xargs-unsafe filenames
         \\  -f path            specify a search path explicitly
         \\  -maxdepth N        descend at most N levels below starting points
@@ -2254,8 +2254,8 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
         \\  -inum N            file has inode number N (+N/-N/N)
         \\  -fstype TYPE       file is on filesystem of TYPE
         \\  -flags FLAGS       file has BSD file flags (macOS)
-        \\  -xdev              don't descend into other filesystems
-        \\  -prune             don't descend into matched directory
+        \\  -xdev              do not descend into other filesystems
+        \\  -prune             do not descend into matched directory
         \\
         \\Actions:
         \\  -print             print full path (default action)

@@ -483,19 +483,24 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
             for (per_file_lines.items) |*fl| fl.deinit(allocator);
             per_file_lines.deinit(allocator);
         }
+        var merge_buffers = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (merge_buffers.items) |buf| allocator.free(buf);
+            merge_buffers.deinit(allocator);
+        }
 
         for (opts.files.items) |file_path| {
             var file_lines = std.ArrayListUnmanaged([]const u8){};
             if (std.mem.eql(u8, file_path, "-")) {
                 const stdin_file = std.fs.File.stdin();
-                try readLines(allocator, stdin_file, &file_lines, delimiter);
+                try readLines(allocator, stdin_file, &file_lines, delimiter, &merge_buffers);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
-                try readLines(allocator, file, &file_lines, delimiter);
+                try readLines(allocator, file, &file_lines, delimiter, &merge_buffers);
             }
             try per_file_lines.append(allocator, file_lines);
         }
@@ -532,23 +537,28 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Read all lines from files or stdin
     var lines = std.ArrayListUnmanaged([]const u8){};
     defer lines.deinit(allocator);
+    var buffers = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (buffers.items) |buf| allocator.free(buf);
+        buffers.deinit(allocator);
+    }
 
     if (opts.files.items.len == 0) {
         // Read from stdin
         const stdin_file = std.fs.File.stdin();
-        try readLines(allocator, stdin_file, &lines, delimiter);
+        try readLines(allocator, stdin_file, &lines, delimiter, &buffers);
     } else {
         for (opts.files.items) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 const stdin_file = std.fs.File.stdin();
-                try readLines(allocator, stdin_file, &lines, delimiter);
+                try readLines(allocator, stdin_file, &lines, delimiter, &buffers);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
-                try readLines(allocator, file, &lines, delimiter);
+                try readLines(allocator, file, &lines, delimiter, &buffers);
             }
         }
     }
@@ -581,50 +591,41 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
 }
 
 /// Read lines from a file into the lines list.
-/// Line data is embedded in the ArrayList backing allocation so that
-/// lines.deinit(allocator) frees both descriptors and string data.
-fn readLines(allocator: Allocator, file: std.fs.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8) !void {
+/// The file content is kept alive via the buffers list so that line
+/// slices remain valid until the caller frees the buffers.
+fn readLines(allocator: Allocator, file: std.fs.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8, buffers: *std.ArrayListUnmanaged([]const u8)) !void {
     const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return,
     };
-    defer allocator.free(content);
 
-    if (content.len == 0) return;
+    if (content.len == 0) {
+        allocator.free(content);
+        return;
+    }
 
-    // First pass: count lines
+    // Track this buffer so the caller can free it later
+    try buffers.append(allocator, content);
+
+    // Count lines for capacity hint
     var num_lines: usize = 0;
     for (content) |c| {
         if (c == delimiter) num_lines += 1;
     }
     if (content[content.len - 1] != delimiter) num_lines += 1;
 
-    // Calculate capacity needed: existing items + new line descriptors +
-    // enough extra slots to hold the raw string data.
-    const bytes_per_slot = @sizeOf([]const u8);
-    const total_items = lines.items.len + num_lines;
-    const string_slots = (content.len + bytes_per_slot - 1) / bytes_per_slot;
-    const needed_capacity = total_items + string_slots;
+    try lines.ensureTotalCapacity(allocator, lines.items.len + num_lines);
 
-    try lines.ensureTotalCapacity(allocator, needed_capacity);
-
-    // Copy string data into the tail of the backing array, past all
-    // descriptor slots.  The backing is capacity * bytes_per_slot bytes.
-    const backing: [*]u8 = @ptrCast(lines.items.ptr);
-    const string_offset = total_items * bytes_per_slot;
-    @memcpy(backing[string_offset..][0..content.len], content);
-
-    // Second pass: build descriptors pointing into the embedded data
-    const string_base = backing + string_offset;
+    // Build descriptors pointing directly into the owned content
     var start: usize = 0;
     for (content, 0..) |c, idx| {
         if (c == delimiter) {
-            lines.appendAssumeCapacity(string_base[start..idx]);
+            lines.appendAssumeCapacity(content[start..idx]);
             start = idx + 1;
         }
     }
     if (start < content.len) {
-        lines.appendAssumeCapacity(string_base[start..content.len]);
+        lines.appendAssumeCapacity(content[start..content.len]);
     }
 }
 
@@ -1890,8 +1891,13 @@ test "readLines does not leak the content buffer" {
 
     var lines = std.ArrayListUnmanaged([]const u8){};
     defer lines.deinit(allocator);
+    var bufs = std.ArrayListUnmanaged([]const u8){};
+    defer {
+        for (bufs.items) |buf| allocator.free(buf);
+        bufs.deinit(allocator);
+    }
 
-    try readLines(allocator, file, &lines, '\n');
+    try readLines(allocator, file, &lines, '\n', &bufs);
 
     // Verify readLines produced the expected lines
     try testing.expectEqual(@as(usize, 3), lines.items.len);

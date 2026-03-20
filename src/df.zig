@@ -2095,7 +2095,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  -T, --print-type      print file system type
         \\  -t, --type=TYPE       limit listing to file systems of type TYPE
         \\  -x, --exclude-type=TYPE  limit listing to file systems not of type TYPE
-        \\  -Y                    don't resolve NFS paths (no-op)
+        \\  -Y                    do not resolve NFS paths (no-op)
         \\  -,                    format numbers with thousands grouping (commas)
         \\      --block-size=SIZE  scale sizes by SIZE before printing them
         \\      --total            produce a grand total

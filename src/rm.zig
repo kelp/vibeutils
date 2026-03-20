@@ -148,7 +148,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\                          or when removing recursively
         \\  -r, -R, --recursive   remove directories and their contents recursively
         \\  -v, --verbose         explain what is being done
-        \\  -x                    don't cross mount points during recursive removal
+        \\  -x                    do not cross mount points during recursive removal
         \\  -W                    attempt to undelete (not supported, stub)
         \\      --preserve-root   do not remove '/' (default)
         \\      --no-preserve-root  do not treat '/' specially

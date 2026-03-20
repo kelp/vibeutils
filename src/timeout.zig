@@ -228,7 +228,7 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "missing operand after '{s}'", .{parsed.positionals[0]});
         }
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "Try 'timeout --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return 125;
     }
 
     // Parse timeout duration
@@ -501,7 +501,7 @@ test "runTimeout - missing operand" {
 
     const result = try runTimeout(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
+    try testing.expectEqual(@as(u8, 125), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 }
 
@@ -511,7 +511,7 @@ test "runTimeout - missing command" {
 
     const result = try runTimeout(testing.allocator, &.{"5"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
+    try testing.expectEqual(@as(u8, 125), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
 }
 
@@ -632,15 +632,15 @@ test "parseSignal - USR2 returns platform-correct value" {
     try testing.expectEqual(@as(?u8, expected), parseSignal("sigusr2"));
 }
 
-test "runTimeout - no arguments returns misuse exit code" {
-    // GNU timeout returns exit 2 for missing arguments, not 125.
-    // Exit 125 is reserved for timeout-tool-itself failures.
+test "runTimeout - no arguments returns 125" {
+    // GNU timeout returns exit 125 for missing operands.
+    // Exit 2 is for invalid flags only.
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
     const result = try runTimeout(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
+    try testing.expectEqual(@as(u8, 125), result);
 }
 
 test "runTimeout - unknown flag returns misuse exit code" {
@@ -653,12 +653,12 @@ test "runTimeout - unknown flag returns misuse exit code" {
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
 }
 
-test "runTimeout - missing command after duration returns misuse exit code" {
-    // Only providing a duration without a command is a usage error (exit 2).
+test "runTimeout - missing command after duration returns 125" {
+    // Only providing a duration without a command returns exit 125.
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
     const result = try runTimeout(testing.allocator, &.{"5"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
+    try testing.expectEqual(@as(u8, 125), result);
 }

@@ -67,7 +67,7 @@ const ChownArgs = struct {
         .P = .{ .short = 'P', .desc = "Do not traverse any symbolic links (default)" },
         .recursive = .{ .short = 'R', .desc = "Operate on files and directories recursively" },
         .reference = .{ .desc = "Use RFILE's owner and group rather than specifying values", .value_name = "RFILE" },
-        .numeric_ids = .{ .short = 'n', .desc = "Use numeric IDs only, don't resolve user/group names" },
+        .numeric_ids = .{ .short = 'n', .desc = "Use numeric IDs only, do not resolve user/group names" },
         .no_cross_device = .{ .short = 'x', .desc = "Don't cross mount points during recursive operations" },
         .dereference = .{ .short = 0, .desc = "Affect the referent of each symbolic link (default)" },
         .no_preserve_root = .{ .short = 0, .desc = "Do not treat '/' specially (default)" },
@@ -241,9 +241,9 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
         \\      --dereference       affect the referent of each symbolic link (default)
         \\      --reference=RFILE  use RFILE's owner and group rather than
         \\                         specifying OWNER:GROUP values
-        \\  -n                     use numeric IDs only, don't resolve names
+        \\  -n                     use numeric IDs only, do not resolve names
         \\  -R, --recursive        operate on files and directories recursively
-        \\  -x                     don't cross mount points during recursion
+        \\  -x                     do not cross mount points during recursion
         \\      --preserve-root    fail to operate recursively on '/'
         \\      --no-preserve-root do not treat '/' specially (default)
         \\      --help             display this help and exit

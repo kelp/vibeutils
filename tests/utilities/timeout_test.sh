@@ -123,10 +123,10 @@ test_timeout() {
             "Expected --help to mention --signal"
     fi
 
-    # Regression test: arg errors exit 2, not 125
-    echo -e "${CYAN}Testing arg errors exit with code 2...${NC}"
+    # Missing operands exit 125; invalid flags exit 2
+    echo -e "${CYAN}Testing exit codes for missing operands and bad flags...${NC}"
 
-    test_command_exit_code "timeout no args exits 2" 2 "$binary"
+    test_command_exit_code "timeout no args exits 125" 125 "$binary"
 
     "$binary" --bad-flag 2>/dev/null
     exit_code=$?
