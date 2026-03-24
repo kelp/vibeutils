@@ -82,12 +82,30 @@ nix shell github:kelp/vibeutils
 nix build github:kelp/vibeutils
 ```
 
-For faster installs with prebuilt binaries, use the Cachix
-binary cache:
+For faster installs with prebuilt binaries, add the
+Cachix binary cache:
 
 ```bash
 cachix use vibeutils
-nix shell github:kelp/vibeutils
+```
+
+#### Persistent install (nix-darwin / home-manager)
+
+Add vibeutils as a flake input:
+
+```nix
+# flake.nix
+inputs.vibeutils = {
+  url = "github:kelp/vibeutils";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+Pass it to home-manager and add to packages:
+
+```nix
+# home.nix
+home.packages = [ inputs.vibeutils.packages.${pkgs.system}.default ];
 ```
 
 Nix installs use original names (no prefix) since Nix
