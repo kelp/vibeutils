@@ -45,6 +45,22 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Extract release notes for this version
+NOTES_FILE="RELEASE_NOTES.md"
+if [ ! -f "$NOTES_FILE" ]; then
+    echo "Error: $NOTES_FILE not found"
+    exit 1
+fi
+
+# Extract the section between "## $VERSION" and the next "## "
+RELEASE_NOTES=$(sed -n "/^## ${VERSION} /,/^## [0-9]/{/^## [0-9]/!p;}" "$NOTES_FILE" | sed '/^$/d; 1{/^$/d}')
+if [ -z "$RELEASE_NOTES" ]; then
+    echo "Error: No release notes found for $VERSION in $NOTES_FILE"
+    echo "Add a '## $VERSION — YYYY-MM-DD' section before releasing."
+    exit 1
+fi
+echo "Found release notes for $VERSION"
+
 # Pull latest to avoid conflicts
 echo "Pulling latest from origin..."
 git pull --ff-only origin main
@@ -106,5 +122,24 @@ echo "  - Build release binaries"
 echo "  - Create GitHub release"
 echo "  - Update Homebrew tap"
 echo "  - Push to Cachix"
+echo ""
+
+# Wait for GitHub release to be created by CI, then update notes
+echo "Waiting for GitHub release to appear..."
+for i in $(seq 1 30); do
+    if gh release view "$TAG" >/dev/null 2>&1; then
+        echo "Updating release notes..."
+        gh release edit "$TAG" --notes "$RELEASE_NOTES"
+        echo "Release notes updated for $TAG"
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "Warning: GitHub release not found after 5 minutes."
+        echo "Update notes manually: gh release edit $TAG --notes-file <(echo \"\$RELEASE_NOTES\")"
+        break
+    fi
+    sleep 10
+done
+
 echo ""
 echo "Monitor: https://github.com/kelp/vibeutils/actions"
