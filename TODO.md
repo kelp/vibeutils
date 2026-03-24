@@ -5,8 +5,9 @@
 - **Utilities**: basename, cat, chmod, chown, cp, cut, date, dd, df, dirname, du, echo, env, false, find, free, grep, head, id, ln, ls, mkdir, mktemp, mv, nl, printf, pwd, readlink, realpath, rm, rmdir, seq, sleep, sort, stat, tac, tail, tee, test, timeout, touch, tr, true, uniq, wc, whoami, yes
 - **Flag coverage**: 288/288 MUST, 220/220 SHOULD (100%)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
-- **Infrastructure**: Build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**, **7 shared common modules** (time, path, glob, prompt, format, file_ops, lib color detection)
-- **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy
+- **Infrastructure**: justfile build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**, **7 shared common modules** (time, path, glob, prompt, format, file_ops, lib color detection)
+- **Packaging**: Homebrew tap, Nix flake with Cachix binary cache (4 platforms), GitHub release binaries
+- **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy, RELEASE_NOTES.md
 
 ## Project Goals
 - **Balance**: 80% of GNU's usefulness with 20% of the complexity
@@ -1083,7 +1084,8 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] Configure test runner
 - [x] Common library module system
 - [x] Integrate zig-clap dependency
-- [x] Basic Makefile for common tasks
+- [x] Basic Makefile for common tasks (removed in 0.8.0)
+- [x] **justfile migration**: Full parity with Makefile, now sole task runner
 - [x] **Security fixes**: Replace fragile version parsing with safe ZON parser
 - [x] **Modular architecture**: Metadata-driven utility configuration in build/utils.zig
 - [x] **Memory management**: Fix memory leaks and add proper cleanup
@@ -1093,6 +1095,9 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] **Coverage system**: Removed non-functional coverage system (Zig 0.15.1 lacks native coverage)
 - [x] **CI/CD pipeline**: GitHub Actions workflows for cross-platform testing
 - [x] **Multi-platform releases**: GitHub Actions matrix build (linux arm64/amd64, darwin arm64/amd64)
+- [x] **Release automation**: release.sh extracts notes from RELEASE_NOTES.md and updates GitHub release
+- [x] **Cachix binary cache**: Explicit push via `nix build --print-out-paths | cachix push`
+- [x] **Weekly flake update**: CI updates flake.lock and pushes fresh builds to Cachix
 - [ ] Add install targets for man pages
 - [ ] Add benchmarking infrastructure (see Benchmarking System section)
 
@@ -1223,11 +1228,10 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 - [ ] **Integration Tests**: Real operations in permitted locations
 - [x] **Mock Tests**: Unit tests with injected syscalls (via requiresPrivilege)
 
-#### 4. Makefile Targets ✓
+#### 4. justfile Targets ✓
 - [x] test-privileged: Cross-platform privileged test runner
-- [x] test-privileged-linux: Linux-specific with fakeroot (make test-privileged)
-- [x] test-privileged-macos: macOS with Docker fallback (make test-privileged-local)
-- [x] test-privileged-bsd: BSD VMs with available tools
+- [x] test-privileged-local: macOS with Docker fallback
+- [x] test-linux-privileged: Linux Docker container
 
 ### Fallback Strategies
 1. Test error paths (permission denied scenarios)
@@ -1299,12 +1303,12 @@ Comprehensive performance tracking system to monitor improvements and regression
 
 #### 5. Build System Integration
 - [ ] Add `zig build bench` target
-- [ ] Makefile targets:
-  - `make benchmark` - Run all benchmarks
-  - `make bench-micro` - Micro-benchmarks only  
-  - `make bench-utilities` - Utility benchmarks only
-  - `make bench-compare` - GNU comparison
-  - `make bench-report` - Generate HTML report
+- [ ] justfile targets:
+  - `just benchmark` - Run all benchmarks
+  - `just bench-micro` - Micro-benchmarks only
+  - `just bench-utilities` - Utility benchmarks only
+  - `just bench-compare` - GNU comparison
+  - `just bench-report` - Generate HTML report
 
 #### 6. Reporting and Visualization
 - [ ] JSON output format for automation
@@ -1331,48 +1335,36 @@ Comprehensive performance tracking system to monitor improvements and regression
 ## CI/CD Infrastructure (Implemented) ✓
 
 ### GitHub Actions Workflows
-- [x] **CI Workflow** (.github/workflows/ci.yml)
+- [x] **Test Workflow** (.github/workflows/test.yml)
   - [x] Cross-platform testing (Ubuntu, macOS)
+  - [x] Unit tests and integration tests
   - [x] Privileged test support with fakeroot
-  - [x] Code formatting validation
-  - [x] Build artifacts generation
-  - [x] Performance benchmarking (basic)
-  - [x] Code quality checks
-  - [x] Integration test suite
-  - [x] Windows build (experimental)
+
+- [x] **Integration Workflow** (.github/workflows/integration.yml)
+  - [x] Full integration test suite (48 utilities)
+  - [x] Cross-platform (Ubuntu, macOS)
 
 - [x] **Documentation Workflow** (.github/workflows/docs.yml)
-  - [x] Automatic documentation generation
   - [x] GitHub Pages deployment
-  - [x] API documentation from source
   - [x] Man page conversion to HTML
-
-- [x] **Security Workflow** (.github/workflows/security.yml)
-  - [x] Dependabot dependency scanning
-  - [x] CodeQL static analysis
-  - [x] Security policy enforcement
-  - [x] Vulnerability reporting
 
 - [x] **Release Workflow** (.github/workflows/release.yml)
   - [x] Automated release on tag push
-  - [x] Multi-platform binary generation
-  - [x] Checksum generation
-  - [x] GitHub Release creation
-  - [x] Asset upload automation
+  - [x] Multi-platform binary generation (4 targets)
+  - [x] GitHub Release creation with asset upload
+  - [x] Homebrew tap formula auto-update
+  - [x] Cachix binary cache push (explicit, not daemon)
+
+- [x] **Update Flake Workflow** (.github/workflows/update-flake.yml)
+  - [x] Weekly flake.lock update (Monday 6am UTC)
+  - [x] Cachix push across 4 platforms after update
+  - [x] Manual trigger via workflow_dispatch
 
 ### Supporting Infrastructure
-- [x] **Coverage Reporting**: Integrated with Codecov for test coverage tracking
+- [x] **Cachix Binary Cache**: Prebuilt binaries for darwin-arm64, darwin-amd64, linux-arm64, linux-amd64
+- [x] **Release Script**: Extracts notes from RELEASE_NOTES.md, updates GitHub release after CI
 - [x] **Privileged Testing**: Smart detection and fallback for privilege simulation
-- [x] **File Permission Fixes**: Unified file operations to prevent macOS SIGABRT
-- [x] **Error Reporting**: Consistent warning/error functions across utilities
 - [x] **CI Environment Detection**: Helper functions for CI-specific behavior
-
-### Key Improvements from CI/CD Implementation
-1. **Cross-platform Compatibility**: Fixed file permission operations for macOS
-2. **Test Reliability**: Privileged tests now skip gracefully when simulation unavailable
-3. **Code Quality**: Automated formatting and quality checks on every push
-4. **Security**: Continuous vulnerability scanning and static analysis
-5. **Release Process**: Fully automated multi-platform releases
 
 ## Modern Features Roadmap
 
