@@ -56,8 +56,8 @@
             zig
             pkgs.actionlint
             pkgs.bash
+            pkgs.cachix
             pkgs.coreutils
-            pkgs.gnumake
             pkgs.mandoc
           ];
         };
