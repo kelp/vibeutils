@@ -163,5 +163,7 @@ jobs:
         with:
           name: vibeutils
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
 
-      - run: nix build
+      - name: Build and push to Cachix
+        run: nix build --print-out-paths | cachix push vibeutils
