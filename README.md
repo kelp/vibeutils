@@ -91,15 +91,14 @@ cachix use vibeutils
 
 #### Persistent install (nix-darwin / home-manager)
 
-Add the Cachix cache and vibeutils flake input, then
-include the package in home-manager:
+Add vibeutils as a flake input. Do **not** use
+`inputs.nixpkgs.follows` — that changes the derivation
+hash and forces a build from source instead of pulling
+prebuilt binaries from Cachix.
 
 ```nix
 # flake.nix
-inputs.vibeutils = {
-  url = "github:kelp/vibeutils";
-  inputs.nixpkgs.follows = "nixpkgs";
-};
+inputs.vibeutils.url = "github:kelp/vibeutils";
 ```
 
 ```nix
@@ -107,8 +106,8 @@ inputs.vibeutils = {
 home.packages = [ inputs.vibeutils.packages.${pkgs.system}.default ];
 ```
 
-With `cachix use vibeutils` configured, this pulls
-prebuilt binaries instead of compiling.
+The vibeutils flake lock is updated weekly via CI, so
+its nixpkgs stays current.
 
 Nix installs use original names (no prefix) since Nix
 environments are isolated.
