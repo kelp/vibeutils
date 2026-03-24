@@ -28,8 +28,9 @@ automatically.
 
 ## Project Status
 
-**Pre-1.0**: 47 utilities implemented with comprehensive test
-coverage. Expect breaking changes as we refine the design.
+**Pre-1.0 (v0.8.0)**: 47 utilities with 100% POSIX flag
+coverage (288 MUST + 220 SHOULD). Expect breaking changes
+as we refine the design.
 
 ### Implemented Utilities
 
@@ -107,17 +108,17 @@ Find binaries in `zig-out/bin/`.
 ## Development
 
 ```bash
-make build          # Build all utilities
-make test           # Run unit tests
-make it             # Run integration tests
-make coverage       # Coverage report
-make fmt            # Format code
-make help           # All targets
+just build          # Build all utilities
+just test           # Run unit tests
+just it             # Run integration tests
+just coverage       # Coverage report
+just fmt            # Format code
+just                # List all recipes
 
 # Single utility
-make build UTIL=grep
-make test UTIL=grep
-make run UTIL=grep ARGS="-r TODO src/"
+just build-util grep
+just test-util grep
+just run grep -- -r TODO src/
 ```
 
 ### Testing
