@@ -1,5 +1,13 @@
 # Release Notes
 
+## 0.8.1 — 2026-03-27
+
+### Infrastructure
+- Fix Homebrew formula: switch to source archive URL with
+  pre-built ARM64 bottle
+- Build matrix uses native runners per platform instead of
+  cross-compiling on ubuntu-latest
+
 ## 0.8.0 — 2026-03-20
 
 Full POSIX flag compliance, massive bug sweep, and 7 new
