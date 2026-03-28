@@ -77,24 +77,49 @@ const ColorScheme = enum {
 - NO_COLOR standard compliance
 - Optional config file (~/.config/vibeutils/config.toml)
 
+### Spec Reference Hierarchy
+
+GNU coreutils is the primary behavioral reference.
+When a flag exists in GNU, match GNU semantics. For
+flags that exist only in macOS/OpenBSD (not GNU),
+follow that spec's semantics.
+
+Each utility has a flag matrix in
+`docs/specs/<util>-flags.md` that maps every flag
+across POSIX, macOS, OpenBSD, and GNU, with a tier:
+
+- **MUST** — present across multiple specs
+- **SHOULD** — useful flag from any single spec
+- **WONT** — explicitly declined
+- **KEEP** — vibeutils-specific additions
+
+The matrices are the authoritative source for which
+flags to implement and which spec governs behavior.
+
 ### Compatibility
-- Full GNU coreutils compatibility for scripts
+- GNU coreutils behavioral compatibility for scripts
+- macOS/OpenBSD-only flags added as SHOULD tier
 - Additional flags don't break POSIX compliance
 - Modern features are opt-in via flags or auto-detected
 - Graceful degradation on limited terminals
 
-### POSIX Compliance Decisions
+### Per-Utility Spec Exceptions
 
-#### test and [ Commands
-The `test` and `[` utilities follow strict POSIX compliance:
-- **No options are supported** - Per POSIX.1-2024, test shall not recognize `--` or any options
-- **All arguments are expressions** - Including `--help` and `--version`
-- **Behavior**: `test --help` returns 0 (true) as `--help` is a non-empty string
-- **Rationale**: Matches BSD/OpenBSD behavior for consistency and standards compliance
-- **Note**: This differs from GNU coreutils where `[` may honor `--help` as a special flag
+#### stat
+BSD and GNU `stat` have incompatible flag semantics
+(`-f`, `-t`, `-n`, `-q`, `-r`, `-s`, `-x` all differ).
+We follow the GNU interface.
 
-This decision ensures scripts using `test` or `[` work consistently across different
-Unix-like systems without surprises from special flag handling.
+#### test and [
+The `test` and `[` utilities follow strict POSIX
+compliance rather than GNU:
+- **No options** — per POSIX.1-2024, `test` does not
+  recognize `--` or any options
+- **All arguments are expressions** — including
+  `--help` and `--version`
+- `test --help` returns 0 (true) because `--help`
+  is a non-empty string
+- This differs from GNU where `[` may honor `--help`
 
 ## What We DON'T Do
 - Unnecessary animations
