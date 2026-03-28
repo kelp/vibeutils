@@ -126,13 +126,40 @@ engineering principles (correctness, simplicity,
 security) while adding modern UX features (colors,
 icons, progress bars).
 
-### GNU Coreutils as Behavioral Reference
+### Spec Reference Hierarchy
 
-When implementing flags or features, match GNU coreutils
-behavior. Check `docs/specs/<util>-gnu.txt` for GNU man
-page text. Do not invent custom behavior, emit warnings
-for unimplemented features, or silently degrade — either
-implement the full GNU behavior or don't add the flag.
+**GNU coreutils is the primary behavioral reference.**
+When a flag exists in GNU, match GNU semantics. For
+flags that exist only in macOS/OpenBSD (not GNU),
+follow that spec's semantics. For `stat`, we follow
+the GNU interface (BSD and GNU `stat` have incompatible
+flag semantics for `-f`, `-t`, and others).
+
+The per-utility flag matrices in `docs/specs/<util>-flags.md`
+are the authoritative source for which flags are
+implemented and at what priority:
+
+- **MUST** — flags present across multiple specs
+  (POSIX + at least one other). Must be implemented.
+- **SHOULD** — useful flags from any single spec.
+  Implement when practical.
+- **WONT** — explicitly declined. Do not implement.
+- **KEEP** — vibeutils-specific additions (e.g.,
+  `--git`, `--icons`). Not in any upstream spec.
+
+Each matrix has columns for POSIX, macOS, OpenBSD,
+GNU, and Ours. Check the matrix before implementing
+or auditing a flag — it resolves which spec to follow.
+
+**Why GNU?** Most users run on Linux (containers, CI,
+WSL). macOS power users install GNU coreutils via
+Homebrew. 95%+ of flags are semantically identical
+across specs; the matrices add macOS/OpenBSD-only
+flags as SHOULD to cover BSD users too.
+
+Do not invent custom behavior, emit warnings for
+unimplemented features, or silently degrade — either
+implement the full behavior or don't add the flag.
 
 ### Key Design Decisions
 

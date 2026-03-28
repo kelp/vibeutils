@@ -1274,24 +1274,64 @@ test "tr [c*] fill with other chars before repeat in SET2" {
 
 test "tr extra operand returns misuse" {
     // GNU: tr a b c -> "tr: extra operand 'c'" on stderr, exit 1
+    // Use runTrWithInput to avoid stdin hang (filter utility)
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("x");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
     var stderr_buffer = std.ArrayListUnmanaged(u8){};
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "a", "b", "c" };
-    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
-    // GNU uses exit 1, but vibeutils convention for usage errors is exit 2
-    // Either 1 or 2 is acceptable; the key is it must NOT be 0
+    const parsed = TrArgs{
+        .positionals = &.{ "a", "b", "c" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        stderr_buffer.writer(testing.allocator),
+    );
+    input_file.close();
+
+    // Must NOT be 0 — extra operands are an error
     try testing.expect(result != 0);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
 }
 
 test "tr multiple extra operands returns misuse" {
     // tr a b c d -> should error on 'c' (the first extra operand)
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("x");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
     var stderr_buffer = std.ArrayListUnmanaged(u8){};
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "a", "b", "c", "d" };
-    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const parsed = TrArgs{
+        .positionals = &.{ "a", "b", "c", "d" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        stderr_buffer.writer(testing.allocator),
+    );
+    input_file.close();
+
     try testing.expect(result != 0);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
 }
