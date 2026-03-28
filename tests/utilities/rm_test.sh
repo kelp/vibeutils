@@ -752,6 +752,63 @@ test_rm() {
         print_test_result "rm test cleanup verification" "FAIL" "$remaining_files test files remain"
     fi
 
+    # ============================================================
+    # F67: rm -W must not delete files (undelete, not delete)
+    # ============================================================
+    echo -e "${CYAN}Testing -W flag safety...${NC}"
+
+    # -W on an existing file must not remove it
+    local w_file=$(create_temp_file "precious data")
+    "$binary" -W "$w_file" 2>/dev/null
+    local w_exit=$?
+    if [[ -f "$w_file" ]]; then
+        print_test_result "rm -W preserves existing file" "PASS"
+    else
+        print_test_result "rm -W preserves existing file" "FAIL" "File was deleted when -W (undelete) was requested"
+    fi
+    if [[ $w_exit -ne 0 ]]; then
+        print_test_result "rm -W exits non-zero" "PASS"
+    else
+        print_test_result "rm -W exits non-zero" "FAIL" "Expected non-zero exit, got 0"
+    fi
+    rm -f "$w_file" 2>/dev/null
+
+    # -W on a nonexistent file should error
+    "$binary" -W "/tmp/rm_W_nonexistent_test_$$.txt" 2>/dev/null
+    local w_noent_exit=$?
+    if [[ $w_noent_exit -ne 0 ]]; then
+        print_test_result "rm -W nonexistent file exits non-zero" "PASS"
+    else
+        print_test_result "rm -W nonexistent file exits non-zero" "FAIL" "Expected non-zero exit, got 0"
+    fi
+
+    # -W on a directory must not remove it
+    local w_dir=$(create_temp_dir)
+    "$binary" -W "$w_dir" 2>/dev/null
+    local w_dir_exit=$?
+    if [[ -d "$w_dir" ]]; then
+        print_test_result "rm -W preserves existing directory" "PASS"
+    else
+        print_test_result "rm -W preserves existing directory" "FAIL" "Directory was deleted when -W (undelete) was requested"
+    fi
+    if [[ $w_dir_exit -ne 0 ]]; then
+        print_test_result "rm -W on directory exits non-zero" "PASS"
+    else
+        print_test_result "rm -W on directory exits non-zero" "FAIL" "Expected non-zero exit, got 0"
+    fi
+    rm -rf "$w_dir" 2>/dev/null
+
+    # -W stderr should contain an error message
+    local w_stderr_file=$(create_temp_file "for stderr test")
+    local w_stderr_output
+    w_stderr_output=$("$binary" -W "$w_stderr_file" 2>&1 1>/dev/null)
+    if [[ -n "$w_stderr_output" ]]; then
+        print_test_result "rm -W prints error to stderr" "PASS"
+    else
+        print_test_result "rm -W prints error to stderr" "FAIL" "No stderr output from -W"
+    fi
+    rm -f "$w_stderr_file" 2>/dev/null
+
     # Regression test: symlink to directory removed without -r
     local symlink_target_dir=$(create_temp_dir)
     create_temp_file "content" "$symlink_target_dir/file.txt"

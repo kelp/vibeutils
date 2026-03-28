@@ -146,6 +146,25 @@ test_tr() {
     # -ds requires two operands
     test_command_exit_code "tr -ds needs two sets" 2 bash -c "echo '' | '$binary' -ds abc 2>/dev/null"
 
+    # Extra operands should be rejected (GNU: exit 1 with "extra operand")
+    test_command_exit_code "tr extra operand rejected" 1 bash -c "echo test | '$binary' a b c 2>/dev/null"
+    # Verify stderr contains "extra operand" message
+    test_command_output "tr extra operand stderr msg" "extra operand" bash -c "'$binary' a b c 2>&1 >/dev/null </dev/null | head -1 | grep -o 'extra operand'"
+
+    echo -e "${CYAN}Testing [c*] repeat fill...${NC}"
+
+    # [c*] should fill SET2 to match SET1 length
+    test_command_output "tr [c*] fill basic" "xxx" bash -c "printf 'abc' | '$binary' 'abc' '[x*]'"
+
+    # [c*0] is the POSIX synonym for [c*]
+    test_command_output "tr [c*0] fill POSIX synonym" "xxx" bash -c "printf 'abc' | '$binary' 'abc' '[x*0]'"
+
+    # [c*] with character class in SET1
+    test_command_output "tr [c*] fill with class" "xxxxx" bash -c "printf 'HELLO' | '$binary' '[:upper:]' '[x*]'"
+
+    # [c*] with other chars before repeat
+    test_command_output "tr [c*] fill after literal" "yxxx" bash -c "printf 'abcd' | '$binary' 'abcd' 'y[x*]'"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}tr tests completed${NC}"

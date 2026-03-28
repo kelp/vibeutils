@@ -1149,6 +1149,78 @@ test "rm: -W still removes files normally" {
     try testing.expect(stat == error.FileNotFound);
 }
 
+test "rm: -W must not delete existing file" {
+    // F67: rm -W is supposed to attempt recovery (undelete), not deletion.
+    // On Linux where undelete is unsupported, it should error and leave
+    // the file intact. Deleting a file when asked to recover it is
+    // dangerous data loss.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("preserve_me.txt", .{});
+    file.close();
+
+    const file_path = try tmp.dir.realpathAlloc(testing.allocator, "preserve_me.txt");
+    defer testing.allocator.free(file_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-W", file_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // File MUST still exist -- -W should never delete
+    const stat = tmp.dir.statFile("preserve_me.txt");
+    try testing.expect(stat != error.FileNotFound);
+
+    // Exit code must be non-zero since undelete is not supported
+    try testing.expect(exit_code != 0);
+}
+
+test "rm: -W on nonexistent file returns error" {
+    // Attempting to undelete a file that doesn't exist should error.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-W", "/tmp/nonexistent_rm_W_test_99999" };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should fail with non-zero exit
+    try testing.expect(exit_code != 0);
+    // Stderr should contain an error message
+    try testing.expect(stderr_buffer.items.len > 0);
+}
+
+test "rm: -W on directory returns error without removing it" {
+    // -W on a directory should also not remove it.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makeDir("keep_this_dir");
+
+    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, "keep_this_dir");
+    defer testing.allocator.free(dir_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-W", dir_path };
+    const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Directory MUST still exist
+    const stat = tmp.dir.statFile("keep_this_dir");
+    try testing.expect(stat != error.FileNotFound);
+
+    // Exit code must be non-zero
+    try testing.expect(exit_code != 0);
+}
+
 // ============================================================
 // Tests for rm on symlinks to directories (POSIX compliance)
 // ============================================================
