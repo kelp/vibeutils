@@ -742,14 +742,20 @@ For each utility:
 #### 37. tail ✓
 - [x] Test: Default 10 lines
 - [x] Test: Custom line count (-n)
-- [ ] Test: Follow mode (-f) (deferred - complex feature)
+- [x] Test: Follow mode (-f)
+- [x] Test: Follow mode truncation detection
+- [x] Test: Follow retry file rotation (-F)
+- [x] Test: Follow retry nonexistent file (-F)
+- [x] Test: Follow + reverse mutual exclusion
 - [x] Test: Byte count (-c)
 - [x] Test: Multiple files
 - [x] Test: Reverse line reading
 - [x] Test: Zero-terminated lines (-z)
 - [x] Test: Files without final newline
 - [x] Implement: Efficient line reading from end
-- [ ] Implement: Follow mode with inotify (deferred - complex feature)
+- [x] Implement: Follow mode with kqueue (macOS) and inotify (Linux)
+- [x] Implement: Follow retry with file rotation detection (-F)
+- [ ] Implement: Multi-file follow (GNU tail follows all files)
 - [x] Implement: CircularLineBuffer for performance
 - [x] Implement: Zero-terminated line support
 - [x] Implement: Zig 0.15.1 Reader API migration

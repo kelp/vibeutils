@@ -1,5 +1,21 @@
 # Release Notes
 
+## Unreleased
+
+### Features
+- tail: implement -f (follow) using kqueue on macOS and
+  inotify on Linux for event-driven file watching
+- tail: implement -F (follow with retry) with file rotation
+  detection and wait-for-file on initially missing files
+- tail: truncation detection with stderr warning
+
+### Docs
+- Fix stale I/O examples: .writer() → .writerStreaming(),
+  4096 → 8192 buffers (drifted after issue #5 fix and
+  buffer standardization)
+- Add behavioral testing and GNU conformance rules to
+  CLAUDE.md
+
 ## 0.8.1 — 2026-03-27
 
 ### Infrastructure
