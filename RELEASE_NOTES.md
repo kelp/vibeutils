@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## 0.8.2 — 2026-03-28
 
 ### Features
 - tail: implement -f (follow) using kqueue on macOS and
