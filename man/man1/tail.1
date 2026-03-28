@@ -7,7 +7,7 @@
 .Nd display the last part of a file
 .Sh SYNOPSIS
 .Nm tail
-.Op Fl qvz
+.Op Fl fFqvz
 .Op Fl c Ar number
 .Op Fl n Ar number
 .Op Ar file ...
@@ -23,6 +23,14 @@ The options are as follows:
 Output the last
 .Ar number
 bytes instead of lines.
+.It Fl f , Fl Fl follow
+Output appended data as the file grows.
+Uses kqueue on macOS and inotify on Linux.
+.It Fl F
+Same as
+.Fl f ,
+but retry if the file is inaccessible or replaced.
+Useful for following log files that are rotated.
 .It Fl n Ar number
 Output the last
 .Ar number
@@ -77,6 +85,11 @@ Display the last 100 bytes of a file:
 .Bd -literal -offset indent
 $ tail -c 100 file.txt
 .Ed
+.Pp
+Follow a log file for new entries:
+.Bd -literal -offset indent
+$ tail -f /var/log/syslog
+.Ed
 .Sh SEE ALSO
 .Xr cat 1 ,
 .Xr head 1 ,
@@ -90,7 +103,7 @@ utility is compliant with the
 specification.
 .Pp
 The flags
-.Op Fl qvz
+.Op Fl fFqvz
 are extensions to that specification.
 .Sh AUTHORS
 .An "vibeutils implementation by Travis Cole"

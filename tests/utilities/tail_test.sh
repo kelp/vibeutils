@@ -136,8 +136,86 @@ test_tail() {
     # Zero-terminated with other flags
     test_command_exit_code "tail -z -q combination works" 0 "$binary" -z -q -n 2 "$nul_file" "$nul_file"
     
-    # Follow mode (-f/-F/--follow) not yet implemented; skip tests
-    echo -e "${CYAN}Skipping follow mode tests (not yet implemented)...${NC}"
+    echo -e "${CYAN}Testing follow mode (-f/-F)...${NC}"
+
+    # Test: tail -f sees appended data
+    local follow_file=$(create_temp_file "initial line")
+    local follow_output="$TEMP_DIR/follow_stdout"
+    "$binary" -f "$follow_file" > "$follow_output" &
+    local tail_pid=$!
+    sleep 1
+    echo "appended line" >> "$follow_file"
+    sleep 2
+    kill "$tail_pid" 2>/dev/null || true
+    wait "$tail_pid" 2>/dev/null || true
+    if grep -q "appended line" "$follow_output"; then
+        print_test_result "tail -f sees appended data" "PASS"
+    else
+        print_test_result "tail -f sees appended data" "FAIL" "Expected 'appended line' in output"
+    fi
+
+    # Test: tail -f detects truncation
+    local trunc_file=$(create_temp_file "this is longer original content for truncation test")
+    local trunc_stdout="$TEMP_DIR/trunc_stdout"
+    local trunc_stderr="$TEMP_DIR/trunc_stderr"
+    "$binary" -f "$trunc_file" > "$trunc_stdout" 2>"$trunc_stderr" &
+    local trunc_pid=$!
+    sleep 1
+    : > "$trunc_file"
+    echo "short" >> "$trunc_file"
+    sleep 2
+    kill "$trunc_pid" 2>/dev/null || true
+    wait "$trunc_pid" 2>/dev/null || true
+    if grep -q "file truncated" "$trunc_stderr"; then
+        print_test_result "tail -f detects truncation" "PASS"
+    else
+        print_test_result "tail -f detects truncation" "FAIL" "Expected 'file truncated' on stderr"
+    fi
+
+    # Test: tail -F follows rotated file
+    local rotate_file="$TEMP_DIR/rotate_test.log"
+    echo "original content" > "$rotate_file"
+    local rotate_stdout="$TEMP_DIR/rotate_stdout"
+    local rotate_stderr="$TEMP_DIR/rotate_stderr"
+    "$binary" -F "$rotate_file" > "$rotate_stdout" 2>"$rotate_stderr" &
+    local rotate_pid=$!
+    sleep 2
+    mv "$rotate_file" "${rotate_file}.1"
+    sleep 1
+    echo "rotated content" > "$rotate_file"
+    sleep 3
+    kill "$rotate_pid" 2>/dev/null || true
+    wait "$rotate_pid" 2>/dev/null || true
+    if grep -q "rotated content" "$rotate_stdout" && grep -q "file has been replaced" "$rotate_stderr"; then
+        print_test_result "tail -F follows rotated file" "PASS"
+    else
+        print_test_result "tail -F follows rotated file" "FAIL" "Expected rotated content in stdout and replacement message on stderr"
+    fi
+
+    # Test: tail -F waits for nonexistent file to appear
+    local missing_file="$TEMP_DIR/missing_file.log"
+    local missing_stdout="$TEMP_DIR/missing_stdout"
+    local missing_stderr="$TEMP_DIR/missing_stderr"
+    "$binary" -F "$missing_file" > "$missing_stdout" 2>"$missing_stderr" &
+    local missing_pid=$!
+    sleep 2
+    echo "file appeared" > "$missing_file"
+    sleep 3
+    kill "$missing_pid" 2>/dev/null || true
+    wait "$missing_pid" 2>/dev/null || true
+    if grep -q "file appeared" "$missing_stdout" && grep -q "waiting for it to appear" "$missing_stderr"; then
+        print_test_result "tail -F waits for nonexistent file" "PASS"
+    else
+        print_test_result "tail -F waits for nonexistent file" "FAIL" "Expected 'file appeared' in stdout and 'waiting' on stderr"
+    fi
+
+    # Test: tail -f -r is an error (mutually exclusive)
+    local mutual_file=$(create_temp_file "test")
+    if "$binary" -f -r "$mutual_file" 2>/dev/null; then
+        print_test_result "tail -f -r mutual exclusion" "FAIL" "Expected non-zero exit"
+    else
+        print_test_result "tail -f -r mutual exclusion" "PASS"
+    fi
 
     echo -e "${CYAN}Testing error conditions...${NC}"
     
