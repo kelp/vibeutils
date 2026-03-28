@@ -450,6 +450,25 @@ fn flushWriter(writer: anytype) void {
     }
 }
 
+/// Read new data from file starting at last_pos, write to stdout.
+/// Returns the new file position after reading.
+fn readNewData(file: std.fs.File, last_pos: u64, stdout_writer: anytype) !u64 {
+    const new_end = try file.getEndPos();
+    if (new_end > last_pos) {
+        try file.seekTo(last_pos);
+        var buf: [BUFFER_SIZE]u8 = undefined;
+        while (true) {
+            const n = try file.read(&buf);
+            if (n == 0) break;
+            try stdout_writer.writeAll(buf[0..n]);
+        }
+        const pos = try file.getEndPos();
+        flushWriter(stdout_writer);
+        return pos;
+    }
+    return last_pos;
+}
+
 /// Get the inode number for a file at the given path.
 /// Used by follow mode to detect file rotation.
 fn getInode(path: []const u8) !u64 {
@@ -461,11 +480,13 @@ fn getInode(path: []const u8) !u64 {
 /// Uses kqueue on macOS/BSD and inotify on Linux.
 /// This function runs an infinite loop and only returns on error.
 fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: TailOptions) !void {
+    var waited_for_file = false;
     var file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
         if (options.follow_retry and err == error.FileNotFound) {
             // -F: wait for file to appear
             common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: No such file or directory; waiting for it to appear", .{path});
             flushWriter(stderr_writer);
+            waited_for_file = true;
             while (true) {
                 std.Thread.sleep(std.time.ns_per_s);
                 break :blk std.fs.cwd().openFile(path, .{}) catch continue;
@@ -475,7 +496,9 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
         }
     };
     errdefer file.close();
-    var last_pos = try file.getEndPos();
+    // If we waited for the file to appear, read from the start
+    // (processFile never ran). Otherwise resume from end.
+    var last_pos: u64 = if (waited_for_file) 0 else try file.getEndPos();
     var last_inode = try getInode(path);
 
     if (comptime builtin.os.tag == .linux) {
@@ -486,6 +509,9 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
             path,
             std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF,
         );
+
+        // Read any data written before the watch was registered
+        last_pos = try readNewData(file, last_pos, stdout_writer);
 
         while (true) {
             // Block until inotify event
@@ -536,18 +562,7 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
                 last_pos = 0;
             }
 
-            // Read and print new data
-            if (new_end > last_pos) {
-                try file.seekTo(last_pos);
-                var buf: [BUFFER_SIZE]u8 = undefined;
-                while (true) {
-                    const n = try file.read(&buf);
-                    if (n == 0) break;
-                    try stdout_writer.writeAll(buf[0..n]);
-                }
-                last_pos = try file.getEndPos();
-                flushWriter(stdout_writer);
-            }
+            last_pos = try readNewData(file, last_pos, stdout_writer);
         }
     } else {
         // macOS/BSD: kqueue
@@ -564,6 +579,9 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
         }};
         // Register the watch
         _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+
+        // Read any data written before the watch was registered
+        last_pos = try readNewData(file, last_pos, stdout_writer);
 
         while (true) {
             // Wait for events (blocks)
@@ -611,18 +629,7 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
                 last_pos = 0;
             }
 
-            // Read and print new data
-            if (new_end > last_pos) {
-                try file.seekTo(last_pos);
-                var buf: [BUFFER_SIZE]u8 = undefined;
-                while (true) {
-                    const n = try file.read(&buf);
-                    if (n == 0) break;
-                    try stdout_writer.writeAll(buf[0..n]);
-                }
-                last_pos = try file.getEndPos();
-                flushWriter(stdout_writer);
-            }
+            last_pos = try readNewData(file, last_pos, stdout_writer);
         }
     }
 }
