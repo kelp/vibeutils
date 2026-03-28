@@ -6,8 +6,8 @@ This document corrects Claude's outdated training data (pre-0.11.0) with current
 
 | What Claude Thinks | Reality in 0.15.x | Quick Fix |
 |-------------------|-------------------|-----------|
-| `std.io.getStdOut().writer()` | REMOVED - Writergate happened | Use buffered writer pattern (see below) |
-| `std.io.getStdErr().writer()` | REMOVED - Writergate happened | Use buffered writer pattern (see below) |
+| `std.io.getStdOut().writer()` | REMOVED - Writergate happened | Use `.writerStreaming(&buf)` pattern (see below) |
+| `std.io.getStdErr().writer()` | REMOVED - Writergate happened | Use `.writerStreaming(&buf)` pattern (see below) |
 | `usingnamespace` keyword exists | REMOVED completely from language | Use zero-bit fields + `@fieldParentPtr` for mixins |
 | `async`/`await` keywords exist | REMOVED from language | Will be library features in future |
 | `std.ArrayList(T).init(allocator)` | Now unmanaged by default | Use `std.ArrayListUnmanaged(T){}`, pass allocator to methods |
@@ -127,9 +127,9 @@ This document corrects Claude's outdated training data (pre-0.11.0) with current
 const stdout = std.io.getStdOut().writer();
 try stdout.print("Hello, {}\n", .{world});
 
-// ✅ ZIG 0.15.x (RIGHT)  
-var stdout_buffer: [4096]u8 = undefined;
-var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+// ✅ ZIG 0.15.x (RIGHT)
+var stdout_buffer: [8192]u8 = undefined;
+var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
 const stdout = &stdout_writer.interface;
 defer stdout.flush() catch {};  // DON'T FORGET TO FLUSH!
 try stdout.print("Hello, {s}\n", .{world});
@@ -441,8 +441,9 @@ test "comptime var" {
 ## 🔄 Migration Strategies
 
 ### Writergate Migration
-1. Add buffer array before writer creation
-2. Create writer with `.writer(&buffer)`
+1. Add `[8192]u8` buffer array before writer creation
+2. Create writer with `.writerStreaming(&buffer)` for
+   stdout/stderr (NOT `.writer()` — see issue #5)
 3. Use `&writer.interface` to get `*std.Io.Writer`
 4. Always `defer flush()` or data may be lost
 

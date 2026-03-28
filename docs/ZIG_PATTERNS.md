@@ -46,15 +46,16 @@ while (args_iter.next()) |arg| {
 ### Standard Streams (Zig 0.15.x)
 ```zig
 // NEW: Explicit buffers required
-var stdout_buffer: [4096]u8 = undefined;
-var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+// Use writerStreaming() for stdout/stderr (NOT writer() — see issue #5)
+var stdout_buffer: [8192]u8 = undefined;
+var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
 const stdout = &stdout_writer.interface;
 
-var stderr_buffer: [4096]u8 = undefined;
-var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+var stderr_buffer: [8192]u8 = undefined;
+var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
 const stderr = &stderr_writer.interface;
 
-var stdin_buffer: [4096]u8 = undefined;
+var stdin_buffer: [8192]u8 = undefined;
 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
 const stdin = &stdin_reader.interface;
 
@@ -247,7 +248,7 @@ std.process.exit(1); // Non-zero for error
 fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     // Note: For simple error printing, can still use unbuffered
     var stderr_buffer: [1024]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
     const stderr = &stderr_writer.interface;
     stderr.print(fmt ++ "\n", args) catch {};
     stderr.flush() catch {};

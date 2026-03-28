@@ -76,6 +76,10 @@ just test                # Run tests
 just coverage            # Generate coverage report
 just fmt                 # Format code
 
+# Integration Tests
+just it                      # Run all integration tests
+just it-util tail            # Run integration tests for one utility
+
 # Single Utility Development
 just build-util chown        # Build only chown
 just test-util chown         # Test only chown (smoke test + binary check)
@@ -85,7 +89,6 @@ just fuzz wc                 # Fuzz a specific utility (Linux only)
 # Zig-specific
 zig build test --summary all     # Test summary
 zig build -Doptimize=ReleaseFast # Optimized build
-zig test src/echo.zig            # Test single file (requires module setup)
 ```
 
 
@@ -123,6 +126,14 @@ engineering principles (correctness, simplicity,
 security) while adding modern UX features (colors,
 icons, progress bars).
 
+### GNU Coreutils as Behavioral Reference
+
+When implementing flags or features, match GNU coreutils
+behavior. Check `docs/specs/<util>-gnu.txt` for GNU man
+page text. Do not invent custom behavior, emit warnings
+for unimplemented features, or silently degrade — either
+implement the full GNU behavior or don't add the flag.
+
 ### Key Design Decisions
 
 1. **Common Library Pattern**: All utilities import a shared `common` module that provides:
@@ -153,8 +164,9 @@ The styling system (`src/common/style.zig`) automatically detects:
 **Color must be gated on `isTty()`**, not just
 `ColorMode.detect()`. The detect function only checks env
 vars (`TERM`, `NO_COLOR`). Without an isatty check, ANSI
-codes leak into pipes, files, and test buffers. Reference
-pattern: `du.zig` line ~552.
+codes leak into pipes, files, and test buffers. Grep for
+`isTty()` or `isatty(` in `src/df.zig` or `src/ls/` for
+reference patterns.
 
 ### Adding a New Utility
 - [ ] Create `src/<utility>.zig` with embedded tests
@@ -235,6 +247,15 @@ Filter utilities (`tee`, `cat`, `sort`, `uniq`, etc.) that read from stdin will 
 
 See `docs/TESTING_STRATEGY.md` for the complete pre-implementation checklist and patterns.
 
+### Tests Must Verify Behavior, Not Just Parsing
+
+When a flag is implemented, tests must verify the flag
+changes program behavior — not just that it parses. A
+test that checks `parsed.follow == true` without
+verifying the program actually follows the file is not
+a real test. Integration tests in `tests/utilities/`
+must cover behavioral verification for every flag.
+
 ### Standard Tests
 - Use `testing.allocator` to detect memory leaks
 - Tests embedded in same file as implementation
@@ -277,6 +298,11 @@ to ArrayList, args iterators, and takeDelimiterExclusive.
 
 ## Common Pitfalls You WILL Hit
 
+- **stdout/stderr must use `.writerStreaming()`**: NOT
+  `.writer()`. File.writer() uses pwritev at offset 0
+  which ignores O_APPEND on macOS, breaking `>>` shell
+  redirects. See issue #5. A lint check in
+  `src/common/lib.zig` enforces this.
 - **No `std.posix.setenv`/`unsetenv`**: Use C extern
   functions: `extern fn setenv(name: [*:0]const u8,
   value: [*:0]const u8, overwrite: c_int) c_int;` and
@@ -331,11 +357,11 @@ Due to "Writergate", all I/O uses explicit buffers. Utilities follow this patter
 
 ```zig
 pub fn main() !void {
-    var stdout_buffer: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
-    
+
     // Similar for stderr
 }
 
@@ -372,29 +398,3 @@ pub fn runUtil(allocator: Allocator, args: []const []const u8,
 - **OrbStack**: `orb -m ubuntu zig build test` (ubuntu, debian, arch available)
 - **Docker**: `just test-linux`, `just docker-shell`
 
-## TDD Pipeline Configuration
-
-### Test Command
-`zig build test --summary all`
-
-### Source Layout
-- Source: `src/{module}.zig`
-- Tests: `src/{module}.zig` (embedded in same file)
-
-### Build Integration
-- After approval: update `build.zig` if adding new utility
-- Full test: `zig build test --summary all`
-- Lint: `just fmt`
-
-### Verify Gate Checks
-- Tests pass: `zig build test --summary all`
-- No stubs: source file > 30 lines
-- Lint clean: `just fmt`
-- Language checks: `grep "usingnamespace\|std.io.getStdOut" src/{module}.zig` (should find nothing)
-
-### Language-Specific Agent Context
-Read `docs/ZIG_BREAKING_CHANGES.md` before writing any Zig
-code. Use `zig-patterns` skill for correct 0.15.x patterns.
-Tests use `testing.allocator` (privileged tests use
-`privilege_test.TestArena`). I/O uses explicit buffers per
-Writergate pattern.
