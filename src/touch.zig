@@ -1060,6 +1060,83 @@ test "touch: -A flag stderr mentions unimplemented or unsupported" {
     try testing.expect(has_unimplemented or has_unsupported);
 }
 
+// ==================== F53: -d timezone handling ====================
+
+test "touch: parseIso8601 Z suffix should be treated as UTC" {
+    // "2024-01-15T00:00:00Z" means UTC midnight
+    // GNU touch produces epoch 1705276800 for this input
+    const result = try parseIso8601("2024-01-15T00:00:00Z");
+    // 2024-01-15 00:00:00 UTC = 1705276800
+    try testing.expectEqual(@as(i64, 1705276800), result.sec);
+}
+
+test "touch: parseIso8601 positive timezone offset +05:00" {
+    // "2024-01-15T00:00:00+05:00" means midnight in UTC+5
+    // UTC equivalent = 2024-01-14T19:00:00Z = 1705276800 - 18000 = 1705258800
+    const result = try parseIso8601("2024-01-15T00:00:00+05:00");
+    try testing.expectEqual(@as(i64, 1705258800), result.sec);
+}
+
+test "touch: parseIso8601 negative timezone offset -05:00" {
+    // "2024-01-15T00:00:00-05:00" means midnight in UTC-5
+    // UTC equivalent = 2024-01-15T05:00:00Z = 1705276800 + 18000 = 1705294800
+    const result = try parseIso8601("2024-01-15T00:00:00-05:00");
+    try testing.expectEqual(@as(i64, 1705294800), result.sec);
+}
+
+test "touch: parseIso8601 half-hour timezone offset +05:30" {
+    // "2024-01-15T00:00:00+05:30" means midnight in UTC+5:30
+    // UTC equivalent = 2024-01-14T18:30:00Z = 1705276800 - 19800 = 1705257000
+    const result = try parseIso8601("2024-01-15T00:00:00+05:30");
+    try testing.expectEqual(@as(i64, 1705257000), result.sec);
+}
+
+test "touch: -d with Z suffix sets correct UTC timestamp on file" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/utc_z.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-d", "2024-01-15T00:00:00Z", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify mtime is 2024-01-15 00:00:00 UTC = 1705276800
+    const stat = try common.file.FileInfo.stat(test_file);
+    const expected_ns: i128 = 1705276800 * std.time.ns_per_s;
+    try testing.expectEqual(expected_ns, stat.mtime);
+}
+
+test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var path_buf: [fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/tz_plus5.txt", .{tmp_path});
+    defer testing.allocator.free(test_file);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // midnight at +05:00 = 2024-01-14T19:00:00 UTC = epoch 1705258800
+    const args = [_][]const u8{ "-d", "2024-01-15T00:00:00+05:00", test_file };
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const stat = try common.file.FileInfo.stat(test_file);
+    const expected_ns: i128 = 1705258800 * std.time.ns_per_s;
+    try testing.expectEqual(expected_ns, stat.mtime);
+}
+
 test "touch: -A flag should not modify file timestamps" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();

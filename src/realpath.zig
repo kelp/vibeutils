@@ -663,3 +663,54 @@ test "realpath: canonicalize-missing deeper path .. past root returns root" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_buffer.items);
 }
+
+test "realpath: default mode allows missing last component (GNU -E semantics)" {
+    // GNU realpath default is -E: all-but-last component must exist.
+    // `realpath /tmp/nonexistent_xyz` should exit 0 and print the path.
+    // Our implementation uses -e semantics (all must exist) so this fails.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/tmp/nonexistent_vibeutils_test_xyz"};
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // GNU default: exit 0 because /tmp exists (only last component missing)
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "nonexistent_vibeutils_test_xyz") != null);
+}
+
+test "realpath: default mode fails when intermediate component missing" {
+    // Even with GNU -E semantics, missing intermediate dirs cause failure.
+    // `realpath /nonexistent_dir/file` should exit 1.
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/nonexistent_vibeutils_dir/somefile"};
+    const result = try runRealpath(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // Both -e and -E fail when intermediate components don't exist
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(stderr_buffer.items.len > 0);
+}
+
+test "realpath: -e flag fails when last component missing (stricter than default)" {
+    // With -e, ALL components must exist, including the last one.
+    // `realpath -e /tmp/nonexistent_xyz` should exit 1.
+    // This distinguishes -e from the default (-E) behavior.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-e", "/tmp/nonexistent_vibeutils_test_xyz" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // -e requires ALL components to exist, so this must fail
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
+    try testing.expect(stderr_buffer.items.len > 0);
+}

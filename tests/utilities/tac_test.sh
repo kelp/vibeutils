@@ -56,10 +56,23 @@ test_tac() {
 
     echo -e "${CYAN}Testing --before flag...${NC}"
 
-    # Before mode moves separator from trailing to leading
-    local before_input=$'line1\nline2\nline3\n'
-    local before_expected=$'\nline3\nline2\nline1'
+    # Before mode: GNU splits records with separator *before* each record.
+    # GNU: printf 'line1\nline2\nline3\n' | tac -b → "\n\nline3\nline2line1"
+    # Records: "line1", "\nline2", "\nline3", "\n" → reversed: "\n", "\nline3", "\nline2", "line1"
+    local before_expected=$'\n\nline3\nline2line1'
     test_command_output_exact "tac -b basic" "$before_expected" bash -c "printf 'line1\nline2\nline3\n' | '$binary' -b"
+
+    # Before mode with single-byte custom separator
+    # GNU: printf 'a:b:c:' | tac -s: -b → "::c:ba"
+    test_command_output_exact "tac -b -s colon" "::c:ba" bash -c "printf 'a:b:c:' | '$binary' -s ':' -b"
+
+    # Before mode with multi-byte separator
+    # GNU: printf 'a<>b<>c<>' | tac -s '<>' -b → "<><>c<>ba"
+    test_command_output_exact "tac -b -s multi-byte" "<><>c<>ba" bash -c "printf 'a<>b<>c<>' | '$binary' -s '<>' -b"
+
+    # Before mode with no trailing separator
+    # GNU: printf 'a:b:c' | tac -s: -b → ":c:ba"
+    test_command_output_exact "tac -b -s colon no trailing" ":c:ba" bash -c "printf 'a:b:c' | '$binary' -s ':' -b"
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 

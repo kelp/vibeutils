@@ -433,6 +433,10 @@ test "tac with multi-byte separator" {
 }
 
 test "tac with --before flag" {
+    // GNU: printf 'line1\nline2\nline3\n' | tac -b → "\n\nline3\nline2line1"
+    // With -b, records are delimited by a preceding separator:
+    //   "line1", "\nline2", "\nline3", "\n" (empty trailing)
+    // Reversed: "\n", "\nline3", "\nline2", "line1"
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -449,8 +453,7 @@ test "tac with --before flag" {
     const args = [_][]const u8{ "-b", test_path };
     const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    // With --before, separator moves from trailing to leading
-    try testing.expectEqualStrings("\nline3\nline2\nline1", stdout_buffer.items);
+    try testing.expectEqualStrings("\n\nline3\nline2line1", stdout_buffer.items);
 }
 
 test "tac with multiple files" {
@@ -507,11 +510,15 @@ test "tac reverseByByteSeparator no trailing separator" {
 }
 
 test "tac reverseByByteSeparator with before" {
+    // GNU: printf 'a\nb\nc\n' | tac -b → "\n\nc\nba"
+    // With -b, records are delimited by a *preceding* separator:
+    //   "a", "\nb", "\nc", "\n" (empty trailing)
+    // Reversed: "\n", "\nc", "\nb", "a" → "\n\nc\nba"
     var buffer = std.ArrayListUnmanaged(u8){};
     defer buffer.deinit(testing.allocator);
 
     try reverseByByteSeparator(testing.allocator, "a\nb\nc\n", '\n', true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("\nc\nb\na", buffer.items);
+    try testing.expectEqualStrings("\n\nc\nba", buffer.items);
 }
 
 test "tac reverseByStringSeparator basic" {
@@ -520,4 +527,91 @@ test "tac reverseByStringSeparator basic" {
 
     try reverseByStringSeparator(testing.allocator, "x<>y<>z<>", "<>", false, buffer.writer(testing.allocator));
     try testing.expectEqualStrings("z<>y<>x<>", buffer.items);
+}
+
+test "tac reverseByStringSeparator with before" {
+    // GNU: printf 'a<>b<>c<>' | tac -s '<>' -b → "<><>c<>ba"
+    // With -b, records are delimited by a preceding separator:
+    //   "a", "<>b", "<>c", "<>" (empty trailing)
+    // Reversed: "<>", "<>c", "<>b", "a" → "<><>c<>ba"
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    try reverseByStringSeparator(testing.allocator, "a<>b<>c<>", "<>", true, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("<><>c<>ba", buffer.items);
+}
+
+test "tac -b with single-byte custom separator" {
+    // GNU: printf 'a:b:c:' | tac -s: -b → "::c:ba"
+    // With -b, records delimited by preceding separator:
+    //   "a", ":b", ":c", ":" (empty trailing)
+    // Reversed: ":", ":c", ":b", "a" → "::c:ba"
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("a:b:c:");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-s", ":", "-b", test_path };
+    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("::c:ba", stdout_buffer.items);
+}
+
+test "tac -b with multi-byte separator" {
+    // GNU: printf 'a<>b<>c<>' | tac -s '<>' -b → "<><>c<>ba"
+    // This tests the full runTac path with multi-byte separator + before flag.
+    // Bug F57: reverseByStringSeparator passes sep_byte=0, so -b is inert.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    try test_file.writeAll("a<>b<>c<>");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-s", "<>", "-b", test_path };
+    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("<><>c<>ba", stdout_buffer.items);
+}
+
+test "tac -b with single-byte separator no trailing separator" {
+    // GNU: printf 'a:b:c' | tac -s: -b → ":c:ba"
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    try reverseByByteSeparator(testing.allocator, "a:b:c", ':', true, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings(":c:ba", buffer.items);
+}
+
+test "tac -b with multi-byte separator no trailing separator" {
+    // GNU: printf 'a<>b<>c' | tac -s '<>' -b | od -c shows: "<>c<>ba"
+    // Records: "a", "<>b", "<>c" (no trailing) → reversed: "<>c", "<>b", "a" → "<>c<>ba"
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    try reverseByStringSeparator(testing.allocator, "a<>b<>c", "<>", true, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("<>c<>ba", buffer.items);
+}
+
+test "tac reverseByByteSeparator with before single-byte custom sep" {
+    // GNU: printf 'a:b:c:' | tac -s: -b → "::c:ba"
+    var buffer = std.ArrayListUnmanaged(u8){};
+    defer buffer.deinit(testing.allocator);
+
+    try reverseByByteSeparator(testing.allocator, "a:b:c:", ':', true, buffer.writer(testing.allocator));
+    try testing.expectEqualStrings("::c:ba", buffer.items);
 }

@@ -697,3 +697,153 @@ test "readlink -m single component dotdot returns root" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("/\n", stdout_buf.items);
 }
+
+// ============================================================================
+// F44/F45: GNU compatibility tests for -f vs -e
+// These tests document correct GNU behavior. Currently FAILING because
+// our -f behaves like -e (requires all components to exist).
+// ============================================================================
+
+test "readlink -f nonexistent last component exits 0 (GNU compat)" {
+    // GNU: readlink -f /existing_dir/nonexistent_file -> prints path, exits 0
+    // All components except the last must exist. The last may be missing.
+    // Our implementation incorrectly exits 1 because -f maps to .strict
+    // which uses realpathAlloc (requires everything to exist).
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/no_such_file.txt", .{dir_path});
+    defer testing.allocator.free(nonexistent_path);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/no_such_file.txt\n", .{dir_path});
+    defer testing.allocator.free(expected);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", nonexistent_path };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    // GNU exits 0 when parent exists but last component is missing
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "readlink -f dangling symlink exits 0 (GNU compat)" {
+    // GNU: readlink -f <dangling_symlink> -> resolves parent, prints
+    // canonical path to where target would be, exits 0.
+    // Our implementation exits 1 because realpathAlloc fails on
+    // dangling symlinks.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a dangling symlink with a relative target
+    try tmp_dir.dir.symLink("nonexistent_target", "dangling.txt", .{});
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dangling.txt", .{dir_path});
+    defer testing.allocator.free(link_path);
+    // GNU resolves the symlink target relative to the symlink's directory
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent_target\n", .{dir_path});
+    defer testing.allocator.free(expected);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", link_path };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    // GNU exits 0 for dangling symlinks with -f
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "readlink -f dangling symlink with absolute target exits 0 (GNU compat)" {
+    // Dangling symlink pointing to absolute path where parent exists
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    // Symlink target is an absolute path to a nonexistent file in tmp_dir
+    const abs_target = try std.fmt.allocPrint(testing.allocator, "{s}/abs_nonexistent", .{dir_path});
+    defer testing.allocator.free(abs_target);
+    try tmp_dir.dir.symLink(abs_target, "dangling_abs.txt", .{});
+
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dangling_abs.txt", .{dir_path});
+    defer testing.allocator.free(link_path);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/abs_nonexistent\n", .{dir_path});
+    defer testing.allocator.free(expected);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", link_path };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "readlink -f intermediate missing should fail" {
+    // When an intermediate directory does not exist, -f should fail
+    // (same as GNU behavior). This is a boundary test.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "/tmp/no_such_dir_vibeutils/no_such_file" };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    // Both GNU and our implementation should fail here
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_buf.items);
+}
+
+test "readlink -e nonexistent last component should fail" {
+    // -e requires ALL components to exist, including the last one.
+    // This is the key difference from -f.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+    const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/no_such_file.txt", .{dir_path});
+    defer testing.allocator.free(nonexistent_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-e", nonexistent_path };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    // -e should fail when last component is missing
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_buf.items);
+}
+
+test "readlink -f vs -e diverge on missing last component" {
+    // -f should succeed (exit 0) and -e should fail (exit 1) when
+    // the parent directory exists but the last component does not.
+    // This test demonstrates the semantic difference between the two flags.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+    const missing_path = try std.fmt.allocPrint(testing.allocator, "{s}/ghost_file", .{dir_path});
+    defer testing.allocator.free(missing_path);
+
+    // Test -f: should succeed
+    var stdout_f = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_f.deinit(testing.allocator);
+    const args_f = [_][]const u8{ "-f", missing_path };
+    const result_f = try runReadlink(testing.allocator, &args_f, stdout_f.writer(testing.allocator), common.null_writer);
+
+    // Test -e: should fail
+    var stdout_e = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_e.deinit(testing.allocator);
+    const args_e = [_][]const u8{ "-e", missing_path };
+    const result_e = try runReadlink(testing.allocator, &args_e, stdout_e.writer(testing.allocator), common.null_writer);
+
+    // -f exits 0, -e exits 1: they must diverge
+    try testing.expectEqual(@as(u8, 0), result_f);
+    try testing.expectEqual(@as(u8, 1), result_e);
+}

@@ -907,3 +907,69 @@ test "env runEnv: -v verbose with -u" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unsetenv NONEXISTENT_VAR_TEST") != null);
 }
+
+// ============================================================================
+// F8: bare `-` should clear environment (implies -i)
+// ============================================================================
+
+test "env parseArgs: bare dash implies -i" {
+    // Per GNU coreutils: "A mere - implies -i"
+    const options = try parseArgs(testing.allocator, &.{"-"});
+    defer options.deinit(testing.allocator);
+    try testing.expect(options.ignore_environment);
+}
+
+test "env parseArgs: bare dash with assignments and command" {
+    // `env - FOO=bar echo hello` should parse like `env -i FOO=bar echo hello`
+    const options = try parseArgs(testing.allocator, &.{ "-", "FOO=bar", "echo", "hello" });
+    defer options.deinit(testing.allocator);
+    try testing.expect(options.ignore_environment);
+    try testing.expectEqual(@as(usize, 1), options.assignments.len);
+    try testing.expectEqualStrings("FOO", options.assignments[0].name);
+    try testing.expectEqualStrings("bar", options.assignments[0].value);
+    try testing.expectEqual(@as(usize, 2), options.command.len);
+    try testing.expectEqualStrings("echo", options.command[0]);
+}
+
+test "env runEnv: bare dash clears environment" {
+    // `env -` with no command should print empty environment
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{"-"}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
+}
+
+test "env runEnv: bare dash with assignment prints only that var" {
+    // `env - FOO=bar` should print only FOO=bar (clean environment)
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{ "-", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("FOO=bar\n", stdout_buffer.items);
+}
+
+// ============================================================================
+// F9: -S (split-string) should split and process arguments
+// ============================================================================
+
+test "env runEnv: -S splits string into assignment" {
+    // `env -i -S "FOO=bar"` should process FOO=bar as an assignment
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = runEnv(testing.allocator, &.{ "-i", "-S", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Should actually set FOO=bar in the environment, not just warn
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar\n") != null);
+    // Should NOT print a stub warning
+    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+}

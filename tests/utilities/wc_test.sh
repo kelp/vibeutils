@@ -87,9 +87,9 @@ test_wc() {
     test_command_output "wc -w -c combination" "       6      20 $multiline_file" "$binary" -w -c "$multiline_file"
     test_command_output "wc -l -w -c combination" "       2       6      20 $multiline_file" "$binary" -l -w -c "$multiline_file"
 
-    # Test -m and -c together (mutually exclusive, last flag wins)
-    test_command_output "wc -c -m combination" "      23 $unicode_file" "$binary" -c -m "$unicode_file"  # -m wins (last)
-    test_command_output "wc -m -c combination" "      28 $unicode_file" "$binary" -m -c "$unicode_file"  # -c wins (last)
+    # Test -m and -c together (GNU: both columns printed, chars before bytes)
+    test_command_output "wc -c -m combination" "      23      28 $unicode_file" "$binary" -c -m "$unicode_file"
+    test_command_output "wc -m -c combination" "      23      28 $unicode_file" "$binary" -m -c "$unicode_file"
 
     # Test with -L combinations
     test_command_output "wc -l -L combination" "       2       6 $multiline_file" "$binary" -l -L "$multiline_file"
@@ -363,17 +363,93 @@ test_wc() {
     local zero_file=$(create_temp_file "")
     test_command_output "wc zero file all flags" "       0       0       0       0 $zero_file" "$binary" -l -w -c -L "$zero_file"
 
-    # Test -c and -m mutual exclusion behavior (GNU: last flag wins)
+    # Test -c and -m NOT mutually exclusive (GNU: both columns shown)
+    # GNU wc always prints both chars and bytes when both -c and -m given,
+    # with chars column before bytes column regardless of flag order
     local mutual_test=$(create_temp_file $'UTF-8: café')
-    local cm_output
-    local mc_output
-    cm_output=$("$binary" -c -m "$mutual_test" 2>/dev/null | awk '{print $1}')
-    mc_output=$("$binary" -m -c "$mutual_test" 2>/dev/null | awk '{print $1}')
-    if [[ "$cm_output" != "$mc_output" ]]; then
-        print_test_result "wc -c -m mutual exclusion" "PASS" "-c and -m are mutually exclusive"
-    else
-        print_test_result "wc -c -m mutual exclusion" "FAIL" "Should show different results for -c vs -m with UTF-8"
-    fi
+    test_command_output "wc -cm combined flag" "      11      12 $mutual_test" "$binary" -cm "$mutual_test"
+    test_command_output "wc -mc combined flag" "      11      12 $mutual_test" "$binary" -mc "$mutual_test"
+
+    echo -e "${CYAN}Testing F29: -c and -m both shown (GNU behavior)...${NC}"
+
+    # GNU wc does NOT treat -c and -m as mutually exclusive.
+    # When both are specified, both columns are printed.
+    # Column order is always: chars before bytes (regardless of flag order).
+
+    # Piped input: "café\n" = 5 chars, 6 bytes
+    test_command_output "wc -cm stdin" "       5       6" \
+        bash -c "printf 'caf\xc3\xa9\n' | '$binary' -cm"
+    test_command_output "wc -mc stdin" "       5       6" \
+        bash -c "printf 'caf\xc3\xa9\n' | '$binary' -mc"
+
+    # Separate flags: -c -m and -m -c
+    test_command_output "wc -c -m stdin" "       5       6" \
+        bash -c "printf 'caf\xc3\xa9\n' | '$binary' -c -m"
+    test_command_output "wc -m -c stdin" "       5       6" \
+        bash -c "printf 'caf\xc3\xa9\n' | '$binary' -m -c"
+
+    # Combined with other flags: -lwcm should show all four columns
+    test_command_output "wc -lwcm stdin" "       1       1       5       6" \
+        bash -c "printf 'caf\xc3\xa9\n' | '$binary' -lwcm"
+
+    # File mode
+    local f29_file="$TEMP_DIR/f29_cafe.txt"
+    printf 'caf\xc3\xa9\n' > "$f29_file"
+    test_command_output "wc -cm file" "       5       6 $f29_file" \
+        "$binary" -cm "$f29_file"
+    test_command_output "wc -mc file" "       5       6 $f29_file" \
+        "$binary" -mc "$f29_file"
+
+    # ASCII: -cm should show same number twice (chars == bytes)
+    test_command_output "wc -cm ASCII stdin" "       6       6" \
+        bash -c "printf 'hello\n' | '$binary' -cm"
+
+    echo -e "${CYAN}Testing F30: -L tab expansion (GNU behavior)...${NC}"
+
+    # GNU wc -L counts display columns, not raw bytes.
+    # Tabs expand to the next tab stop (every 8 columns).
+
+    # "ab\tcd\n": a=1, b=2, tab->8, c=9, d=10 => max line length = 10
+    test_command_output "wc -L tab expansion" "      10" \
+        bash -c "printf 'ab\tcd\n' | '$binary' -L"
+
+    # Single tab: expands to column 8
+    test_command_output "wc -L single tab" "       8" \
+        bash -c "printf '\t' | '$binary' -L"
+
+    # Two tabs: first to col 8, second to col 16
+    test_command_output "wc -L two tabs" "      16" \
+        bash -c "printf '\t\t' | '$binary' -L"
+
+    # "a\t": a at col 1, tab expands to col 8
+    test_command_output "wc -L char then tab" "       8" \
+        bash -c "printf 'a\t' | '$binary' -L"
+
+    # Empty input: 0
+    test_command_output "wc -L empty" "       0" \
+        bash -c "printf '' | '$binary' -L"
+
+    # 7 chars + tab: 7 chars fill cols 1-7, tab to col 8
+    test_command_output "wc -L 7chars tab" "       8" \
+        bash -c "printf '1234567\t' | '$binary' -L"
+
+    # 8 chars + tab: 8 chars fill cols 1-8 (at tab stop), tab to col 16
+    test_command_output "wc -L 8chars tab" "      16" \
+        bash -c "printf '12345678\t' | '$binary' -L"
+
+    # Tab in middle of line: "abc\tdef\n"
+    # a=1, b=2, c=3, tab->8, d=9, e=10, f=11 => 11
+    test_command_output "wc -L tab mid-line" "      11" \
+        bash -c "printf 'abc\tdef\n' | '$binary' -L"
+
+    # Multiple lines: -L should report max across all lines
+    # Line 1: "ab\tcd" => 10; Line 2: "x" => 1; max = 10
+    test_command_output "wc -L multiline max" "      10" \
+        bash -c "printf 'ab\tcd\nx\n' | '$binary' -L"
+
+    # Only tabs (3 tabs): col 8, 16, 24
+    test_command_output "wc -L only tabs" "      24" \
+        bash -c "printf '\t\t\t' | '$binary' -L"
 
     echo -e "${CYAN}Testing error recovery and continuation...${NC}"
 

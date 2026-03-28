@@ -447,4 +447,105 @@ test_ls() {
     else
         print_test_result "ls NO_COLOR overrides --color=always" "PASS"
     fi
+
+    # ================================================================
+    # F49: ls must exit 2 on nonexistent path (GNU behavior)
+    # ================================================================
+    echo -e "${CYAN}Testing exit code for nonexistent path (GNU compat)...${NC}"
+
+    test_command_exit_code "ls nonexistent path exits 2" 2 \
+        "$binary" "/tmp/vibeutils_nonexistent_dir_$$_f49"
+
+    # Multiple args where one is nonexistent should also exit non-zero
+    local f49_dir
+    f49_dir=$(create_temp_dir)
+    create_temp_file "exists" "$f49_dir/real.txt"
+
+    "$binary" "$f49_dir" "/tmp/vibeutils_no_such_dir_$$" >/dev/null 2>&1
+    local f49_mixed_exit=$?
+    if [[ $f49_mixed_exit -ne 0 ]]; then
+        print_test_result "ls mixed valid+invalid paths exits non-zero" "PASS"
+    else
+        print_test_result "ls mixed valid+invalid paths exits non-zero" "FAIL" \
+            "Expected non-zero exit, got 0"
+    fi
+
+    # Permission-denied directory should also exit non-zero
+    local f49_noread
+    f49_noread=$(create_temp_dir)
+    chmod 000 "$f49_noread"
+    "$binary" "$f49_noread" >/dev/null 2>&1
+    local f49_perm_exit=$?
+    chmod 755 "$f49_noread"  # restore so cleanup works
+    if [[ $f49_perm_exit -ne 0 ]]; then
+        print_test_result "ls permission-denied dir exits non-zero" "PASS"
+    else
+        print_test_result "ls permission-denied dir exits non-zero" "FAIL" \
+            "Expected non-zero exit, got 0"
+    fi
+
+    # ================================================================
+    # F50: ls -a must include . and .. entries (GNU behavior)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -a includes . and .. entries...${NC}"
+
+    local f50_dir
+    f50_dir=$(create_temp_dir)
+    create_temp_file "visible" "$f50_dir/visible.txt"
+    create_temp_file "hidden" "$f50_dir/.hidden"
+
+    local f50_output
+    f50_output=$("$binary" -a -1 "$f50_dir" 2>/dev/null | strip_ansi)
+
+    # -a output must contain literal "." and ".." lines
+    if echo "$f50_output" | grep -qx '\.'; then
+        print_test_result "ls -a includes . entry" "PASS"
+    else
+        print_test_result "ls -a includes . entry" "FAIL" \
+            "Expected '.' in output: '$f50_output'"
+    fi
+
+    if echo "$f50_output" | grep -qx '\.\.'; then
+        print_test_result "ls -a includes .. entry" "PASS"
+    else
+        print_test_result "ls -a includes .. entry" "FAIL" \
+            "Expected '..' in output: '$f50_output'"
+    fi
+
+    # . and .. should be first two entries (GNU behavior)
+    local f50_first
+    f50_first=$(echo "$f50_output" | head -1)
+    local f50_second
+    f50_second=$(echo "$f50_output" | head -2 | tail -1)
+    if [[ "$f50_first" == "." && "$f50_second" == ".." ]]; then
+        print_test_result "ls -a . and .. are first two entries" "PASS"
+    else
+        print_test_result "ls -a . and .. are first two entries" "FAIL" \
+            "Expected '.' then '..', got '$f50_first' then '$f50_second'"
+    fi
+
+    # -a on empty directory should still show . and ..
+    local f50_empty
+    f50_empty=$(create_temp_dir)
+    local f50_empty_output
+    f50_empty_output=$("$binary" -a -1 "$f50_empty" 2>/dev/null | strip_ansi)
+
+    if echo "$f50_empty_output" | grep -qx '\.' && \
+       echo "$f50_empty_output" | grep -qx '\.\.'; then
+        print_test_result "ls -a empty dir shows . and .." "PASS"
+    else
+        print_test_result "ls -a empty dir shows . and .." "FAIL" \
+            "Expected . and .. in empty dir output: '$f50_empty_output'"
+    fi
+
+    # -A should NOT include . and .. (verify distinction from -a)
+    local f50_big_a_output
+    f50_big_a_output=$("$binary" -A -1 "$f50_dir" 2>/dev/null | strip_ansi)
+    if ! echo "$f50_big_a_output" | grep -qx '\.' && \
+       ! echo "$f50_big_a_output" | grep -qx '\.\.'; then
+        print_test_result "ls -A excludes . and .. (contrast with -a)" "PASS"
+    else
+        print_test_result "ls -A excludes . and .. (contrast with -a)" "FAIL" \
+            "Found . or .. in -A output: '$f50_big_a_output'"
+    fi
 }
