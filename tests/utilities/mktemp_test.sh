@@ -201,4 +201,94 @@ test_mktemp() {
         fi
         rmdir "$output"
     fi
+
+    echo -e "${CYAN}Testing bare template creates in cwd (F14)...${NC}"
+
+    # GNU mktemp: bare template (no directory component) creates in cwd,
+    # not in /tmp. Our implementation incorrectly sends bare templates
+    # to /tmp via resolveTmpdir.
+    local testcwd="$TEMP_DIR/mktemp_cwd_test"
+    mkdir -p "$testcwd"
+
+    output=$(cd "$testcwd" && "$binary" myapp.XXXXXX)
+    local f14_exit=$?
+    if [[ $f14_exit -eq 0 ]]; then
+        local result_dir
+        result_dir=$(dirname "$output")
+        # Resolve symlinks so /tmp vs $TMPDIR doesn't cause false matches
+        local resolved_dir resolved_cwd
+        resolved_dir=$(cd "$result_dir" 2>/dev/null && pwd -P)
+        resolved_cwd=$(cd "$testcwd" 2>/dev/null && pwd -P)
+        if [[ "$resolved_dir" == "$resolved_cwd" ]]; then
+            print_test_result "bare template creates in cwd" "PASS"
+        else
+            print_test_result "bare template creates in cwd" "FAIL" \
+                "Expected dir '$resolved_cwd', got '$resolved_dir' (full path: $output)"
+        fi
+        rm -f "$output"
+    else
+        print_test_result "bare template creates in cwd" "FAIL" \
+            "Command failed with exit code $f14_exit"
+    fi
+
+    # Also test bare template with -d (directory mode) creates in cwd
+    output=$(cd "$testcwd" && "$binary" -d mydir.XXXXXX)
+    f14_exit=$?
+    if [[ $f14_exit -eq 0 ]]; then
+        local result_dir
+        result_dir=$(dirname "$output")
+        local resolved_dir resolved_cwd
+        resolved_dir=$(cd "$result_dir" 2>/dev/null && pwd -P)
+        resolved_cwd=$(cd "$testcwd" 2>/dev/null && pwd -P)
+        if [[ "$resolved_dir" == "$resolved_cwd" ]]; then
+            print_test_result "bare template -d creates dir in cwd" "PASS"
+        else
+            print_test_result "bare template -d creates dir in cwd" "FAIL" \
+                "Expected dir '$resolved_cwd', got '$resolved_dir' (full path: $output)"
+        fi
+        rm -rf "$output"
+    else
+        print_test_result "bare template -d creates dir in cwd" "FAIL" \
+            "Command failed with exit code $f14_exit"
+    fi
+
+    rmdir "$testcwd" 2>/dev/null || true
+
+    echo -e "${CYAN}Testing -t with slash in template rejected (F55)...${NC}"
+
+    # GNU mktemp: -t with a template containing a directory separator
+    # must fail with an error about "directory separator". Our
+    # implementation silently strips the directory and succeeds.
+
+    # Single slash in template
+    local f55_stderr f55_exit
+    f55_stderr=$("$binary" -t mydir/XXXXXX 2>&1)
+    f55_exit=$?
+    if [[ $f55_exit -ne 0 ]]; then
+        print_test_result "-t with slash in template fails" "PASS"
+    else
+        print_test_result "-t with slash in template fails" "FAIL" \
+            "Expected non-zero exit, got 0 (output: $f55_stderr)"
+        rm -f "$f55_stderr" 2>/dev/null || true
+    fi
+
+    # Verify error message mentions directory separator
+    f55_stderr=$("$binary" -t mydir/XXXXXX 2>&1 1>/dev/null)
+    if [[ "$f55_stderr" == *"directory separator"* ]]; then
+        print_test_result "-t slash error mentions directory separator" "PASS"
+    else
+        print_test_result "-t slash error mentions directory separator" "FAIL" \
+            "Expected 'directory separator' in stderr, got: '$f55_stderr'"
+    fi
+
+    # Multiple slashes in template
+    f55_stderr=$("$binary" -t a/b/c/XXXXXX 2>&1)
+    f55_exit=$?
+    if [[ $f55_exit -ne 0 ]]; then
+        print_test_result "-t with multiple slashes in template fails" "PASS"
+    else
+        print_test_result "-t with multiple slashes in template fails" "FAIL" \
+            "Expected non-zero exit, got 0 (output: $f55_stderr)"
+        rm -f "$f55_stderr" 2>/dev/null || true
+    fi
 }

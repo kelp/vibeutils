@@ -716,4 +716,102 @@ test_touch() {
     else
         print_test_result "touch -A exits non-zero" "FAIL" "Expected non-zero exit, got $a_exit"
     fi
+
+    echo -e "${CYAN}Testing F52: -A flag should succeed (exit 0)...${NC}"
+
+    # F52: touch -A should be accepted without error (exit 0)
+    # On macOS, -A adjusts timestamps by a delta. GNU touch on Linux
+    # doesn't have -A, but our implementation should at least accept it.
+    local f52_file="$TEMP_DIR/f52_adjust_zero.txt"
+    echo "test" > "$f52_file"
+    local f52_out="" f52_err="" f52_exit=""
+    run_command f52_cmd f52_out f52_err f52_exit "$binary" -A 0 "$f52_file"
+    if [[ $f52_exit -eq 0 ]]; then
+        print_test_result "touch -A 0 exits zero" "PASS"
+    else
+        print_test_result "touch -A 0 exits zero" "FAIL" "Expected exit 0, got $f52_exit (stderr: $f52_err)"
+    fi
+
+    echo -e "${CYAN}Testing F53: -d timezone offset handling...${NC}"
+
+    # F53: touch -d with Z suffix should produce UTC timestamp
+    # GNU touch: touch -d "2024-01-15T00:00:00Z" => epoch 1705276800
+    local f53_z_file="$TEMP_DIR/f53_z_test.txt"
+    local f53_z_out="" f53_z_err="" f53_z_exit=""
+    run_command f53_z_cmd f53_z_out f53_z_err f53_z_exit "$binary" -d "2024-01-15T00:00:00Z" "$f53_z_file"
+    if [[ $f53_z_exit -eq 0 ]]; then
+        print_test_result "touch -d with Z suffix succeeds" "PASS"
+    else
+        print_test_result "touch -d with Z suffix succeeds" "FAIL" "Exit code $f53_z_exit (stderr: $f53_z_err)"
+    fi
+
+    local f53_z_mtime
+    f53_z_mtime=$(get_mtime "$f53_z_file")
+    if [[ "$f53_z_mtime" -eq 1705276800 ]]; then
+        print_test_result "touch -d Z suffix gives UTC epoch" "PASS"
+    else
+        print_test_result "touch -d Z suffix gives UTC epoch" "FAIL" "Expected 1705276800, got $f53_z_mtime"
+    fi
+
+    # F53: touch -d with +05:00 offset
+    # GNU touch: touch -d "2024-01-15T00:00:00+05:00" => epoch 1705258800
+    local f53_plus_file="$TEMP_DIR/f53_plus5_test.txt"
+    local f53_plus_out="" f53_plus_err="" f53_plus_exit=""
+    run_command f53_plus_cmd f53_plus_out f53_plus_err f53_plus_exit "$binary" -d "2024-01-15T00:00:00+05:00" "$f53_plus_file"
+    if [[ $f53_plus_exit -eq 0 ]]; then
+        print_test_result "touch -d with +05:00 offset succeeds" "PASS"
+    else
+        print_test_result "touch -d with +05:00 offset succeeds" "FAIL" "Exit code $f53_plus_exit"
+    fi
+
+    local f53_plus_mtime
+    f53_plus_mtime=$(get_mtime "$f53_plus_file")
+    if [[ "$f53_plus_mtime" -eq 1705258800 ]]; then
+        print_test_result "touch -d +05:00 offset gives correct UTC epoch" "PASS"
+    else
+        print_test_result "touch -d +05:00 offset gives correct UTC epoch" "FAIL" "Expected 1705258800, got $f53_plus_mtime"
+    fi
+
+    # F53: touch -d with +05:30 half-hour offset
+    # GNU touch: touch -d "2024-01-15T00:00:00+05:30" => epoch 1705257000
+    local f53_half_file="$TEMP_DIR/f53_half_hour_test.txt"
+    local f53_half_out="" f53_half_err="" f53_half_exit=""
+    run_command f53_half_cmd f53_half_out f53_half_err f53_half_exit "$binary" -d "2024-01-15T00:00:00+05:30" "$f53_half_file"
+    if [[ $f53_half_exit -eq 0 ]]; then
+        print_test_result "touch -d with +05:30 half-hour offset succeeds" "PASS"
+    else
+        print_test_result "touch -d with +05:30 half-hour offset succeeds" "FAIL" "Exit code $f53_half_exit"
+    fi
+
+    local f53_half_mtime
+    f53_half_mtime=$(get_mtime "$f53_half_file")
+    if [[ "$f53_half_mtime" -eq 1705257000 ]]; then
+        print_test_result "touch -d +05:30 half-hour offset gives correct UTC epoch" "PASS"
+    else
+        print_test_result "touch -d +05:30 half-hour offset gives correct UTC epoch" "FAIL" "Expected 1705257000, got $f53_half_mtime"
+    fi
+
+    # F53: touch -d with -05:00 negative offset
+    # GNU touch: touch -d "2024-01-15T00:00:00-05:00" => epoch 1705294800
+    local f53_neg_file="$TEMP_DIR/f53_neg5_test.txt"
+    local f53_neg_out="" f53_neg_err="" f53_neg_exit=""
+    run_command f53_neg_cmd f53_neg_out f53_neg_err f53_neg_exit "$binary" -d "2024-01-15T00:00:00-05:00" "$f53_neg_file"
+    if [[ $f53_neg_exit -eq 0 ]]; then
+        print_test_result "touch -d with -05:00 offset succeeds" "PASS"
+    else
+        print_test_result "touch -d with -05:00 offset succeeds" "FAIL" "Exit code $f53_neg_exit"
+    fi
+
+    local f53_neg_mtime
+    f53_neg_mtime=$(get_mtime "$f53_neg_file")
+    if [[ "$f53_neg_mtime" -eq 1705294800 ]]; then
+        print_test_result "touch -d -05:00 offset gives correct UTC epoch" "PASS"
+    else
+        print_test_result "touch -d -05:00 offset gives correct UTC epoch" "FAIL" "Expected 1705294800, got $f53_neg_mtime"
+    fi
+
+    # F53: bare datetime without timezone (should be treated as local time)
+    # This is a baseline test - bare datetimes should work as before
+    local f53_bare_file="$TEMP_DIR/f53_bare_test.txt"
+    test_command_succeeds "touch -d bare datetime (no tz)" "$binary" -d "2024-01-15T00:00:00" "$f53_bare_file"
 }

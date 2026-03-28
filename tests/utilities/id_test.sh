@@ -120,6 +120,36 @@ test_id() {
     test_command_exit_code "id nonexistent user exits 1" 1 \
         "$binary" nonexistent_user_12345
 
+    echo -e "${CYAN}Testing -G with named user (F47)...${NC}"
+
+    # F47: id -G <username> should produce the same groups as id -G
+    local groups_no_user groups_named
+    groups_no_user=$("$binary" -G 2>/dev/null)
+    groups_named=$("$binary" -G "$(whoami)" 2>/dev/null)
+    local no_user_count named_count
+    no_user_count=$(echo "$groups_no_user" | tr ' ' '\n' | wc -l)
+    named_count=$(echo "$groups_named" | tr ' ' '\n' | wc -l)
+    if [[ "$no_user_count" -eq "$named_count" ]]; then
+        print_test_result "id -G <user> group count matches id -G" "PASS"
+    else
+        print_test_result "id -G <user> group count matches id -G" "FAIL" \
+            "id -G has $no_user_count groups, id -G \$(whoami) has $named_count groups"
+    fi
+
+    # F47: id -Gn <username> should produce the same group names as id -Gn
+    local gn_no_user gn_named
+    gn_no_user=$("$binary" -Gn 2>/dev/null)
+    gn_named=$("$binary" -Gn "$(whoami)" 2>/dev/null)
+    local gn_no_user_count gn_named_count
+    gn_no_user_count=$(echo "$gn_no_user" | tr ' ' '\n' | wc -l)
+    gn_named_count=$(echo "$gn_named" | tr ' ' '\n' | wc -l)
+    if [[ "$gn_no_user_count" -eq "$gn_named_count" ]]; then
+        print_test_result "id -Gn <user> group count matches id -Gn" "PASS"
+    else
+        print_test_result "id -Gn <user> group count matches id -Gn" "FAIL" \
+            "id -Gn has $gn_no_user_count groups, id -Gn \$(whoami) has $gn_named_count groups"
+    fi
+
     echo -e "${CYAN}Testing regression fixes...${NC}"
 
     # Regression: id -g should print numeric GID

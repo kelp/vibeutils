@@ -243,4 +243,82 @@ test_env() {
         print_test_result "env exit code 255 passthrough (regression)" "FAIL" \
             "Expected exit 255, got: $exit_code"
     fi
+
+    echo -e "${CYAN}Testing bare dash (F8: - implies -i)...${NC}"
+
+    # Bare dash should clear environment (GNU: "A mere - implies -i")
+    local dash_output
+    dash_output=$("$binary" - 2>/dev/null)
+    if [[ -z "$dash_output" ]]; then
+        print_test_result "env - prints empty environment" "PASS"
+    else
+        print_test_result "env - prints empty environment" "FAIL" \
+            "Expected empty output, got ${#dash_output} bytes"
+    fi
+
+    # Bare dash with assignment should only show that assignment
+    dash_output=$("$binary" - FOO=bar 2>/dev/null)
+    if [[ "$dash_output" == "FOO=bar" ]]; then
+        print_test_result "env - FOO=bar prints only FOO=bar" "PASS"
+    else
+        print_test_result "env - FOO=bar prints only FOO=bar" "FAIL" \
+            "Expected 'FOO=bar', got: '$dash_output'"
+    fi
+
+    # Bare dash with command should execute in clean environment
+    cmd_output=$("$binary" - FOO=bar sh -c 'echo $FOO' 2>/dev/null)
+    if [[ "$cmd_output" == "bar" ]]; then
+        print_test_result "env - FOO=bar sh -c 'echo \$FOO'" "PASS"
+    else
+        print_test_result "env - FOO=bar sh -c 'echo \$FOO'" "FAIL" \
+            "Expected 'bar', got: '$cmd_output'"
+    fi
+
+    # Bare dash should actually clear inherited vars
+    cmd_output=$(HOME=/test_value "$binary" - sh -c 'echo "HOME=${HOME:-unset}"' 2>/dev/null)
+    if [[ "$cmd_output" == "HOME=unset" ]]; then
+        print_test_result "env - clears inherited HOME" "PASS"
+    else
+        print_test_result "env - clears inherited HOME" "FAIL" \
+            "Expected 'HOME=unset', got: '$cmd_output'"
+    fi
+
+    echo -e "${CYAN}Testing -S split-string (F9)...${NC}"
+
+    # -S should split string and process assignment
+    cmd_output=$("$binary" -i -S "FOO=bar" 2>/dev/null)
+    if [[ "$cmd_output" == "FOO=bar" ]]; then
+        print_test_result "env -i -S 'FOO=bar' sets variable" "PASS"
+    else
+        print_test_result "env -i -S 'FOO=bar' sets variable" "FAIL" \
+            "Expected 'FOO=bar', got: '$cmd_output'"
+    fi
+
+    # -S should split string and execute command
+    cmd_output=$("$binary" -S "FOO=bar printenv FOO" 2>/dev/null)
+    if [[ "$cmd_output" == "bar" ]]; then
+        print_test_result "env -S 'FOO=bar printenv FOO' executes" "PASS"
+    else
+        print_test_result "env -S 'FOO=bar printenv FOO' executes" "FAIL" \
+            "Expected 'bar', got: '$cmd_output'"
+    fi
+
+    # -S with quoted arguments
+    cmd_output=$("$binary" -i -S "A=1 B=2" 2>/dev/null)
+    if [[ "$cmd_output" =~ "A=1" && "$cmd_output" =~ "B=2" ]]; then
+        print_test_result "env -i -S 'A=1 B=2' sets both" "PASS"
+    else
+        print_test_result "env -i -S 'A=1 B=2' sets both" "FAIL" \
+            "Expected A=1 and B=2, got: '$cmd_output'"
+    fi
+
+    # -S should not produce a warning to stderr
+    local stderr_output
+    stderr_output=$("$binary" -i -S "X=1" 2>&1 1>/dev/null)
+    if [[ -z "$stderr_output" ]]; then
+        print_test_result "env -S produces no stderr warning" "PASS"
+    else
+        print_test_result "env -S produces no stderr warning" "FAIL" \
+            "Expected no stderr, got: '$stderr_output'"
+    fi
 }

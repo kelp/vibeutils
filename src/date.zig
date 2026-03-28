@@ -1315,3 +1315,117 @@ test "date -v stderr should contain error message" {
     // stderr should contain a message about -v not being implemented
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "not yet implemented") != null);
 }
+
+// ============================================================================
+// F62: date -r with numeric timestamp should parse as epoch seconds
+// ============================================================================
+// On macOS/BSD, -r accepts both filenames and numeric epoch seconds.
+// Our implementation always calls statFile(), so -r 0 fails with
+// "cannot stat reference file" instead of displaying epoch time.
+
+test "date -r 0 -u should display epoch (numeric timestamp)" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-r", "0", "-u", "+%Y-%m-%d" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970-01-01\n", stdout_buffer.items);
+}
+
+test "date -r 86400 -u should display 1970-01-02" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-r", "86400", "-u", "+%Y-%m-%d" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1970-01-02\n", stdout_buffer.items);
+}
+
+test "date -r with negative epoch (pre-1970)" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -86400 = 1969-12-31 00:00:00 UTC
+    const args = [_][]const u8{ "-r", "-86400", "-u", "+%Y-%m-%d" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1969-12-31\n", stdout_buffer.items);
+}
+
+test "date -r numeric should output epoch seconds with +%s" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-r", "1000000", "-u", "+%s" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1000000\n", stdout_buffer.items);
+}
+
+// ============================================================================
+// F63: date -d should respect timezone offset in ISO 8601
+// ============================================================================
+// parseIso8601 discards the Z suffix and +HH:MM offset, then uses mktime
+// which interprets the time as local time. The timezone information is lost.
+
+test "date -d ISO 8601 with Z suffix should treat as UTC" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // 2024-01-15T00:00:00Z in UTC = epoch 1705276800
+    const args = [_][]const u8{ "-d", "2024-01-15T00:00:00Z", "-u", "+%s" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1705276800\n", stdout_buffer.items);
+}
+
+test "date -d ISO 8601 with +05:30 offset should adjust epoch" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // 2024-01-15T00:00:00+05:30 = UTC 2024-01-14T18:30:00 = epoch 1705257000
+    const args = [_][]const u8{ "-d", "2024-01-15T00:00:00+05:30", "-u", "+%s" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1705257000\n", stdout_buffer.items);
+}
+
+test "date -d ISO 8601 with -05:00 offset should adjust epoch" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // 2024-01-15T00:00:00-05:00 = UTC 2024-01-15T05:00:00 = epoch 1705294800
+    const args = [_][]const u8{ "-d", "2024-01-15T00:00:00-05:00", "-u", "+%s" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1705294800\n", stdout_buffer.items);
+}
+
+test "date -d ISO 8601 with +00:00 offset is same as Z" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // 2024-01-15T00:00:00+00:00 = UTC midnight = epoch 1705276800
+    const args = [_][]const u8{ "-d", "2024-01-15T00:00:00+00:00", "-u", "+%s" };
+    const result = try runDate(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1705276800\n", stdout_buffer.items);
+}

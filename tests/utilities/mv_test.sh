@@ -625,4 +625,164 @@ test_mv() {
         print_test_result "mv symlink is still symlink (regression)" "FAIL" \
             "Moved symlink became a regular file"
     fi
+
+    echo -e "${CYAN}Testing F36: mv -i must prompt and respect 'n' on Linux...${NC}"
+
+    # F36: On Linux, rename() atomically replaces files and never returns
+    # EEXIST, so the interactive prompt (which lives inside the
+    # PathAlreadyExists handler) is never reached. Piping "n" should
+    # preserve the destination content; GNU mv does this correctly.
+    local f36_src=$(create_temp_file "f36 new content")
+    local f36_dst=$(create_temp_file "f36 original content")
+    echo "n" | "$binary" -i "$f36_src" "$f36_dst" >/dev/null 2>&1
+    local f36_dst_content
+    f36_dst_content=$(<"$f36_dst")
+    if [[ "$f36_dst_content" == "f36 original content" ]]; then
+        print_test_result "mv -i with 'n' preserves destination (F36)" "PASS"
+    else
+        print_test_result "mv -i with 'n' preserves destination (F36)" "FAIL" \
+            "Expected 'f36 original content', got '$f36_dst_content'"
+    fi
+    # Source should still exist when user declined
+    if [[ -e "$f36_src" ]]; then
+        print_test_result "mv -i with 'n' keeps source file (F36)" "PASS"
+    else
+        print_test_result "mv -i with 'n' keeps source file (F36)" "FAIL" \
+            "Source was removed despite user answering 'n'"
+    fi
+
+    # Cross-check: GNU mv -i with "n" preserves destination
+    if command -v /usr/bin/mv >/dev/null 2>&1; then
+        local gnu_f36_src=$(create_temp_file "gnu f36 new")
+        local gnu_f36_dst=$(create_temp_file "gnu f36 original")
+        echo "n" | /usr/bin/mv -i "$gnu_f36_src" "$gnu_f36_dst" >/dev/null 2>&1
+        local gnu_f36_content
+        gnu_f36_content=$(<"$gnu_f36_dst")
+        if [[ "$gnu_f36_content" == "gnu f36 original" ]]; then
+            print_test_result "mv -i 'n' matches GNU behavior (F36 reference)" "PASS"
+        else
+            print_test_result "mv -i 'n' matches GNU behavior (F36 reference)" "FAIL" \
+                "GNU mv also failed? Content: '$gnu_f36_content'"
+        fi
+    fi
+
+    echo -e "${CYAN}Testing F37: mv dir into own subdirectory...${NC}"
+
+    # F37: Moving a directory into its own subdirectory should produce a
+    # clean error message and exit 1. The bug is that rename() returns
+    # EINVAL which Zig maps to unreachable, causing a panic/crash.
+    local f37_parent=$(create_temp_dir)
+    mkdir -p "$f37_parent/child"
+    local f37_stderr_file="$TEMP_DIR/f37_stderr"
+    "$binary" "$f37_parent" "$f37_parent/child" >"$TEMP_DIR/f37_stdout" 2>"$f37_stderr_file"
+    local f37_exit=$?
+    local f37_stderr
+    f37_stderr=$(<"$f37_stderr_file")
+
+    if [[ $f37_exit -ne 0 ]]; then
+        print_test_result "mv dir into own subdir exits non-zero (F37)" "PASS"
+    else
+        print_test_result "mv dir into own subdir exits non-zero (F37)" "FAIL" \
+            "Expected non-zero exit, got 0"
+    fi
+
+    # stderr should contain a clean error message from mv
+    if [[ "$f37_stderr" == *"mv:"* ]]; then
+        print_test_result "mv dir into own subdir has clean error (F37)" "PASS"
+    else
+        print_test_result "mv dir into own subdir has clean error (F37)" "FAIL" \
+            "Expected 'mv:' error prefix in stderr, got: '$f37_stderr'"
+    fi
+
+    # stderr must NOT contain panic or stack trace indicators
+    if [[ "$f37_stderr" != *"panic"* ]] && [[ "$f37_stderr" != *"unreachable"* ]] && \
+       [[ "$f37_stderr" != *"thread"* ]] && [[ "$f37_stderr" != *"stack trace"* ]]; then
+        print_test_result "mv dir into own subdir no panic/crash (F37)" "PASS"
+    else
+        print_test_result "mv dir into own subdir no panic/crash (F37)" "FAIL" \
+            "stderr contains panic indicators: '$f37_stderr'"
+    fi
+    rm -f "$f37_stderr_file" "$TEMP_DIR/f37_stdout"
+
+    echo -e "${CYAN}Testing F38: mv flag precedence (last flag wins)...${NC}"
+
+    # F38: GNU mv uses last-flag-wins for -f/-i/-n.
+    # All three are stored as independent booleans with fixed evaluation
+    # order in our code, so the order they appear on the command line
+    # is ignored. These tests verify GNU-compatible last-flag-wins.
+
+    # Test -n -f: force should win (last flag), destination overwritten
+    local f38_nf_src=$(create_temp_file "f38 nf new content")
+    local f38_nf_dst=$(create_temp_file "f38 nf original content")
+    "$binary" -n -f "$f38_nf_src" "$f38_nf_dst" >/dev/null 2>&1
+    local f38_nf_content
+    f38_nf_content=$(<"$f38_nf_dst")
+    if [[ "$f38_nf_content" == "f38 nf new content" ]]; then
+        print_test_result "mv -n -f overwrites (force wins, F38)" "PASS"
+    else
+        print_test_result "mv -n -f overwrites (force wins, F38)" "FAIL" \
+            "Expected 'f38 nf new content', got '$f38_nf_content'"
+    fi
+
+    # Test -f -n: no-clobber should win (last flag), destination preserved
+    local f38_fn_src=$(create_temp_file "f38 fn new content")
+    local f38_fn_dst=$(create_temp_file "f38 fn original content")
+    "$binary" -f -n "$f38_fn_src" "$f38_fn_dst" >/dev/null 2>&1
+    local f38_fn_content
+    f38_fn_content=$(<"$f38_fn_dst")
+    if [[ "$f38_fn_content" == "f38 fn original content" ]]; then
+        print_test_result "mv -f -n preserves dest (no-clobber wins, F38)" "PASS"
+    else
+        print_test_result "mv -f -n preserves dest (no-clobber wins, F38)" "FAIL" \
+            "Expected 'f38 fn original content', got '$f38_fn_content'"
+    fi
+    # Source should still exist when no-clobber wins
+    if [[ -e "$f38_fn_src" ]]; then
+        print_test_result "mv -f -n source retained (F38)" "PASS"
+    else
+        print_test_result "mv -f -n source retained (F38)" "FAIL" \
+            "Source removed despite no-clobber"
+    fi
+
+    # Test -f -i: interactive should win (last flag), prompt with "n"
+    # should preserve destination
+    local f38_fi_src=$(create_temp_file "f38 fi new content")
+    local f38_fi_dst=$(create_temp_file "f38 fi original content")
+    echo "n" | "$binary" -f -i "$f38_fi_src" "$f38_fi_dst" >/dev/null 2>&1
+    local f38_fi_content
+    f38_fi_content=$(<"$f38_fi_dst")
+    if [[ "$f38_fi_content" == "f38 fi original content" ]]; then
+        print_test_result "mv -f -i with 'n' preserves dest (interactive wins, F38)" "PASS"
+    else
+        print_test_result "mv -f -i with 'n' preserves dest (interactive wins, F38)" "FAIL" \
+            "Expected 'f38 fi original content', got '$f38_fi_content'"
+    fi
+
+    # Test -i -f: force should win (last flag), destination overwritten
+    local f38_if_src=$(create_temp_file "f38 if new content")
+    local f38_if_dst=$(create_temp_file "f38 if original content")
+    echo "n" | "$binary" -i -f "$f38_if_src" "$f38_if_dst" >/dev/null 2>&1
+    local f38_if_content
+    f38_if_content=$(<"$f38_if_dst")
+    if [[ "$f38_if_content" == "f38 if new content" ]]; then
+        print_test_result "mv -i -f overwrites (force wins, F38)" "PASS"
+    else
+        print_test_result "mv -i -f overwrites (force wins, F38)" "FAIL" \
+            "Expected 'f38 if new content', got '$f38_if_content'"
+    fi
+
+    # Cross-check with GNU mv for -n -f
+    if command -v /usr/bin/mv >/dev/null 2>&1; then
+        local gnu_nf_src=$(create_temp_file "gnu nf new")
+        local gnu_nf_dst=$(create_temp_file "gnu nf original")
+        /usr/bin/mv -n -f "$gnu_nf_src" "$gnu_nf_dst" >/dev/null 2>&1
+        local gnu_nf_content
+        gnu_nf_content=$(<"$gnu_nf_dst")
+        if [[ "$gnu_nf_content" == "gnu nf new" ]]; then
+            print_test_result "mv -n -f matches GNU (force wins, F38 ref)" "PASS"
+        else
+            print_test_result "mv -n -f matches GNU (force wins, F38 ref)" "SKIP" \
+                "GNU mv returned: '$gnu_nf_content'"
+        fi
+    fi
 }

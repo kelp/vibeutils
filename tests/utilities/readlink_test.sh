@@ -413,4 +413,95 @@ test_readlink() {
     echo -e "${CYAN}Testing .. past root regression...${NC}"
     test_command_output "readlink -m .. past root returns /" "/" \
         "$binary" -m /tmp/nonexistent/../../../..
+
+    # ==================================================================
+    # F44/F45: GNU compatibility tests for -f vs -e
+    # GNU readlink -f allows the last component to be missing (exits 0).
+    # Our implementation incorrectly exits 1 because -f maps to
+    # realpathAlloc which requires all components to exist.
+    # ==================================================================
+    echo -e "${CYAN}Testing -f GNU compat (F44/F45)...${NC}"
+
+    # F44: -f with nonexistent last component should exit 0
+    local f44_dir
+    f44_dir=$(create_temp_dir)
+    local f44_path="$f44_dir/no_such_file.txt"
+    local f44_expected
+    f44_expected=$(_canon "$f44_dir")/no_such_file.txt
+    local f44_out=""
+    local f44_err=""
+    local f44_exit=""
+    run_command f44_cmd f44_out f44_err f44_exit \
+        "$binary" -f "$f44_path"
+    if [[ $f44_exit -eq 0 && "$f44_out" == "$f44_expected" ]]; then
+        print_test_result \
+            "readlink -f nonexistent last component exits 0 (GNU)" "PASS"
+    else
+        print_test_result \
+            "readlink -f nonexistent last component exits 0 (GNU)" "FAIL" \
+            "Expected exit 0 and '$f44_expected', got exit $f44_exit and '$f44_out'"
+    fi
+
+    # F45: -f with dangling symlink should exit 0
+    local f45_dir
+    f45_dir=$(create_temp_dir)
+    local f45_link="$f45_dir/dangling_link"
+    ln -s "no_such_target" "$f45_link"
+    local f45_expected
+    f45_expected=$(_canon "$f45_dir")/no_such_target
+    local f45_out=""
+    local f45_err=""
+    local f45_exit=""
+    run_command f45_cmd f45_out f45_err f45_exit \
+        "$binary" -f "$f45_link"
+    if [[ $f45_exit -eq 0 && "$f45_out" == "$f45_expected" ]]; then
+        print_test_result \
+            "readlink -f dangling symlink exits 0 (GNU)" "PASS"
+    else
+        print_test_result \
+            "readlink -f dangling symlink exits 0 (GNU)" "FAIL" \
+            "Expected exit 0 and '$f45_expected', got exit $f45_exit and '$f45_out'"
+    fi
+
+    # -f with missing intermediate directory should still fail
+    local f_inter_out=""
+    local f_inter_err=""
+    local f_inter_exit=""
+    run_command f_inter_cmd f_inter_out f_inter_err f_inter_exit \
+        "$binary" -f "/tmp/no_such_dir_vibeutils_$$_test/file.txt"
+    if [[ $f_inter_exit -ne 0 ]]; then
+        print_test_result \
+            "readlink -f missing intermediate fails" "PASS"
+    else
+        print_test_result \
+            "readlink -f missing intermediate fails" "FAIL" \
+            "Expected non-zero exit, got $f_inter_exit"
+    fi
+
+    # -e with nonexistent last component should fail (unlike -f)
+    local e_miss_path="$f44_dir/also_no_such_file.txt"
+    test_command_exit_code \
+        "readlink -e nonexistent last component fails" 1 \
+        "$binary" -e "$e_miss_path"
+
+    # -f vs -e divergence: same missing-last-component path
+    local diverge_path="$f44_dir/diverge_ghost"
+    local div_f_out=""
+    local div_f_err=""
+    local div_f_exit=""
+    run_command div_f_cmd div_f_out div_f_err div_f_exit \
+        "$binary" -f "$diverge_path"
+    local div_e_out=""
+    local div_e_err=""
+    local div_e_exit=""
+    run_command div_e_cmd div_e_out div_e_err div_e_exit \
+        "$binary" -e "$diverge_path"
+    if [[ $div_f_exit -eq 0 && $div_e_exit -ne 0 ]]; then
+        print_test_result \
+            "readlink -f vs -e diverge on missing last component" "PASS"
+    else
+        print_test_result \
+            "readlink -f vs -e diverge on missing last component" "FAIL" \
+            "Expected -f exit 0 and -e exit nonzero, got -f=$div_f_exit -e=$div_e_exit"
+    fi
 }

@@ -1125,3 +1125,122 @@ test "printSingleGroup outputs numeric GID with delimiter" {
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, stdout_buffer.items);
 }
+
+test "id -G with named user matches id -G without username" {
+    // Get current username
+    const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
+    const user_info = try common.user_group.getUserById(uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+
+    // Run id -G (no username) - gets groups from current process
+    var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_no_user.deinit(testing.allocator);
+    const args_no_user = [_][]const u8{"-G"};
+    const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_no_user);
+
+    // Run id -G <username> - should also list ALL groups
+    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_named.deinit(testing.allocator);
+    const args_named = [_][]const u8{ "-G", user_info.name };
+    const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_named);
+
+    // Both should produce the same set of groups
+    // (order may differ, so compare as sorted sets)
+    const no_user_trimmed = std.mem.trimRight(u8, stdout_no_user.items, "\n");
+    const named_trimmed = std.mem.trimRight(u8, stdout_named.items, "\n");
+
+    // At minimum, the named user should have the same number of groups
+    var no_user_count: usize = 1;
+    for (no_user_trimmed) |c| {
+        if (c == ' ') no_user_count += 1;
+    }
+    var named_count: usize = 1;
+    for (named_trimmed) |c| {
+        if (c == ' ') named_count += 1;
+    }
+
+    // F47: named user shows only primary GID, missing supplementary groups
+    try testing.expectEqual(no_user_count, named_count);
+}
+
+test "id -Gn with named user matches id -Gn without username" {
+    // Get current username
+    const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
+    const user_info = try common.user_group.getUserById(uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+
+    // Run id -Gn (no username)
+    var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_no_user.deinit(testing.allocator);
+    const args_no_user = [_][]const u8{ "-G", "-n" };
+    const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_no_user);
+
+    // Run id -Gn <username>
+    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_named.deinit(testing.allocator);
+    const args_named = [_][]const u8{ "-G", "-n", user_info.name };
+    const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_named);
+
+    // Both should produce the same set of group names
+    const no_user_trimmed = std.mem.trimRight(u8, stdout_no_user.items, "\n");
+    const named_trimmed = std.mem.trimRight(u8, stdout_named.items, "\n");
+
+    var no_user_count: usize = 1;
+    for (no_user_trimmed) |c| {
+        if (c == ' ') no_user_count += 1;
+    }
+    var named_count: usize = 1;
+    for (named_trimmed) |c| {
+        if (c == ' ') named_count += 1;
+    }
+
+    // F47: named user should list all supplementary group names too
+    try testing.expectEqual(no_user_count, named_count);
+}
+
+test "id default format with named user includes all groups" {
+    // Get current username
+    const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
+    const user_info = try common.user_group.getUserById(uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+
+    // Run id (default format, no username)
+    var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_no_user.deinit(testing.allocator);
+    const args_no_user = [_][]const u8{};
+    const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_no_user);
+
+    // Run id <username> (default format, with username)
+    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_named.deinit(testing.allocator);
+    const args_named = [_][]const u8{user_info.name};
+    const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_named);
+
+    // Extract groups= portion from both outputs
+    const no_user_groups_start = std.mem.indexOf(u8, stdout_no_user.items, "groups=") orelse
+        return error.TestUnexpectedResult;
+    const named_groups_start = std.mem.indexOf(u8, stdout_named.items, "groups=") orelse
+        return error.TestUnexpectedResult;
+
+    const no_user_groups = stdout_no_user.items[no_user_groups_start..];
+    const named_groups = stdout_named.items[named_groups_start..];
+
+    // Count commas to determine number of group entries
+    var no_user_comma_count: usize = 0;
+    for (no_user_groups) |c| {
+        if (c == ',') no_user_comma_count += 1;
+    }
+    var named_comma_count: usize = 0;
+    for (named_groups) |c| {
+        if (c == ',') named_comma_count += 1;
+    }
+
+    // F47: default format with named user should list same number of groups
+    try testing.expectEqual(no_user_comma_count, named_comma_count);
+}

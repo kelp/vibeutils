@@ -93,4 +93,103 @@ test_date() {
         print_test_result "date -v produces no stdout" "FAIL" \
             "Expected empty stdout, got: '$dv_out'"
     fi
+
+    # ================================================================
+    # F62: date -r with numeric timestamp should parse as epoch seconds
+    # ================================================================
+    # macOS/BSD -r accepts both filenames and numeric epoch seconds.
+    # Our implementation always calls statFile(), so -r 0 fails.
+    echo -e "${CYAN}Testing -r with numeric epoch timestamp (F62)...${NC}"
+
+    local r0_cmd r0_out r0_err r0_exit
+    run_command r0_cmd r0_out r0_err r0_exit "$binary" -r 0 -u "+%Y-%m-%d"
+    if [[ $r0_exit -eq 0 && "$r0_out" == "1970-01-01" ]]; then
+        print_test_result "date -r 0 -u displays epoch" "PASS"
+    else
+        print_test_result "date -r 0 -u displays epoch" "FAIL" \
+            "Expected '1970-01-01' exit 0, got '$r0_out' exit $r0_exit stderr='$r0_err'"
+    fi
+
+    local r86_cmd r86_out r86_err r86_exit
+    run_command r86_cmd r86_out r86_err r86_exit "$binary" -r 86400 -u "+%Y-%m-%d"
+    if [[ $r86_exit -eq 0 && "$r86_out" == "1970-01-02" ]]; then
+        print_test_result "date -r 86400 -u displays next day" "PASS"
+    else
+        print_test_result "date -r 86400 -u displays next day" "FAIL" \
+            "Expected '1970-01-02' exit 0, got '$r86_out' exit $r86_exit stderr='$r86_err'"
+    fi
+
+    # Edge case: negative epoch (pre-1970)
+    local rneg_cmd rneg_out rneg_err rneg_exit
+    run_command rneg_cmd rneg_out rneg_err rneg_exit "$binary" -r -86400 -u "+%Y-%m-%d"
+    if [[ $rneg_exit -eq 0 && "$rneg_out" == "1969-12-31" ]]; then
+        print_test_result "date -r -86400 -u displays pre-epoch" "PASS"
+    else
+        print_test_result "date -r -86400 -u displays pre-epoch" "FAIL" \
+            "Expected '1969-12-31' exit 0, got '$rneg_out' exit $rneg_exit stderr='$rneg_err'"
+    fi
+
+    # -r with numeric should round-trip via %s
+    local rs_cmd rs_out rs_err rs_exit
+    run_command rs_cmd rs_out rs_err rs_exit "$binary" -r 1000000 -u "+%s"
+    if [[ $rs_exit -eq 0 && "$rs_out" == "1000000" ]]; then
+        print_test_result "date -r 1000000 -u +%s round-trips" "PASS"
+    else
+        print_test_result "date -r 1000000 -u +%s round-trips" "FAIL" \
+            "Expected '1000000' exit 0, got '$rs_out' exit $rs_exit stderr='$rs_err'"
+    fi
+
+    # ================================================================
+    # F63: date -d should respect timezone offset in ISO 8601
+    # ================================================================
+    # parseIso8601 discards the Z suffix and +HH:MM offset, then uses
+    # mktime which treats the time as local. Run in a non-UTC timezone
+    # to expose the bug.
+    echo -e "${CYAN}Testing -d with ISO 8601 timezone offsets (F63)...${NC}"
+
+    # Z suffix should mean UTC; epoch for 2024-01-15T00:00:00Z = 1705276800
+    local dz_cmd dz_out dz_err dz_exit
+    run_command dz_cmd dz_out dz_err dz_exit \
+        env TZ=America/New_York "$binary" -d "2024-01-15T00:00:00Z" -u "+%s"
+    if [[ $dz_exit -eq 0 && "$dz_out" == "1705276800" ]]; then
+        print_test_result "date -d ISO8601 Z suffix gives UTC epoch" "PASS"
+    else
+        print_test_result "date -d ISO8601 Z suffix gives UTC epoch" "FAIL" \
+            "Expected '1705276800' exit 0, got '$dz_out' exit $dz_exit stderr='$dz_err'"
+    fi
+
+    # +05:30 offset: 2024-01-15T00:00:00+05:30 = UTC 2024-01-14T18:30:00 = 1705257000
+    local d530_cmd d530_out d530_err d530_exit
+    run_command d530_cmd d530_out d530_err d530_exit \
+        env TZ=America/New_York "$binary" -d "2024-01-15T00:00:00+05:30" -u "+%s"
+    if [[ $d530_exit -eq 0 && "$d530_out" == "1705257000" ]]; then
+        print_test_result "date -d ISO8601 +05:30 offset" "PASS"
+    else
+        print_test_result "date -d ISO8601 +05:30 offset" "FAIL" \
+            "Expected '1705257000' exit 0, got '$d530_out' exit $d530_exit stderr='$d530_err'"
+    fi
+
+    # -05:00 offset: 2024-01-15T00:00:00-05:00 = UTC 2024-01-15T05:00:00 = 1705294800
+    # Use Asia/Kolkata (UTC+5:30) so that ignoring the offset gives the WRONG answer,
+    # ensuring we test that the -05:00 offset is actually being parsed and applied.
+    local dm5_cmd dm5_out dm5_err dm5_exit
+    run_command dm5_cmd dm5_out dm5_err dm5_exit \
+        env TZ=Asia/Kolkata "$binary" -d "2024-01-15T00:00:00-05:00" -u "+%s"
+    if [[ $dm5_exit -eq 0 && "$dm5_out" == "1705294800" ]]; then
+        print_test_result "date -d ISO8601 -05:00 offset" "PASS"
+    else
+        print_test_result "date -d ISO8601 -05:00 offset" "FAIL" \
+            "Expected '1705294800' exit 0, got '$dm5_out' exit $dm5_exit stderr='$dm5_err'"
+    fi
+
+    # +00:00 should be equivalent to Z
+    local d00_cmd d00_out d00_err d00_exit
+    run_command d00_cmd d00_out d00_err d00_exit \
+        env TZ=America/New_York "$binary" -d "2024-01-15T00:00:00+00:00" -u "+%s"
+    if [[ $d00_exit -eq 0 && "$d00_out" == "1705276800" ]]; then
+        print_test_result "date -d ISO8601 +00:00 same as Z" "PASS"
+    else
+        print_test_result "date -d ISO8601 +00:00 same as Z" "FAIL" \
+            "Expected '1705276800' exit 0, got '$d00_out' exit $d00_exit stderr='$d00_err'"
+    fi
 }

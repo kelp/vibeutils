@@ -1310,3 +1310,113 @@ test "mv: verbose move does not print arrow to stderr" {
     // stderr should NOT contain the verbose arrow message
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "->") == null);
 }
+
+test "mv: moving directory into its own subdirectory returns error not panic" {
+    // F37: mv parent parent/child triggers EINVAL from rename(),
+    // which Zig maps to unreachable (panic). The code should handle
+    // this gracefully and return exit code 1 with a clean error message.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Create parent/child directory structure
+    try test_dir.tmp_dir.dir.makePath("parent/child");
+
+    const parent_path = try test_dir.getPath("parent");
+    defer testing.allocator.free(parent_path);
+    const child_path = try test_dir.getPath("parent/child");
+    defer testing.allocator.free(child_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // Run via runUtility so we get an exit code instead of a crash
+    const args = [_][]const u8{ parent_path, child_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    // Should exit with error (1), not panic/crash
+    try testing.expectEqual(@as(u8, 1), exit_code);
+
+    // stderr should contain a clean error message, not a stack trace
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "mv:") != null);
+    // Must NOT contain panic indicators
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "panic") == null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "unreachable") == null);
+}
+
+test "mv: -n -f flag combination should let force win (last flag)" {
+    // F38: GNU mv uses last-flag-wins semantics.
+    // -n -f means force wins: destination should be overwritten.
+    // Our code evaluates no_clobber first regardless of flag order,
+    // so this test should fail until the precedence bug is fixed.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("src_nf", "New content from source");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dst_nf", "Original destination content");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // Simulate -n -f: last flag is force, should overwrite
+    const args = [_][]const u8{ "-n", "-f", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // With last-flag-wins, force should override no-clobber:
+    // destination should have the new content
+    const content = try test_dir.readFile(dest_name);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("New content from source", content);
+
+    // Source should be gone (it was moved)
+    try testing.expect(!test_dir.fileExists(source_name));
+}
+
+test "mv: -f -n flag combination should let no-clobber win (last flag)" {
+    // F38: GNU mv uses last-flag-wins semantics.
+    // -f -n means no-clobber wins: destination should be preserved.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    const source_name = try test_dir.createUniqueFile("src_fn", "New content");
+    defer testing.allocator.free(source_name);
+    const dest_name = try test_dir.createUniqueFile("dst_fn", "Original content preserved");
+    defer testing.allocator.free(dest_name);
+
+    const source_path = try test_dir.getPath(source_name);
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath(dest_name);
+    defer testing.allocator.free(dest_path);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // Simulate -f -n: last flag is no-clobber, should preserve destination
+    const args = [_][]const u8{ "-f", "-n", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // With last-flag-wins, no-clobber should override force:
+    // destination should still have original content
+    const content = try test_dir.readFile(dest_name);
+    defer testing.allocator.free(content);
+    try testing.expectEqualStrings("Original content preserved", content);
+
+    // Source should still exist (move was skipped)
+    try testing.expect(test_dir.fileExists(source_name));
+}

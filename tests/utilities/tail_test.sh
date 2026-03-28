@@ -294,4 +294,22 @@ test_tail() {
     # Mixed file types
     local expected_mixed=$'==> '"$test_file1"$' <==\nSingle line file\n==> /dev/null <=='
     test_command_output "tail mixed normal and special" "$expected_mixed" "$binary" -n 1 "$test_file1" /dev/null
+
+    echo -e "${CYAN}Testing large -c value via stdin (OOM bug F64)...${NC}"
+
+    # F64: tail -c with large value on empty stdin should exit 0, not OOM.
+    # processInputByBytesNoSeek allocates byte_count bytes unconditionally,
+    # so a large value causes OOM even when there is no data to read.
+
+    # Large -c on /dev/null: must exit 0 (GNU behavior), not OOM crash
+    test_command_exit_code "tail -c 10000000000 /dev/null exits 0" 0 bash -c "'$binary' -c 10000000000 < /dev/null"
+
+    # Large -c on empty pipe: must exit 0
+    test_command_exit_code "tail -c 10000000000 empty pipe exits 0" 0 bash -c "echo -n '' | '$binary' -c 10000000000"
+
+    # Large -c with small input via pipe: should return all input, not OOM
+    test_command_output "tail -c 1000000000 small stdin returns data" "hello" bash -c "printf 'hello' | '$binary' -c 1000000000"
+
+    # -c 0 from stdin should produce nothing (edge case, not the OOM bug)
+    test_command_output "tail -c 0 from stdin" "" bash -c "printf 'data' | '$binary' -c 0"
 }

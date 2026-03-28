@@ -269,4 +269,53 @@ test_realpath() {
     echo -e "${CYAN}Testing .. past root regression...${NC}"
     test_command_output "realpath -m .. past root returns /" "/" \
         "$binary" -m /tmp/nonexistent/../../../..
+
+    # F46: GNU default is -E (all-but-last), not -e (all must exist)
+    echo -e "${CYAN}Testing default mode uses GNU -E semantics...${NC}"
+
+    # Default mode: last component may be missing if parent exists
+    local default_out default_rc
+    default_out=$("$binary" /tmp/nonexistent_vibeutils_test_xyz 2>/dev/null)
+    default_rc=$?
+    if [[ "$default_rc" -eq 0 ]]; then
+        print_test_result "default: missing last component exits 0" "PASS"
+    else
+        print_test_result "default: missing last component exits 0" "FAIL" \
+            "Expected exit 0, got $default_rc"
+    fi
+
+    if [[ "$default_out" == *"nonexistent_vibeutils_test_xyz"* ]]; then
+        print_test_result "default: missing last component prints path" "PASS"
+    else
+        print_test_result "default: missing last component prints path" "FAIL" \
+            "Expected path containing nonexistent_vibeutils_test_xyz, got: $default_out"
+    fi
+
+    # Default mode: missing intermediate directory still fails
+    test_command_exit_code "default: missing intermediate exits 1" 1 \
+        "$binary" /nonexistent_vibeutils_dir/somefile 2>/dev/null
+
+    # -e mode: missing last component must fail (stricter than default)
+    local e_rc
+    "$binary" -e /tmp/nonexistent_vibeutils_test_xyz >/dev/null 2>&1
+    e_rc=$?
+    if [[ "$e_rc" -ne 0 ]]; then
+        print_test_result "-e: missing last component exits nonzero" "PASS"
+    else
+        print_test_result "-e: missing last component exits nonzero" "FAIL" \
+            "Expected nonzero exit, got $e_rc"
+    fi
+
+    # Verify default and -e differ: default succeeds, -e fails for same path
+    local default_rc2 e_rc2
+    "$binary" /tmp/nonexistent_vibeutils_test_xyz >/dev/null 2>/dev/null
+    default_rc2=$?
+    "$binary" -e /tmp/nonexistent_vibeutils_test_xyz >/dev/null 2>/dev/null
+    e_rc2=$?
+    if [[ "$default_rc2" -eq 0 && "$e_rc2" -ne 0 ]]; then
+        print_test_result "default vs -e: different behavior for missing last" "PASS"
+    else
+        print_test_result "default vs -e: different behavior for missing last" "FAIL" \
+            "default exit=$default_rc2 -e exit=$e_rc2 (expected 0 and nonzero)"
+    fi
 }
