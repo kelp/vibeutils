@@ -51,6 +51,29 @@ test_uniq() {
 
     test_command_output "uniq -D no duplicates" "" bash -c "printf 'aaa\nbbb\nccc\n' | '$binary' -D"
 
+    echo -e "${CYAN}Testing --all-repeated=METHOD variants...${NC}"
+
+    # --all-repeated=none: print all duplicates, no separator between groups
+    test_command_output_exact "uniq --all-repeated=none" $'a\na\n' bash -c "printf 'a\na\nb\n' | '$binary' --all-repeated=none"
+
+    # --all-repeated=none exit code should be 0, not a crash
+    test_command_exit_code "uniq --all-repeated=none exits 0" 0 bash -c "printf 'a\na\nb\n' | '$binary' --all-repeated=none"
+
+    # --all-repeated=prepend: empty line before every group (including first)
+    test_command_output_exact "uniq --all-repeated=prepend" $'\na\na\n' bash -c "printf 'a\na\nb\n' | '$binary' --all-repeated=prepend"
+
+    # --all-repeated=separate: empty line between groups (not before first)
+    test_command_output_exact "uniq --all-repeated=separate" $'a\na\n' bash -c "printf 'a\na\nb\n' | '$binary' --all-repeated=separate"
+
+    # --all-repeated=separate with multiple duplicate groups
+    test_command_output_exact "uniq --all-repeated=separate multi-group" $'a\na\n\nc\nc\n' bash -c "printf 'a\na\nb\nc\nc\n' | '$binary' --all-repeated=separate"
+
+    # --all-repeated=prepend with multiple duplicate groups
+    test_command_output_exact "uniq --all-repeated=prepend multi-group" $'\na\na\n\nc\nc\n' bash -c "printf 'a\na\nb\nc\nc\n' | '$binary' --all-repeated=prepend"
+
+    # --all-repeated=none with multiple duplicate groups
+    test_command_output_exact "uniq --all-repeated=none multi-group" $'a\na\nc\nc\n' bash -c "printf 'a\na\nb\nc\nc\n' | '$binary' --all-repeated=none"
+
     echo -e "${CYAN}Testing -u (unique) flag...${NC}"
 
     test_command_output "uniq -u basic" "bbb" bash -c "printf 'aaa\naaa\nbbb\nccc\nccc\n' | '$binary' -u"

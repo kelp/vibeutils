@@ -82,6 +82,50 @@ test_timeout() {
             "Expected exit 143 (128+TERM), got $exit_code"
     fi
 
+    # Regression: setpgid race — very short timeouts with -s KILL must
+    # still produce exit 137 (128+9), not 0.  Run several iterations to
+    # increase the chance of hitting the race window where setpgid hasn't
+    # taken effect before the signal is sent to the process group.
+    # Each invocation is guarded by the system timeout (5s) to prevent
+    # hangs when the race causes our binary to block in waitpid forever.
+    echo -e "${CYAN}Testing setpgid race with -s KILL (multiple iterations)...${NC}"
+    local kill_failures=0
+    local kill_detail=""
+    for i in $(seq 1 20); do
+        timeout 5 "$binary" -s KILL 0.01 sleep 60 >/dev/null 2>&1
+        exit_code=$?
+        if [[ $exit_code -ne 137 ]]; then
+            kill_failures=$((kill_failures + 1))
+            kill_detail="${kill_detail}  iter $i: got $exit_code\n"
+        fi
+    done
+    if [[ $kill_failures -eq 0 ]]; then
+        print_test_result "timeout -s KILL race (20 iterations)" "PASS"
+    else
+        print_test_result "timeout -s KILL race (20 iterations)" "FAIL" \
+            "$kill_failures/20 runs did not exit 137:\n$kill_detail"
+    fi
+
+    # Regression: setpgid race — very short timeouts with --preserve-status
+    # must still produce exit 143 (128+15), not 0.
+    echo -e "${CYAN}Testing setpgid race with --preserve-status (multiple iterations)...${NC}"
+    local ps_failures=0
+    local ps_detail=""
+    for i in $(seq 1 20); do
+        timeout 5 "$binary" --preserve-status 0.01 sleep 60 >/dev/null 2>&1
+        exit_code=$?
+        if [[ $exit_code -ne 143 ]]; then
+            ps_failures=$((ps_failures + 1))
+            ps_detail="${ps_detail}  iter $i: got $exit_code\n"
+        fi
+    done
+    if [[ $ps_failures -eq 0 ]]; then
+        print_test_result "timeout --preserve-status race (20 iterations)" "PASS"
+    else
+        print_test_result "timeout --preserve-status race (20 iterations)" "FAIL" \
+            "$ps_failures/20 runs did not exit 143:\n$ps_detail"
+    fi
+
     echo -e "${CYAN}Testing duration suffixes...${NC}"
 
     # Test with seconds suffix

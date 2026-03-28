@@ -161,7 +161,38 @@ test_head() {
     # Directory handling
     local test_dir=$(create_temp_dir)
     test_command_fails "head directory" "$binary" "$test_dir"
-    
+
+    # Directory: verify clean error message, not a stack trace
+    local dir_stderr dir_stdout dir_exit dir_cmd
+    run_command dir_cmd dir_stdout dir_stderr dir_exit "$binary" "$test_dir"
+    if [[ "$dir_stderr" == *"Is a directory"* ]] && [[ "$dir_stderr" != *".zig"* ]] && [[ "$dir_stderr" != *"panicked"* ]]; then
+        print_test_result "head directory stderr is clean error" "PASS"
+    else
+        print_test_result "head directory stderr is clean error" "FAIL" \
+            "Expected 'Is a directory' without stack trace. Got stderr: $dir_stderr"
+    fi
+
+    # Directory in byte mode: same clean error
+    local dir_byte_stderr dir_byte_stdout dir_byte_exit dir_byte_cmd
+    run_command dir_byte_cmd dir_byte_stdout dir_byte_stderr dir_byte_exit "$binary" -c 10 "$test_dir"
+    if [[ $dir_byte_exit -eq 1 ]] && [[ "$dir_byte_stderr" == *"Is a directory"* ]] && [[ "$dir_byte_stderr" != *".zig"* ]]; then
+        print_test_result "head -c directory exits 1 with clean error" "PASS"
+    else
+        print_test_result "head -c directory exits 1 with clean error" "FAIL" \
+            "Expected exit 1 and 'Is a directory'. Got exit=$dir_byte_exit stderr: $dir_byte_stderr"
+    fi
+
+    # Directory with valid file: should process remaining files
+    local dir_combo_file=$(create_temp_file "after directory")
+    local dir_combo_stderr dir_combo_stdout dir_combo_exit dir_combo_cmd
+    run_command dir_combo_cmd dir_combo_stdout dir_combo_stderr dir_combo_exit "$binary" "$test_dir" "$dir_combo_file"
+    if [[ $dir_combo_exit -eq 1 ]] && [[ "$dir_combo_stdout" == *"after directory"* ]] && [[ "$dir_combo_stderr" == *"Is a directory"* ]]; then
+        print_test_result "head directory then valid file continues" "PASS"
+    else
+        print_test_result "head directory then valid file continues" "FAIL" \
+            "Expected exit 1, stdout with 'after directory', stderr with 'Is a directory'. Got exit=$dir_combo_exit stdout='$dir_combo_stdout' stderr='$dir_combo_stderr'"
+    fi
+
     # Permission denied
     local unreadable_file=$(create_temp_file "secret content")
     chmod 000 "$unreadable_file"

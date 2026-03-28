@@ -1164,3 +1164,214 @@ test "ln: -sb without -f creates backup and replaces symlink" {
     const link_target = try tmp_dir.dir.readLink("mylink", &buffer);
     try testing.expectEqualStrings(new_target_abs, link_target);
 }
+
+// F54: ln -sfn should replace a symlink-to-directory, not follow it
+test "ln: -sfn replaces symlink to directory instead of following it" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a real directory and a symlink pointing to it
+    try tmp_dir.dir.makeDir("real_dir");
+    try tmp_dir.dir.symLink("real_dir", "dir_link", .{ .is_directory = true });
+
+    // Create a target file
+    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
+    defer testing.allocator.free(target_abs);
+    const dir_link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dir_link" });
+    defer testing.allocator.free(dir_link_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -sfn target.txt dir_link
+    // GNU behavior: dir_link should be REPLACED with a symlink to target.txt
+    // Bug: our code follows dir_link into real_dir and creates target.txt inside it
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-s", "-f", "-n", target_abs, dir_link_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // dir_link should now be a symlink to target.txt, NOT a symlink to real_dir
+    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_target = try tmp_dir.dir.readLink("dir_link", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, link_target);
+}
+
+// F54: ln -sfh should also replace symlink to directory (POSIX -h alias)
+test "ln: -sfh replaces symlink to directory (POSIX -h alias)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("real_dir");
+    try tmp_dir.dir.symLink("real_dir", "dir_link", .{ .is_directory = true });
+    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
+    defer testing.allocator.free(target_abs);
+    const dir_link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dir_link" });
+    defer testing.allocator.free(dir_link_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln -sfh target.txt dir_link
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-s", "-f", "-h", target_abs, dir_link_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_target = try tmp_dir.dir.readLink("dir_link", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, link_target);
+}
+
+// F54: ln -n with regular file dest should work normally
+test "ln: -sfn with regular file destination works normally" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+    try createTestFile(tmp_dir.dir, "existing.txt", "old content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
+    defer testing.allocator.free(target_abs);
+    const existing_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "existing.txt" });
+    defer testing.allocator.free(existing_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-s", "-f", "-n", target_abs, existing_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should be a symlink to target.txt
+    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_target = try tmp_dir.dir.readLink("existing.txt", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, link_target);
+}
+
+// F54: ln -n with dangling symlink dest should work normally
+test "ln: -sfn with dangling symlink destination replaces it" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+
+    // Create a dangling symlink
+    try tmp_dir.dir.symLink("nonexistent", "dangling_link", .{});
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
+    defer testing.allocator.free(target_abs);
+    const dangling_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dangling_link" });
+    defer testing.allocator.free(dangling_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "-s", "-f", "-n", target_abs, dangling_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link_target = try tmp_dir.dir.readLink("dangling_link", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, link_target);
+}
+
+// F66: ln --backup=simple should not panic
+test "ln: --backup=simple does not panic with TooManyValues" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try createTestFile(tmp_dir.dir, "source.txt", "source content");
+    try createTestFile(tmp_dir.dir, "dest.txt", "dest content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const source_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "source.txt" });
+    defer testing.allocator.free(source_abs);
+    const dest_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dest.txt" });
+    defer testing.allocator.free(dest_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Run: ln --backup=simple source.txt dest.txt
+    // GNU ln accepts --backup=CONTROL; our code panics with TooManyValues
+    // because backup is a bool and can't take a value.
+    // Expected: exit code 0 (success) with backup created, or at minimum
+    // a clean error message (not a stack trace / panic).
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "--backup=simple", source_abs, dest_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    // Should succeed (GNU behavior) or at least give a clean error (exit 2).
+    // Must NOT propagate TooManyValues error (which would be a panic/stack trace).
+    // For now, test that it returns a clean exit code, not an error propagation.
+    try testing.expect(exit_code == 0 or exit_code == 2);
+}
+
+// F66: ln --backup=numbered should also not panic
+test "ln: --backup=numbered does not panic" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try createTestFile(tmp_dir.dir, "source.txt", "source content");
+    try createTestFile(tmp_dir.dir, "dest.txt", "dest content");
+
+    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(tmp_path);
+
+    const source_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "source.txt" });
+    defer testing.allocator.free(source_abs);
+    const dest_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dest.txt" });
+    defer testing.allocator.free(dest_abs);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const exit_code = try runLn(
+        testing.allocator,
+        &[_][]const u8{ "--backup=numbered", source_abs, dest_abs },
+        common.null_writer,
+        stderr_buffer.writer(testing.allocator),
+    );
+
+    try testing.expect(exit_code == 0 or exit_code == 2);
+}

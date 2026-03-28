@@ -687,6 +687,78 @@ test "head with -z and fewer items than requested" {
     try testing.expectEqualStrings("Line A\x00Line B\x00", stdout_buffer.items);
 }
 
+test "head directory in line mode returns exit code 1 not crash" {
+    // GNU head: head /tmp prints "head: error reading '/tmp': Is a directory" to stderr, exits 1
+    // Our implementation crashes with a Zig stack trace instead of a clean error
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/tmp"};
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Must exit 1 (general error), not crash/panic
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    // Stderr must contain a diagnostic about the directory, not a stack trace
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+}
+
+test "head directory in byte mode returns exit code 1 not crash" {
+    // GNU head: head -c 10 /tmp prints "head: error reading '/tmp': Is a directory" to stderr, exits 1
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "10", "/tmp" };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+}
+
+test "head directory does not produce stack trace on stderr" {
+    // Verify stderr does not contain stack trace markers
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/tmp"};
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    // Must not contain Zig panic/stack trace indicators
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "panicked") == null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "error.") == null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, ".zig") == null);
+}
+
+test "head directory continues processing remaining files" {
+    // GNU head processes remaining files after a directory error
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "valid.txt", "hello\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const valid_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "valid.txt");
+    defer testing.allocator.free(valid_path);
+
+    const args = [_][]const u8{ "/tmp", valid_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should return error exit code but still output valid file
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "hello") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+}
+
 test "head with obsolete -NUM syntax" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();

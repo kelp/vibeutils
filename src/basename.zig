@@ -412,12 +412,30 @@ test "computeBasename function directly" {
     try testing.expectEqualStrings("/", computeBasename("//", null));
     try testing.expectEqualStrings("usr", computeBasename("/usr/", null));
     try testing.expectEqualStrings("basename", computeBasename("basename", null));
-    try testing.expectEqualStrings(".", computeBasename("", null));
+    // GNU basename "" outputs an empty line (bare newline), not "."
+    try testing.expectEqualStrings("", computeBasename("", null));
 
     // Test suffix edge cases
     try testing.expectEqualStrings(".txt", computeBasename(".txt", ".txt")); // Don't remove if entire name
     try testing.expectEqualStrings("file.txt", computeBasename("file.txt", "")); // Empty suffix
     try testing.expectEqualStrings("file.pdf", computeBasename("file.pdf", ".txt")); // Suffix doesn't match
+
+    // GNU: empty string with suffix still returns empty, not "."
+    try testing.expectEqualStrings("", computeBasename("", ".txt"));
+}
+
+test "basename empty string with -a flag" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // GNU: basename -a "" "" outputs two empty lines (\n\n), not ".\n.\n"
+    const args = [_][]const u8{ "-a", "", "" };
+    const result = try runBasename(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\n\n", stdout_buffer.items);
 }
 
 test "basename complex path cases" {

@@ -1151,3 +1151,147 @@ test "tr empty input produces empty output" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buffer.items);
 }
+
+test "tr [c*] fill-to-SET1-length translates all chars" {
+    // GNU: printf 'abc' | tr 'abc' '[x*]' -> "xxx"
+    // [x*] should expand to repeat 'x' to match the length of SET1
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("abc");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed = TrArgs{
+        .positionals = &.{ "abc", "[x*]" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("xxx", stdout_buffer.items);
+}
+
+test "tr [c*0] fill-to-SET1-length POSIX synonym" {
+    // GNU: printf 'abc' | tr 'abc' '[x*0]' -> "xxx"
+    // [x*0] is the POSIX synonym for [x*] (fill to match SET1 length)
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("abc");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed = TrArgs{
+        .positionals = &.{ "abc", "[x*0]" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("xxx", stdout_buffer.items);
+}
+
+test "tr [c*] fill with character class in SET1" {
+    // GNU: printf 'HELLO' | tr '[:upper:]' '[x*]' -> "xxxxx"
+    // [x*] should expand to match the full expanded length of [:upper:] (26 chars)
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("HELLO");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed = TrArgs{
+        .positionals = &.{ "[:upper:]", "[x*]" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("xxxxx", stdout_buffer.items);
+}
+
+test "tr [c*] fill with other chars before repeat in SET2" {
+    // GNU: printf 'abcd' | tr 'abcd' 'y[x*]' -> "yxxx"
+    // 'y' maps to 'a', then [x*] fills the remaining 3 positions
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("abcd");
+    try input_file.seekTo(0);
+
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const parsed = TrArgs{
+        .positionals = &.{ "abcd", "y[x*]" },
+    };
+
+    const result = try runTrWithInput(
+        testing.allocator,
+        parsed,
+        input_file,
+        stdout_buffer.writer(testing.allocator),
+        common.null_writer,
+    );
+    input_file.close();
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("yxxx", stdout_buffer.items);
+}
+
+test "tr extra operand returns misuse" {
+    // GNU: tr a b c -> "tr: extra operand 'c'" on stderr, exit 1
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "a", "b", "c" };
+    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    // GNU uses exit 1, but vibeutils convention for usage errors is exit 2
+    // Either 1 or 2 is acceptable; the key is it must NOT be 0
+    try testing.expect(result != 0);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+}
+
+test "tr multiple extra operands returns misuse" {
+    // tr a b c d -> should error on 'c' (the first extra operand)
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "a", "b", "c", "d" };
+    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expect(result != 0);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+}

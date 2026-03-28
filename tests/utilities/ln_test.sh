@@ -604,4 +604,151 @@ test_ln() {
         print_test_result "ln readable error message (regression)" "FAIL" \
             "Expected readable error, got: $reg_err_err"
     fi
+
+    # F54: ln -sfn should replace a symlink-to-directory, not follow it
+    echo -e "${CYAN}Testing F54: -n/--no-dereference with symlink-to-directory...${NC}"
+
+    # Create a real directory, a symlink to it, and a target file
+    local f54_dir="$TEMP_DIR/f54_real_dir"
+    mkdir -p "$f54_dir"
+    local f54_dir_link="$TEMP_DIR/f54_dir_link"
+    ln -s "$f54_dir" "$f54_dir_link"
+    local f54_target=$(create_temp_file "f54 target content")
+
+    # ln -sfn target dir_link should REPLACE dir_link with a symlink to target
+    # Bug: our code follows dir_link into f54_real_dir and creates target inside
+    local f54_out=""
+    local f54_err=""
+    local f54_exit=""
+    run_command f54_cmd f54_out f54_err f54_exit \
+        "$binary" -sfn "$f54_target" "$f54_dir_link"
+
+    if [[ $f54_exit -eq 0 ]]; then
+        print_test_result "ln -sfn exit code" "PASS"
+    else
+        print_test_result "ln -sfn exit code" "FAIL" \
+            "Expected exit 0, got $f54_exit, stderr: $f54_err"
+    fi
+
+    # dir_link should now point to f54_target, NOT to f54_real_dir
+    local f54_readlink
+    f54_readlink=$(readlink "$f54_dir_link")
+    if [[ "$f54_readlink" == "$f54_target" ]]; then
+        print_test_result "ln -sfn replaces symlink-to-dir" "PASS"
+    else
+        print_test_result "ln -sfn replaces symlink-to-dir" "FAIL" \
+            "Expected dir_link -> $f54_target, got dir_link -> $f54_readlink"
+    fi
+
+    # dir_link should NOT be a directory anymore (it should be a symlink to a file)
+    if [[ -L "$f54_dir_link" && ! -d "$f54_dir_link" ]]; then
+        print_test_result "ln -sfn dir_link is not a directory" "PASS"
+    else
+        print_test_result "ln -sfn dir_link is not a directory" "FAIL" \
+            "dir_link is still a directory (symlink was followed)"
+    fi
+
+    # F54: same test with -h (POSIX alias for --no-dereference)
+    local f54h_dir="$TEMP_DIR/f54h_real_dir"
+    mkdir -p "$f54h_dir"
+    local f54h_dir_link="$TEMP_DIR/f54h_dir_link"
+    ln -s "$f54h_dir" "$f54h_dir_link"
+    local f54h_target=$(create_temp_file "f54h target content")
+
+    local f54h_out=""
+    local f54h_err=""
+    local f54h_exit=""
+    run_command f54h_cmd f54h_out f54h_err f54h_exit \
+        "$binary" -sfh "$f54h_target" "$f54h_dir_link"
+
+    local f54h_readlink
+    f54h_readlink=$(readlink "$f54h_dir_link")
+    if [[ "$f54h_readlink" == "$f54h_target" ]]; then
+        print_test_result "ln -sfh replaces symlink-to-dir" "PASS"
+    else
+        print_test_result "ln -sfh replaces symlink-to-dir" "FAIL" \
+            "Expected dir_link -> $f54h_target, got dir_link -> $f54h_readlink"
+    fi
+
+    # F54: --no-dereference long option
+    local f54l_dir="$TEMP_DIR/f54l_real_dir"
+    mkdir -p "$f54l_dir"
+    local f54l_dir_link="$TEMP_DIR/f54l_dir_link"
+    ln -s "$f54l_dir" "$f54l_dir_link"
+    local f54l_target=$(create_temp_file "f54l target content")
+
+    local f54l_out=""
+    local f54l_err=""
+    local f54l_exit=""
+    run_command f54l_cmd f54l_out f54l_err f54l_exit \
+        "$binary" -sf --no-dereference "$f54l_target" "$f54l_dir_link"
+
+    local f54l_readlink
+    f54l_readlink=$(readlink "$f54l_dir_link")
+    if [[ "$f54l_readlink" == "$f54l_target" ]]; then
+        print_test_result "ln --no-dereference replaces symlink-to-dir" "PASS"
+    else
+        print_test_result "ln --no-dereference replaces symlink-to-dir" "FAIL" \
+            "Expected dir_link -> $f54l_target, got dir_link -> $f54l_readlink"
+    fi
+
+    # F66: ln --backup=simple should not crash/panic
+    echo -e "${CYAN}Testing F66: --backup=CONTROL should not panic...${NC}"
+
+    local f66_source=$(create_temp_file "f66 source content")
+    local f66_dest=$(create_temp_file "f66 dest content")
+
+    # --backup=simple should work or give a clean error, NOT a stack trace
+    local f66_out=""
+    local f66_err=""
+    local f66_exit=""
+    run_command f66_cmd f66_out f66_err f66_exit \
+        "$binary" --backup=simple "$f66_source" "$f66_dest"
+
+    # Check that it did NOT produce a stack trace / error return trace
+    # The binary currently prints "error: TooManyValues" with a Zig
+    # error return trace, which is unacceptable for a user-facing tool.
+    if [[ "$f66_err" =~ "TooManyValues" || "$f66_err" =~ "panic" \
+          || "$f66_err" =~ ".zig:" || "$f66_err" =~ "stack trace" \
+          || "$f66_err" =~ "reached unreachable" ]]; then
+        print_test_result "ln --backup=simple no error trace" "FAIL" \
+            "Got Zig error trace instead of clean message: $f66_err"
+    else
+        print_test_result "ln --backup=simple no error trace" "PASS"
+    fi
+
+    # Should exit cleanly: 0 (success) or 2 (usage error), but NOT 1 from
+    # an unhandled error propagation
+    if [[ $f66_exit -eq 0 || $f66_exit -eq 2 ]]; then
+        print_test_result "ln --backup=simple clean exit" "PASS"
+    else
+        print_test_result "ln --backup=simple clean exit" "FAIL" \
+            "Expected exit 0 or 2, got $f66_exit (stderr: $f66_err)"
+    fi
+
+    # F66: same with --backup=numbered
+    local f66n_source=$(create_temp_file "f66n source content")
+    local f66n_dest=$(create_temp_file "f66n dest content")
+
+    local f66n_out=""
+    local f66n_err=""
+    local f66n_exit=""
+    run_command f66n_cmd f66n_out f66n_err f66n_exit \
+        "$binary" --backup=numbered "$f66n_source" "$f66n_dest"
+
+    if [[ "$f66n_err" =~ "TooManyValues" || "$f66n_err" =~ "panic" \
+          || "$f66n_err" =~ ".zig:" || "$f66n_err" =~ "stack trace" \
+          || "$f66n_err" =~ "reached unreachable" ]]; then
+        print_test_result "ln --backup=numbered no error trace" "FAIL" \
+            "Got Zig error trace instead of clean message: $f66n_err"
+    else
+        print_test_result "ln --backup=numbered no error trace" "PASS"
+    fi
+
+    if [[ $f66n_exit -eq 0 || $f66n_exit -eq 2 ]]; then
+        print_test_result "ln --backup=numbered clean exit" "PASS"
+    else
+        print_test_result "ln --backup=numbered clean exit" "FAIL" \
+            "Expected exit 0 or 2, got $f66n_exit (stderr: $f66n_err)"
+    fi
 }

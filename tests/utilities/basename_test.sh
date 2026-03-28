@@ -37,7 +37,8 @@ test_basename() {
     test_command_output "POSIX: multiple trailing slashes" "usr" "$binary" "/usr///"
 
     # Empty and edge cases
-    test_command_output "POSIX: empty string becomes dot" "." "$binary" ""
+    # GNU: basename "" outputs an empty line (bare newline), not "."
+    test_command_output "POSIX: empty string becomes empty" "" "$binary" ""
     test_command_output "POSIX: single dot" "." "$binary" "."
     test_command_output "POSIX: double dot" ".." "$binary" ".."
     test_command_output "POSIX: relative with dots" ".." "$binary" "path/../.."

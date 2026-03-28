@@ -255,6 +255,136 @@ test_tee() {
     test_command_output "tee - outputs hello twice" $'hello\nhello' \
         bash -c "echo 'hello' | '$binary' -"
 
+    echo -e "${CYAN}Testing write error diagnostics (F58, F59, F60)...${NC}"
+
+    # F58: tee silently swallows write errors in default mode
+    # GNU tee always prints a diagnostic when a write fails,
+    # even without -p. Our tee only prints with -p.
+    if [[ -c /dev/full ]]; then
+        local f58_stderr
+        f58_stderr=$(bash -c "echo test | '$binary' /dev/full >/dev/null" 2>&1)
+        if [[ -n "$f58_stderr" ]]; then
+            print_test_result "tee /dev/full prints error without -p (F58)" "PASS"
+        else
+            print_test_result "tee /dev/full prints error without -p (F58)" "FAIL" \
+                "GNU tee prints diagnostic on write error even without -p, ours is silent"
+        fi
+    else
+        # Fallback: use a read-only file
+        local ro_file="$TEMP_DIR/readonly_f58.txt"
+        touch "$ro_file"
+        chmod 444 "$ro_file"
+        local f58_stderr
+        f58_stderr=$(bash -c "echo test | '$binary' '$ro_file' >/dev/null" 2>&1)
+        if [[ -n "$f58_stderr" ]]; then
+            print_test_result "tee read-only file prints error without -p (F58)" "PASS"
+        else
+            print_test_result "tee read-only file prints error without -p (F58)" "FAIL" \
+                "GNU tee prints diagnostic on write error even without -p, ours is silent"
+        fi
+        chmod 644 "$ro_file"
+    fi
+
+    # F60: tee error messages omit filename
+    # GNU: "tee: /dev/full: No space left on device"
+    # Ours: "tee: write error: WriteError"
+    if [[ -c /dev/full ]]; then
+        local f60_stderr
+        f60_stderr=$(bash -c "echo test | '$binary' -p /dev/full >/dev/null" 2>&1)
+        if [[ "$f60_stderr" == *"/dev/full"* ]]; then
+            print_test_result "tee error includes filename (F60)" "PASS"
+        else
+            print_test_result "tee error includes filename (F60)" "FAIL" \
+                "Expected '/dev/full' in error, got: '$f60_stderr'"
+        fi
+    else
+        local ro_file="$TEMP_DIR/readonly_f60.txt"
+        touch "$ro_file"
+        chmod 444 "$ro_file"
+        local f60_stderr
+        f60_stderr=$(bash -c "echo test | '$binary' -p '$ro_file' >/dev/null" 2>&1)
+        if [[ "$f60_stderr" == *"$ro_file"* ]]; then
+            print_test_result "tee error includes filename (F60)" "PASS"
+        else
+            print_test_result "tee error includes filename (F60)" "FAIL" \
+                "Expected filename in error, got: '$f60_stderr'"
+        fi
+        chmod 644 "$ro_file"
+    fi
+
+    # F60 additional: error message should include system error, not "WriteError"
+    if [[ -c /dev/full ]]; then
+        local f60b_stderr
+        f60b_stderr=$(bash -c "echo test | '$binary' -p /dev/full >/dev/null" 2>&1)
+        if [[ "$f60b_stderr" != *"WriteError"* ]]; then
+            print_test_result "tee error uses system message not WriteError (F60)" "PASS"
+        else
+            print_test_result "tee error uses system message not WriteError (F60)" "FAIL" \
+                "Error contains raw 'WriteError' instead of system message like 'No space left on device'"
+        fi
+    else
+        print_test_result "tee error uses system message not WriteError (F60)" "SKIP" \
+            "/dev/full not available"
+    fi
+
+    # F58 additional: tee to /dev/null + /dev/full should report error for /dev/full
+    if [[ -c /dev/full ]]; then
+        local f58_multi_stderr
+        f58_multi_stderr=$(bash -c "echo test | '$binary' /dev/null /dev/full >/dev/null" 2>&1)
+        if [[ -n "$f58_multi_stderr" ]]; then
+            print_test_result "tee /dev/null+/dev/full reports error (F58)" "PASS"
+        else
+            print_test_result "tee /dev/null+/dev/full reports error (F58)" "FAIL" \
+                "GNU tee reports write error for /dev/full even with other good files"
+        fi
+    else
+        print_test_result "tee /dev/null+/dev/full reports error (F58)" "SKIP" \
+            "/dev/full not available"
+    fi
+
+    # F59: tee -p does not implement GNU pipe-exit semantics
+    #
+    # GNU behavior:
+    #   Without -p: exit on broken stdout pipe (SIGPIPE/EPIPE),
+    #     so the output file gets only partial data.
+    #   With -p: continue reading stdin and writing to files even
+    #     after stdout pipe breaks. The file gets ALL the data.
+    #
+    # Our behavior: tee catches stdout write errors and continues
+    # in ALL modes. -p has no effect on pipe handling.
+    #
+    # We use 100000 lines (>64KB) to exceed the pipe buffer so
+    # that head -1 closes the read end before all data is written.
+
+    local f59_outfile="$TEMP_DIR/f59_output.txt"
+
+    # Test 1: Without -p, tee should stop writing to file after
+    # stdout pipe breaks (GNU exits on SIGPIPE by default).
+    # Our tee incorrectly continues writing all data.
+    seq 1 100000 | timeout 10 bash -c "'$binary' '$f59_outfile' | head -1 >/dev/null" 2>/dev/null || true
+    local f59_no_p_lines
+    f59_no_p_lines=$(wc -l < "$f59_outfile" 2>/dev/null | tr -d ' ')
+
+    if [[ "$f59_no_p_lines" -lt 100000 ]]; then
+        print_test_result "tee without -p exits on broken pipe (F59)" "PASS"
+    else
+        print_test_result "tee without -p exits on broken pipe (F59)" "FAIL" \
+            "Expected partial data (<100000 lines) when stdout pipe breaks, got $f59_no_p_lines (tee should exit on SIGPIPE without -p)"
+    fi
+
+    # Test 2: With -p, tee should continue writing to file after
+    # stdout pipe breaks. The file should get all 100000 lines.
+    seq 1 100000 | timeout 10 bash -c "'$binary' -p '$f59_outfile' | head -1 >/dev/null" 2>/dev/null || true
+    local f59_p_lines
+    f59_p_lines=$(wc -l < "$f59_outfile" 2>/dev/null | tr -d ' ')
+
+    if [[ "$f59_p_lines" -eq 100000 ]]; then
+        print_test_result "tee -p continues writing to file after pipe break (F59)" "PASS"
+    else
+        print_test_result "tee -p continues writing to file after pipe break (F59)" "FAIL" \
+            "Expected 100000 lines in file with -p, got $f59_p_lines"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}tee tests completed${NC}"
