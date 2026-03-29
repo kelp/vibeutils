@@ -68,12 +68,13 @@ pub fn runPrintf(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // Process format string, reusing it if arguments remain
     while (true) {
         const start_arg_idx = arg_idx;
-        const result = processFormat(format, arguments, &arg_idx, stdout_writer, stderr_writer, allocator);
-        if (result) |_| {
-            // success
-        } else |_| {
+        const halted = processFormat(format, arguments, &arg_idx, stdout_writer, stderr_writer, allocator) catch blk: {
             had_error = true;
-        }
+            break :blk false;
+        };
+
+        // \c halts all output immediately
+        if (halted) break;
 
         // If no arguments were consumed, or all arguments have been used, stop
         if (arg_idx <= start_arg_idx or arg_idx >= arguments.len) {
@@ -88,7 +89,7 @@ pub fn runPrintf(allocator: Allocator, args: []const []const u8, stdout_writer: 
 }
 
 /// Process one pass of the format string, consuming arguments as needed.
-/// Returns the number of arguments consumed.
+/// Returns true if a \c halt was encountered.
 fn processFormat(
     format: []const u8,
     arguments: []const []const u8,
@@ -96,12 +97,13 @@ fn processFormat(
     writer: anytype,
     stderr_writer: anytype,
     allocator: Allocator,
-) !void {
+) !bool {
     var i: usize = 0;
     while (i < format.len) {
         if (format[i] == '\\') {
             // Escape sequence in format string
             const result = try processEscape(format, i, writer);
+            if (result.halt) return true;
             i = result.new_pos;
         } else if (format[i] == '%') {
             if (i + 1 < format.len and format[i + 1] == '%') {
@@ -111,18 +113,21 @@ fn processFormat(
             } else {
                 // Format specifier
                 const result = try processSpecifier(format, i, arguments, arg_idx, writer, stderr_writer, allocator);
-                i = result;
+                if (result.halt) return true;
+                i = result.pos;
             }
         } else {
             try writer.writeByte(format[i]);
             i += 1;
         }
     }
+    return false;
 }
 
 /// Result from processing an escape sequence
 const EscapeResult = struct {
     new_pos: usize,
+    halt: bool = false,
 };
 
 /// Process a backslash escape sequence in the format string.
@@ -167,10 +172,28 @@ fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult 
             try writer.writeByte('\\');
             return .{ .new_pos = pos + 2 };
         },
+        'c' => {
+            // \c halts all output immediately
+            return .{ .new_pos = pos + 2, .halt = true };
+        },
         '0' => {
-            // Octal: \0NNN (up to 3 octal digits after the 0)
+            // Octal: \0NNN (up to 3 octal digits after the leading 0)
             var value: u8 = 0;
             var j: usize = pos + 2;
+            var count: usize = 0;
+            while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
+                j += 1;
+                count += 1;
+            }) {
+                value = value *% 8 +% (format[j] - '0');
+            }
+            try writer.writeByte(value);
+            return .{ .new_pos = j };
+        },
+        '1'...'7' => {
+            // Octal: \NNN (up to 3 octal digits, first digit included)
+            var value: u8 = 0;
+            var j: usize = pos + 1;
             var count: usize = 0;
             while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
                 j += 1;
@@ -217,8 +240,14 @@ fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult 
     }
 }
 
+/// Result from processing a format specifier
+const SpecifierResult = struct {
+    pos: usize,
+    halt: bool = false,
+};
+
 /// Parse and process a format specifier starting at '%'.
-/// Returns the new position in the format string.
+/// Returns the new position and whether \c halt was encountered.
 fn processSpecifier(
     format: []const u8,
     pos: usize,
@@ -227,7 +256,7 @@ fn processSpecifier(
     writer: anytype,
     stderr_writer: anytype,
     allocator: Allocator,
-) !usize {
+) !SpecifierResult {
     var i = pos + 1; // Skip the '%'
 
     // Parse flags: -, +, space, 0, #
@@ -291,7 +320,7 @@ fn processSpecifier(
     if (i >= format.len) {
         // Incomplete format specifier, output as literal
         try writer.writeByte('%');
-        return pos + 1;
+        return .{ .pos = pos + 1 };
     }
 
     const conv = format[i];
@@ -314,7 +343,8 @@ fn processSpecifier(
         },
         'b' => {
             const arg = getNextArg(arguments, arg_idx);
-            try formatBString(writer, arg);
+            const halted = try formatBString(writer, arg);
+            if (halted) return .{ .pos = i, .halt = true };
         },
         'c' => {
             const arg = getNextArg(arguments, arg_idx);
@@ -347,7 +377,7 @@ fn processSpecifier(
             const val = parseUintArg(arg);
             try formatHex(writer, val, true, spec);
         },
-        'f' => {
+        'f', 'F' => {
             const arg = getNextArg(arguments, arg_idx);
             const val = parseFloatArg(arg);
             try formatFloat(writer, val, 'f', spec);
@@ -372,6 +402,16 @@ fn processSpecifier(
             const val = parseFloatArg(arg);
             try formatFloat(writer, val, 'G', spec);
         },
+        'a' => {
+            const arg = getNextArg(arguments, arg_idx);
+            const val = parseFloatArg(arg);
+            try formatHexFloat(writer, val, false, spec);
+        },
+        'A' => {
+            const arg = getNextArg(arguments, arg_idx);
+            const val = parseFloatArg(arg);
+            try formatHexFloat(writer, val, true, spec);
+        },
         else => {
             // Unknown specifier, output literally
             try writer.writeByte('%');
@@ -379,7 +419,7 @@ fn processSpecifier(
         },
     }
 
-    return i;
+    return .{ .pos = i };
 }
 
 /// Format specifier flags and modifiers
@@ -493,8 +533,9 @@ fn formatString(writer: anytype, s: []const u8, spec: FormatSpec) !void {
     }
 }
 
-/// Format a %b string (with backslash escape interpretation like echo -e)
-fn formatBString(writer: anytype, s: []const u8) !void {
+/// Format a %b string (with backslash escape interpretation like echo -e).
+/// Returns true if \c was encountered (halt all output).
+fn formatBString(writer: anytype, s: []const u8) !bool {
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '\\' and i + 1 < s.len) {
@@ -508,10 +549,8 @@ fn formatBString(writer: anytype, s: []const u8) !void {
                     i += 2;
                 },
                 'c' => {
-                    // \c suppresses further output -- for %b this means
-                    // we stop and the caller should stop too. Since we
-                    // can only control our own output, just return.
-                    return;
+                    // \c suppresses further output -- halt everything
+                    return true;
                 },
                 'f' => {
                     try writer.writeByte('\x0c');
@@ -537,14 +576,33 @@ fn formatBString(writer: anytype, s: []const u8) !void {
                     try writer.writeByte('\\');
                     i += 2;
                 },
-                '0'...'7' => {
+                '0' => {
+                    // \0NNN: '0' is a prefix, read up to 3 octal digits after it
                     var value: u8 = 0;
-                    var j: usize = 1;
-                    while (j <= 3 and i + j < s.len and s[i + j] >= '0' and s[i + j] <= '7') : (j += 1) {
-                        value = value *% 8 +% (s[i + j] - '0');
+                    var j: usize = i + 2; // skip past \ and 0
+                    var count: usize = 0;
+                    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
+                        j += 1;
+                        count += 1;
+                    }) {
+                        value = value *% 8 +% (s[j] - '0');
                     }
                     try writer.writeByte(value);
-                    i += j;
+                    i = j;
+                },
+                '1'...'7' => {
+                    // \NNN: first digit is part of the value, up to 3 digits total
+                    var value: u8 = 0;
+                    var j: usize = i + 1; // start at the first digit
+                    var count: usize = 0;
+                    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
+                        j += 1;
+                        count += 1;
+                    }) {
+                        value = value *% 8 +% (s[j] - '0');
+                    }
+                    try writer.writeByte(value);
+                    i = j;
                 },
                 'x' => {
                     var value: u8 = 0;
@@ -582,6 +640,7 @@ fn formatBString(writer: anytype, s: []const u8) !void {
             i += 1;
         }
     }
+    return false;
 }
 
 /// Format a signed integer with the given radix and spec
@@ -839,6 +898,54 @@ fn formatFloat(writer: anytype, val: f64, conv: u8, spec: FormatSpec) !void {
         try writePadding(writer, ' ', padding);
         if (sign_char) |sc| try writer.writeByte(sc);
         try writer.writeAll(content);
+    }
+}
+
+/// Format a hex float (%a/%A) using Zig's std.fmt.
+fn formatHexFloat(writer: anytype, val: f64, uppercase: bool, spec: FormatSpec) !void {
+    var buf: [256]u8 = undefined;
+
+    // Use Zig's builtin hex float formatter
+    const formatted = std.fmt.bufPrint(&buf, "{x}", .{val}) catch "0x0p+0";
+
+    if (uppercase) {
+        // Convert to uppercase: 0x -> 0X, a-f -> A-F, p -> P
+        var upper_buf: [256]u8 = undefined;
+        for (formatted, 0..) |c, idx| {
+            upper_buf[idx] = switch (c) {
+                'a'...'f' => c - 'a' + 'A',
+                'x' => 'X',
+                'p' => 'P',
+                else => c,
+            };
+        }
+        const upper = upper_buf[0..formatted.len];
+        try applyFloatPadding(writer, upper, spec);
+    } else {
+        try applyFloatPadding(writer, formatted, spec);
+    }
+}
+
+/// Apply width/padding to a pre-formatted float string.
+fn applyFloatPadding(writer: anytype, formatted: []const u8, spec: FormatSpec) !void {
+    const w = spec.width orelse 0;
+    if (formatted.len >= w) {
+        try writer.writeAll(formatted);
+    } else {
+        const padding = w - formatted.len;
+        if (spec.left_justify) {
+            try writer.writeAll(formatted);
+            try writePadding(writer, ' ', padding);
+        } else if (spec.zero_pad) {
+            // Insert zeros after sign/prefix
+            const prefix_end: usize = if (formatted.len > 1 and (formatted[1] == 'x' or formatted[1] == 'X')) 2 else if (formatted.len > 0 and formatted[0] == '-') 1 else 0;
+            try writer.writeAll(formatted[0..prefix_end]);
+            try writePadding(writer, '0', padding);
+            try writer.writeAll(formatted[prefix_end..]);
+        } else {
+            try writePadding(writer, ' ', padding);
+            try writer.writeAll(formatted);
+        }
     }
 }
 

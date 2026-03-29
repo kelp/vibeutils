@@ -174,11 +174,15 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
     var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
     const stderr = &stderr_writer.interface;
 
-    try runLs(allocator, args, stdout, stderr);
+    const exit_code = try runLs(allocator, args, stdout, stderr);
 
     // Flush buffers before exit
     stdout.flush() catch {};
     stderr.flush() catch {};
+
+    if (exit_code != 0) {
+        std.process.exit(exit_code);
+    }
 }
 
 /// Wrapper function for consistent fuzz testing interface
@@ -190,40 +194,40 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     };
     defer allocator.free(parsed_args.positionals);
 
-    // Call the main ls implementation
-    runLs(allocator, parsed_args, stdout_writer, stderr_writer) catch |err| {
+    // Call the main ls implementation which returns an exit code
+    return runLs(allocator, parsed_args, stdout_writer, stderr_writer) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "ls", "execution failed: {s}", .{@errorName(err)});
         return 1;
     };
-
-    return 0;
 }
 
 /// Core ls functionality that accepts separate stdout and stderr writers
 /// This allows for testing and different output targets
-pub fn runLs(allocator: std.mem.Allocator, args: LsArgs, stdout_writer: anytype, stderr_writer: anytype) !void {
-    try lsMain(stdout_writer, stderr_writer, args, allocator);
+/// Returns exit code: 0 for success, 2 for serious errors (e.g. nonexistent path)
+pub fn runLs(allocator: std.mem.Allocator, args: LsArgs, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    return try lsMain(stdout_writer, stderr_writer, args, allocator);
 }
 
 /// Core ls functionality that accepts a writer parameter
 /// This allows for testing and different output targets
-fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !void {
+/// Returns exit code: 0 for success, 2 for serious errors
+fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !u8 {
     // Handle help
     if (args.help) {
         try printHelp(allocator, writer);
-        return;
+        return 0;
     }
 
     // Handle version
     if (args.version) {
         try writer.print("ls ({s}) {s}\n", .{ common.name, common.version });
-        return;
+        return 0;
     }
 
     // Handle test-icons
     if (args.test_icons) {
         try printIconTest(writer);
-        return;
+        return 0;
     }
 
     // Resolve display config from environment and terminal state
@@ -347,6 +351,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
 
     // Access positionals (the paths to list)
     const paths = args.positionals;
+    var had_error = false;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
@@ -359,9 +364,13 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
                 if (i > 0) try writer.writeAll("\n");
                 try writer.print("{s}:\n", .{path});
             }
-            try listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
+            listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+                had_error = true;
+            };
         }
     }
+
+    return if (had_error) 2 else 0;
 }
 
 /// Print help message with usage examples
@@ -502,7 +511,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
-        return;
+        return err;
     };
 
     // If it's a file (not a directory), just print the file entry
@@ -630,7 +639,7 @@ test "lsMain help works with different writers" {
         .positionals = &.{},
     };
 
-    try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
+    _ = try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
 
     // Should contain help text
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
@@ -650,7 +659,7 @@ test "lsMain version works with different writers" {
         .positionals = &.{},
     };
 
-    try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
+    _ = try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
 
     // Should contain version info
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "ls (") != null);
@@ -669,7 +678,7 @@ test "runLs function works with separate writers" {
         .positionals = &.{},
     };
 
-    try runLs(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    _ = try runLs(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should contain help text in stdout
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);

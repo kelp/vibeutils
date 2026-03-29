@@ -25,6 +25,7 @@ const SortFlags = struct {
     human_numeric_sort: bool = false,
     month_sort: bool = false,
     random_sort: bool = false,
+    version_sort: bool = false,
 };
 
 /// A KEYDEF specifying a field range and per-key sort options
@@ -127,6 +128,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 opts.global_flags.month_sort = true;
             } else if (std.mem.eql(u8, flag, "random-sort")) {
                 opts.global_flags.random_sort = true;
+            } else if (std.mem.eql(u8, flag, "version-sort")) {
+                opts.global_flags.version_sort = true;
             } else if (std.mem.eql(u8, flag, "merge")) {
                 opts.merge_only = true;
             } else if (std.mem.startsWith(u8, flag, "buffer-size=")) {
@@ -245,7 +248,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                     'c' => opts.check = .diagnose_first,
                     'C' => opts.check = .quiet,
                     'z' => opts.zero_terminated = true,
-                    'V' => opts.version = true,
+                    'V' => opts.global_flags.version_sort = true,
                     'k' => {
                         // -k takes a value: rest of this arg or next arg
                         const value = if (j + 1 < arg.len)
@@ -656,7 +659,15 @@ fn compareLines(ctx: SortContext, a: []const u8, b: []const u8) bool {
                 return if (flags.reverse) !is_less else is_less;
             }
         }
-        // All keys equal - fall through to equal
+        // All keys equal: without -s, use full-line byte
+        // comparison as last-resort tiebreaker (GNU behavior).
+        // With -s (stable), preserve input order.
+        if (!opts.stable) {
+            const last_resort = std.mem.order(u8, a, b);
+            if (last_resort != .eq) {
+                return last_resort == .lt;
+            }
+        }
         return false;
     } else {
         // Compare whole lines with global flags
@@ -783,6 +794,11 @@ fn compareWithFlags(a: []const u8, b: []const u8, flags: SortFlags) std.math.Ord
     }
     if (flags.random_sort) {
         return compareRandom(a, b);
+    }
+
+    // Version sort mode
+    if (flags.version_sort) {
+        return compareVersion(a, b);
     }
 
     // Numeric sort modes
@@ -1003,14 +1019,101 @@ fn parseGeneralNumber(s: []const u8) f64 {
 }
 
 /// Human-numeric sort: compare numbers with SI suffixes (K, M, G, T, etc.)
+/// GNU coreutils -h uses three-level comparison:
+/// 1) sign (negative < non-negative)
+/// 2) suffix rank (no suffix < K < M < G < T < P < E)
+/// 3) numeric value within same suffix
 fn compareHumanNumeric(a: []const u8, b: []const u8) std.math.Order {
-    const a_val = parseHumanNumber(a);
-    const b_val = parseHumanNumber(b);
-    if (a_val < b_val) return .lt;
-    if (a_val > b_val) return .gt;
-    return .eq;
+    const a_parsed = parseHumanParts(a);
+    const b_parsed = parseHumanParts(b);
+
+    // Compare signs first: negative < zero/positive
+    const a_neg = a_parsed.negative and a_parsed.value > 0;
+    const b_neg = b_parsed.negative and b_parsed.value > 0;
+    if (a_neg != b_neg) {
+        return if (a_neg) .lt else .gt;
+    }
+
+    // Both same sign: compare suffix rank, then numeric value.
+    // For negative numbers, higher suffix/value means more negative
+    // (i.e., less), so we reverse the comparison.
+    if (a_neg) {
+        // Both negative: higher suffix = more negative = less
+        const suffix_ord = std.math.order(a_parsed.suffix_rank, b_parsed.suffix_rank);
+        if (suffix_ord != .eq) return suffix_ord.invert();
+        // Same suffix: higher value = more negative = less
+        if (a_parsed.value < b_parsed.value) return .gt;
+        if (a_parsed.value > b_parsed.value) return .lt;
+        return .eq;
+    } else {
+        // Both non-negative
+        const suffix_ord = std.math.order(a_parsed.suffix_rank, b_parsed.suffix_rank);
+        if (suffix_ord != .eq) return suffix_ord;
+        if (a_parsed.value < b_parsed.value) return .lt;
+        if (a_parsed.value > b_parsed.value) return .gt;
+        return .eq;
+    }
 }
 
+const HumanParts = struct {
+    value: f64,
+    suffix_rank: u8,
+    negative: bool,
+};
+
+/// Parse a human-readable number into sign, numeric value, and suffix
+/// rank for three-level comparison.
+fn parseHumanParts(s: []const u8) HumanParts {
+    var i: usize = 0;
+    while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
+    if (i >= s.len) return .{ .value = 0, .suffix_rank = 0, .negative = false };
+
+    var negative = false;
+    if (s[i] == '-') {
+        negative = true;
+        i += 1;
+    } else if (s[i] == '+') {
+        i += 1;
+    }
+
+    var result: f64 = 0;
+    var has_digits = false;
+    while (i < s.len and std.ascii.isDigit(s[i])) : (i += 1) {
+        result = result * 10 + @as(f64, @floatFromInt(s[i] - '0'));
+        has_digits = true;
+    }
+
+    if (i < s.len and s[i] == '.') {
+        i += 1;
+        var frac: f64 = 0.1;
+        while (i < s.len and std.ascii.isDigit(s[i])) : (i += 1) {
+            result += @as(f64, @floatFromInt(s[i] - '0')) * frac;
+            frac *= 0.1;
+            has_digits = true;
+        }
+    }
+
+    if (!has_digits) return .{ .value = 0, .suffix_rank = 0, .negative = false };
+
+    // Determine suffix rank: 0=none, 1=K, 2=M, 3=G, 4=T, 5=P, 6=E
+    var suffix_rank: u8 = 0;
+    if (i < s.len) {
+        suffix_rank = switch (s[i]) {
+            'K', 'k' => 1,
+            'M' => 2,
+            'G' => 3,
+            'T' => 4,
+            'P' => 5,
+            'E' => 6,
+            else => 0,
+        };
+    }
+
+    return .{ .value = result, .suffix_rank = suffix_rank, .negative = negative };
+}
+
+/// Parse a human-readable number and return the total byte value.
+/// Used by tests and other callers that need the flat f64 value.
 fn parseHumanNumber(s: []const u8) f64 {
     var i: usize = 0;
     while (i < s.len and (s[i] == ' ' or s[i] == '\t')) : (i += 1) {}
@@ -1058,6 +1161,52 @@ fn parseHumanNumber(s: []const u8) f64 {
     }
 
     return if (negative) -result else result;
+}
+
+/// Version sort: compare strings as version numbers.
+/// Splits on digit/non-digit boundaries, compares numeric
+/// parts numerically and non-numeric parts lexicographically.
+fn compareVersion(a: []const u8, b: []const u8) std.math.Order {
+    var ai: usize = 0;
+    var bi: usize = 0;
+
+    while (ai < a.len and bi < b.len) {
+        const a_is_digit = std.ascii.isDigit(a[ai]);
+        const b_is_digit = std.ascii.isDigit(b[bi]);
+
+        if (a_is_digit and b_is_digit) {
+            // Both in numeric segment: skip leading zeros,
+            // compare numerically
+            const a_start = ai;
+            const b_start = bi;
+            while (ai < a.len and std.ascii.isDigit(a[ai])) : (ai += 1) {}
+            while (bi < b.len and std.ascii.isDigit(b[bi])) : (bi += 1) {}
+
+            // Strip leading zeros for comparison
+            var a_num = a[a_start..ai];
+            var b_num = b[b_start..bi];
+            while (a_num.len > 1 and a_num[0] == '0') a_num = a_num[1..];
+            while (b_num.len > 1 and b_num[0] == '0') b_num = b_num[1..];
+
+            // Compare by length first (longer = bigger)
+            if (a_num.len != b_num.len) {
+                return std.math.order(a_num.len, b_num.len);
+            }
+            // Same length: compare digit by digit
+            const digit_order = std.mem.order(u8, a_num, b_num);
+            if (digit_order != .eq) return digit_order;
+        } else {
+            // At least one non-digit: compare bytes
+            if (a[ai] != b[bi]) {
+                return std.math.order(a[ai], b[bi]);
+            }
+            ai += 1;
+            bi += 1;
+        }
+    }
+
+    // One or both exhausted
+    return std.math.order(a.len, b.len);
 }
 
 /// Month sort: compare by month abbreviation
@@ -1275,7 +1424,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\      --parallel=N             change the number of sorts run concurrently to N
         \\      --random-source=FILE     get random bytes from FILE
         \\      --help                   display this help and exit
-        \\  -V, --version                output version information and exit
+        \\  -V, --version-sort           natural sort of (version) numbers within text
+        \\      --version                output version information and exit
         \\
         \\KEYDEF is F[.C][OPTS][,F[.C][OPTS]] for start and stop position, where F is a
         \\field number and C a character position (numbered from 1); both are origin 1.

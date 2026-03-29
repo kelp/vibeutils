@@ -250,7 +250,13 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                     opts.human_readable = false;
                 },
                 'l' => opts.local = true,
-                'n' => opts.no_sync = true,
+                'n' => {
+                    if (comptime is_linux) {
+                        err_msg = "unrecognized option";
+                        break;
+                    }
+                    opts.no_sync = true;
+                },
                 'P' => {
                     opts.portability = true;
                     opts.human_readable = false;
@@ -1344,8 +1350,10 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
             if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
             break :blk std.fmt.bufPrint(&size_label_buf, "{d}B-blocks", .{bs}) catch "blocks";
         }
+        if (opts.portability) break :blk "1024-blocks";
         break :blk "1K-blocks";
     };
+    const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
 
     if (opts.display.icons == .on) {
         if (opts.print_type) {
@@ -1355,7 +1363,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
                 size_label,
                 "Used",
                 "Available",
-                "Use%",
+                pct_label,
                 "Usage",
                 "Mounted on",
             });
@@ -1365,7 +1373,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
                 size_label,
                 "Used",
                 "Available",
-                "Use%",
+                pct_label,
                 "Usage",
                 "Mounted on",
             });
@@ -1378,7 +1386,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
                 size_label,
                 "Used",
                 "Available",
-                "Use%",
+                pct_label,
                 "Mounted on",
             });
         } else {
@@ -1387,7 +1395,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
                 size_label,
                 "Used",
                 "Available",
-                "Use%",
+                pct_label,
                 "Mounted on",
             });
         }
@@ -1642,8 +1650,10 @@ fn printHeaderDynamic(stdout: anytype, opts: DfOptions, widths: ColumnWidths, s:
             if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
             break :blk std.fmt.bufPrint(&size_label_buf, "{d}B-blocks", .{bs}) catch "blocks";
         }
+        if (opts.portability) break :blk "1024-blocks";
         break :blk "1K-blocks";
     };
+    const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
 
     // Icon column spacer (2 chars for icon + space)
     if (opts.display.icons == .on) {
@@ -1667,7 +1677,7 @@ fn printHeaderDynamic(stdout: anytype, opts: DfOptions, widths: ColumnWidths, s:
     try stdout.writeAll("  ");
     try padLeft(stdout, "Avail", widths.avail);
     try stdout.writeAll("  ");
-    try padLeft(stdout, "Use%", widths.use_pct);
+    try padLeft(stdout, pct_label, widths.use_pct);
 
     if (opts.display.icons == .on) {
         try stdout.writeAll("  ");
@@ -3181,6 +3191,7 @@ test "isCloudFs - source patterns" {
 }
 
 test "parseArgs - n flag accepted as no-op" {
+    if (comptime is_linux) return error.SkipZigTest;
     const args = [_][]const u8{"-n"};
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
@@ -3189,6 +3200,7 @@ test "parseArgs - n flag accepted as no-op" {
 }
 
 test "parseArgs - n combined with other flags" {
+    if (comptime is_linux) return error.SkipZigTest;
     const args = [_][]const u8{"-an"};
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
@@ -3198,6 +3210,7 @@ test "parseArgs - n combined with other flags" {
 }
 
 test "runDf - n flag accepted" {
+    if (comptime is_linux) return error.SkipZigTest;
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
