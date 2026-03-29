@@ -476,7 +476,11 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
     var actual_pattern: []const u8 = pattern;
 
     if (opts.line_regexp) {
-        actual_pattern = std.fmt.allocPrint(allocator, "^({s})$", .{pattern}) catch return null;
+        if (opts.regex_mode == .extended) {
+            actual_pattern = std.fmt.allocPrint(allocator, "^({s})$", .{pattern}) catch return null;
+        } else {
+            actual_pattern = std.fmt.allocPrint(allocator, "^\\({s}\\)$", .{pattern}) catch return null;
+        }
     } else if (opts.word_regexp) {
         if (opts.regex_mode == .extended) {
             actual_pattern = std.fmt.allocPrint(allocator, "(^|[^[:alnum:]_])({s})([^[:alnum:]_]|$)", .{pattern}) catch return null;
@@ -746,28 +750,38 @@ fn processFile(
                 }
 
                 if (opts.only_matching and !opts.invert_match) {
-                    if (show_filename) {
-                        printFilename(stdout_writer, filename, use_color);
-                        printSep(stdout_writer, fn_sep, use_color);
-                    }
-                    if (opts.line_number) {
-                        printLineNumber(stdout_writer, line_num, use_color);
-                        printSep(stdout_writer, ':', use_color);
-                    }
-                    if (opts.byte_offset) {
-                        printByteOffset(stdout_writer, line_offsets.items[line_num - 1], use_color);
-                        printSep(stdout_writer, ':', use_color);
-                    }
-                    if (result.match_end > result.match_start and result.match_end <= line.len) {
+                    // Print all non-overlapping matches on this line, each on its own output line.
+                    var search_offset: usize = 0;
+                    var cur_result = result;
+                    while (cur_result.matched and cur_result.match_end > cur_result.match_start and search_offset + cur_result.match_end <= line.len) {
+                        if (show_filename) {
+                            printFilename(stdout_writer, filename, use_color);
+                            printSep(stdout_writer, fn_sep, use_color);
+                        }
+                        if (opts.line_number) {
+                            printLineNumber(stdout_writer, line_num, use_color);
+                            printSep(stdout_writer, ':', use_color);
+                        }
+                        if (opts.byte_offset) {
+                            printByteOffset(stdout_writer, line_offsets.items[line_num - 1] + search_offset + cur_result.match_start, use_color);
+                            printSep(stdout_writer, ':', use_color);
+                        }
+                        const abs_start = search_offset + cur_result.match_start;
+                        const abs_end = search_offset + cur_result.match_end;
                         if (use_color) {
                             stdout_writer.print("{s}", .{Color.match_highlight}) catch {};
-                            stdout_writer.writeAll(line[result.match_start..result.match_end]) catch {};
+                            stdout_writer.writeAll(line[abs_start..abs_end]) catch {};
                             stdout_writer.print("{s}", .{Color.reset}) catch {};
                         } else {
-                            stdout_writer.writeAll(line[result.match_start..result.match_end]) catch {};
+                            stdout_writer.writeAll(line[abs_start..abs_end]) catch {};
                         }
+                        stdout_writer.writeByte(line_term) catch {};
+
+                        // Advance past this match and search for more
+                        search_offset = abs_end;
+                        if (search_offset >= line.len) break;
+                        cur_result = matchAnyPattern(patterns, line[search_offset..], allocator);
                     }
-                    stdout_writer.writeByte(line_term) catch {};
                 } else {
                     if (show_filename) {
                         printFilename(stdout_writer, filename, use_color);

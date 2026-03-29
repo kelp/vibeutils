@@ -50,7 +50,7 @@ pub const utilities = [_]UtilityMeta{
     .{ .name = "stat", .path = "src/stat.zig", .needs_libc = true, .description = "Display file or file system status" },
     .{ .name = "sort", .path = "src/sort.zig", .needs_libc = true, .description = "Sort lines of text files" },
     .{ .name = "tr", .path = "src/tr.zig", .needs_libc = true, .description = "Translate or delete characters" },
-    .{ .name = "nl", .path = "src/nl.zig", .needs_libc = true, .description = "Number lines of files" },
+    .{ .name = "nl", .path = "src/nl.zig", .needs_libc = true, .description = "Number lines of files", .c_sources = &.{"src/regex_alloc.c"} },
     .{ .name = "uniq", .path = "src/uniq.zig", .needs_libc = true, .description = "Report or omit repeated lines" },
     .{ .name = "readlink", .path = "src/readlink.zig", .needs_libc = true, .description = "Print value of a symbolic link" },
     .{ .name = "cut", .path = "src/cut.zig", .needs_libc = true, .description = "Remove sections from each line of files" },

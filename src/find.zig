@@ -1417,12 +1417,32 @@ fn evaluate(
         .size => {
             const sz = expr.data.size;
             const file_size: u64 = @intCast(@max(0, stat_buf.size));
-            const target_bytes = sz.toBytes();
-            return switch (sz.cmp) {
-                .exactly => file_size == target_bytes,
-                .greater_than => file_size > target_bytes,
-                .less_than => file_size < target_bytes,
-            };
+            if (sz.unit == .bytes) {
+                // For 'c' suffix, compare raw bytes directly
+                const target_bytes = sz.value;
+                return switch (sz.cmp) {
+                    .exactly => file_size == target_bytes,
+                    .greater_than => file_size > target_bytes,
+                    .less_than => file_size < target_bytes,
+                };
+            } else {
+                // For block-based units, convert file size to unit count
+                // using ceiling division, matching GNU find behavior
+                const unit_size: u64 = switch (sz.unit) {
+                    .bytes => unreachable,
+                    .words => 2,
+                    .blocks => 512,
+                    .kilobytes => 1024,
+                    .megabytes => 1048576,
+                    .gigabytes => 1073741824,
+                };
+                const file_units = if (file_size == 0) 0 else (file_size + unit_size - 1) / unit_size;
+                return switch (sz.cmp) {
+                    .exactly => file_units == sz.value,
+                    .greater_than => file_units > sz.value,
+                    .less_than => file_units < sz.value,
+                };
+            }
         },
         .empty => {
             if (kind == .regular) return stat_buf.size == 0;

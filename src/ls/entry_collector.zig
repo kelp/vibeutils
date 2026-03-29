@@ -31,6 +31,25 @@ pub fn collectFilteredEntries(
         .skip_dots = options.almost_all,
     };
 
+    // When -a (show_all) is set and -A (almost_all) is not,
+    // GNU ls includes "." and ".." as the first two entries.
+    // The directory iterator doesn't yield these, so add them manually.
+    if (options.all and !options.almost_all) {
+        const dot = try allocator.dupe(u8, ".");
+        errdefer allocator.free(dot);
+        try entries.append(allocator, Entry{
+            .name = dot,
+            .kind = .directory,
+        });
+
+        const dotdot = try allocator.dupe(u8, "..");
+        errdefer allocator.free(dotdot);
+        try entries.append(allocator, Entry{
+            .name = dotdot,
+            .kind = .directory,
+        });
+    }
+
     // Collect entries
     var iter = dir.iterate();
     while (try iter.next()) |entry| {

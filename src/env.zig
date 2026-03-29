@@ -114,6 +114,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
     // Handle -S: split string into tokens, process as assignments/command
     if (options.split_string) |split_str| {
         var split_assignments = std.ArrayListUnmanaged(Assignment){};
+        defer split_assignments.deinit(allocator);
         var split_command = std.ArrayListUnmanaged([]const u8){};
         var in_command = false;
 
@@ -159,12 +160,21 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
                     return @intFromEnum(common.ExitCode.general_error);
                 };
             }
-            options.assignments = merged.items;
+            // Free old owned assignments before replacing
+            if (options.owns_memory and options.assignments.len > 0) {
+                allocator.free(options.assignments);
+            }
+            options.assignments = merged.toOwnedSlice(allocator) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
         }
 
         // -S command tokens override if no command was set from args
         if (options.command.len == 0 and split_command.items.len > 0) {
             options.command = split_command.items;
+        } else {
+            split_command.deinit(allocator);
         }
     }
 

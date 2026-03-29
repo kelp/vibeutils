@@ -331,9 +331,11 @@ fn doStat(path: []const u8, follow_symlinks: bool) !c.Stat {
     return stat_buf;
 }
 
-/// Get the size contribution of a file (disk usage or apparent size)
-fn getFileSize(stat_buf: c.Stat, apparent_size: bool) u64 {
+/// Get the size contribution of a file (disk usage or apparent size).
+/// In apparent-size mode, directories contribute 0 (matching GNU du).
+fn getFileSize(stat_buf: c.Stat, apparent_size: bool, is_dir: bool) u64 {
     if (apparent_size) {
+        if (is_dir) return 0;
         return @intCast(@max(0, stat_buf.size));
     } else {
         // Disk usage: blocks * 512 (blocks are always 512-byte units)
@@ -379,7 +381,7 @@ fn calculateDu(
     // Skip symlinks when not following them during recursive traversal
     if (is_symlink and !follow_symlinks and depth > 0) {
         // Report symlink itself if -a
-        const link_size = getFileSize(stat_buf, config.apparent_size);
+        const link_size = getFileSize(stat_buf, config.apparent_size, false);
         if (config.all and shouldPrintAtDepth(depth, config)) {
             printEntry(stdout, style, link_size, config, path, false, true);
         }
@@ -394,20 +396,27 @@ fn calculateDu(
         }
     }
 
-    // Track inodes to avoid counting hardlinks twice (unless -l is set)
+    // Track inodes to avoid counting hardlinks twice (unless -l is set).
+    // When dereferencing all symlinks (-L), multiple paths can resolve to the
+    // same inode even when nlink == 1 (symlink + target), so track
+    // unconditionally in that mode.
     const ino: u64 = stat_buf.ino;
     const nlink: u64 = @intCast(stat_buf.nlink);
-    if (nlink > 1 and !is_dir and !config.count_links) {
+    const should_dedup = !is_dir and !config.count_links and
+        (nlink > 1 or config.dereference_mode == .all);
+    var is_duplicate = false;
+    if (should_dedup) {
         // Combine dev and ino into a u128 key for uniqueness
         const key: u128 = (@as(u128, dev) << 64) | @as(u128, ino);
         if (seen_inodes.contains(key)) {
-            return 0;
+            is_duplicate = true;
+        } else {
+            seen_inodes.put(key, {}) catch {};
         }
-        seen_inodes.put(key, {}) catch {};
     }
 
     if (!is_dir) {
-        const file_size = getFileSize(stat_buf, config.apparent_size);
+        const file_size = if (is_duplicate) 0 else getFileSize(stat_buf, config.apparent_size, false);
         // Always print top-level arguments (depth == 0); print children only with -a
         if ((depth == 0 or config.all) and shouldPrintAtDepth(depth, config)) {
             printEntry(stdout, style, file_size, config, path, false, false);
@@ -418,8 +427,9 @@ fn calculateDu(
     // Directory: recurse into it
     const effective_root_dev = root_dev orelse dev;
 
-    const dir_own_size = getFileSize(stat_buf, config.apparent_size);
+    const dir_own_size = getFileSize(stat_buf, config.apparent_size, true);
     var subtree_size: u64 = 0;
+    var direct_files_size: u64 = 0;
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
         printDirError(allocator, stderr, path, err);
@@ -460,9 +470,15 @@ fn calculateDu(
             has_error,
         );
         subtree_size += child_size;
+
+        // Track direct file sizes for -S (separate_dirs) mode.
+        // Directory children are excluded from the reported size.
+        if (config.separate_dirs and entry.kind != .directory) {
+            direct_files_size += child_size;
+        }
     }
 
-    const total_size = if (config.separate_dirs) dir_own_size else dir_own_size + subtree_size;
+    const total_size = if (config.separate_dirs) dir_own_size + direct_files_size else dir_own_size + subtree_size;
 
     if (shouldPrintAtDepth(depth, config)) {
         printEntry(stdout, style, total_size, config, path, true, false);
@@ -1163,11 +1179,11 @@ test "du getFileSize apparent vs disk" {
     const stat_buf = try doStat(test_path, false);
 
     // Apparent size should be exactly 100
-    const apparent = getFileSize(stat_buf, true);
+    const apparent = getFileSize(stat_buf, true, false);
     try testing.expectEqual(@as(u64, 100), apparent);
 
     // Disk usage should be >= 100 (rounded to block boundaries)
-    const disk = getFileSize(stat_buf, false);
+    const disk = getFileSize(stat_buf, false, false);
     try testing.expect(disk >= 100);
 }
 

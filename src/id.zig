@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 extern "c" fn geteuid() std.c.uid_t;
 extern "c" fn getegid() std.c.gid_t;
 extern "c" fn getgroups(size: c_int, list: [*]std.c.gid_t) c_int;
+extern "c" fn getgrouplist(user: [*:0]const u8, group: std.c.gid_t, groups: [*]std.c.gid_t, ngroups: *c_int) c_int;
 
 // C library bindings for passwd entry access (used by -F and -P flags)
 // macOS passwd struct includes pw_change, pw_class, pw_expire fields
@@ -306,38 +307,41 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     if (show_groups) {
         const group_separator: u8 = if (parsed.zero) 0 else ' ';
 
-        if (is_specified_user) {
-            // For specified user, we just show the primary group
-            // (getgroups only works for current process)
-            return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
-        }
-
-        // Get supplementary groups for current user
-        const ngroups = getgroups(0, undefined);
-        if (ngroups < 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot get supplementary group list", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        }
-
-        if (ngroups == 0) {
-            // No supplementary groups, just print primary group
-            return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
-        }
-
-        const group_list = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
-            return @intFromEnum(common.ExitCode.general_error);
+        // Get group list: getgrouplist(3) for a named user,
+        // getgroups(2) for the current process.
+        const group_list: []std.c.gid_t = if (is_specified_user)
+            getGroupsForUser(uid, @intCast(gid), allocator) orelse {
+                return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
+            }
+        else blk: {
+            const ngroups = getgroups(0, undefined);
+            if (ngroups <= 0) {
+                return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
+            }
+            const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+            const actual = getgroups(@intCast(ngroups), buf.ptr);
+            if (actual <= 0) {
+                allocator.free(buf);
+                return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
+            }
+            const count: usize = @intCast(actual);
+            if (count == buf.len) break :blk buf;
+            // Shrink to exact count so free() sees the right length.
+            const exact = allocator.alloc(std.c.gid_t, count) catch {
+                allocator.free(buf);
+                common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+            @memcpy(exact, buf[0..count]);
+            allocator.free(buf);
+            break :blk exact;
         };
         defer allocator.free(group_list);
 
-        const actual = getgroups(@intCast(ngroups), group_list.ptr);
-        if (actual < 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot get supplementary group list", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        }
-
-        const count: usize = @intCast(actual);
-        for (group_list[0..count], 0..) |g, i| {
+        for (group_list, 0..) |g, i| {
             const group_gid: common.user_group.gid_t = @intCast(g);
             if (i > 0) try stdout_writer.writeByte(group_separator);
 
@@ -384,6 +388,35 @@ fn printSingleGroup(
     return @intFromEnum(common.ExitCode.success);
 }
 
+/// Get the full group list for a named user via getgrouplist(3).
+/// Returns the allocated group slice, or null if the lookup fails.
+/// Caller must free the returned slice with allocator.free().
+fn getGroupsForUser(uid: common.user_group.uid_t, gid: std.c.gid_t, allocator: Allocator) ?[]std.c.gid_t {
+    const pw = getpwuid(@intCast(uid)) orelse return null;
+    var ngroups: c_int = 16;
+    while (true) {
+        const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch return null;
+        const rc = getgrouplist(pw.pw_name, gid, buf.ptr, &ngroups);
+        if (rc >= 0) {
+            const count: usize = @intCast(ngroups);
+            // Shrink to exact size so callers can free the returned slice.
+            if (allocator.resize(buf, count)) {
+                return buf[0..count];
+            }
+            // resize failed; copy into a new allocation of exact size.
+            const result = allocator.alloc(std.c.gid_t, count) catch {
+                allocator.free(buf);
+                return null;
+            };
+            @memcpy(result, buf[0..count]);
+            allocator.free(buf);
+            return result;
+        }
+        // ngroups was updated with the required size; retry with larger buffer.
+        allocator.free(buf);
+    }
+}
+
 /// Print the default format: uid=N(name) gid=N(name) groups=N(name),...
 fn printDefaultFormat(
     allocator: Allocator,
@@ -398,17 +431,18 @@ fn printDefaultFormat(
     const user_info = common.user_group.getUserById(uid, allocator) catch {
         // Print without name if lookup fails
         try stdout_writer.print("uid={d}", .{uid});
-        return printDefaultGidAndGroups(allocator, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
+        return printDefaultGidAndGroups(allocator, uid, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
     };
     defer allocator.free(user_info.name);
     try stdout_writer.print("uid={d}({s})", .{ uid, user_info.name });
 
-    return printDefaultGidAndGroups(allocator, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
+    return printDefaultGidAndGroups(allocator, uid, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
 }
 
 /// Print the gid and groups portions of default format
 fn printDefaultGidAndGroups(
     allocator: Allocator,
+    uid: common.user_group.uid_t,
     gid: common.user_group.gid_t,
     is_specified_user: bool,
     delimiter: u8,
@@ -425,38 +459,47 @@ fn printDefaultGidAndGroups(
     try stdout_writer.print(" gid={d}({s})", .{ gid, group_info.name });
 
     // Print groups=...
-    if (is_specified_user) {
-        // For specified user, just show primary group
-        try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
-        try stdout_writer.writeByte(delimiter);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Get supplementary groups for current user
-    const ngroups = getgroups(0, undefined);
-    if (ngroups <= 0) {
-        // No supplementary groups or error, just show primary
-        try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
-        try stdout_writer.writeByte(delimiter);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    const group_list = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+    // Get group list: getgrouplist(3) for a named user,
+    // getgroups(2) for the current process.
+    const group_list: []std.c.gid_t = if (is_specified_user)
+        getGroupsForUser(uid, @intCast(gid), allocator) orelse {
+            try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
+            try stdout_writer.writeByte(delimiter);
+            return @intFromEnum(common.ExitCode.success);
+        }
+    else blk: {
+        const ngroups = getgroups(0, undefined);
+        if (ngroups <= 0) {
+            try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
+            try stdout_writer.writeByte(delimiter);
+            return @intFromEnum(common.ExitCode.success);
+        }
+        const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        const actual = getgroups(@intCast(ngroups), buf.ptr);
+        if (actual <= 0) {
+            allocator.free(buf);
+            try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
+            try stdout_writer.writeByte(delimiter);
+            return @intFromEnum(common.ExitCode.success);
+        }
+        const count: usize = @intCast(actual);
+        if (count == buf.len) break :blk buf;
+        const exact = allocator.alloc(std.c.gid_t, count) catch {
+            allocator.free(buf);
+            common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        @memcpy(exact, buf[0..count]);
+        allocator.free(buf);
+        break :blk exact;
     };
     defer allocator.free(group_list);
 
-    const actual = getgroups(@intCast(ngroups), group_list.ptr);
-    if (actual <= 0) {
-        try stdout_writer.print(" groups={d}({s})", .{ gid, group_info.name });
-        try stdout_writer.writeByte(delimiter);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
     try stdout_writer.writeAll(" groups=");
-    const count: usize = @intCast(actual);
-    for (group_list[0..count], 0..) |g, i| {
+    for (group_list, 0..) |g, i| {
         const group_gid: common.user_group.gid_t = @intCast(g);
         if (i > 0) try stdout_writer.writeByte(',');
 

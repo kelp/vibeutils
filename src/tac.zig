@@ -168,25 +168,45 @@ fn runTacOnInput(allocator: Allocator, input_file: std.fs.File, separator: []con
 
 /// Reverse records delimited by a single byte
 fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, before: bool, writer: anytype) !void {
-    // Collect record boundaries
     var records = std.ArrayListUnmanaged([]const u8){};
     defer records.deinit(allocator);
 
-    var start: usize = 0;
-    for (data, 0..) |byte, i| {
-        if (byte == sep) {
-            // Record includes the separator at the end (or we handle before/after)
-            try records.append(allocator, data[start .. i + 1]);
-            start = i + 1;
+    if (before) {
+        // In -b mode, the separator is prepended to each record.
+        // For "a\nb\nc\n", records are: "a", "\nb", "\nc", "\n"
+        // First record runs from start to (but not including) the first separator.
+        // Subsequent records start at the separator and run to (but not including) the next.
+        var start: usize = 0;
+        for (data, 0..) |byte, i| {
+            if (byte == sep and i > start) {
+                // End the previous record just before this separator
+                try records.append(allocator, data[start..i]);
+                start = i; // Next record starts at the separator
+            } else if (byte == sep and i == start) {
+                // Separator at the very start of remaining data — look for next boundary
+                // Just continue; the separator is part of the next record
+            }
         }
-    }
-    // Handle trailing content without a final separator
-    if (start < data.len) {
-        try records.append(allocator, data[start..]);
+        // Remaining content from start to end
+        if (start < data.len) {
+            try records.append(allocator, data[start..]);
+        }
+    } else {
+        // Default mode: separator trails each record.
+        var start: usize = 0;
+        for (data, 0..) |byte, i| {
+            if (byte == sep) {
+                try records.append(allocator, data[start .. i + 1]);
+                start = i + 1;
+            }
+        }
+        if (start < data.len) {
+            try records.append(allocator, data[start..]);
+        }
     }
 
     // Write records in reverse order
-    try writeRecordsReversed(records.items, sep, before, writer);
+    try writeRecordsReversed(records.items, writer);
 }
 
 /// Reverse records delimited by a multi-byte string
@@ -194,55 +214,55 @@ fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const
     var records = std.ArrayListUnmanaged([]const u8){};
     defer records.deinit(allocator);
 
-    var start: usize = 0;
-    var pos: usize = 0;
-    while (pos + sep.len <= data.len) {
-        if (std.mem.eql(u8, data[pos .. pos + sep.len], sep)) {
-            try records.append(allocator, data[start .. pos + sep.len]);
-            start = pos + sep.len;
-            pos = start;
-        } else {
-            pos += 1;
-        }
-    }
-    // Trailing content
-    if (start < data.len) {
-        try records.append(allocator, data[start..]);
-    }
-
-    try writeRecordsReversed(records.items, 0, before, writer);
-}
-
-/// Write records in reverse. For single-byte separator with --before mode,
-/// we need to move separators from trailing to leading position.
-fn writeRecordsReversed(records: []const []const u8, sep_byte: u8, before: bool, writer: anytype) !void {
-    if (records.len == 0) return;
-
-    if (!before) {
-        // Default mode: separator trails each record (already stored that way)
-        var i: usize = records.len;
-        while (i > 0) {
-            i -= 1;
-            try writer.writeAll(records[i]);
-        }
-    } else {
-        // Before mode: separator precedes each record instead of trailing.
-        // Records are stored with trailing separators.
-        // We need to output: sep + content (without trailing sep).
-        var i: usize = records.len;
-        while (i > 0) {
-            i -= 1;
-            const rec = records[i];
-            // Check if the record has a trailing separator byte
-            if (rec.len > 0 and sep_byte != 0 and rec[rec.len - 1] == sep_byte) {
-                // Move separator from end to beginning
-                try writer.writeByte(sep_byte);
-                try writer.writeAll(rec[0 .. rec.len - 1]);
+    if (before) {
+        // In -b mode, the separator is prepended to each record.
+        // For "a<>b<>c<>", records are: "a", "<>b", "<>c", "<>"
+        var start: usize = 0;
+        var pos: usize = 0;
+        while (pos + sep.len <= data.len) {
+            if (std.mem.eql(u8, data[pos .. pos + sep.len], sep)) {
+                if (pos > start) {
+                    try records.append(allocator, data[start..pos]);
+                    start = pos;
+                }
+                pos += sep.len;
             } else {
-                // No trailing separator (last record or multi-byte sep)
-                try writer.writeAll(rec);
+                pos += 1;
             }
         }
+        if (start < data.len) {
+            try records.append(allocator, data[start..]);
+        }
+    } else {
+        // Default mode: separator trails each record.
+        var start: usize = 0;
+        var pos: usize = 0;
+        while (pos + sep.len <= data.len) {
+            if (std.mem.eql(u8, data[pos .. pos + sep.len], sep)) {
+                try records.append(allocator, data[start .. pos + sep.len]);
+                start = pos + sep.len;
+                pos = start;
+            } else {
+                pos += 1;
+            }
+        }
+        if (start < data.len) {
+            try records.append(allocator, data[start..]);
+        }
+    }
+
+    try writeRecordsReversed(records.items, writer);
+}
+
+/// Write records in reverse order. Records are already correctly formed
+/// (with trailing separators in default mode, or leading separators in -b mode).
+fn writeRecordsReversed(records: []const []const u8, writer: anytype) !void {
+    if (records.len == 0) return;
+
+    var i: usize = records.len;
+    while (i > 0) {
+        i -= 1;
+        try writer.writeAll(records[i]);
     }
 }
 

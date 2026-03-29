@@ -31,6 +31,7 @@ pub extern "c" fn localtime_r(timer: *const c.time_t, result: *c_tm) ?*c_tm;
 pub extern "c" fn gmtime_r(timer: *const c.time_t, result: *c_tm) ?*c_tm;
 pub extern "c" fn strftime(s: [*]u8, maxsize: usize, format: [*:0]const u8, tp: *const c_tm) usize;
 pub extern "c" fn mktime(tp: *c_tm) c.time_t;
+pub extern "c" fn timegm(tp: *c_tm) c.time_t;
 
 // ============================================================================
 // Duration string parsing

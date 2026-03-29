@@ -7,14 +7,27 @@
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
+const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
+const c = @cImport({
+    @cInclude("regex.h");
+});
+
+const is_linux = builtin.os.tag == .linux;
+
+const regex_c = if (is_linux) struct {
+    extern "c" fn regex_heap_alloc() ?*c.regex_t;
+    extern "c" fn regex_heap_free(re: *c.regex_t) void;
+} else struct {};
+
 /// Numbering style for a section
-const NumberingStyle = enum {
+const NumberingStyle = union(enum) {
     all, // a: number all lines
     non_empty, // t: number only non-empty lines (default body)
     none, // n: do not number lines
+    regex: *c.regex_t, // p<pattern>: number lines matching regex
 };
 
 /// Number output format
@@ -36,6 +49,7 @@ const NlOptions = struct {
     increment: i64 = 1,
     no_renumber: bool = false,
     delimiter: [2]u8 = .{ '\\', ':' },
+    delimiter_empty: bool = false,
     join_blank_lines: u32 = 1,
 };
 
@@ -138,11 +152,36 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
     );
 }
 
-/// Parse a numbering style string
+/// Parse a numbering style string (simple styles only)
 fn parseNumberingStyle(s: []const u8) ?NumberingStyle {
     if (std.mem.eql(u8, s, "a")) return .all;
     if (std.mem.eql(u8, s, "t")) return .non_empty;
     if (std.mem.eql(u8, s, "n")) return .none;
+    return null;
+}
+
+/// Parse a numbering style string including regex (p<pattern>)
+fn parseNumberingStyleFull(s: []const u8, allocator: Allocator) ?NumberingStyle {
+    if (parseNumberingStyle(s)) |style| return style;
+    if (s.len >= 1 and s[0] == 'p') {
+        const pattern = s[1..];
+        const pattern_z = allocator.dupeZ(u8, pattern) catch return null;
+        defer allocator.free(pattern_z);
+        const regex = if (comptime is_linux)
+            (regex_c.regex_heap_alloc() orelse return null)
+        else
+            (allocator.create(c.regex_t) catch return null);
+        const result = c.regcomp(regex, pattern_z.ptr, c.REG_NOSUB | c.REG_EXTENDED);
+        if (result != 0) {
+            if (comptime is_linux) {
+                regex_c.regex_heap_free(regex);
+            } else {
+                allocator.destroy(regex);
+            }
+            return null;
+        }
+        return .{ .regex = regex };
+    }
     return null;
 }
 
@@ -171,7 +210,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     // Body numbering: -b takes precedence, --body-numbering as long form
     const body_val = args.b orelse args.body_numbering;
     if (body_val) |val| {
-        opts.body_style = parseNumberingStyle(val) orelse {
+        opts.body_style = parseNumberingStyleFull(val, allocator) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid body numbering style: '{s}'", .{val});
             return null;
         };
@@ -180,7 +219,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     // Header numbering: -h takes precedence, --header-numbering as long form
     const header_val = args.h orelse args.header_numbering;
     if (header_val) |val| {
-        opts.header_style = parseNumberingStyle(val) orelse {
+        opts.header_style = parseNumberingStyleFull(val, allocator) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid header numbering style: '{s}'", .{val});
             return null;
         };
@@ -189,7 +228,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     // Footer numbering: -f takes precedence, --footer-numbering as long form
     const footer_val = args.f orelse args.footer_numbering;
     if (footer_val) |val| {
-        opts.footer_style = parseNumberingStyle(val) orelse {
+        opts.footer_style = parseNumberingStyleFull(val, allocator) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid footer numbering style: '{s}'", .{val});
             return null;
         };
@@ -245,7 +284,9 @@ fn resolveOptions(args: NlArgs, stderr_writer: anytype, allocator: Allocator) !?
     // Section delimiter: -d takes precedence, --section-delimiter as long form
     const delim_val = args.d orelse args.section_delimiter;
     if (delim_val) |val| {
-        if (val.len == 1) {
+        if (val.len == 0) {
+            opts.delimiter_empty = true;
+        } else if (val.len == 1) {
             opts.delimiter = .{ val[0], ':' };
         } else if (val.len == 2) {
             opts.delimiter = .{ val[0], val[1] };
@@ -391,20 +432,20 @@ fn writeNumberedLine(writer: anytype, number: i64, line: []const u8, opts: NlOpt
     try writer.writeAll("\n");
 }
 
-/// Write an unnumbered line (spaces for the number field, separator, then content)
+/// Write an unnumbered line (spaces for width + separator width, then content)
 fn writeUnnumberedLine(writer: anytype, line: []const u8, opts: NlOptions) !void {
-    // Fill number field with spaces
+    // GNU nl outputs (width + separator length) spaces for unnumbered lines
+    const total_pad = opts.width + @as(u32, @intCast(opts.separator.len));
     var pad: u32 = 0;
-    while (pad < opts.width) : (pad += 1) {
+    while (pad < total_pad) : (pad += 1) {
         try writer.writeAll(" ");
     }
-    try writer.writeAll(opts.separator);
     try writer.writeAll(line);
     try writer.writeAll("\n");
 }
 
 /// Process lines from a reader with nl numbering logic
-fn numberLines(reader: anytype, writer: anytype, opts: NlOptions, state: *NlState) !void {
+fn numberLines(reader: anytype, writer: anytype, opts: NlOptions, state: *NlState, allocator: Allocator) !void {
     while (true) {
         const line_with_nl = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
             error.StreamTooLong => {
@@ -421,7 +462,7 @@ fn numberLines(reader: anytype, writer: anytype, opts: NlOptions, state: *NlStat
                 // Handle remaining data without trailing newline
                 const remaining = reader.buffered();
                 if (remaining.len > 0) {
-                    try processLine(writer, remaining, opts, state);
+                    try processLine(writer, remaining, opts, state, allocator);
                     reader.toss(remaining.len);
                 }
                 break;
@@ -431,23 +472,25 @@ fn numberLines(reader: anytype, writer: anytype, opts: NlOptions, state: *NlStat
 
         // Strip trailing newline for processing
         const line = line_with_nl[0 .. line_with_nl.len - 1];
-        try processLine(writer, line, opts, state);
+        try processLine(writer, line, opts, state, allocator);
     }
 }
 
 /// Process a single line: check for section delimiters, apply numbering
-fn processLine(writer: anytype, line: []const u8, opts: NlOptions, state: *NlState) !void {
-    // Check for section delimiter
-    if (isSectionDelimiter(line, opts.delimiter)) |new_section| {
-        state.section = new_section;
-        state.blank_count = 0;
-        // Reset line number on new logical page (header) unless -p
-        if (new_section == .header and !opts.no_renumber) {
-            state.line_number = opts.start;
+fn processLine(writer: anytype, line: []const u8, opts: NlOptions, state: *NlState, allocator: Allocator) !void {
+    // Check for section delimiter (skip when delimiter is empty)
+    if (!opts.delimiter_empty) {
+        if (isSectionDelimiter(line, opts.delimiter)) |new_section| {
+            state.section = new_section;
+            state.blank_count = 0;
+            // Reset line number on section transitions unless -p
+            if (!opts.no_renumber) {
+                state.line_number = opts.start;
+            }
+            // Delimiter lines become empty lines in output
+            try writer.writeAll("\n");
+            return;
         }
-        // Delimiter lines become empty lines in output
-        try writer.writeAll("\n");
-        return;
     }
 
     const style = getStyleForSection(opts, state.section);
@@ -462,7 +505,7 @@ fn processLine(writer: anytype, line: []const u8, opts: NlOptions, state: *NlSta
                     state.line_number += opts.increment;
                     state.blank_count = 0;
                 } else {
-                    try writer.writeAll("\n");
+                    try writeUnnumberedLine(writer, line, opts);
                 }
             } else {
                 state.blank_count = 0;
@@ -473,7 +516,7 @@ fn processLine(writer: anytype, line: []const u8, opts: NlOptions, state: *NlSta
         .non_empty => {
             if (is_blank) {
                 state.blank_count = 0;
-                try writer.writeAll("\n");
+                try writeUnnumberedLine(writer, line, opts);
             } else {
                 state.blank_count = 0;
                 try writeNumberedLine(writer, state.line_number, line, opts);
@@ -482,6 +525,27 @@ fn processLine(writer: anytype, line: []const u8, opts: NlOptions, state: *NlSta
         },
         .none => {
             try writeUnnumberedLine(writer, line, opts);
+        },
+        .regex => |re| {
+            if (is_blank) {
+                state.blank_count = 0;
+                try writeUnnumberedLine(writer, line, opts);
+            } else {
+                state.blank_count = 0;
+                // Match against the compiled regex
+                const line_z = allocator.dupeZ(u8, line) catch {
+                    try writeUnnumberedLine(writer, line, opts);
+                    return;
+                };
+                defer allocator.free(line_z);
+                const exec_result = c.regexec(re, line_z.ptr, 0, null, 0);
+                if (exec_result == 0) {
+                    try writeNumberedLine(writer, state.line_number, line, opts);
+                    state.line_number += opts.increment;
+                } else {
+                    try writeUnnumberedLine(writer, line, opts);
+                }
+            }
         },
     }
 }
@@ -557,7 +621,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         // Read from stdin
         var stdin_buffer: [8192]u8 = undefined;
         var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-        numberLines(&stdin_reader.interface, stdout_writer, opts, &state) catch |err| {
+        numberLines(&stdin_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{@errorName(err)});
             has_error = true;
         };
@@ -566,7 +630,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             if (std.mem.eql(u8, file_path, "-")) {
                 var stdin_buffer: [8192]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
-                numberLines(&stdin_reader.interface, stdout_writer, opts, &state) catch |err| {
+                numberLines(&stdin_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{@errorName(err)});
                     has_error = true;
                 };
@@ -580,7 +644,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                numberLines(&file_reader.interface, stdout_writer, opts, &state) catch |err| {
+                numberLines(&file_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, @errorName(err) });
                     has_error = true;
                 };
@@ -695,7 +759,7 @@ test "nl default skips blank lines" {
 
     const exit_code = try runNl(testing.allocator, &.{file_path}, stdout_buf.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("     1\thello\n\n     2\tworld\n", stdout_buf.items);
+    try testing.expectEqualStrings("     1\thello\n       \n     2\tworld\n", stdout_buf.items);
 }
 
 test "nl -b a numbers all lines" {
@@ -729,7 +793,7 @@ test "nl -b n numbers no lines" {
 
     const exit_code = try runNl(testing.allocator, &.{ "-b", "n", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("      \thello\n      \tworld\n", stdout_buf.items);
+    try testing.expectEqualStrings("       hello\n       world\n", stdout_buf.items);
 }
 
 test "nl -n ln left justified" {

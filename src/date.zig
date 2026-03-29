@@ -258,6 +258,11 @@ fn resolveTimestamp(opts: DateOptions) TimestampResult {
     }
 
     if (opts.reference_file) |ref| {
+        // Try interpreting as a numeric epoch timestamp first
+        if (std.fmt.parseInt(i64, ref, 10)) |epoch_secs| {
+            return .{ .secs = epoch_secs, .ns = 0, .err = null };
+        } else |_| {}
+        // Fall back to stat-ing as a file path
         const stat = std.fs.cwd().statFile(ref) catch {
             return .{ .secs = 0, .ns = 0, .err = "cannot stat reference file" };
         };
@@ -295,6 +300,10 @@ fn parseIso8601(ds: []const u8) TimestampResult {
     var minute: i32 = 0;
     var second: i32 = 0;
 
+    // Timezone offset in seconds (0 if unspecified, parsed from Z or +/-HH:MM)
+    var tz_offset_secs: i64 = 0;
+    var has_tz: bool = false;
+
     // Parse optional time component
     if (ds.len > 10) {
         if (ds[10] != 'T' and ds[10] != ' ') return err_result;
@@ -308,9 +317,28 @@ fn parseIso8601(ds: []const u8) TimestampResult {
         if (time_str.len >= 8 and time_str[5] == ':') {
             second = std.fmt.parseInt(i32, time_str[6..8], 10) catch return err_result;
         }
+
+        // Parse timezone suffix after the time component
+        // Look for Z, +HH:MM, or -HH:MM
+        const seconds_end: usize = if (time_str.len >= 8 and time_str[5] == ':') 8 else 5;
+        if (time_str.len > seconds_end) {
+            const tz_str = time_str[seconds_end..];
+            if (tz_str.len == 1 and tz_str[0] == 'Z') {
+                has_tz = true;
+                tz_offset_secs = 0;
+            } else if (tz_str.len == 6 and (tz_str[0] == '+' or tz_str[0] == '-') and tz_str[3] == ':') {
+                const tz_hours = std.fmt.parseInt(i32, tz_str[1..3], 10) catch return err_result;
+                const tz_mins = std.fmt.parseInt(i32, tz_str[4..6], 10) catch return err_result;
+                tz_offset_secs = @as(i64, tz_hours) * 3600 + @as(i64, tz_mins) * 60;
+                if (tz_str[0] == '-') {
+                    tz_offset_secs = -tz_offset_secs;
+                }
+                has_tz = true;
+            }
+        }
     }
 
-    // Convert to epoch via mktime
+    // Convert to epoch
     var tm = time.c_tm{
         .tm_sec = @intCast(second),
         .tm_min = @intCast(minute),
@@ -325,10 +353,17 @@ fn parseIso8601(ds: []const u8) TimestampResult {
         .tm_zone = "UTC",
     };
 
-    const result = time.mktime(&tm);
-    if (result == -1) return err_result;
-
-    return .{ .secs = @intCast(result), .ns = 0, .err = null };
+    if (has_tz) {
+        // Use timegm to interpret as UTC, then subtract the timezone offset
+        const result = time.timegm(&tm);
+        if (result == -1) return err_result;
+        return .{ .secs = @as(i64, @intCast(result)) - tz_offset_secs, .ns = 0, .err = null };
+    } else {
+        // No timezone info: use mktime (local time interpretation)
+        const result = time.mktime(&tm);
+        if (result == -1) return err_result;
+        return .{ .secs = @intCast(result), .ns = 0, .err = null };
+    }
 }
 
 /// Determine the format string based on options

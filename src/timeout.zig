@@ -17,7 +17,6 @@ const prog_name = "timeout";
 
 // C library bindings for process management
 extern "c" fn kill(pid: std.c.pid_t, sig: c_int) c_int;
-extern "c" fn setpgid(pid: std.c.pid_t, pgid: std.c.pid_t) c_int;
 extern "c" fn waitpid(pid: std.c.pid_t, stat_loc: ?*c_int, options: c_int) std.c.pid_t;
 const WNOHANG: c_int = 1;
 
@@ -96,6 +95,24 @@ fn parseSignal(signal_str: []const u8) ?u8 {
     }
 
     return null;
+}
+
+/// Map a spawn/exec error to the appropriate exit code (127, 126, or 125).
+fn handleSpawnError(allocator: Allocator, stderr_writer: anytype, cmd: []const u8, err: std.process.Child.SpawnError) u8 {
+    switch (err) {
+        error.FileNotFound => {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': No such file or directory", .{cmd});
+            return 127;
+        },
+        error.AccessDenied => {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': Permission denied", .{cmd});
+            return 126;
+        },
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': {s}", .{ cmd, @errorName(err) });
+            return 125;
+        },
+    }
 }
 
 /// Extract exit code from waitpid status
@@ -264,29 +281,25 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
     child.stdout_behavior = .Inherit;
     child.stderr_behavior = .Inherit;
 
+    // Set up process group before spawn so the child calls setpgid(0,0)
+    // itself before exec. This avoids the race where the parent's
+    // post-spawn setpgid arrives after the child has already exec'd.
+    if (!parsed.foreground) {
+        child.pgid = 0;
+    }
+
     child.spawn() catch |err| {
-        switch (err) {
-            error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': No such file or directory", .{cmd_args[0]});
-                return 127;
-            },
-            error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': Permission denied", .{cmd_args[0]});
-                return 126;
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to run command '{s}': {s}", .{ cmd_args[0], @errorName(err) });
-                return 125;
-            },
-        }
+        return handleSpawnError(allocator, stderr_writer, cmd_args[0], err);
+    };
+
+    // Block until exec succeeds or fails. spawn() alone may not report
+    // exec errors (e.g. FileNotFound); those travel through an error
+    // pipe that waitForSpawn() reads.
+    child.waitForSpawn() catch |err| {
+        return handleSpawnError(allocator, stderr_writer, cmd_args[0], err);
     };
 
     const child_pid = child.id;
-
-    // Set up process group if not in foreground mode
-    if (!parsed.foreground) {
-        _ = setpgid(child_pid, child_pid);
-    }
 
     // If timeout is 0, just wait for the command (no timeout)
     if (timeout_nanos == 0) {

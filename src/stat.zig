@@ -1234,7 +1234,7 @@ test "stat -c format: permissions octal" {
     }
     // Verify the octal value matches actual file permissions
     const stat_info = try tmp_dir.dir.statFile("test.txt");
-    const actual_mode: u32 = stat_info.mode & 0o7777;
+    const actual_mode: u32 = @intCast(stat_info.mode & 0o7777);
     const reported_mode = try std.fmt.parseInt(u32, trimmed, 8);
     try testing.expectEqual(actual_mode, reported_mode);
 }
