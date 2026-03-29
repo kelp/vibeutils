@@ -27,9 +27,9 @@ test_nl() {
     test_command_output "nl default non-empty" "     1	hello
      2	world" "$binary" "$simple_file"
 
-    # Default skips blank lines
+    # Default skips blank lines (GNU outputs width+sep spaces for blank lines)
     test_command_output "nl default skips blanks" "     1	hello
-
+       
      2	world" "$binary" "$blank_file"
 
     echo -e "${CYAN}Testing body numbering styles (-b)...${NC}"
@@ -41,12 +41,12 @@ test_nl() {
 
     # -b t: number non-empty (default)
     test_command_output "nl -b t numbers non-empty" "     1	hello
-
+       
      2	world" "$binary" -b t "$blank_file"
 
     # -b n: number no lines
-    test_command_output "nl -b n numbers none" "      	hello
-      	world" "$binary" -b n "$simple_file"
+    test_command_output "nl -b n numbers none" "       hello
+       world" "$binary" -b n "$simple_file"
 
     # --body-numbering long option
     test_command_output "nl --body-numbering=a" "     1	hello

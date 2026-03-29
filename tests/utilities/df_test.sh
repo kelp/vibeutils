@@ -36,13 +36,13 @@ test_df() {
 
     echo -e "${CYAN}Testing POSIX portability mode...${NC}"
 
-    # -P should show 1K-blocks (POSIX mode)
+    # -P should show 1024-blocks (POSIX mode)
     output=$("$binary" -P / 2>/dev/null)
     exit_code=$?
-    if [[ $exit_code -eq 0 && "$output" =~ "1K-blocks" ]]; then
-        print_test_result "df -P shows 1K-blocks" "PASS"
+    if [[ $exit_code -eq 0 && "$output" =~ "1024-blocks" ]]; then
+        print_test_result "df -P shows 1024-blocks" "PASS"
     else
-        print_test_result "df -P shows 1K-blocks" "FAIL"
+        print_test_result "df -P shows 1024-blocks" "FAIL"
     fi
 
     echo -e "${CYAN}Testing specific path...${NC}"
