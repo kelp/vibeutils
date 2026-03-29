@@ -442,6 +442,56 @@ pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     return runTrWithInput(allocator, parsed, stdin_file, stdout_writer, stderr_writer);
 }
 
+/// Scan a raw SET2 string for a fill repeat ([c*] or [c*0]).
+/// Returns the fill character if found, or null if no fill repeat is present.
+fn findFillChar(set_str: []const u8) ?u8 {
+    var i: usize = 0;
+    while (i < set_str.len) {
+        // Skip backslash escapes
+        if (set_str[i] == '\\' and i + 1 < set_str.len) {
+            // Skip past the escape (simple: just advance 2)
+            if (set_str[i + 1] >= '0' and set_str[i + 1] <= '7') {
+                i += 2;
+                while (i < set_str.len and set_str[i] >= '0' and set_str[i] <= '7') : (i += 1) {}
+            } else {
+                i += 2;
+            }
+            continue;
+        }
+
+        // Check for [c*] or [c*0] pattern
+        if (set_str[i] == '[' and i + 3 < set_str.len and set_str[i + 2] == '*') {
+            // Find closing ]
+            var j = i + 3;
+            while (j < set_str.len and set_str[j] != ']') : (j += 1) {}
+            if (j < set_str.len) {
+                const count_str = set_str[i + 3 .. j];
+                // [c*] (empty count) or [c*0] (zero count) are fill markers
+                if (count_str.len == 0) {
+                    return set_str[i + 1];
+                }
+                // Check if count is zero (could be "0", "00", etc.)
+                var is_zero = true;
+                for (count_str) |c| {
+                    if (c != '0') {
+                        is_zero = false;
+                        break;
+                    }
+                }
+                if (is_zero) {
+                    return set_str[i + 1];
+                }
+                // Non-zero repeat count, skip past it
+                i = j + 1;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+    return null;
+}
+
 /// Internal function for running tr with a specific input file.
 /// Allows testing with mock input streams.
 fn runTrWithInput(
@@ -451,6 +501,13 @@ fn runTrWithInput(
     stdout_writer: anytype,
     stderr_writer: anytype,
 ) !u8 {
+    // Check for extra operands
+    const max_positionals: usize = if (args.delete and !args.squeeze_repeats) 1 else 2;
+    if (args.positionals.len > max_positionals) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{args.positionals[max_positionals]});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
     // Parse SET1
     const raw_set1 = parseSet(allocator, args.positionals[0]) catch {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid SET1", .{});
@@ -480,9 +537,22 @@ fn runTrWithInput(
         };
         set2_allocated = true;
 
-        // Handle [c*] repetition: expand to match SET1 length
-        // This was handled during parsing with count=0 sentinel.
-        // We re-expand set2 if needed.
+        // Handle [c*] / [c*0] fill repetition: expand to match SET1 length.
+        // parseSet produced count=0 for these, so the fill char contributed
+        // nothing. Detect the fill char from the raw string and append copies.
+        if (findFillChar(args.positionals[1])) |fill_ch| {
+            if (set2.len < set1.len) {
+                const needed = set1.len - set2.len;
+                const new_set2 = allocator.alloc(u8, set1.len) catch {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "out of memory", .{});
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+                @memcpy(new_set2[0..set2.len], set2);
+                @memset(new_set2[set2.len .. set2.len + needed], fill_ch);
+                allocator.free(set2);
+                set2 = new_set2;
+            }
+        }
     }
     defer if (set2_allocated) allocator.free(set2);
 

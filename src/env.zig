@@ -83,7 +83,7 @@ pub fn main() !void {
 
 /// Run the env utility with given arguments
 pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) u8 {
-    const options = parseArgs(allocator, args) catch |err| {
+    var options = parseArgs(allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "env", "unrecognized option\nTry 'env --help' for more information.", .{});
@@ -111,9 +111,61 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
         return 0;
     }
 
-    // Handle -S stub warning
-    if (options.split_string != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, "env", "-S flag not yet fully implemented", .{});
+    // Handle -S: split string into tokens, process as assignments/command
+    if (options.split_string) |split_str| {
+        var split_assignments = std.ArrayListUnmanaged(Assignment){};
+        var split_command = std.ArrayListUnmanaged([]const u8){};
+        var in_command = false;
+
+        var token_it = std.mem.tokenizeAny(u8, split_str, " \t");
+        while (token_it.next()) |token| {
+            if (in_command) {
+                split_command.append(allocator, token) catch {
+                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+            } else if (std.mem.indexOfScalar(u8, token, '=')) |eq_pos| {
+                split_assignments.append(allocator, .{
+                    .name = token[0..eq_pos],
+                    .value = token[eq_pos + 1 ..],
+                }) catch {
+                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+            } else {
+                // First non-assignment token starts the command
+                in_command = true;
+                split_command.append(allocator, token) catch {
+                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+            }
+        }
+
+        // Merge -S assignments with any from the command line
+        if (split_assignments.items.len > 0) {
+            var merged = std.ArrayListUnmanaged(Assignment){};
+            // Add original assignments first
+            for (options.assignments) |a| {
+                merged.append(allocator, a) catch {
+                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+            }
+            // Then -S assignments
+            for (split_assignments.items) |a| {
+                merged.append(allocator, a) catch {
+                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
+            }
+            options.assignments = merged.items;
+        }
+
+        // -S command tokens override if no command was set from args
+        if (options.command.len == 0 and split_command.items.len > 0) {
+            options.command = split_command.items;
+        }
     }
 
     // Build the environment
@@ -189,6 +241,12 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
         // Check for --
         if (std.mem.eql(u8, arg, "--")) {
             past_options = true;
+            continue;
+        }
+
+        // A bare `-` implies -i (clear environment), per GNU coreutils
+        if (std.mem.eql(u8, arg, "-")) {
+            options.ignore_environment = true;
             continue;
         }
 
@@ -873,7 +931,7 @@ test "env runEnv: -P sets alternate PATH in environment" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar\n") != null);
 }
 
-test "env runEnv: -S prints stub warning" {
+test "env runEnv: -S processes assignments" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
@@ -881,7 +939,8 @@ test "env runEnv: -S prints stub warning" {
 
     const exit_code = runEnv(testing.allocator, &.{ "-i", "-S", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-S flag not yet fully implemented") != null);
+    // -S should process the string, not print a stub warning
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar") != null);
 }
 
 test "env runEnv: -v verbose with -i" {

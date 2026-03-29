@@ -617,6 +617,42 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
     }
 }
 
+/// Rename wrapper that handles EINVAL instead of panicking.
+///
+/// Zig's std.posix.rename maps EINVAL to `unreachable`, which causes a panic
+/// when the kernel returns EINVAL (e.g., moving a directory into its own
+/// subdirectory). This wrapper calls the C rename directly and maps EINVAL
+/// to error.InvalidArgument so callers can handle it gracefully.
+const SafeRenameError = std.posix.RenameError || error{InvalidArgument};
+
+fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
+    const old_c = try std.posix.toPosixPath(old_path);
+    const new_c = try std.posix.toPosixPath(new_path);
+    const rc = std.c.rename(&old_c, &new_c);
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => return,
+        .ACCES => return error.AccessDenied,
+        .PERM => return error.PermissionDenied,
+        .BUSY => return error.FileBusy,
+        .DQUOT => return error.DiskQuota,
+        .FAULT => unreachable,
+        .INVAL => return error.InvalidArgument,
+        .ISDIR => return error.IsDir,
+        .LOOP => return error.SymLinkLoop,
+        .MLINK => return error.LinkQuotaExceeded,
+        .NAMETOOLONG => return error.NameTooLong,
+        .NOENT => return error.FileNotFound,
+        .NOTDIR => return error.NotDir,
+        .NOMEM => return error.SystemResources,
+        .NOSPC => return error.NoSpaceLeft,
+        .EXIST => return error.PathAlreadyExists,
+        .NOTEMPTY => return error.PathAlreadyExists,
+        .ROFS => return error.ReadOnlyFileSystem,
+        .XDEV => return error.RenameAcrossMountPoints,
+        else => return error.Unexpected,
+    }
+}
+
 /// Check if path is a directory, respecting the no_follow_symlink option.
 /// When no_follow_symlink is true, a symlink to a directory is NOT treated
 /// as a directory (the symlink itself is treated as a file target).
@@ -668,44 +704,47 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
         }
     }
 
+    // Check if destination exists for interactive prompt, overwrite hint, and backup.
+    // On Linux, rename() atomically overwrites without returning EEXIST, so we must
+    // check before calling rename to give -i a chance to prompt (F36).
+    const dest_exists = if (std.fs.cwd().access(dest, .{})) |_| true else |_| false;
+
+    if (dest_exists and options.interactive) {
+        if (!try common.prompt.promptYesNo(stderr_writer, "mv: overwrite '{s}'? ", .{dest})) {
+            return; // User chose not to overwrite
+        }
+    }
+
     // Print one-time overwrite hint when destination exists with -f (overwrite succeeds, hint suggests -i)
     if (options.force and !options.interactive and !options.no_clobber and !hinted_overwrite.*) {
-        if (std.fs.cwd().access(dest, .{})) |_| {
+        if (dest_exists) {
             common.printHintWithProgram(allocator, stderr_writer, "mv", "use -i for interactive prompts before overwriting", .{});
             hinted_overwrite.* = true;
-        } else |_| {}
+        }
     }
 
     // Create backup of destination if it exists and backup mode is enabled
-    if (options.backup) {
-        if (std.fs.cwd().access(dest, .{})) |_| {
-            const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{dest});
-            defer allocator.free(backup_name);
-            std.posix.rename(dest, backup_name) catch |backup_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create backup '{s}': {}", .{ backup_name, backup_err });
-                return backup_err;
-            };
-            if (options.verbose) {
-                try stdout_writer.print("mv: created backup '{s}'\n", .{backup_name});
-            }
-        } else |_| {}
+    if (options.backup and dest_exists) {
+        const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{dest});
+        defer allocator.free(backup_name);
+        safeRename(dest, backup_name) catch |backup_err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create backup '{s}': {}", .{ backup_name, backup_err });
+            return backup_err;
+        };
+        if (options.verbose) {
+            try stdout_writer.print("mv: created backup '{s}'\n", .{backup_name});
+        }
     }
 
-    // Try atomic rename first
-    std.posix.rename(source, dest) catch |err| switch (err) {
+    // Try atomic rename first (using safeRename to handle EINVAL gracefully)
+    safeRename(source, dest) catch |err| switch (err) {
         error.RenameAcrossMountPoints => {
             // Fall back to copy + remove
             return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
         },
         error.PathAlreadyExists => {
-            // Destination exists - handle based on options
-            // Interactive mode takes precedence unless force is also specified
-            if (options.interactive and !options.force) {
-                if (!try common.prompt.promptYesNo(stderr_writer, "mv: overwrite '{s}'? ", .{dest})) {
-                    return; // User chose not to overwrite
-                }
-            } else if (!options.force) {
-                // No force, no interactive - fail with clear error message
+            // Destination exists but rename didn't overwrite (some filesystems)
+            if (!options.force) {
                 common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot overwrite '{s}': File exists (use -f to force or -i for interactive)", .{dest});
                 return error.PathAlreadyExists;
             }
@@ -715,10 +754,15 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
                 // If delete fails, fall back to cross-filesystem move
                 return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
             };
-            std.posix.rename(source, dest) catch |retry_err| {
+            safeRename(source, dest) catch |retry_err| {
                 common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, retry_err });
                 return retry_err;
             };
+        },
+        error.InvalidArgument => {
+            // EINVAL: typically means moving a directory into a subdirectory of itself
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot move '{s}' to a subdirectory of itself, '{s}'", .{ source, dest });
+            return error.InvalidArgument;
         },
         else => {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, err });
@@ -816,11 +860,37 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
         return @intFromEnum(common.ExitCode.misuse);
     }
 
+    // GNU mv uses last-flag-wins for mutually exclusive -f, -i, -n.
+    // Scan raw args to determine which appeared last (F38).
+    const LastOverwriteFlag = enum { none, force, interactive, no_clobber };
+    var last_overwrite_flag = LastOverwriteFlag.none;
+    for (args) |arg| {
+        if (arg.len > 1 and arg[0] == '-' and (arg.len < 3 or arg[1] != '-')) {
+            // Short flag(s): -f, -i, -n, or combined like -fi
+            for (arg[1..]) |ch| {
+                switch (ch) {
+                    'f' => last_overwrite_flag = .force,
+                    'i' => last_overwrite_flag = .interactive,
+                    'n' => last_overwrite_flag = .no_clobber,
+                    else => {},
+                }
+            }
+        } else if (std.mem.eql(u8, arg, "--force")) {
+            last_overwrite_flag = .force;
+        } else if (std.mem.eql(u8, arg, "--interactive")) {
+            last_overwrite_flag = .interactive;
+        } else if (std.mem.eql(u8, arg, "--no-clobber")) {
+            last_overwrite_flag = .no_clobber;
+        } else if (std.mem.eql(u8, arg, "--")) {
+            break; // Stop scanning at -- separator
+        }
+    }
+
     const options = MoveOptions{
-        .interactive = parsed_args.interactive,
-        .force = parsed_args.force,
+        .interactive = last_overwrite_flag == .interactive,
+        .force = last_overwrite_flag == .force,
         .verbose = parsed_args.verbose,
-        .no_clobber = parsed_args.no_clobber,
+        .no_clobber = last_overwrite_flag == .no_clobber,
         .no_follow_symlink = parsed_args.no_follow_symlink,
         .backup = parsed_args.backup,
     };

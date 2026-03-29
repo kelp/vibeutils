@@ -711,10 +711,10 @@ test_touch() {
     echo "test" > "$a_adjust_file"
     local a_out="" a_err="" a_exit=""
     run_command a_cmd a_out a_err a_exit "$binary" -A 01 "$a_adjust_file"
-    if [[ $a_exit -ne 0 ]]; then
-        print_test_result "touch -A exits non-zero" "PASS"
+    if [[ $a_exit -eq 0 ]]; then
+        print_test_result "touch -A accepted without error" "PASS"
     else
-        print_test_result "touch -A exits non-zero" "FAIL" "Expected non-zero exit, got $a_exit"
+        print_test_result "touch -A accepted without error" "FAIL" "Expected exit 0, got $a_exit"
     fi
 
     echo -e "${CYAN}Testing F52: -A flag should succeed (exit 0)...${NC}"

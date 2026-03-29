@@ -145,6 +145,17 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 };
                 defer file.close();
 
+                const stat = file.stat() catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    had_error = true;
+                    continue;
+                };
+                if (stat.kind == .directory) {
+                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': Is a directory", .{file_path});
+                    had_error = true;
+                    continue;
+                }
+
                 if (options.show_headers) {
                     try stdout_writer.print("==> {s} <==\n", .{file_path});
                 }
@@ -273,7 +284,7 @@ const DEFAULT_LINE_COUNT: u64 = 10;
 // ========== ERROR HANDLING ==========
 
 /// Convert error to user-friendly message
-fn errorToMessage(err: anytype) []const u8 {
+fn errorToMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.FileNotFound => "No such file or directory",
         error.AccessDenied => "Permission denied",

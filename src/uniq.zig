@@ -9,6 +9,18 @@ const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
 
+/// Method for --all-repeated / -D flag
+const AllRepeatedMethod = enum {
+    /// Flag not active
+    off,
+    /// Print all duplicate lines, no separator between groups
+    none,
+    /// Print all duplicate lines, blank line before each group
+    prepend,
+    /// Print all duplicate lines, blank line between groups (not before first)
+    separate,
+};
+
 /// Command-line arguments for uniq
 const UniqArgs = struct {
     /// Prefix lines by number of occurrences
@@ -17,6 +29,8 @@ const UniqArgs = struct {
     repeated: bool = false,
     /// Print all duplicate lines
     all_repeated: bool = false,
+    /// Method for --all-repeated (internal, set by pre-processing)
+    all_repeated_method: AllRepeatedMethod = .off,
     /// Skip N fields before comparing
     skip_fields: ?u32 = null,
     /// Ignore case when comparing
@@ -78,7 +92,30 @@ pub fn main() !void {
 
 /// Public entry point that reads from stdin
 pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const parsed_args = common.argparse.ArgParser.parse(UniqArgs, allocator, args) catch |err| {
+    // Pre-process args: extract METHOD from --all-repeated=METHOD
+    // and replace with bare --all-repeated so argparse sees a bool flag.
+    var all_repeated_method: AllRepeatedMethod = .off;
+    var cleaned_args = try std.ArrayListUnmanaged([]const u8).initCapacity(allocator, args.len);
+    defer cleaned_args.deinit(allocator);
+
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "--all-repeated=")) {
+            const method_str = arg["--all-repeated=".len..];
+            all_repeated_method = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument '{s}' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{method_str});
+                return @intFromEnum(common.ExitCode.misuse);
+            };
+            if (all_repeated_method == .off) {
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument 'off' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            }
+            cleaned_args.appendAssumeCapacity("--all-repeated");
+        } else {
+            cleaned_args.appendAssumeCapacity(arg);
+        }
+    }
+
+    var parsed_args = common.argparse.ArgParser.parse(UniqArgs, allocator, cleaned_args.items) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid option\nTry 'uniq --help' for more information.", .{});
@@ -96,6 +133,17 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
         }
     };
     defer allocator.free(parsed_args.positionals);
+
+    // Set the all_repeated_method from pre-processing.
+    // If --all-repeated or -D was used (bool is true) but no =METHOD was given,
+    // default to .none (GNU behavior).
+    if (parsed_args.all_repeated) {
+        if (all_repeated_method == .off) {
+            parsed_args.all_repeated_method = .none;
+        } else {
+            parsed_args.all_repeated_method = all_repeated_method;
+        }
+    }
 
     if (parsed_args.help) {
         try printHelp(allocator, stdout_writer);
@@ -161,6 +209,14 @@ fn runUniqWithInput(
     out_writer: anytype,
     stderr_writer: anytype,
 ) !u8 {
+    // Resolve effective method: if all_repeated is set via bool (e.g. -D or
+    // direct struct init in tests) but all_repeated_method is still .off,
+    // default to .none.
+    const method = if (opts.all_repeated and opts.all_repeated_method == .off)
+        AllRepeatedMethod.none
+    else
+        opts.all_repeated_method;
+
     const delimiter: u8 = if (opts.zero_terminated) 0 else '\n';
 
     var input_buffer: [8192]u8 = undefined;
@@ -171,6 +227,9 @@ fn runUniqWithInput(
     defer if (prev_line) |p| allocator.free(p);
 
     var count: u64 = 0;
+    // Track whether we have already emitted a duplicate group (for
+    // prepend/separate blank-line logic).
+    var has_printed_group = false;
 
     while (true) {
         const line = readLine(allocator, input, delimiter) catch |err| switch (err) {
@@ -187,7 +246,7 @@ fn runUniqWithInput(
         if (line == null) {
             // End of input: flush last group
             if (prev_line) |prev| {
-                try outputLine(out_writer, prev, count, opts, delimiter);
+                try outputLine(out_writer, prev, count, opts, method, delimiter, &has_printed_group);
             }
             break;
         }
@@ -200,7 +259,7 @@ fn runUniqWithInput(
                 allocator.free(current);
             } else {
                 // Group boundary: output the previous group
-                try outputLine(out_writer, prev, count, opts, delimiter);
+                try outputLine(out_writer, prev, count, opts, method, delimiter, &has_printed_group);
                 allocator.free(prev);
                 prev_line = current;
                 count = 1;
@@ -293,17 +352,32 @@ fn getCompareSlice(line: []const u8, opts: UniqArgs) []const u8 {
 }
 
 /// Output a line (or not) according to count/repeated/unique/all_repeated flags.
-fn outputLine(writer: anytype, line: []const u8, count: u64, opts: UniqArgs, delimiter: u8) !void {
-    // -D (all_repeated): handled differently -- we need to print all copies.
-    // However, since we collapsed them already, for -D we print `count` copies.
-    if (opts.all_repeated) {
+fn outputLine(writer: anytype, line: []const u8, count: u64, opts: UniqArgs, method: AllRepeatedMethod, delimiter: u8, has_printed_group: *bool) !void {
+    // -D / --all-repeated: print all copies of duplicate groups.
+    // Since we collapsed them, we print `count` copies.
+    if (method != .off) {
         // Only print if this is a duplicate group (count > 1)
         if (count > 1) {
+            // Handle separator/prepend blank lines
+            switch (method) {
+                .prepend => {
+                    // Blank line before every group
+                    try writer.writeByte(delimiter);
+                },
+                .separate => {
+                    // Blank line between groups (not before first)
+                    if (has_printed_group.*) {
+                        try writer.writeByte(delimiter);
+                    }
+                },
+                .none, .off => {},
+            }
             var i: u64 = 0;
             while (i < count) : (i += 1) {
                 try writer.writeAll(line);
                 try writer.writeByte(delimiter);
             }
+            has_printed_group.* = true;
         }
         return;
     }
