@@ -155,6 +155,43 @@ test_sort() {
     test_command_output "sort basic b-a to a-b (argsFree safety net)" $'a\nb' \
         bash -c "printf 'b\na\n' | '$binary'"
 
+    # ================================================================
+    # Audit findings: F10, F25, F26
+    # ================================================================
+
+    echo -e "${CYAN}Testing -V version-sort (F10)...${NC}"
+
+    # F10: -V should perform version-sort, not print version info.
+    # GNU coreutils sort -V sorts version strings naturally.
+    test_command_output "sort -V version-sort" $'v1.2\nv1.9\nv1.10' \
+        bash -c "printf 'v1.10\nv1.9\nv1.2\n' | '$binary' -V"
+
+    # Additional version-sort cases
+    test_command_output "sort -V mixed versions" $'1.0\n1.2\n1.10\n2.0' \
+        bash -c "printf '1.10\n2.0\n1.0\n1.2\n' | '$binary' -V"
+
+    echo -e "${CYAN}Testing -h human-numeric suffix rank (F25)...${NC}"
+
+    # F25: -h should sort by suffix rank, not raw byte value.
+    # GNU: 12345K < 1M because K-suffix < M-suffix.
+    test_command_output "sort -h suffix rank K < M" $'12345K\n1M\n1G' \
+        bash -c "printf '1M\n12345K\n1G\n' | '$binary' -h"
+
+    # Additional -h case: large K value vs small M value
+    # 9999K = 10,238,976 bytes > 1M = 1,048,576 bytes, but K < M by suffix rank
+    test_command_output "sort -h large K before small M" $'9999K\n1M' \
+        bash -c "printf '1M\n9999K\n' | '$binary' -h"
+
+    echo -e "${CYAN}Testing -s stable sort vs last-resort comparison (F26)...${NC}"
+
+    # F26: Without -s, sort falls back to full-line byte comparison
+    # when all keys tie. With -s, input order is preserved.
+    test_command_output "sort -k2 tiebreak without -s" $'a 1\nb 1' \
+        bash -c "printf 'b 1\na 1\n' | '$binary' -k2,2"
+
+    test_command_output "sort -k2 -s preserves input order" $'b 1\na 1' \
+        bash -c "printf 'b 1\na 1\n' | '$binary' -k2,2 -s"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}sort tests completed${NC}"

@@ -214,6 +214,62 @@ test_nl() {
 000002	beta
 000003	gamma" "$binary" -n rz "$nl_pad_file"
 
+    echo -e "${CYAN}Testing F39: section delimiter resets counter on all transitions...${NC}"
+
+    # F39: GNU nl resets the counter on every section transition, not just header
+    local f39_body_file=$(create_temp_file $'line1\nline2\n\\:\\:\nbody1\nbody2')
+    test_command_output "nl F39 body transition resets counter" "    10	line1
+    11	line2
+
+    10	body1
+    11	body2" "$binary" -b a -v 10 "$f39_body_file"
+
+    local f39_footer_file=$(create_temp_file $'line1\nline2\n\\:\nfoot1\nfoot2')
+    test_command_output "nl F39 footer transition resets counter" "    10	line1
+    11	line2
+
+    10	foot1
+    11	foot2" "$binary" -b a -f a -v 10 "$f39_footer_file"
+
+    echo -e "${CYAN}Testing F40: unnumbered lines use spaces not separator...${NC}"
+
+    # F40: GNU nl outputs width+len(sep) spaces for unnumbered lines, no separator char
+    test_command_output "nl F40 unnumbered line spaces only" "       hello
+       world" "$binary" -b n "$simple_file"
+
+    test_command_output "nl F40 unnumbered line custom sep spaces" "        hello
+        world" "$binary" -b n -s ": " "$simple_file"
+
+    echo -e "${CYAN}Testing F41: skipped blank lines have indent...${NC}"
+
+    # F41: GNU nl outputs width+len(sep) spaces then newline for blank lines
+    # The blank line should have 7 spaces (width=6 + tab=1 char replaced by space)
+    local f41_expected
+    f41_expected=$(printf '     1\thello\n       \n     2\tworld')
+    test_command_output "nl F41 blank line indent default mode" "$f41_expected" "$binary" "$blank_file"
+
+    local f41_join_file=$(create_temp_file $'hello\n\nworld')
+    local f41_join_expected
+    f41_join_expected=$(printf '     1\thello\n       \n     2\tworld')
+    test_command_output "nl F41 blank line indent with -b a -l 2" "$f41_join_expected" "$binary" -b a -l 2 "$f41_join_file"
+
+    echo -e "${CYAN}Testing F42: -b pREGEX numbers matching lines...${NC}"
+
+    # F42: GNU nl supports -b pREGEX to number lines matching regex
+    local f42_file=$(create_temp_file $'foo\nbar\nfoo2\nbaz')
+    test_command_output "nl F42 -b pfoo numbers matching lines" "     1	foo
+       bar
+     2	foo2
+       baz" "$binary" -b pfoo "$f42_file"
+
+    echo -e "${CYAN}Testing F43: -d empty disables section matching...${NC}"
+
+    # F43: GNU nl accepts empty delimiter to disable section matching
+    local f43_file=$(create_temp_file $'hello\n\\:\\:\\:\nworld')
+    test_command_output "nl F43 -d empty disables sections" "     1	hello
+     2	\\:\\:\\:
+     3	world" "$binary" -d '' -b a "$f43_file"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}nl tests completed${NC}"

@@ -506,4 +506,115 @@ test_chmod() {
 
     # Restore for cleanup
     chmod 755 "$ad_dir"
+
+    # =========================================================================
+    # Behavioral verification tests (audit finding F69)
+    # These tests verify that chmod ACTUALLY CHANGES file permissions on disk,
+    # not just that the command exits successfully.
+    # =========================================================================
+
+    echo -e "${CYAN}Testing behavioral permission changes...${NC}"
+
+    # --- Test: chmod 755 actually produces mode 755 ---
+    local btest_file=$(create_temp_file "behavioral test")
+    chmod 644 "$btest_file"
+    test_command_succeeds "behavioral: chmod 755" "$binary" 755 "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "755" ]]; then
+        print_test_result "behavioral: chmod 755 produces 755" "PASS"
+    else
+        print_test_result "behavioral: chmod 755 produces 755" "FAIL" "Expected 755, got: $perms"
+    fi
+
+    # --- Test: chmod u+x from 644 produces 744 ---
+    chmod 644 "$btest_file"
+    test_command_succeeds "behavioral: chmod u+x" "$binary" u+x "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "744" ]]; then
+        print_test_result "behavioral: chmod u+x from 644 produces 744" "PASS"
+    else
+        print_test_result "behavioral: chmod u+x from 644 produces 744" "FAIL" "Expected 744, got: $perms"
+    fi
+
+    # --- Test: chmod g+w from 644 produces 664 ---
+    chmod 644 "$btest_file"
+    test_command_succeeds "behavioral: chmod g+w" "$binary" g+w "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "664" ]]; then
+        print_test_result "behavioral: chmod g+w from 644 produces 664" "PASS"
+    else
+        print_test_result "behavioral: chmod g+w from 644 produces 664" "FAIL" "Expected 664, got: $perms"
+    fi
+
+    # --- Test: chmod o-r from 644 produces 640 ---
+    chmod 644 "$btest_file"
+    test_command_succeeds "behavioral: chmod o-r" "$binary" o-r "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "640" ]]; then
+        print_test_result "behavioral: chmod o-r from 644 produces 640" "PASS"
+    else
+        print_test_result "behavioral: chmod o-r from 644 produces 640" "FAIL" "Expected 640, got: $perms"
+    fi
+
+    # --- Test: chmod a+x from 644 produces 755 ---
+    chmod 644 "$btest_file"
+    test_command_succeeds "behavioral: chmod a+x" "$binary" a+x "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "755" ]]; then
+        print_test_result "behavioral: chmod a+x from 644 produces 755" "PASS"
+    else
+        print_test_result "behavioral: chmod a+x from 644 produces 755" "FAIL" "Expected 755, got: $perms"
+    fi
+
+    # --- Test: chmod u=rwx,g=rx,o=r produces 754 ---
+    chmod 000 "$btest_file"
+    test_command_succeeds "behavioral: chmod u=rwx,g=rx,o=r" "$binary" u=rwx,g=rx,o=r "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "754" ]]; then
+        print_test_result "behavioral: chmod u=rwx,g=rx,o=r produces 754" "PASS"
+    else
+        print_test_result "behavioral: chmod u=rwx,g=rx,o=r produces 754" "FAIL" "Expected 754, got: $perms"
+    fi
+
+    # --- Test: chmod +t on directory sets sticky bit ---
+    local btest_dir=$(create_temp_dir)
+    chmod 755 "$btest_dir"
+    test_command_succeeds "behavioral: chmod +t on dir" "$binary" +t "$btest_dir"
+    perms=$(get_file_permissions "$btest_dir")
+    if [[ "$perms" == "1755" ]]; then
+        print_test_result "behavioral: chmod +t sets sticky bit (1755)" "PASS"
+    else
+        print_test_result "behavioral: chmod +t sets sticky bit (1755)" "FAIL" "Expected 1755, got: $perms"
+    fi
+
+    # --- Test: chmod 4755 sets setuid bit ---
+    chmod 644 "$btest_file"
+    test_command_succeeds "behavioral: chmod 4755" "$binary" 4755 "$btest_file"
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "4755" ]]; then
+        print_test_result "behavioral: chmod 4755 sets setuid (4755)" "PASS"
+    else
+        print_test_result "behavioral: chmod 4755 sets setuid (4755)" "FAIL" "Expected 4755, got: $perms"
+    fi
+
+    # --- Test: chmod -w should remove write permission (known bug) ---
+    # BUG: chmod -w file is parsed as a flag by argparse, not as a
+    # symbolic mode. This test documents the bug.
+    echo -e "${CYAN}Testing chmod -w bug (mode string starting with -)...${NC}"
+    chmod 644 "$btest_file"
+    local mw_cmd mw_out mw_err mw_exit
+    run_command mw_cmd mw_out mw_err mw_exit "$binary" -w "$btest_file"
+    if [[ $mw_exit -eq 0 ]]; then
+        print_test_result "behavioral: chmod -w exits 0" "PASS"
+    else
+        print_test_result "behavioral: chmod -w exits 0" "FAIL" \
+            "Expected exit 0, got: $mw_exit (stderr: $mw_err)"
+    fi
+    perms=$(get_file_permissions "$btest_file")
+    if [[ "$perms" == "444" ]]; then
+        print_test_result "behavioral: chmod -w from 644 produces 444" "PASS"
+    else
+        print_test_result "behavioral: chmod -w from 644 produces 444" "FAIL" \
+            "Expected 444, got: $perms"
+    fi
 }

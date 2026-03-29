@@ -1224,9 +1224,19 @@ test "stat -c format: permissions octal" {
     const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    // Should contain octal permissions (possibly affected by umask)
     const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
-    try testing.expect(trimmed.len > 0);
+    // Must be 3-4 characters (e.g. "644", "0644")
+    try testing.expect(trimmed.len >= 3);
+    try testing.expect(trimmed.len <= 4);
+    // Every character must be a valid octal digit (0-7)
+    for (trimmed) |ch| {
+        try testing.expect(ch >= '0' and ch <= '7');
+    }
+    // Verify the octal value matches actual file permissions
+    const stat_info = try tmp_dir.dir.statFile("test.txt");
+    const actual_mode: u32 = stat_info.mode & 0o7777;
+    const reported_mode = try std.fmt.parseInt(u32, trimmed, 8);
+    try testing.expectEqual(actual_mode, reported_mode);
 }
 
 test "stat -c format: permissions human readable" {
@@ -1294,9 +1304,12 @@ test "stat -c format: user and group names" {
     const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    // Should be a non-empty name
     const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
-    try testing.expect(trimmed.len > 0);
+    // Verify the reported username matches the current user
+    const current_uid = common.user_group.getCurrentUserId();
+    const user_info = try common.user_group.getUserById(current_uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+    try testing.expectEqualStrings(user_info.name, trimmed);
 }
 
 test "stat -c format: timestamps" {
@@ -1317,9 +1330,24 @@ test "stat -c format: timestamps" {
     const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    // Should contain numbers
     const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
-    try testing.expect(trimmed.len > 0);
+    // Output should be three space-separated epoch timestamps
+    var it = std.mem.tokenizeScalar(u8, trimmed, ' ');
+    const atime_str = it.next() orelse return error.TestFailed;
+    const mtime_str = it.next() orelse return error.TestFailed;
+    const ctime_str = it.next() orelse return error.TestFailed;
+    // Each must parse as a valid integer
+    const atime_val = try std.fmt.parseInt(i64, atime_str, 10);
+    const mtime_val = try std.fmt.parseInt(i64, mtime_str, 10);
+    const ctime_val = try std.fmt.parseInt(i64, ctime_str, 10);
+    // Timestamps must be recent (after 2020-01-01 = 1577836800)
+    try testing.expect(atime_val > 1577836800);
+    try testing.expect(mtime_val > 1577836800);
+    try testing.expect(ctime_val > 1577836800);
+    // Verify mtime matches the actual file's mtime (stat.mtime is in nanoseconds)
+    const stat_info = try tmp_dir.dir.statFile("test.txt");
+    const actual_mtime: i64 = @intCast(@divTrunc(stat_info.mtime, std.time.ns_per_s));
+    try testing.expectEqual(actual_mtime, mtime_val);
 }
 
 test "stat --printf interprets escapes" {
@@ -1767,4 +1795,154 @@ test "stat permission denied error message is not No such file" {
     // BUG: The error message should NOT say "No such file or directory"
     // for an AccessDenied error. It should say "Permission denied".
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Permission denied") != null);
+}
+
+// F15: Default output must not show spurious '+' before numeric fields.
+// The {d: <N} format on signed i64 produces a leading '+' sign, e.g.
+// "Size: +4096" instead of "Size: 4096".
+test "stat default output has no spurious plus on numeric fields" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    try test_file.writeAll("hello");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{test_path};
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_buffer.items;
+
+    // Find the "Size:" line and verify no '+' before the number
+    const size_pos = std.mem.indexOf(u8, output, "Size:") orelse
+        return error.TestExpectedEqual;
+    // Extract from "Size:" to end of that line
+    const rest = output[size_pos..];
+    const eol = std.mem.indexOf(u8, rest, "\n") orelse rest.len;
+    const size_line = rest[0..eol];
+
+    // GNU stat outputs "  Size: 5         Blocks: 8          IO Block: 4096   regular file"
+    // Our implementation incorrectly outputs "  Size: +5        Blocks: +8         IO Block: +4096  regular file"
+    // The '+' character should not appear anywhere on this line
+    try testing.expect(std.mem.indexOf(u8, size_line, "+") == null);
+}
+
+// F17: stat -f -c FORMAT should use the format string, not print
+// the default filesystem block output. Currently the -f branch
+// continues before checking opts.format.
+test "stat -f -c format string is honored" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "-c", "%n", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // -f -c '%n' should output just the file name, not the full filesystem block
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
+}
+
+// F18: Terse output should have 16 space-separated fields matching GNU stat.
+// GNU format: name size blocks mode uid gid dev inode nlinks major minor
+//             atime mtime ctime btime blksize
+// Our implementation outputs only 14 fields (missing major/minor device type,
+// and has duplicate blocks instead of btime).
+test "stat -t terse output has 16 fields like GNU" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    try test_file.writeAll("hello");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-t", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Count space-separated fields
+    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    var field_count: usize = 0;
+    var in_field = false;
+    for (trimmed) |ch| {
+        if (ch == ' ') {
+            if (in_field) {
+                field_count += 1;
+                in_field = false;
+            }
+        } else {
+            in_field = true;
+        }
+    }
+    if (in_field) field_count += 1;
+
+    // GNU stat -t outputs exactly 16 fields
+    try testing.expectEqual(@as(usize, 16), field_count);
+}
+
+// F16: On Linux, stat -f uses a macOS StatFs struct with wrong field
+// offsets, producing garbage values. Verify that -f output contains
+// sane values (e.g., block size is a reasonable power of 2).
+test "stat -f produces sane block size on this platform" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+
+    const output = stdout_buffer.items;
+
+    // Find "Block size:" line and extract the number
+    const block_pos = std.mem.indexOf(u8, output, "Block size:") orelse
+        return error.TestExpectedEqual;
+    const after_label = output[block_pos + "Block size:".len ..];
+    // Skip leading spaces
+    var start: usize = 0;
+    while (start < after_label.len and after_label[start] == ' ') : (start += 1) {}
+    // Read digits
+    var end: usize = start;
+    while (end < after_label.len and after_label[end] >= '0' and after_label[end] <= '9') : (end += 1) {}
+    const block_size_str = after_label[start..end];
+    const block_size = std.fmt.parseInt(u64, block_size_str, 10) catch
+        return error.TestExpectedEqual;
+
+    // Block size should be a reasonable value: between 512 and 1048576 (1MB)
+    // On Linux with the macOS struct, this produces garbage like 16914836
+    try testing.expect(block_size >= 512);
+    try testing.expect(block_size <= 1048576);
 }

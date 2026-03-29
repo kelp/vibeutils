@@ -190,6 +190,85 @@ test_du() {
     fi
     rm -rf "$reg_tmpdir"
 
+    # ================================================================
+    # F22: du -L should not double-count symlink targets
+    # ================================================================
+    echo -e "${CYAN}Testing -L symlink dedup (F22)...${NC}"
+
+    local f22_dir
+    f22_dir=$(mktemp -d)
+    echo -n "AAAAAAAAAA" > "$f22_dir/realfile.txt"   # exactly 10 bytes
+    ln -s realfile.txt "$f22_dir/linkfile.txt"
+
+    # GNU du -L -b -s counts the file once through both paths
+    local gnu_size vibe_size
+    gnu_size=$(du -L -b -s "$f22_dir" 2>/dev/null | awk '{print $1}')
+    vibe_size=$("$binary" -L -b -s "$f22_dir" 2>/dev/null | awk '{print $1}')
+
+    if [[ "$vibe_size" -eq "$gnu_size" ]]; then
+        print_test_result "du -L does not double-count symlink targets" "PASS"
+    else
+        print_test_result "du -L does not double-count symlink targets" "FAIL" \
+            "Expected $gnu_size (GNU), got $vibe_size (vibeutils)"
+    fi
+    rm -rf "$f22_dir"
+
+    # ================================================================
+    # F23: du -b should not inflate directory size with metadata
+    # ================================================================
+    echo -e "${CYAN}Testing -b directory apparent size (F23)...${NC}"
+
+    local f23_dir
+    f23_dir=$(mktemp -d)
+    echo -n "AAAAAAAAAA" > "$f23_dir/file.txt"   # exactly 10 bytes
+
+    gnu_size=$(du -b -s "$f23_dir" 2>/dev/null | awk '{print $1}')
+    vibe_size=$("$binary" -b -s "$f23_dir" 2>/dev/null | awk '{print $1}')
+
+    if [[ "$vibe_size" -eq "$gnu_size" ]]; then
+        print_test_result "du -b directory total matches GNU (no dir metadata)" "PASS"
+    else
+        print_test_result "du -b directory total matches GNU (no dir metadata)" "FAIL" \
+            "Expected $gnu_size (GNU), got $vibe_size (vibeutils)"
+    fi
+    rm -rf "$f23_dir"
+
+    # ================================================================
+    # F24: du -S should show sum of direct files, not dir inode size
+    # ================================================================
+    echo -e "${CYAN}Testing -S separate-dirs (F24)...${NC}"
+
+    local f24_dir
+    f24_dir=$(mktemp -d)
+    mkdir "$f24_dir/sub"
+    echo -n "AAAAAAAAAA" > "$f24_dir/topfile.txt"       # 10 bytes
+    echo -n "BBBBBBBBBB" > "$f24_dir/sub/subfile.txt"    # 10 bytes
+
+    # Compare -S output for top-level directory
+    local gnu_top vibe_top
+    gnu_top=$(du -S -b "$f24_dir" 2>/dev/null | grep "$f24_dir$" | awk '{print $1}')
+    vibe_top=$("$binary" -S -b "$f24_dir" 2>/dev/null | grep "$f24_dir$" | awk '{print $1}')
+
+    if [[ "$vibe_top" -eq "$gnu_top" ]]; then
+        print_test_result "du -S top dir shows direct file sum (matches GNU)" "PASS"
+    else
+        print_test_result "du -S top dir shows direct file sum (matches GNU)" "FAIL" \
+            "Expected $gnu_top (GNU), got $vibe_top (vibeutils)"
+    fi
+
+    # Compare -S output for subdirectory
+    local gnu_sub vibe_sub
+    gnu_sub=$(du -S -b "$f24_dir/sub" 2>/dev/null | grep "sub$" | awk '{print $1}')
+    vibe_sub=$("$binary" -S -b "$f24_dir" 2>/dev/null | grep "sub$" | awk '{print $1}')
+
+    if [[ "$vibe_sub" -eq "$gnu_sub" ]]; then
+        print_test_result "du -S subdir shows direct file sum (matches GNU)" "PASS"
+    else
+        print_test_result "du -S subdir shows direct file sum (matches GNU)" "FAIL" \
+            "Expected $gnu_sub (GNU), got $vibe_sub (vibeutils)"
+    fi
+    rm -rf "$f24_dir"
+
     # Cleanup
     rm -rf "$tmpdir"
 }

@@ -2039,3 +2039,271 @@ test "parseMode with octal string returns correct mode" {
     const mode = try parseMode("0644");
     try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
 }
+
+// =============================================================================
+// Behavioral tests: verify chmod ACTUALLY CHANGES FILE PERMISSIONS on disk
+// =============================================================================
+//
+// These tests create real temp files, apply chmod via chmodFiles or runUtility,
+// then stat the file to verify the mode changed. This covers the audit finding
+// (F69) that existing unit tests only check parsed struct fields.
+
+/// Helper: set a file's mode via libc chmod, for test setup
+fn setFileModeOctal(path: []const u8, mode_val: u32) !void {
+    const path_z = try std.posix.toPosixPath(path);
+    const result = std.c.chmod(&path_z, @as(std.c.mode_t, @intCast(mode_val)));
+    if (result != 0) return error.ChmodFailed;
+}
+
+fn getFileMode(path: []const u8) !u32 {
+    const stat = try std.fs.cwd().statFile(path);
+    return @as(u32, @intCast(stat.mode & 0o7777));
+}
+
+test "behavioral: chmod 755 actually sets mode 0o755" {
+    // Skip if running as root (root may produce different behavior)
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test755.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test755.txt", &path_buf);
+
+    // Set initial mode to 0o644
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "755", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o755), actual_mode);
+}
+
+test "behavioral: chmod u+x from 644 sets mode 0o744" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_uplusx.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_uplusx.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "u+x", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o744), actual_mode);
+}
+
+test "behavioral: chmod g+w from 644 sets mode 0o664" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_gplusw.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_gplusw.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "g+w", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o664), actual_mode);
+}
+
+test "behavioral: chmod o-r from 644 sets mode 0o640" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_ominusr.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_ominusr.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "o-r", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o640), actual_mode);
+}
+
+test "behavioral: chmod a+x from 644 sets mode 0o755" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_aplusx.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_aplusx.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "a+x", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o755), actual_mode);
+}
+
+test "behavioral: chmod u=rwx,g=rx,o=r sets mode 0o754" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_complex.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_complex.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o000);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "u=rwx,g=rx,o=r", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o754), actual_mode);
+}
+
+test "behavioral: chmod +t on directory sets sticky bit" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("stickydir");
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("stickydir", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o755);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "+t", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    // Sticky bit (0o1000) should be set, basic perms should be preserved
+    try testing.expect((actual_mode & 0o1000) != 0);
+    try testing.expectEqual(@as(u32, 0o1755), actual_mode);
+}
+
+test "behavioral: chmod 4755 sets setuid bit" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_setuid.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_setuid.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const files = [_][]const u8{abs_path};
+    try chmodFiles(testing.allocator, "4755", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+
+    const actual_mode = try getFileMode(abs_path);
+    // Setuid bit (0o4000) should be set
+    try testing.expect((actual_mode & 0o4000) != 0);
+    try testing.expectEqual(@as(u32, 0o4755), actual_mode);
+}
+
+test "behavioral: chmod -w via runUtility removes write permission" {
+    // BUG: chmod -w file should remove write permission from all users,
+    // but the argparser consumes -w as a flag (UnknownFlag error) instead
+    // of treating it as a symbolic mode string.
+    // This test documents the bug and will FAIL until fixed.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_minusw.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_minusw.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // chmod -w file should succeed with exit code 0
+    const args = [_][]const u8{ "-w", abs_path };
+    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    // Should succeed (exit code 0), not fail as "invalid argument"
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Should have removed write permission: 0o644 -> 0o444
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o444), actual_mode);
+}

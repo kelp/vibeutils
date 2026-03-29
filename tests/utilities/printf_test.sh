@@ -218,4 +218,117 @@ test_printf() {
         print_test_result "printf %.2f 99.999 rounds to 100.00" "FAIL" \
             "Expected '100.00', got '$output'"
     fi
+
+    # ========== AUDIT FINDING TESTS ==========
+
+    echo -e "${CYAN}Testing F31: octal escapes without leading zero...${NC}"
+
+    # F31: \NNN octal escape without leading zero
+    # GNU printf '\101\n' outputs 'A' (octal 101 = 65)
+    output=$("$binary" '\101')
+    if [[ "$output" == "A" ]]; then
+        print_test_result "printf F31: \\101 octal = A" "PASS"
+    else
+        print_test_result "printf F31: \\101 octal = A" "FAIL" \
+            "Expected 'A', got '$output'"
+    fi
+
+    # F31: single octal digit
+    output=$("$binary" '\7')
+    local expected_bel=$'\x07'
+    if [[ "$output" == "$expected_bel" ]]; then
+        print_test_result "printf F31: \\7 octal = BEL" "PASS"
+    else
+        print_test_result "printf F31: \\7 octal = BEL" "FAIL" \
+            "Expected BEL (0x07), got '$output'"
+    fi
+
+    # F31: 3-digit octal
+    output=$("$binary" '\110')
+    if [[ "$output" == "H" ]]; then
+        print_test_result "printf F31: \\110 octal = H" "PASS"
+    else
+        print_test_result "printf F31: \\110 octal = H" "FAIL" \
+            "Expected 'H', got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing F32: %b octal \\0NNN off-by-one...${NC}"
+
+    # F32: %b \0NNN should skip the leading 0 prefix
+    output=$("$binary" '%b' '\0101')
+    if [[ "$output" == "A" ]]; then
+        print_test_result "printf F32: %b \\0101 = A" "PASS"
+    else
+        print_test_result "printf F32: %b \\0101 = A" "FAIL" \
+            "Expected 'A', got '$(echo -n "$output" | od -A x -t x1z)'"
+    fi
+
+    # F32: %b \0110 = 'H'
+    output=$("$binary" '%b' '\0110')
+    if [[ "$output" == "H" ]]; then
+        print_test_result "printf F32: %b \\0110 = H" "PASS"
+    else
+        print_test_result "printf F32: %b \\0110 = H" "FAIL" \
+            "Expected 'H', got '$(echo -n "$output" | od -A x -t x1z)'"
+    fi
+
+    echo -e "${CYAN}Testing F33: \\c in format string stops output...${NC}"
+
+    # F33: \c halts output in format string
+    output=$("$binary" 'before\cafter')
+    if [[ "$output" == "before" ]]; then
+        print_test_result "printf F33: \\c stops output" "PASS"
+    else
+        print_test_result "printf F33: \\c stops output" "FAIL" \
+            "Expected 'before', got '$output'"
+    fi
+
+    # F33: \c at start
+    output=$("$binary" '\chello')
+    if [[ "$output" == "" ]]; then
+        print_test_result "printf F33: \\c at start = empty" "PASS"
+    else
+        print_test_result "printf F33: \\c at start = empty" "FAIL" \
+            "Expected empty, got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing F34: %b \\c halts format-string reuse...${NC}"
+
+    # F34: %b \c should stop reusing format for remaining args
+    output=$("$binary" '%b\n' 'hello\c' 'world')
+    if [[ "$output" == "hello" ]]; then
+        print_test_result "printf F34: %b \\c halts reuse" "PASS"
+    else
+        print_test_result "printf F34: %b \\c halts reuse" "FAIL" \
+            "Expected 'hello', got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing F35: %F, %a, %A format specifiers...${NC}"
+
+    # F35: %F is uppercase %f
+    output=$("$binary" '%F' 3.14)
+    if [[ "$output" == "3.140000" ]]; then
+        print_test_result "printf F35: %F 3.14 = 3.140000" "PASS"
+    else
+        print_test_result "printf F35: %F 3.14 = 3.140000" "FAIL" \
+            "Expected '3.140000', got '$output'"
+    fi
+
+    # F35: %a hex float (just check it starts with 0x and has p)
+    output=$("$binary" '%a' 1.5)
+    if [[ "$output" == 0x*p* ]]; then
+        print_test_result "printf F35: %a hex float format" "PASS"
+    else
+        print_test_result "printf F35: %a hex float format" "FAIL" \
+            "Expected '0x...p...', got '$output'"
+    fi
+
+    # F35: %A hex float uppercase
+    output=$("$binary" '%A' 1.5)
+    if [[ "$output" == 0X*P* ]]; then
+        print_test_result "printf F35: %A hex float uppercase" "PASS"
+    else
+        print_test_result "printf F35: %A hex float uppercase" "FAIL" \
+            "Expected '0X...P...', got '$output'"
+    fi
 }

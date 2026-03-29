@@ -1908,3 +1908,137 @@ test "readLines does not leak the content buffer" {
     // testing.allocator will detect that the content buffer
     // allocated by readToEndAlloc was never freed.
 }
+
+// ============================================================================
+//                    TESTS: Audit findings F10, F25, F26
+// ============================================================================
+
+// F10: sort -V should perform version-sort, not print version info.
+// GNU coreutils: -V is --version-sort (natural sort of version strings).
+// Our implementation maps -V to opts.version (print version and exit).
+test "sort -V should version-sort, not print version" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    const tmp_path = "/tmp/sort_test_version_sort.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("v1.10\nv1.9\nv1.2\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{ "-V", tmp_path };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // GNU sort -V produces version-sorted output: v1.2, v1.9, v1.10
+    // Currently, our -V prints version info and ignores the file.
+    try testing.expectEqualStrings("v1.2\nv1.9\nv1.10\n", buffer.items);
+}
+
+// F25: sort -h should sort by suffix rank, not raw byte value.
+// GNU coreutils: 12345K < 1M < 1G (suffix determines magnitude class).
+// Our implementation converts to bytes: 12345K = 12,641,280 > 1M = 1,048,576,
+// so it incorrectly places 12345K after 1M.
+test "sort -h orders by suffix rank not raw byte value" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    const tmp_path = "/tmp/sort_test_human_suffix.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        try writer.interface.writeAll("1M\n12345K\n1G\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{ "-h", tmp_path };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // GNU sort -h: 12345K comes before 1M because K-suffix < M-suffix.
+    // Our implementation produces "1M\n12345K\n1G\n" (wrong: compares byte values).
+    try testing.expectEqualStrings("12345K\n1M\n1G\n", buffer.items);
+}
+
+// F25: direct unit test of compareHumanNumeric
+test "compareHumanNumeric suffix rank: 12345K should be less than 1M" {
+    // GNU sort -h treats suffix as the primary sort key.
+    // K < M regardless of the numeric prefix.
+    // Our implementation converts 12345K to 12,641,280 and 1M to 1,048,576,
+    // returning .gt instead of .lt.
+    try testing.expectEqual(std.math.Order.lt, compareHumanNumeric("12345K", "1M"));
+}
+
+// F26: Without -s, sort should use full-line byte comparison as tiebreaker
+// when all keys compare equal. With -s, input order is preserved.
+test "sort -k2 without -s uses full-line tiebreaker" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    const tmp_path = "/tmp/sort_test_tiebreak.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        // Input order: b before a. Key field (field 2) is identical.
+        try writer.interface.writeAll("b 1\na 1\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{ "-k2,2", tmp_path };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // GNU sort without -s: when keys tie, full-line byte comparison
+    // is used as last-resort. "a 1" < "b 1" so "a 1" comes first.
+    // Our implementation returns false (equal) and preserves input
+    // order, so it produces "b 1\na 1\n" — same as -s behavior.
+    try testing.expectEqualStrings("a 1\nb 1\n", buffer.items);
+}
+
+test "sort -k2 -s preserves input order on tie" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var buffer = std.ArrayListUnmanaged(u8){};
+
+    const tmp_path = "/tmp/sort_test_stable.txt";
+    {
+        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer file.close();
+        var write_buf: [4096]u8 = undefined;
+        var writer = file.writer(&write_buf);
+        // Input order: b before a. Key field (field 2) is identical.
+        try writer.interface.writeAll("b 1\na 1\n");
+        try writer.interface.flush();
+    }
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = [_][]const u8{ "-k2,2", "-s", tmp_path };
+    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // With -s (stable), input order is preserved when keys tie.
+    // "b 1" appeared before "a 1" in input, so it stays first.
+    try testing.expectEqualStrings("b 1\na 1\n", buffer.items);
+}

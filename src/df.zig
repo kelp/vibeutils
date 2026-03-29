@@ -3438,3 +3438,117 @@ test "runDf - help mentions new flags" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-,") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-I") != null);
 }
+
+// ============================================================================
+// F19: df -I has wrong semantics (macOS-only boolean flag)
+// On macOS, -I means "suppress inode counts" and takes no argument.
+// The current implementation wrongly treats -I as an exclude-type filter
+// requiring an argument on all platforms.
+// ============================================================================
+
+test "parseArgs - I flag without argument accepted on macOS" {
+    // On macOS, -I is a boolean flag meaning "suppress inode counts".
+    // It should parse without error when given no argument.
+    if (comptime !is_darwin) return error.SkipZigTest;
+    const args = [_][]const u8{"-I"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    // On macOS, -I alone should NOT be an error
+    try testing.expect(parsed.err == null);
+}
+
+test "runDf - I flag without argument succeeds on macOS" {
+    // On macOS, `df -I /` should succeed (suppress inode counts).
+    if (comptime !is_darwin) return error.SkipZigTest;
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-I", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    // Should succeed, not treat "/" as the argument to -I
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Filesystem") != null);
+}
+
+// ============================================================================
+// F20: df -P uses wrong POSIX column headers
+// POSIX requires: "1024-blocks", "Available", "Capacity"
+// Current code emits: "1K-blocks", "Available", "Use%"
+// ============================================================================
+
+test "printHeader - POSIX mode uses 1024-blocks not 1K-blocks" {
+    // POSIX (df -P) requires the header column to read "1024-blocks",
+    // not "1K-blocks". See IEEE Std 1003.1-2017 df specification.
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    var opts = DfOptions{};
+    opts.portability = true;
+    opts.human_readable = false;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    try printHeader(buf.writer(testing.allocator), opts);
+    // POSIX mandates "1024-blocks"
+    try testing.expect(std.mem.indexOf(u8, buf.items, "1024-blocks") != null);
+}
+
+test "printHeader - POSIX mode uses Capacity not Use%" {
+    // POSIX requires the percentage column to be labeled "Capacity",
+    // not "Use%". See IEEE Std 1003.1-2017 df specification.
+    var buf = std.ArrayListUnmanaged(u8){};
+    defer buf.deinit(testing.allocator);
+    var opts = DfOptions{};
+    opts.portability = true;
+    opts.human_readable = false;
+    opts.display.color = .off;
+    opts.display.icons = .off;
+    try printHeader(buf.writer(testing.allocator), opts);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Capacity") != null);
+}
+
+test "runDf - P flag output has POSIX-compliant headers" {
+    // Full integration: df -P / should produce POSIX headers.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-P", "/" };
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    // POSIX requires "1024-blocks", not "1K-blocks"
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1024-blocks") != null);
+    // POSIX requires "Capacity", not "Use%"
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Capacity") != null);
+}
+
+// ============================================================================
+// F21: df -n is a stub (should be rejected on Linux)
+// GNU df does not have -n. On Linux, it should be rejected as an
+// unrecognized option (exit code 2), not silently accepted.
+// ============================================================================
+
+test "parseArgs - n flag rejected on Linux" {
+    // GNU df does not support -n. On Linux, this should be an
+    // unrecognized option, not silently accepted as a no-op.
+    if (comptime !is_linux) return error.SkipZigTest;
+    const args = [_][]const u8{"-n"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err != null);
+}
+
+test "runDf - n flag returns misuse on Linux" {
+    // On Linux, -n is not a valid GNU df flag and should exit with
+    // misuse (exit code 2).
+    if (comptime !is_linux) return error.SkipZigTest;
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-n"};
+    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 2), result);
+}

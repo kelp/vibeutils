@@ -1566,3 +1566,194 @@ test "printf float simple rounding no carry overflow: 1.005 -> 1.01" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.01", buffer.items);
 }
+
+// ========== AUDIT FINDING TESTS ==========
+
+// F31: \NNN octal escape without leading zero in format string
+// GNU printf treats \101 as octal 101 = 65 = 'A'.
+// Our processEscape only matches '0' after backslash, so \1xx falls
+// through to the else branch and outputs a literal backslash.
+test "F31: format string \\NNN octal without leading zero" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \101 = octal 101 = 65 = 'A'
+    const args = [_][]const u8{"\\101"};
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("A", buffer.items);
+}
+
+test "F31: format string \\NNN octal 1-digit" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \7 = octal 7 = 0x07
+    const args = [_][]const u8{"\\7"};
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\x07", buffer.items);
+}
+
+test "F31: format string \\NNN octal 2-digit" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \62 = octal 62 = 50 = '2'
+    const args = [_][]const u8{"\\62"};
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("2", buffer.items);
+}
+
+test "F31: format string \\NNN octal 3-digit" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // \110 = octal 110 = 72 = 'H'
+    const args = [_][]const u8{"\\110"};
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("H", buffer.items);
+}
+
+// F32: %b octal \0NNN off-by-one -- first digit re-read after consuming '0'
+// GNU printf '%b' '\0101' outputs 'A' (octal 101 = 65).
+// Our formatBString re-reads the initial digit in the while loop because
+// j starts at 1 (the position of the matched digit), causing an off-by-one.
+test "F32: percent-b octal \\0NNN produces correct byte" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // %b with \0101: the '0' is a prefix, '101' is octal = 65 = 'A'
+    const args = [_][]const u8{ "%b", "\\0101" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("A", buffer.items);
+}
+
+test "F32: percent-b octal \\0NNN 3-digit non-zero start" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // %b \0110: the '0' is a prefix, '110' is octal = 72 = 'H'
+    // Bug: code re-reads the '0' prefix, processes '011' = 9 instead
+    const args = [_][]const u8{ "%b", "\\0110" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("H", buffer.items);
+}
+
+test "F32: percent-b octal \\0NNN followed by text" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    // %b \0101X: octal 101 = 65 = 'A', then literal 'X'
+    // Bug: code reads '010' = 8, then outputs char(8) + '1' + 'X'
+    const args = [_][]const u8{ "%b", "\\0101X" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("AX", buffer.items);
+}
+
+// F33: \c in format string not handled
+// GNU printf 'before\cafter' outputs "before" and stops immediately.
+// Our processEscape does not handle 'c' -- it falls through to else
+// and outputs a literal backslash, continuing with the rest.
+test "F33: format string \\c stops output" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"before\\cafter"};
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    _ = result;
+    // Should output only "before", nothing after \c
+    try testing.expectEqualStrings("before", buffer.items);
+}
+
+test "F33: format string \\c at start produces no output" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"\\chello"};
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    _ = result;
+    try testing.expectEqualStrings("", buffer.items);
+}
+
+// F34: %b \c does not halt format-string reuse
+// GNU printf '%b\n' 'hello\c' 'world' outputs "hello" only.
+// Our formatBString returns early on \c, but runPrintf continues
+// reusing the format string for the remaining "world" argument.
+test "F34: percent-b \\c halts format-string reuse" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%b\\n", "hello\\c", "world" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    _ = result;
+    // Should output only "hello" -- \c stops everything, no newline, no "world"
+    try testing.expectEqualStrings("hello", buffer.items);
+}
+
+test "F34: percent-b \\c halts even within single format pass" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%b %b", "hi\\c", "bye" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    _ = result;
+    // \c in first %b should halt all output; "bye" never printed
+    try testing.expectEqualStrings("hi", buffer.items);
+}
+
+// F35: %F, %a, %A format specifiers not implemented
+// GNU printf '%F\n' 3.14 outputs "3.140000" (uppercase version of %f).
+// GNU printf '%a\n' 1.5 outputs hex float like "0xcp-3".
+// Our processSpecifier falls through to else for these, outputting literals.
+test "F35: percent-F uppercase float" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%F", "3.14" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("3.140000", buffer.items);
+}
+
+test "F35: percent-F with zero" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%F", "0" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("0.000000", buffer.items);
+}
+
+test "F35: percent-a hex float" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%a", "1.5" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU outputs "0xcp-3" for 1.5 -- hex float representation
+    // Must start with "0x" and contain "p" (hex float format)
+    try testing.expect(buffer.items.len > 0);
+    try testing.expect(std.mem.startsWith(u8, buffer.items, "0x"));
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "p") != null);
+}
+
+test "F35: percent-A hex float uppercase" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%A", "1.5" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU outputs "0XCP-3" for 1.5
+    try testing.expect(buffer.items.len > 0);
+    try testing.expect(std.mem.startsWith(u8, buffer.items, "0X"));
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "P") != null);
+}

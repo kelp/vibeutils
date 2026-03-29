@@ -186,6 +186,60 @@ test_stat() {
     fi
     rm -rf "$stat_test_dir"
 
+    # --- F15: No spurious '+' on numeric fields in default output ---
+    echo -e "${CYAN}Testing no spurious plus in default output (F15)...${NC}"
+
+    local stat_default_out
+    stat_default_out=$("$binary" "$tmpfile" 2>/dev/null)
+    # Extract the Size line
+    local size_line
+    size_line=$(echo "$stat_default_out" | grep "Size:")
+    if [[ "$size_line" != *"+"* ]]; then
+        print_test_result "stat default output has no '+' in Size line" "PASS"
+    else
+        print_test_result "stat default output has no '+' in Size line" "FAIL" \
+            "Found '+' in: $size_line"
+    fi
+
+    # --- F17: stat -f -c FORMAT should honor format string ---
+    echo -e "${CYAN}Testing stat -f -c honors format string (F17)...${NC}"
+
+    local stat_fc_out
+    stat_fc_out=$("$binary" -f -c '%n' "$tmpfile" 2>/dev/null)
+    if [[ "$stat_fc_out" == "$tmpfile" ]]; then
+        print_test_result "stat -f -c '%n' outputs file name" "PASS"
+    else
+        print_test_result "stat -f -c '%n' outputs file name" "FAIL" \
+            "Expected '$tmpfile', got '$stat_fc_out'"
+    fi
+
+    # --- F18: Terse output should have 16 fields like GNU stat ---
+    echo -e "${CYAN}Testing terse output field count (F18)...${NC}"
+
+    local stat_terse_out terse_field_count
+    stat_terse_out=$("$binary" -t "$tmpfile" 2>/dev/null)
+    terse_field_count=$(echo "$stat_terse_out" | wc -w)
+    if [[ "$terse_field_count" -eq 16 ]]; then
+        print_test_result "stat -t has 16 fields like GNU" "PASS"
+    else
+        print_test_result "stat -t has 16 fields like GNU" "FAIL" \
+            "Expected 16 fields, got $terse_field_count: $stat_terse_out"
+    fi
+
+    # --- F16: stat -f block size should be sane (not garbage from wrong struct) ---
+    echo -e "${CYAN}Testing stat -f block size is sane (F16)...${NC}"
+
+    local stat_fs_out block_size_val
+    stat_fs_out=$("$binary" -f "$tmpfile" 2>/dev/null)
+    # Extract the block size number after "Block size:"
+    block_size_val=$(echo "$stat_fs_out" | grep "Block size:" | sed 's/.*Block size: *\([0-9]*\).*/\1/')
+    if [[ -n "$block_size_val" && "$block_size_val" -ge 512 && "$block_size_val" -le 1048576 ]]; then
+        print_test_result "stat -f block size is sane ($block_size_val)" "PASS"
+    else
+        print_test_result "stat -f block size is sane" "FAIL" \
+            "Block size $block_size_val is outside 512-1048576 range"
+    fi
+
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
 }

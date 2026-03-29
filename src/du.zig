@@ -1993,3 +1993,201 @@ test "du --help shows new flags" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--si") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--threshold") != null);
 }
+
+// ============================================================================
+// Test helper: extract the size (first field) from the last output line
+// ============================================================================
+
+/// Parse the size value from the first tab-delimited field of the last
+/// non-empty line in du output.  Returns null when parsing fails.
+fn extractLastLineSize(output: []const u8) ?u64 {
+    // Find the last non-empty line
+    var last_line: ?[]const u8 = null;
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        if (line.len > 0) last_line = line;
+    }
+    const line = last_line orelse return null;
+    // Extract first field (before tab)
+    const tab_pos = std.mem.indexOfScalar(u8, line, '\t') orelse return null;
+    return std.fmt.parseInt(u64, line[0..tab_pos], 10) catch null;
+}
+
+/// Parse the size from a specific line that contains the given path substring.
+fn extractSizeForPath(output: []const u8, path: []const u8) ?u64 {
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.indexOf(u8, line, path) != null) {
+            const tab_pos = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+            return std.fmt.parseInt(u64, line[0..tab_pos], 10) catch null;
+        }
+    }
+    return null;
+}
+
+// ============================================================================
+// F22: du -L double-counts symlink targets
+// The inode dedup guard at line 400 only fires when nlink > 1.
+// With -L, a symlink to a file with nlink=1 is stat'd (not lstat'd),
+// resolving to the same inode—but nlink is still 1, so the guard
+// doesn't trigger and the file's bytes are counted twice.
+// GNU du counts it once.
+// ============================================================================
+
+test "du -L does not double-count file reachable via symlink" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a regular file with known content (10 bytes)
+    const f = try tmp_dir.dir.createFile("realfile.txt", .{});
+    try f.writeAll("AAAAAAAAAA");
+    f.close();
+
+    // Create a symlink pointing to the same file
+    tmp_dir.dir.symLink("realfile.txt", "linkfile.txt", .{}) catch |err| {
+        if (err == error.AccessDenied) return; // skip on platforms without symlink support
+        return err;
+    };
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // -L dereferences all symlinks; -b = apparent-size + block-size=1; -s = summary
+    const args = &[_][]const u8{ "-L", "-b", "-s", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const total = extractLastLineSize(stdout_buffer.items) orelse {
+        return error.TestUnexpectedResult;
+    };
+
+    // GNU du -L -b -s counts the file once: total should be 10.
+    // Our implementation double-counts it (20 or more), so this test should fail.
+    try testing.expectEqual(@as(u64, 10), total);
+}
+
+// ============================================================================
+// F23: du -b directory apparent size inflated
+// getFileSize() returns stat.size for directories in apparent-size mode,
+// but GNU du treats directory metadata as 0 in apparent-size mode.
+// ============================================================================
+
+test "du -b directory total equals sum of file apparent sizes (no dir metadata)" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a single file with exactly 10 bytes
+    const f = try tmp_dir.dir.createFile("file.txt", .{});
+    try f.writeAll("AAAAAAAAAA");
+    f.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // -b = --apparent-size --block-size=1; -s = summary
+    const args = &[_][]const u8{ "-b", "-s", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const total = extractLastLineSize(stdout_buffer.items) orelse {
+        return error.TestUnexpectedResult;
+    };
+
+    // GNU du -b -s reports 10 (only the file bytes, directory metadata is 0).
+    // Our implementation adds directory stat.size, inflating the total.
+    try testing.expectEqual(@as(u64, 10), total);
+}
+
+// ============================================================================
+// F24: du -S shows dir-inode blocks instead of direct-file sum
+// With -S, each directory should report the sum of its direct files'
+// sizes, excluding subdirectory subtrees. Our implementation sets
+// total_size = dir_own_size (the inode/metadata size) instead of the
+// sum of files directly in the directory.
+// ============================================================================
+
+test "du -S shows sum of direct files, not directory inode size" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a subdirectory with a file
+    try tmp_dir.dir.makeDir("sub");
+    const f_sub = try tmp_dir.dir.createFile("sub/subfile.txt", .{});
+    try f_sub.writeAll("BBBBBBBBBB"); // 10 bytes
+    f_sub.close();
+
+    // Create a file directly in the top directory
+    const f_top = try tmp_dir.dir.createFile("topfile.txt", .{});
+    try f_top.writeAll("AAAAAAAAAA"); // 10 bytes
+    f_top.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // -S = separate-dirs (don't include subdirectory sizes)
+    // -b = apparent-size + block-size=1
+    const args = &[_][]const u8{ "-S", "-b", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Extract the size reported for the top-level directory
+    const top_size = extractSizeForPath(stdout_buffer.items, dir_path) orelse {
+        return error.TestUnexpectedResult;
+    };
+
+    // GNU du -S -b: top dir shows 10 (just topfile.txt, not subdir).
+    // Our implementation reports dir_own_size (directory inode metadata),
+    // which is filesystem-dependent but never equals 10.
+    try testing.expectEqual(@as(u64, 10), top_size);
+}
+
+test "du -S subdirectory shows sum of its own direct files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.makeDir("sub");
+    const f_sub = try tmp_dir.dir.createFile("sub/subfile.txt", .{});
+    try f_sub.writeAll("BBBBBBBBBB"); // 10 bytes
+    f_sub.close();
+
+    // File in top dir so the top dir is not empty
+    const f_top = try tmp_dir.dir.createFile("topfile.txt", .{});
+    try f_top.writeAll("AAAAAAAAAA"); // 10 bytes
+    f_top.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const sub_path = try tmp_dir.dir.realpath("sub", &path_buf);
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = &[_][]const u8{ "-S", "-b", dir_path };
+    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Extract the size reported for the subdirectory
+    const sub_size = extractSizeForPath(stdout_buffer.items, sub_path) orelse {
+        return error.TestUnexpectedResult;
+    };
+
+    // GNU du -S -b: sub shows 10 (just subfile.txt).
+    // Our implementation reports dir_own_size for subdirectory too.
+    try testing.expectEqual(@as(u64, 10), sub_size);
+}
