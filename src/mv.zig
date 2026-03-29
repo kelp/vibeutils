@@ -701,6 +701,12 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
             // Destination exists - handle based on options
             // Interactive mode takes precedence unless force is also specified
             if (options.interactive and !options.force) {
+                // Only prompt if stdin is a terminal; otherwise default to "no"
+                // (skip the move). This matches GNU mv behavior and prevents
+                // hangs when stdin is not interactive (pipes, tests, etc.).
+                if (!std.posix.isatty(std.fs.File.stdin().handle)) {
+                    return; // Non-interactive stdin: default to no
+                }
                 if (!try common.prompt.promptYesNo(stderr_writer, "mv: overwrite '{s}'? ", .{dest})) {
                     return; // User chose not to overwrite
                 }
