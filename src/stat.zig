@@ -672,10 +672,13 @@ fn printDefaultFormat(
         "regular empty file"
     else
         fileTypeString(mode);
+    const size_u: u64 = @intCast(stat_buf.size);
+    const blocks_u: u64 = @intCast(stat_buf.blocks);
+    const blksize_u: u64 = @intCast(stat_buf.blksize);
     try writer.print("  Size: {d: <10}Blocks: {d: <11}IO Block: {d: <7}{s}\n", .{
-        stat_buf.size,
-        stat_buf.blocks,
-        stat_buf.blksize,
+        size_u,
+        blocks_u,
+        blksize_u,
         file_type,
     });
 
@@ -776,7 +779,32 @@ fn printDefaultFormat(
 fn printTerseFormat(stat_buf: c.Stat, path: []const u8, writer: anytype) !void {
     const mode: u32 = @intCast(stat_buf.mode);
     const dev: u64 = @intCast(stat_buf.dev);
-    try writer.print("{s} {d} {d} {x} {d} {d} {x} {d} {d} {d} {d} {d} {d} {d}\n", .{
+
+    // Device major/minor from rdev
+    const rdev_major: u64 = blk: {
+        if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+            const rdev: u32 = @intCast(stat_buf.rdev);
+            break :blk (rdev >> 24) & 0xff;
+        } else {
+            const rdev: u64 = @intCast(stat_buf.rdev);
+            break :blk (rdev >> 8) & 0xfff;
+        }
+    };
+    const rdev_minor: u64 = blk: {
+        if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+            const rdev: u32 = @intCast(stat_buf.rdev);
+            break :blk rdev & 0xffffff;
+        } else {
+            const rdev: u64 = @intCast(stat_buf.rdev);
+            break :blk rdev & 0xff;
+        }
+    };
+
+    const btime_sec = getTimespecSec(stat_buf, .btime);
+
+    // GNU terse: 16 fields
+    // name size blocks mode uid gid dev inode nlinks major minor atime mtime ctime btime blksize
+    try writer.print("{s} {d} {d} {x} {d} {d} {x} {d} {d} {x} {x} {d} {d} {d} {d} {d}\n", .{
         path,
         stat_buf.size,
         stat_buf.blocks,
@@ -786,11 +814,13 @@ fn printTerseFormat(stat_buf: c.Stat, path: []const u8, writer: anytype) !void {
         dev,
         stat_buf.ino,
         stat_buf.nlink,
+        rdev_major,
+        rdev_minor,
         getTimespecSec(stat_buf, .atime),
         getTimespecSec(stat_buf, .mtime),
         getTimespecSec(stat_buf, .ctime),
+        btime_sec,
         stat_buf.blksize,
-        stat_buf.blocks,
     });
 }
 
@@ -873,7 +903,7 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
     var has_error = false;
 
     for (opts.positionals) |path| {
-        if (opts.file_system) {
+        if (opts.file_system and opts.format == null and opts.printf_fmt == null) {
             printFileSystemInfo(path, stdout_writer) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot statfs '{s}': No such file or directory", .{path});
                 has_error = true;
