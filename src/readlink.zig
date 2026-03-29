@@ -53,7 +53,9 @@ const ReadlinkArgs = struct {
 /// Determine the canonicalize mode from parsed args
 const CanonicalizeMode = enum {
     none,
-    /// -f / -e: all components must exist
+    /// -f: all but the last component must exist (GNU behavior)
+    canonical_missing_ok,
+    /// -e: all components must exist
     strict,
     /// -m: components need not exist
     missing,
@@ -61,7 +63,8 @@ const CanonicalizeMode = enum {
 
 fn getCanonicalizeMode(args: ReadlinkArgs) CanonicalizeMode {
     if (args.@"canonicalize-missing") return .missing;
-    if (args.canonicalize or args.@"canonicalize-existing") return .strict;
+    if (args.@"canonicalize-existing") return .strict;
+    if (args.canonicalize) return .canonical_missing_ok;
     return .none;
 }
 
@@ -148,6 +151,15 @@ fn resolveLink(allocator: Allocator, path: []const u8, mode: CanonicalizeMode) !
             const target = try std.fs.cwd().readLink(path, &buf);
             return try allocator.dupe(u8, target);
         },
+        .canonical_missing_ok => {
+            // GNU -f: all but the last component must exist.
+            // Try full realpath first (handles existing paths).
+            if (std.fs.cwd().realpathAlloc(allocator, path)) |resolved| {
+                return resolved;
+            } else |_| {
+                return resolveCanonicalMissingOk(allocator, path);
+            }
+        },
         .strict => {
             // Canonicalize: resolve to absolute path, all components must exist
             const resolved = try std.fs.cwd().realpathAlloc(allocator, path);
@@ -163,6 +175,49 @@ fn resolveLink(allocator: Allocator, path: []const u8, mode: CanonicalizeMode) !
             }
         },
     }
+}
+
+/// GNU -f resolution: the last component may be missing, but all
+/// parent components must exist. For symlinks, read the link target
+/// first and then resolve that target path.
+fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
+    // Check if path is a symlink (even a dangling one)
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.fs.cwd().readLink(path, &link_buf)) |link_target| {
+        // It's a symlink. Resolve the target path.
+        // If target is relative, make it relative to the symlink's directory.
+        if (std.fs.path.isAbsolute(link_target)) {
+            // Absolute target: resolve it directly with missing-ok logic
+            return resolveWithMissingLastComponent(allocator, link_target);
+        } else {
+            // Relative target: resolve relative to the symlink's parent dir
+            const dir = std.fs.path.dirname(path) orelse ".";
+            const resolved_dir = try std.fs.cwd().realpathAlloc(allocator, dir);
+            defer allocator.free(resolved_dir);
+            const full_target = try std.fs.path.join(allocator, &.{ resolved_dir, link_target });
+            defer allocator.free(full_target);
+            // Try full realpath on the joined path first
+            if (std.fs.cwd().realpathAlloc(allocator, full_target)) |resolved| {
+                return resolved;
+            } else |_| {
+                return resolveWithMissingLastComponent(allocator, full_target);
+            }
+        }
+    } else |_| {
+        // Not a symlink (or doesn't exist at all).
+        // Try to resolve the parent directory and append the basename.
+        return resolveWithMissingLastComponent(allocator, path);
+    }
+}
+
+/// Resolve a path where the last component may not exist.
+/// The parent directory must exist and be resolvable.
+fn resolveWithMissingLastComponent(allocator: Allocator, path: []const u8) ![]u8 {
+    const dir = std.fs.path.dirname(path) orelse ".";
+    const base = std.fs.path.basename(path);
+    const resolved_dir = try std.fs.cwd().realpathAlloc(allocator, dir);
+    defer allocator.free(resolved_dir);
+    return std.fs.path.join(allocator, &.{ resolved_dir, base });
 }
 
 /// Print help message
@@ -377,7 +432,9 @@ test "readlink canonicalize-existing (-e)" {
     try testing.expectEqualStrings(expected, stdout_buf.items);
 }
 
-test "readlink canonicalize nonexistent fails with -f" {
+test "readlink canonicalize nonexistent succeeds with -f when parent exists (GNU compat)" {
+    // GNU -f allows the last component to be missing, so
+    // /tmp/nonexistent exits 0 because /tmp exists.
     var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buf.deinit(testing.allocator);
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
@@ -385,7 +442,7 @@ test "readlink canonicalize nonexistent fails with -f" {
 
     const args = [_][]const u8{ "-f", "/tmp/definitely_nonexistent_readlink_test" };
     const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "readlink canonicalize-missing (-m) with nonexistent path" {
@@ -577,7 +634,9 @@ test "readlink dangling symlink" {
     try testing.expectEqualStrings("nonexistent_target\n", stdout_buf.items);
 }
 
-test "readlink dangling symlink with -f fails" {
+test "readlink dangling symlink with -f succeeds (GNU compat)" {
+    // GNU -f: last component may be missing. A dangling symlink whose
+    // target's parent directory exists should resolve successfully.
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -587,14 +646,17 @@ test "readlink dangling symlink with -f fails" {
     defer testing.allocator.free(dir_path);
     const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/dangling.txt", .{dir_path});
     defer testing.allocator.free(link_path);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent_target\n", .{dir_path});
+    defer testing.allocator.free(expected);
 
     var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-f", link_path };
     const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
-    // -f requires all components to exist; dangling symlink target doesn't exist
-    try testing.expectEqual(@as(u8, 1), result);
+    // GNU -f exits 0 for dangling symlinks when parent exists
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_buf.items);
 }
 
 test "readlink canonicalize-missing with dangling symlink (-m)" {

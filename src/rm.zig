@@ -86,9 +86,12 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // -W: stub -- print warning and skip undelete operation
+    // -W: undelete is not supported on Linux. Print error and
+    // return without deleting anything — deleting a file when
+    // asked to recover it would be dangerous data loss.
     if (parsed_args.undelete) {
-        try stderr_writer.writeAll("rm: -W (undelete) not supported\n");
+        try stderr_writer.writeAll("rm: -W (undelete) not supported on this platform\n");
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Create options structure - merge -i/-I and -r/-R flags
@@ -1118,12 +1121,13 @@ test "rm: -W flag is accepted and prints warning" {
     const args = [_][]const u8{ "-W", "-f", "nonexistent_file_test_12345" };
     const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
-    try testing.expect(exit_code == 0);
-    // Should print the stub warning to stderr
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "rm: -W (undelete) not supported") != null);
+    // -W (undelete) is not supported on Linux; should exit non-zero
+    try testing.expect(exit_code != 0);
+    // Should print warning/error to stderr
+    try testing.expect(stderr_buffer.items.len > 0);
 }
 
-test "rm: -W still removes files normally" {
+test "rm: -W does not delete existing file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -1141,12 +1145,13 @@ test "rm: -W still removes files normally" {
     const args = [_][]const u8{ "-W", file_path };
     const exit_code = try runRm(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
-    try testing.expect(exit_code == 0);
+    // -W must NOT delete the file — that would be data loss
+    try testing.expect(exit_code != 0);
     // Warning should appear
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-W (undelete) not supported") != null);
-    // File should still be removed
+    try testing.expect(stderr_buffer.items.len > 0);
+    // File must still exist
     const stat = tmp.dir.statFile("undelete_test.txt");
-    try testing.expect(stat == error.FileNotFound);
+    try testing.expect(stat != error.FileNotFound);
 }
 
 test "rm: -W must not delete existing file" {

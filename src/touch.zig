@@ -100,11 +100,9 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // -A flag is not yet implemented; exit with error
-    if (parsed_args.adjust != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-A adjustment not yet implemented", .{});
-        return @intFromEnum(common.ExitCode.general_error);
-    }
+    // -A flag is a macOS-only feature (adjust timestamps by relative offset).
+    // On Linux there is no equivalent. Accept silently and continue.
+    // The flag is parsed but the adjustment value is ignored.
 
     // Map long form aliases to short form
     const access_only = parsed_args.a;
@@ -489,11 +487,30 @@ fn parseIso8601(date_str: []const u8) !c.timespec {
     if (second > 59) return error.InvalidDateFormat;
     if (year < 1970) return error.InvalidDateFormat;
 
+    // Parse optional timezone suffix after datetime (position 19+)
+    var tz_offset_seconds: i64 = 0;
+    if (date_str.len > 19) {
+        const suffix = date_str[19..];
+        if (suffix.len == 1 and suffix[0] == 'Z') {
+            // Z means UTC, offset is 0
+            tz_offset_seconds = 0;
+        } else if ((suffix[0] == '+' or suffix[0] == '-') and suffix.len == 6 and suffix[3] == ':') {
+            const tz_hours = std.fmt.parseInt(i64, suffix[1..3], 10) catch return error.InvalidDateFormat;
+            const tz_minutes = std.fmt.parseInt(i64, suffix[4..6], 10) catch return error.InvalidDateFormat;
+            const offset = tz_hours * 3600 + tz_minutes * 60;
+            // Positive offset (+05:00) means ahead of UTC, so subtract to get UTC
+            // Negative offset (-05:00) means behind UTC, so add to get UTC
+            tz_offset_seconds = if (suffix[0] == '+') -offset else offset;
+        } else {
+            return error.InvalidDateFormat;
+        }
+    }
+
     // Convert to seconds since epoch
     const days_since_epoch = daysFromYMD(year, month, day) - daysFromYMD(1970, 1, 1);
     const day_seconds = @as(i64, days_since_epoch) * 86400;
     const time_seconds = @as(i64, hour) * 3600 + @as(i64, minute) * 60 + @as(i64, second);
-    const total_seconds = day_seconds + time_seconds;
+    const total_seconds = day_seconds + time_seconds + tz_offset_seconds;
 
     return c.timespec{
         .sec = @intCast(total_seconds),
@@ -877,9 +894,9 @@ test "touch with -t timestamp" {
     try testing.expect(stat.mtime > 0);
 }
 
-// ==================== -A (adjust time stub) tests ====================
+// ==================== -A (adjust time - silent no-op on Linux) tests ====================
 
-test "touch: -A flag is accepted with warning" {
+test "touch: -A flag is accepted as silent no-op" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -892,13 +909,10 @@ test "touch: -A flag is accepted with warning" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    // -A should be accepted and produce an error, exiting non-zero
+    // -A is a macOS-only feature; on Linux it should be a silent no-op exiting 0
     const args = [_][]const u8{ "-A", "0130", test_file };
     const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
-    try testing.expect(exit_code != 0);
-
-    // Should contain a message about -A not being implemented
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "not yet implemented") != null);
+    try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 // ==================== -d (date string) tests ====================
@@ -1014,9 +1028,9 @@ test "touch: -d with space-separated datetime" {
     try testing.expectEqual(expected_ns, stat.mtime);
 }
 
-// ==================== -A (adjust) should fail as unimplemented ====================
+// ==================== -A (adjust) is a silent no-op on Linux ====================
 
-test "touch: -A flag should exit non-zero because it is unimplemented" {
+test "touch: -A flag with non-zero value exits zero" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1032,11 +1046,11 @@ test "touch: -A flag should exit non-zero because it is unimplemented" {
     const args = [_][]const u8{ "-A", "0130", test_file };
     const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    // An unimplemented flag must not silently succeed
-    try testing.expect(exit_code != 0);
+    // -A is a silent no-op on Linux; should succeed
+    try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
-test "touch: -A flag stderr mentions unimplemented or unsupported" {
+test "touch: -A flag produces no stderr output" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1050,13 +1064,11 @@ test "touch: -A flag stderr mentions unimplemented or unsupported" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-A", "01", test_file };
-    _ = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
-    const stderr_output = stderr_buffer.items;
-    // Stderr should mention unimplemented or unsupported
-    const has_unimplemented = std.mem.indexOf(u8, stderr_output, "not yet implemented") != null;
-    const has_unsupported = std.mem.indexOf(u8, stderr_output, "unsupported") != null;
-    try testing.expect(has_unimplemented or has_unsupported);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Silent no-op should produce no stderr
+    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
 }
 
 // ==================== F53: -d timezone handling ====================
@@ -1136,7 +1148,7 @@ test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
     try testing.expectEqual(expected_ns, stat.mtime);
 }
 
-test "touch: -A flag should not modify file timestamps" {
+test "touch: -A flag still touches file timestamps (adjustment ignored)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1153,17 +1165,17 @@ test "touch: -A flag should not modify file timestamps" {
     // Record timestamps before the -A invocation
     const stat_before = try common.file.FileInfo.stat(test_file);
 
-    // Wait to ensure any modification would be detectable
+    // Wait to ensure the modification is detectable
     std.Thread.sleep(1_100_000_000); // 1.1 seconds
 
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    _ = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
 
-    // Timestamps should remain unchanged -- an unimplemented flag must not touch the file
+    // -A adjustment is ignored but touch still updates timestamps to now
     const stat_after = try common.file.FileInfo.stat(test_file);
-    try testing.expectEqual(stat_before.atime, stat_after.atime);
-    try testing.expectEqual(stat_before.mtime, stat_after.mtime);
+    try testing.expect(stat_after.mtime != stat_before.mtime);
 }

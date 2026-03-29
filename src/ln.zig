@@ -186,6 +186,10 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             },
+            error.TooManyValues => {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option does not accept a value", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            },
             else => return err,
         }
     };
@@ -350,6 +354,19 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
     } else if (files.len >= 2) {
         // Form 3: ln TARGET... DIRECTORY
         const directory = files[files.len - 1];
+
+        // When -n/-h (no_dereference) is set and the destination is a symlink,
+        // treat it as a regular file (Form 1), not as a directory to create
+        // links inside. This prevents ln -sfn from following a symlink-to-directory.
+        if (options.no_dereference and files.len == 2) {
+            var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().readLink(directory, &readlink_buf)) |_| {
+                // Destination is a symlink — treat as Form 1 (TARGET LINK_NAME)
+                return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
+            } else |_| {
+                // Not a symlink — fall through to normal directory check
+            }
+        }
 
         const stat = std.fs.cwd().statFile(directory) catch |err| switch (err) {
             error.FileNotFound => {

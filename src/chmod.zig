@@ -64,7 +64,32 @@ const ChmodArgs = struct {
 
 /// Main entry point for chmod utility
 pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const parsed_args = common.argparse.ArgParser.parse(ChmodArgs, allocator, args) catch |err| {
+    // Pre-process: if an argument looks like a symbolic mode starting
+    // with '-' (e.g. "-w", "-rwx"), insert "--" before it so the
+    // argparser treats it and everything after as positionals.
+    var effective_args: ?[]const []const u8 = null;
+    defer if (effective_args) |ea| allocator.free(ea);
+
+    for (args, 0..) |arg, idx| {
+        // Stop scanning once we hit "--" (already handled by argparse)
+        if (std.mem.eql(u8, arg, "--")) break;
+        // Only inspect args that start with '-'
+        if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
+            if (looksLikeSymbolicMode(arg)) {
+                // Build new array: args[0..idx] ++ ["--"] ++ args[idx..]
+                var new_args = try allocator.alloc([]const u8, args.len + 1);
+                @memcpy(new_args[0..idx], args[0..idx]);
+                new_args[idx] = "--";
+                @memcpy(new_args[idx + 1 ..], args[idx..]);
+                effective_args = new_args;
+                break;
+            }
+        }
+    }
+
+    const parse_args = effective_args orelse args;
+
+    const parsed_args = common.argparse.ArgParser.parse(ChmodArgs, allocator, parse_args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid argument\nTry 'chmod --help' for more information.", .{});
@@ -501,6 +526,26 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
     if (had_errors) {
         return ChmodError.FileOperationFailed;
     }
+}
+
+/// Check whether an argument that starts with '-' is a symbolic chmod mode
+/// rather than a flag. Returns true when the string after the leading '-'
+/// contains a permission character (r, w, x, X, s, t) that is never a valid
+/// chmod short flag, or a who specifier (u, g, o, a) followed by an operator.
+/// Examples: "-w", "-r", "-rwx", "-a+x", "-go-w"
+fn looksLikeSymbolicMode(arg: []const u8) bool {
+    if (arg.len < 2 or arg[0] != '-') return false;
+    // Never treat "--" as a mode
+    if (arg.len >= 2 and arg[1] == '-') return false;
+    const body = arg[1..];
+    for (body) |c| {
+        switch (c) {
+            // Permission bits – never valid chmod flags
+            'r', 'w', 'x', 'X', 's', 't' => return true,
+            else => {},
+        }
+    }
+    return false;
 }
 
 /// Check if a numeric-looking mode string contains non-octal digits (8 or 9).

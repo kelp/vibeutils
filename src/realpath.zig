@@ -121,9 +121,37 @@ fn processPath(
             }
             return false;
         };
-    } else blk: {
-        // Default: canonicalize-existing (all components must exist)
+    } else if (opts.canonicalize_existing) blk: {
+        // -e: all components must exist
         break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
+            if (!opts.quiet) {
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+            }
+            return false;
+        };
+    } else blk: {
+        // Default (-E semantics): all but last component must exist.
+        // Try full path first; if last component is missing, resolve dirname and append basename.
+        break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
+            if (err == error.FileNotFound) {
+                const dir = std.fs.path.dirname(path);
+                if (dir != null and !std.mem.eql(u8, dir.?, "/")) {
+                    const base = std.fs.path.basename(path);
+                    const resolved_dir = std.fs.cwd().realpathAlloc(allocator, dir.?) catch |dir_err| {
+                        if (!opts.quiet) {
+                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(dir_err) });
+                        }
+                        return false;
+                    };
+                    defer allocator.free(resolved_dir);
+                    break :blk std.fs.path.join(allocator, &.{ resolved_dir, base }) catch |join_err| {
+                        if (!opts.quiet) {
+                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(join_err) });
+                        }
+                        return false;
+                    };
+                }
+            }
             if (!opts.quiet) {
                 common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
             }

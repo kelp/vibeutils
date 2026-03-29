@@ -169,7 +169,7 @@ fn printVersion(writer: anytype) !void {
 /// Handles edge cases like / and // according to POSIX specifications
 fn computeBasename(path: []const u8, maybe_suffix: ?[]const u8) []const u8 {
     if (path.len == 0) {
-        return ".";
+        return "";
     }
 
     // Handle special case for root directory
