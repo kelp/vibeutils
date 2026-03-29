@@ -306,7 +306,7 @@ test_find() {
     "$binary" "$print0_dir" "-name" "file.txt" "-print0" > "$print0_out" 2>/dev/null
     local print0_exit=$?
     # Check output contains NUL byte and no newline
-    if [[ $print0_exit -eq 0 ]] && xxd "$print0_out" | grep -q '00'; then
+    if [[ $print0_exit -eq 0 ]] && od -A n -t x1 "$print0_out" | grep -q '00'; then
         print_test_result "find -print0 produces NUL bytes" "PASS"
     else
         print_test_result "find -print0 produces NUL bytes" "FAIL" "Expected NUL-terminated output"
