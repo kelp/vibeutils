@@ -375,5 +375,130 @@ test_chown() {
     test_command_succeeds "chown file in readonly dir" "$binary" "$current_uid" "$file_in_readonly"
     chmod 755 "$readonly_dir"  # Restore for cleanup
 
+    echo -e "${CYAN}Testing audit findings (F71)...${NC}"
+
+    # F71-1: chown user: should set group to user's login group.
+    # Per GNU coreutils: "If a colon but no group name follows the
+    # user name, that user's login group is used as the new group."
+    # The current implementation parses "user:" as user=<uid>,
+    # group=null, which means "keep current group" -- this is wrong.
+    #
+    # Test: create a file, change its group to a supplementary group,
+    # then run "chown user: file" and verify the group changed to the
+    # user's login group.
+    local login_gid=$(id -g "$current_user")
+    local alt_gid=""
+    for gid in $(id -G); do
+        if [[ "$gid" != "$login_gid" ]]; then
+            alt_gid="$gid"
+            break
+        fi
+    done
+    if [[ -n "$alt_gid" ]]; then
+        local login_grp_file=$(create_temp_file "login group test")
+        chgrp "$alt_gid" "$login_grp_file" 2>/dev/null
+        local pre_gid=$(stat -c '%g' "$login_grp_file" 2>/dev/null \
+            || stat -f '%g' "$login_grp_file" 2>/dev/null)
+        if [[ "$pre_gid" == "$alt_gid" ]]; then
+            "$binary" "$current_user:" "$login_grp_file" 2>/dev/null
+            local post_gid=$(stat -c '%g' "$login_grp_file" 2>/dev/null \
+                || stat -f '%g' "$login_grp_file" 2>/dev/null)
+            if [[ "$post_gid" == "$login_gid" ]]; then
+                print_test_result "chown user: sets login group" "PASS"
+            else
+                print_test_result "chown user: sets login group" "FAIL" \
+                    "Expected group $login_gid, got $post_gid (group unchanged from $alt_gid)"
+            fi
+        else
+            print_test_result "chown user: sets login group" "SKIP" \
+                "Could not change file group for test setup"
+        fi
+    else
+        print_test_result "chown user: sets login group" "SKIP" \
+            "No supplementary groups available for testing"
+    fi
+
+    # F71-2: chown -v should print a meaningful change message.
+    # The existing test only checks that the command succeeds and
+    # matches the vague pattern "ownership.*retained".  When ownership
+    # actually changes, the message should contain "changed ownership"
+    # and include the old and new uid:gid values.
+    #
+    # Test: change a file to a supplementary group, then chown back
+    # with -v and verify the stdout contains "changed ownership" with
+    # the expected old and new values.
+    if [[ -n "$alt_gid" ]]; then
+        local verbose_chg_file=$(create_temp_file "verbose change test")
+        chgrp "$alt_gid" "$verbose_chg_file" 2>/dev/null
+        local v_pre_gid=$(stat -c '%g' "$verbose_chg_file" 2>/dev/null \
+            || stat -f '%g' "$verbose_chg_file" 2>/dev/null)
+        if [[ "$v_pre_gid" == "$alt_gid" ]]; then
+            local v_cmd v_out v_err v_exit
+            run_command v_cmd v_out v_err v_exit \
+                "$binary" -v "$current_uid:$login_gid" "$verbose_chg_file"
+            if [[ $v_exit -eq 0 && "$v_out" =~ "changed ownership" ]]; then
+                print_test_result "chown -v prints change message" "PASS"
+            else
+                print_test_result "chown -v prints change message" "FAIL" \
+                    "Expected 'changed ownership' in stdout, got: '$v_out'"
+            fi
+        else
+            print_test_result "chown -v prints change message" "SKIP" \
+                "Could not set up file with alternate group"
+        fi
+    else
+        print_test_result "chown -v prints change message" "SKIP" \
+            "No supplementary groups available"
+    fi
+
+    # F71-3: chown -R should recursively change all files in a
+    # directory tree.  The existing test only checks that the command
+    # succeeds; it does not verify that ownership actually changed on
+    # every file.
+    #
+    # Test: create a directory tree, change all groups to a
+    # supplementary group, then run "chown -R uid:gid tree" and
+    # verify every file has the correct group.
+    if [[ -n "$alt_gid" ]]; then
+        local recur_dir=$(create_temp_dir)
+        mkdir -p "$recur_dir/sub1/sub2"
+        create_temp_file "r1" "$recur_dir/file1"
+        create_temp_file "r2" "$recur_dir/sub1/file2"
+        create_temp_file "r3" "$recur_dir/sub1/sub2/file3"
+        # Change everything to the alternate group
+        chgrp -R "$alt_gid" "$recur_dir" 2>/dev/null
+        # Verify setup worked
+        local setup_gid=$(stat -c '%g' "$recur_dir/sub1/sub2/file3" 2>/dev/null \
+            || stat -f '%g' "$recur_dir/sub1/sub2/file3" 2>/dev/null)
+        if [[ "$setup_gid" == "$alt_gid" ]]; then
+            test_command_succeeds "chown -R recursive tree" \
+                "$binary" -R "$current_uid:$login_gid" "$recur_dir"
+            # Verify every file has the correct group
+            local all_correct=true
+            for f in "$recur_dir/file1" "$recur_dir/sub1/file2" \
+                     "$recur_dir/sub1/sub2/file3" "$recur_dir/sub1" \
+                     "$recur_dir/sub1/sub2"; do
+                local f_gid=$(stat -c '%g' "$f" 2>/dev/null \
+                    || stat -f '%g' "$f" 2>/dev/null)
+                if [[ "$f_gid" != "$login_gid" ]]; then
+                    all_correct=false
+                    break
+                fi
+            done
+            if $all_correct; then
+                print_test_result "chown -R changes all files" "PASS"
+            else
+                print_test_result "chown -R changes all files" "FAIL" \
+                    "Some files still have group $alt_gid instead of $login_gid"
+            fi
+        else
+            print_test_result "chown -R changes all files" "SKIP" \
+                "Could not change group for test setup"
+        fi
+    else
+        print_test_result "chown -R changes all files" "SKIP" \
+            "No supplementary groups available"
+    fi
+
     echo -e "${CYAN}chown testing completed${NC}"
 }

@@ -114,4 +114,63 @@ test_df() {
     # Nonexistent file exits with code 1
     test_command_exit_code "df nonexistent file exits 1" 1 \
         "$binary" /nonexistent/path/file
+
+    # ==================================================================
+    # F20: POSIX -P header compliance
+    # POSIX requires "1024-blocks" and "Capacity", not "1K-blocks"/"Use%"
+    # ==================================================================
+    echo -e "${CYAN}Testing POSIX -P header compliance...${NC}"
+
+    output=$("$binary" -P / 2>/dev/null)
+    exit_code=$?
+    local header
+    header=$(echo "$output" | head -1)
+
+    # POSIX mandates "1024-blocks", not "1K-blocks"
+    if [[ $exit_code -eq 0 && "$header" =~ "1024-blocks" ]]; then
+        print_test_result "df -P header has POSIX 1024-blocks" "PASS"
+    else
+        print_test_result "df -P header has POSIX 1024-blocks" "FAIL" \
+            "Header: $header"
+    fi
+
+    # POSIX mandates "Capacity", not "Use%"
+    if [[ $exit_code -eq 0 && "$header" =~ "Capacity" ]]; then
+        print_test_result "df -P header has POSIX Capacity" "PASS"
+    else
+        print_test_result "df -P header has POSIX Capacity" "FAIL" \
+            "Header: $header"
+    fi
+
+    # ==================================================================
+    # F21: df -n should be rejected on Linux (not a GNU flag)
+    # ==================================================================
+    if [[ "$(uname)" == "Linux" ]]; then
+        echo -e "${CYAN}Testing -n rejected on Linux...${NC}"
+
+        "$binary" -n / >/dev/null 2>&1
+        exit_code=$?
+        if [[ $exit_code -eq 2 ]]; then
+            print_test_result "df -n rejected on Linux (exit 2)" "PASS"
+        else
+            print_test_result "df -n rejected on Linux (exit 2)" "FAIL" \
+                "Exit code: $exit_code (expected 2)"
+        fi
+    fi
+
+    # ==================================================================
+    # F19: df -I without argument should work on macOS
+    # ==================================================================
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo -e "${CYAN}Testing -I as boolean on macOS...${NC}"
+
+        output=$("$binary" -I / 2>/dev/null)
+        exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            print_test_result "df -I without arg succeeds on macOS" "PASS"
+        else
+            print_test_result "df -I without arg succeeds on macOS" "FAIL" \
+                "Exit code: $exit_code (expected 0)"
+        fi
+    fi
 }

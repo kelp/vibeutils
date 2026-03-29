@@ -862,4 +862,91 @@ test_cp() {
         print_test_result "cp --backup creates backup file (regression)" "FAIL" \
             "Expected ${backup_dst}~ to exist"
     fi
+
+    echo -e "${CYAN}Testing audit findings (F70)...${NC}"
+
+    # F70-1: cp -a preserves permissions including execute bit (755)
+    # The existing test uses 644; this verifies 755 is preserved exactly.
+    local a_perm_src=$(create_temp_dir)
+    create_temp_file "exec file content" "$a_perm_src/exec_file.txt"
+    chmod 755 "$a_perm_src/exec_file.txt"
+    local a_perm_dest="$TEMP_DIR/a_perm_dest"
+    test_command_exit_code "cp -a exec permissions copy" 0 \
+        "$binary" -a "$a_perm_src" "$a_perm_dest"
+    local a_src_perms=$(get_file_permissions "$a_perm_src/exec_file.txt")
+    local a_dst_perms=$(get_file_permissions "$a_perm_dest/exec_file.txt")
+    if [[ "$a_src_perms" == "755" && "$a_dst_perms" == "755" ]]; then
+        print_test_result "cp -a preserves 755 permissions" "PASS"
+    else
+        print_test_result "cp -a preserves 755 permissions" "FAIL" \
+            "Source: $a_src_perms, Dest: $a_dst_perms (expected 755)"
+    fi
+
+    # F70-2: cp -N should suppress BSD file flags with -p, NOT affect
+    # symlink following.  The current implementation treats -N as an
+    # alias for -P (follow_none).  This test copies a symlink without
+    # -R and expects -N to NOT preserve the symlink (since without -R,
+    # symlinks should always be followed per POSIX).  If -N wrongly
+    # triggers follow_none, the destination will be a symlink instead
+    # of a regular file.
+    local n_link_target=$(create_temp_file "N flag link target")
+    local n_symlink="$TEMP_DIR/n_flag_symlink"
+    ln -sf "$n_link_target" "$n_symlink"
+    local n_dest="$TEMP_DIR/n_flag_dest"
+    test_command_exit_code "cp -N symlink copy" 0 \
+        "$binary" -N "$n_symlink" "$n_dest"
+    if [[ ! -L "$n_dest" ]]; then
+        print_test_result "cp -N does not affect symlink following" "PASS"
+    else
+        print_test_result "cp -N does not affect symlink following" "FAIL" \
+            "Destination is a symlink; -N should not change symlink behavior"
+    fi
+
+    # F70-3: cp -p should attempt to preserve uid/gid (chown).
+    # The current implementation preserves mode and timestamps but
+    # does NOT call chown.  This test creates a file, copies with -p,
+    # and checks that the destination uid/gid match the source.
+    # Since both are owned by the current user this will trivially
+    # pass for uid, but the real test is whether chown was attempted.
+    # We verify indirectly: copy a file with -p to a directory that
+    # has the setgid bit, which changes the group of new files.
+    # After cp -p, the group should match the SOURCE, not the
+    # directory's group.
+    local sgid_dir="$TEMP_DIR/sgid_dir"
+    mkdir -p "$sgid_dir"
+    # Find a supplementary group we belong to that differs from our primary
+    local current_gid=$(id -g)
+    local alt_gid=""
+    for gid in $(id -G); do
+        if [[ "$gid" != "$current_gid" ]]; then
+            alt_gid="$gid"
+            break
+        fi
+    done
+    if [[ -n "$alt_gid" ]]; then
+        # Set the directory to the alternate group with setgid
+        chgrp "$alt_gid" "$sgid_dir" 2>/dev/null && \
+        chmod g+s "$sgid_dir" 2>/dev/null
+        local sgid_check=$(stat -c '%g' "$sgid_dir" 2>/dev/null || stat -f '%g' "$sgid_dir" 2>/dev/null)
+        if [[ "$sgid_check" == "$alt_gid" ]]; then
+            local p_src=$(create_temp_file "preserve ownership test")
+            local p_src_gid=$(stat -c '%g' "$p_src" 2>/dev/null || stat -f '%g' "$p_src" 2>/dev/null)
+            local p_dest="$sgid_dir/preserved_file.txt"
+            test_command_exit_code "cp -p to setgid dir" 0 \
+                "$binary" -p "$p_src" "$p_dest"
+            local p_dest_gid=$(stat -c '%g' "$p_dest" 2>/dev/null || stat -f '%g' "$p_dest" 2>/dev/null)
+            if [[ "$p_dest_gid" == "$p_src_gid" ]]; then
+                print_test_result "cp -p preserves group in setgid dir" "PASS"
+            else
+                print_test_result "cp -p preserves group in setgid dir" "FAIL" \
+                    "Source gid: $p_src_gid, Dest gid: $p_dest_gid (inherited setgid group $alt_gid)"
+            fi
+        else
+            print_test_result "cp -p preserves group in setgid dir" "SKIP" \
+                "Could not set up setgid directory"
+        fi
+    else
+        print_test_result "cp -p preserves group in setgid dir" "SKIP" \
+            "No supplementary groups available"
+    fi
 }

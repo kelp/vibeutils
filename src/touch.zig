@@ -752,20 +752,19 @@ test "touch -r uses reference file times" {
 
 test "parseTimestamp with full format CCYYMMDDhhmm.ss" {
     const result = try parseTimestamp("202312311359.45");
-    // Should represent 2023-12-31 13:59:45
-    // We can't test exact value without proper date library, but it should succeed
-    try testing.expect(result.sec > 0);
+    // 2023-12-31 13:59:45 UTC = 1704031185 epoch seconds
+    try testing.expectEqual(@as(i64, 1704031185), result.sec);
     try testing.expectEqual(@as(i64, 0), result.nsec);
 }
 
 test "parseTimestamp with YYMMDDhhmm format" {
-    // Test year 2023 (YY=23)
+    // YY=23 -> year 2023, 2023-12-31 13:59:00 UTC = 1704031140
     const result1 = try parseTimestamp("2312311359");
-    try testing.expect(result1.sec > 0);
+    try testing.expectEqual(@as(i64, 1704031140), result1.sec);
 
-    // Test year 1999 (YY=99)
+    // YY=99 -> year 1999, 1999-12-31 13:59:00 UTC = 946648740
     const result2 = try parseTimestamp("9912311359");
-    try testing.expect(result2.sec > 0);
+    try testing.expectEqual(@as(i64, 946648740), result2.sec);
 }
 
 test "parseTimestamp with invalid format" {

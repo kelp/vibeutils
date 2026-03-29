@@ -4340,3 +4340,97 @@ test "find: -iregex stub should not match everything" {
     // No files should match an impossible regex pattern
     try testing.expectEqualStrings("", stdout_buf.items);
 }
+
+// F56: -size uses wrong block rounding (bytes not 512-byte blocks)
+// GNU find -size n (default unit = 512-byte blocks) uses ceiling division:
+//   file_blocks = ceil(file_bytes / 512)
+// Our implementation compares raw bytes, so these tests fail.
+
+test "find: -size 1 matches 100-byte file (block rounding)" {
+    // A 100-byte file occupies ceil(100/512) = 1 block.
+    // GNU: find . -size 1 matches files from 1 to 512 bytes.
+    // Bug: our code computes target_bytes=512 and checks 100 == 512 => false.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("small.txt", .{});
+    try f.writeAll("x" ** 100);
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -size 1 means exactly 1 block (512 bytes); 100 bytes rounds up to 1 block
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "small.txt") != null);
+}
+
+test "find: -size 2 matches 513-byte file (block rounding)" {
+    // A 513-byte file occupies ceil(513/512) = 2 blocks.
+    // GNU: find . -size 2 matches files from 513 to 1024 bytes.
+    // Bug: our code computes target_bytes=1024 and checks 513 == 1024 => false.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("medium.txt", .{});
+    try f.writeAll("x" ** 513);
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -size 2 means exactly 2 blocks; 513 bytes rounds up to 2 blocks
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "medium.txt") != null);
+}
+
+test "find: -size -2 excludes 513-byte file (block rounding)" {
+    // A 513-byte file occupies ceil(513/512) = 2 blocks.
+    // GNU: find . -size -2 matches files with fewer than 2 blocks (i.e. 0 or 1 block).
+    // A 513-byte file has 2 blocks, so -size -2 should NOT match it.
+    // Bug: our code computes target_bytes=1024 and checks 513 < 1024 => true (wrong).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile("twoblk.txt", .{});
+    try f1.writeAll("x" ** 513);
+    f1.close();
+
+    const f2 = try tmp.dir.createFile("oneblk.txt", .{});
+    try f2.writeAll("x" ** 100);
+    f2.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -size -2 means fewer than 2 blocks; 513 bytes = 2 blocks, should NOT match
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "-2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // oneblk.txt (100 bytes = 1 block) should match -size -2
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "oneblk.txt") != null);
+    // twoblk.txt (513 bytes = 2 blocks) should NOT match -size -2
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "twoblk.txt") == null);
+}

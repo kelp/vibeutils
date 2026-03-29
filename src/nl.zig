@@ -941,3 +941,170 @@ test "formatNumber right-zero" {
     const neg_result = formatNumber(&buf, -1, .right_zero, 6);
     try testing.expectEqualStrings("-00001", neg_result);
 }
+
+// F39: Section delimiter resets counter on every section transition, not just header.
+// GNU nl resets the counter on header, body, and footer transitions.
+// Our code only resets on header.
+test "nl section delimiter resets counter on body transition" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // body (default section) -> body delimiter -> new body section
+    // line1 and line2 start at 10; body delimiter should reset to 10
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "line1\nline2\n\\:\\:\nbody1\nbody2\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const exit_code = try runNl(testing.allocator, &.{ "-b", "a", "-v", "10", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // GNU resets line number to start (10) on body section transition
+    try testing.expectEqualStrings("    10\tline1\n    11\tline2\n\n    10\tbody1\n    11\tbody2\n", stdout_buf.items);
+}
+
+test "nl section delimiter resets counter on footer transition" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // body lines then footer delimiter then footer lines
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "line1\nline2\n\\:\nfoot1\nfoot2\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    const exit_code = try runNl(testing.allocator, &.{ "-b", "a", "-f", "a", "-v", "10", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // GNU resets line number to start (10) on footer section transition
+    try testing.expectEqualStrings("    10\tline1\n    11\tline2\n\n    10\tfoot1\n    11\tfoot2\n", stdout_buf.items);
+}
+
+// F40: writeUnnumberedLine outputs separator char instead of spaces.
+// GNU nl outputs width+len(sep) spaces for unnumbered lines, no separator character.
+test "nl unnumbered line outputs spaces not separator" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "hello\nworld\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -b n means no numbering; default width=6, default separator=tab (1 char)
+    // GNU outputs 7 spaces (6 for width + 1 for tab) then content
+    const exit_code = try runNl(testing.allocator, &.{ "-b", "n", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("       hello\n       world\n", stdout_buf.items);
+}
+
+test "nl unnumbered line with custom separator outputs spaces" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "hello\nworld\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -b n, -s ": " (2-char separator), width=6
+    // GNU outputs 8 spaces (6 + 2) then content
+    const exit_code = try runNl(testing.allocator, &.{ "-b", "n", "-s", ": ", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("        hello\n        world\n", stdout_buf.items);
+}
+
+// F41: Skipped blank lines output bare newline without indent.
+// GNU nl outputs width+len(sep) spaces then newline for blank lines.
+test "nl skipped blank lines have indent in default mode" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "hello\n\nworld\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // Default mode (-b t): blank lines are not numbered but should be indented
+    // GNU outputs 7 spaces (width=6 + tab=1) then newline for blank lines
+    const exit_code = try runNl(testing.allocator, &.{file_path}, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("     1\thello\n       \n     2\tworld\n", stdout_buf.items);
+}
+
+test "nl skipped blank lines have indent in all mode with join" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // With -b a -l 2, blank lines that don't meet the join threshold
+    // should still be indented
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "hello\n\nworld\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -b a -l 2: number all lines, but need 2 consecutive blanks to number
+    // The single blank line doesn't meet threshold, so it gets indent + newline
+    // GNU: "     1\thello\n       \n     2\tworld\n"
+    const exit_code = try runNl(testing.allocator, &.{ "-b", "a", "-l", "2", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("     1\thello\n       \n     2\tworld\n", stdout_buf.items);
+}
+
+// F42: -b p:REGEX not implemented.
+// GNU nl supports -b pREGEX to number only lines matching the regex.
+test "nl -b pfoo numbers only matching lines" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "foo\nbar\nfoo2\nbaz\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -b pfoo: number only lines matching regex "foo"
+    // GNU output: foo and foo2 get numbered, bar and baz are unnumbered
+    const exit_code = try runNl(testing.allocator, &.{ "-b", "pfoo", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("     1\tfoo\n       bar\n     2\tfoo2\n       baz\n", stdout_buf.items);
+}
+
+// F43: -d '' (empty delimiter) rejected.
+// GNU nl accepts empty delimiter to disable section matching.
+test "nl -d empty string disables section matching" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // With empty delimiter, \\:\\:\\: should be treated as normal text, not section delimiter
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "hello\n\\:\\:\\:\nworld\n");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -d '' should disable section matching; all lines numbered normally
+    const exit_code = try runNl(testing.allocator, &.{ "-d", "", "-b", "a", file_path }, stdout_buf.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("     1\thello\n     2\t\\:\\:\\:\n     3\tworld\n", stdout_buf.items);
+}

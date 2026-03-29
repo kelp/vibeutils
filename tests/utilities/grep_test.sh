@@ -260,6 +260,33 @@ test_grep() {
         print_test_result "grep -s suppresses errors" "FAIL" "Got stderr: $err"
     fi
 
+    echo -e "${CYAN}Testing F27: grep -x in BRE mode...${NC}"
+
+    # F27: -x should work in BRE mode (default). The bug wraps pattern as
+    # ^(foo)$ but ( ) are literal in BRE, so it matches "(foo)" not "foo".
+    test_command_output "grep -x BRE matches whole line" "foo" bash -c "printf 'foo\nfoo bar\n' | '$binary' --color=never -x 'foo'"
+
+    test_command_exit_code "grep -x BRE no match returns 1" 1 bash -c "printf 'foo bar\nbaz\n' | '$binary' --color=never -x 'foo'"
+
+    # -x with regex metacharacter in BRE mode
+    test_command_output "grep -x BRE with dot metachar" $'foo\nfXo' bash -c "printf 'foo\nfXo\nf.o bar\n' | '$binary' --color=never -x 'f.o'"
+
+    # -Ex (ERE mode) should still work (control test)
+    test_command_output "grep -Ex ERE whole line" "foo" bash -c "printf 'foo\nfoo bar\n' | '$binary' --color=never -Ex 'foo'"
+
+    echo -e "${CYAN}Testing F28: grep -o multiple matches per line...${NC}"
+
+    # F28: -o should print every non-overlapping match, not just the first.
+    test_command_output "grep -o all matches per line" $'foo\nfoo' bash -c "printf 'foobarfoo\n' | '$binary' --color=never -o 'foo'"
+
+    test_command_output "grep -Eo all matches per line" $'foo\nfoo' bash -c "printf 'foobarfoo\n' | '$binary' --color=never -Eo 'foo'"
+
+    # Multiple matches across multiple lines
+    test_command_output "grep -o multi-line multi-match" $'abc\nabc\nabc' bash -c "printf 'abcabc\nxyzabc\n' | '$binary' --color=never -o 'abc'"
+
+    # Single-char pattern with many matches
+    test_command_output "grep -o single char many matches" $'a\na\na\na\na' bash -c "printf 'aababaa\n' | '$binary' --color=never -o 'a'"
+
     echo -e "${CYAN}Testing regression fixes...${NC}"
 
     # Regression test: grep -f pattern_file data_file should work correctly

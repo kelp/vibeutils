@@ -57,14 +57,14 @@ test_timeout() {
             "Expected exit 125, got $exit_code"
     fi
 
-    # Command not found (127 on Linux, may differ on macOS with posix_spawn)
-    "$binary" 1 /nonexistent/command >/dev/null 2>&1
+    # Command not found must exit exactly 127 (standard convention)
+    "$binary" 1 /nonexistent_command_xyz >/dev/null 2>&1
     exit_code=$?
-    if [[ $exit_code -eq 127 || $exit_code -eq 1 ]]; then
-        print_test_result "timeout command not found" "PASS"
+    if [[ $exit_code -eq 127 ]]; then
+        print_test_result "timeout command not found exits 127" "PASS"
     else
-        print_test_result "timeout command not found" "FAIL" \
-            "Expected exit 127 or 1, got $exit_code"
+        print_test_result "timeout command not found exits 127" "FAIL" \
+            "Expected exit 127, got $exit_code"
     fi
 
     echo -e "${CYAN}Testing signal options...${NC}"

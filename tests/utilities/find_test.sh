@@ -144,6 +144,48 @@ test_find() {
     fi
     rm -rf "$size_dir"
 
+    # F56: -size block rounding tests
+    # GNU find -size N (default unit = 512-byte blocks) uses ceiling division:
+    # file_blocks = ceil(file_bytes / 512)
+    echo -e "${CYAN}Testing -size block rounding (F56)...${NC}"
+
+    local blk_dir=$(create_temp_dir)
+    # 100-byte file: ceil(100/512) = 1 block
+    python3 -c "open('$blk_dir/small.txt','wb').write(b'x'*100)"
+    # 513-byte file: ceil(513/512) = 2 blocks
+    python3 -c "open('$blk_dir/medium.txt','wb').write(b'x'*513)"
+    # 512-byte file: ceil(512/512) = 1 block
+    python3 -c "open('$blk_dir/exact512.txt','wb').write(b'x'*512)"
+    touch "$blk_dir/zero_len.txt"
+
+    # -size 1 should match files occupying 1 block (1-512 bytes)
+    run_command cmd out err exit_code "$binary" "$blk_dir" "-type" "f" "-size" "1"
+    if [[ "$out" =~ small.txt && "$out" =~ exact512.txt && ! "$out" =~ medium.txt && ! "$out" =~ zero_len.txt ]]; then
+        print_test_result "find -size 1 matches 1-block files" "PASS"
+    else
+        print_test_result "find -size 1 matches 1-block files" "FAIL" "Got: $out"
+    fi
+
+    # -size 2 should match files occupying 2 blocks (513-1024 bytes)
+    run_command cmd out err exit_code "$binary" "$blk_dir" "-type" "f" "-size" "2"
+    if [[ "$out" =~ medium.txt && ! "$out" =~ small.txt && ! "$out" =~ exact512.txt ]]; then
+        print_test_result "find -size 2 matches 2-block files" "PASS"
+    else
+        print_test_result "find -size 2 matches 2-block files" "FAIL" "Got: $out"
+    fi
+
+    # -size -2 should match files with fewer than 2 blocks (0 or 1 block)
+    # 513-byte file = 2 blocks, should NOT match -size -2
+    # 100-byte file = 1 block, should match -size -2
+    run_command cmd out err exit_code "$binary" "$blk_dir" "-type" "f" "-size" "-2"
+    if [[ "$out" =~ small.txt && "$out" =~ exact512.txt && ! "$out" =~ medium.txt ]]; then
+        print_test_result "find -size -2 excludes 2-block files" "PASS"
+    else
+        print_test_result "find -size -2 excludes 2-block files" "FAIL" "Got: $out"
+    fi
+
+    rm -rf "$blk_dir"
+
     echo -e "${CYAN}Testing -maxdepth...${NC}"
 
     local depth_dir=$(create_temp_dir)
@@ -542,4 +584,324 @@ test_find() {
         print_test_result "find -regex stub returns no matches" "FAIL" \
             "Expected empty output, got: '$out' (exit: $exit_code)"
     fi
+
+    # ================================================================
+    # F1: find -regex/-iregex always returns false
+    # GNU find: -regex '.*' should match every path (it matches the
+    # full path against the regex). Our stub returns false, matching
+    # nothing.
+    # ================================================================
+    echo -e "${CYAN}Testing -regex actually matches (F1)...${NC}"
+
+    local regex_match_dir=$(create_temp_dir)
+    touch "$regex_match_dir/hello.txt" "$regex_match_dir/world.txt"
+
+    # '.*' matches every string -- should list all entries
+    run_command cmd out err exit_code "$binary" "$regex_match_dir" "-regex" ".*"
+    if [[ $exit_code -eq 0 && "$out" =~ hello.txt && "$out" =~ world.txt ]]; then
+        print_test_result "find -regex '.*' matches all entries" "PASS"
+    else
+        print_test_result "find -regex '.*' matches all entries" "FAIL" \
+            "Expected all entries, got: '$out'"
+    fi
+
+    # Specific regex: match only .txt files by full path
+    run_command cmd out err exit_code "$binary" "$regex_match_dir" "-regex" ".*hello\.txt"
+    if [[ $exit_code -eq 0 && "$out" =~ hello.txt && ! "$out" =~ world.txt ]]; then
+        print_test_result "find -regex filters specific pattern" "PASS"
+    else
+        print_test_result "find -regex filters specific pattern" "FAIL" \
+            "Expected only hello.txt, got: '$out'"
+    fi
+
+    # -iregex: case-insensitive match
+    touch "$regex_match_dir/Upper.TXT"
+    run_command cmd out err exit_code "$binary" "$regex_match_dir" "-iregex" ".*upper\.txt"
+    if [[ $exit_code -eq 0 && "$out" =~ Upper.TXT ]]; then
+        print_test_result "find -iregex case-insensitive match" "PASS"
+    else
+        print_test_result "find -iregex case-insensitive match" "FAIL" \
+            "Expected Upper.TXT, got: '$out'"
+    fi
+    rm -rf "$regex_match_dir"
+
+    # ================================================================
+    # F2: find -Bmin/-Bnewer/-Btime/-newerXY always returns true
+    # These birth-time predicates are stubs that match everything.
+    # A file just created should NOT match -Btime +9999 (born more
+    # than 9999 days ago).
+    # ================================================================
+    echo -e "${CYAN}Testing birth-time predicates not always-true (F2)...${NC}"
+
+    local btime_dir=$(create_temp_dir)
+    touch "$btime_dir/recent.txt"
+
+    # -Btime +9999 means "birth time more than 9999 days ago"
+    # A just-created file should NOT match
+    run_command cmd out err exit_code "$binary" "$btime_dir" "-type" "f" "-Btime" "+9999"
+    if [[ $exit_code -eq 0 && -z "$out" ]]; then
+        print_test_result "find -Btime +9999 excludes recent file" "PASS"
+    else
+        print_test_result "find -Btime +9999 excludes recent file" "FAIL" \
+            "Recent file should not match -Btime +9999, got: '$out'"
+    fi
+
+    # -Bmin +999999 means "born more than 999999 minutes ago"
+    run_command cmd out err exit_code "$binary" "$btime_dir" "-type" "f" "-Bmin" "+999999"
+    if [[ $exit_code -eq 0 && -z "$out" ]]; then
+        print_test_result "find -Bmin +999999 excludes recent file" "PASS"
+    else
+        print_test_result "find -Bmin +999999 excludes recent file" "FAIL" \
+            "Recent file should not match -Bmin +999999, got: '$out'"
+    fi
+
+    # -Bnewer REF: file born after REF. A file is not newer than
+    # itself, so -Bnewer <self> with -type f should return nothing
+    run_command cmd out err exit_code "$binary" "$btime_dir" "-type" "f" "-Bnewer" "$btime_dir/recent.txt"
+    if [[ $exit_code -eq 0 && -z "$out" ]]; then
+        print_test_result "find -Bnewer self excludes file" "PASS"
+    else
+        print_test_result "find -Bnewer self excludes file" "FAIL" \
+            "File should not be newer than itself, got: '$out'"
+    fi
+
+    # -newerBm REF with negative case: create old-timestamped ref,
+    # then check that -newermB (mtime newer than birth) fails for
+    # the old file
+    touch -t 197001010000 "$btime_dir/epoch.txt" 2>/dev/null || true
+    if [[ -f "$btime_dir/epoch.txt" ]]; then
+        run_command cmd out err exit_code "$binary" "$btime_dir" \
+            "-type" "f" "-name" "epoch.txt" "-newermB" "$btime_dir/recent.txt"
+        if [[ $exit_code -eq 0 && -z "$out" ]]; then
+            print_test_result "find -newermB excludes older file" "PASS"
+        else
+            print_test_result "find -newermB excludes older file" "FAIL" \
+                "epoch.txt mtime not newer than recent.txt birth, got: '$out'"
+        fi
+    fi
+    rm -rf "$btime_dir"
+
+    # ================================================================
+    # F3: find -printf ignores format string, prints full path
+    # GNU find: -printf '%f\n' prints the filename (basename).
+    # Our stub ignores the format and prints the full path.
+    # ================================================================
+    echo -e "${CYAN}Testing -printf respects format string (F3)...${NC}"
+
+    local printf_dir=$(create_temp_dir)
+    touch "$printf_dir/testfile.txt"
+
+    # %f = filename only (basename)
+    run_command cmd out err exit_code "$binary" "$printf_dir" \
+        "-maxdepth" "0" "-printf" "%f\n"
+    local printf_base
+    printf_base=$(basename "$printf_dir")
+    if [[ $exit_code -eq 0 && "$out" == "$printf_base" ]]; then
+        print_test_result "find -printf '%f' prints basename" "PASS"
+    else
+        print_test_result "find -printf '%f' prints basename" "FAIL" \
+            "Expected '$printf_base', got: '$out'"
+    fi
+
+    # %f for a file inside the directory
+    run_command cmd out err exit_code "$binary" "$printf_dir" \
+        "-name" "testfile.txt" "-printf" "%f\n"
+    if [[ $exit_code -eq 0 && "$out" == "testfile.txt" ]]; then
+        print_test_result "find -printf '%f' file basename" "PASS"
+    else
+        print_test_result "find -printf '%f' file basename" "FAIL" \
+            "Expected 'testfile.txt', got: '$out'"
+    fi
+
+    # %h = directory component
+    run_command cmd out err exit_code "$binary" "$printf_dir" \
+        "-name" "testfile.txt" "-printf" "%h\n"
+    if [[ $exit_code -eq 0 && "$out" == "$printf_dir" ]]; then
+        print_test_result "find -printf '%h' prints dirname" "PASS"
+    else
+        print_test_result "find -printf '%h' prints dirname" "FAIL" \
+            "Expected '$printf_dir', got: '$out'"
+    fi
+
+    # %s = file size in bytes (empty file = 0)
+    run_command cmd out err exit_code "$binary" "$printf_dir" \
+        "-name" "testfile.txt" "-printf" "%s\n"
+    if [[ $exit_code -eq 0 && "$out" == "0" ]]; then
+        print_test_result "find -printf '%s' prints file size" "PASS"
+    else
+        print_test_result "find -printf '%s' prints file size" "FAIL" \
+            "Expected '0', got: '$out'"
+    fi
+    rm -rf "$printf_dir"
+
+    # ================================================================
+    # F4: find -s (stable/sorted order) is a no-op
+    # BSD find -s outputs entries in sorted (lexicographic) order
+    # within each directory.
+    # ================================================================
+    echo -e "${CYAN}Testing -s produces sorted output (F4)...${NC}"
+
+    local sort_dir=$(create_temp_dir)
+    # Create files in non-alphabetical order
+    touch "$sort_dir/cherry.txt"
+    touch "$sort_dir/apple.txt"
+    touch "$sort_dir/banana.txt"
+
+    run_command cmd out err exit_code "$binary" "-s" "$sort_dir" "-type" "f"
+    if [[ $exit_code -eq 0 ]]; then
+        # Extract just filenames, check sorted order
+        local sorted_files
+        sorted_files=$(echo "$out" | while read -r line; do
+            basename "$line"
+        done)
+        local expected_sorted
+        expected_sorted=$(printf "apple.txt\nbanana.txt\ncherry.txt")
+        if [[ "$sorted_files" == "$expected_sorted" ]]; then
+            print_test_result "find -s outputs in sorted order" "PASS"
+        else
+            print_test_result "find -s outputs in sorted order" "FAIL" \
+                "Expected sorted: '$expected_sorted', got: '$sorted_files'"
+        fi
+    else
+        print_test_result "find -s outputs in sorted order" "FAIL" \
+            "Exit code: $exit_code, err: $err"
+    fi
+
+    # Also test sorted order within subdirectories
+    mkdir "$sort_dir/subdir"
+    touch "$sort_dir/subdir/zebra.txt"
+    touch "$sort_dir/subdir/aardvark.txt"
+
+    run_command cmd out err exit_code "$binary" "-s" "$sort_dir" "-type" "f"
+    if [[ $exit_code -eq 0 ]]; then
+        local aardvark_pos zebra_pos
+        aardvark_pos=$(echo "$out" | grep -n "aardvark" | head -1 | cut -d: -f1)
+        zebra_pos=$(echo "$out" | grep -n "zebra" | head -1 | cut -d: -f1)
+        if [[ -n "$aardvark_pos" && -n "$zebra_pos" \
+              && "$aardvark_pos" -lt "$zebra_pos" ]]; then
+            print_test_result "find -s sorts within subdirectories" "PASS"
+        else
+            print_test_result "find -s sorts within subdirectories" "FAIL" \
+                "aardvark before zebra, got output: '$out'"
+        fi
+    else
+        print_test_result "find -s sorts within subdirectories" "FAIL" \
+            "Exit code: $exit_code, err: $err"
+    fi
+    rm -rf "$sort_dir"
+
+    # ================================================================
+    # F5: find -perm -mode and /mode prefix forms rejected
+    # GNU find: -perm -644 means "at least these bits set"
+    # GNU find: -perm /111 means "any of these bits set"
+    # Our parsePerm only accepts raw octal, so these are rejected.
+    # ================================================================
+    echo -e "${CYAN}Testing -perm prefix forms (F5)...${NC}"
+
+    local perm_prefix_dir=$(create_temp_dir)
+    touch "$perm_prefix_dir/rw.txt"
+    chmod 644 "$perm_prefix_dir/rw.txt"
+    touch "$perm_prefix_dir/rwx.txt"
+    chmod 755 "$perm_prefix_dir/rwx.txt"
+
+    # -perm -644: "at least rw-r--r--" -- both files match
+    run_command cmd out err exit_code "$binary" "$perm_prefix_dir" \
+        "-type" "f" "-perm" "-644"
+    if [[ $exit_code -eq 0 && "$out" =~ rw.txt && "$out" =~ rwx.txt ]]; then
+        print_test_result "find -perm -644 matches both files" "PASS"
+    else
+        print_test_result "find -perm -644 matches both files" "FAIL" \
+            "Expected both files, exit: $exit_code, out: '$out', err: '$err'"
+    fi
+
+    # -perm -755: "at least rwxr-xr-x" -- only rwx.txt matches
+    run_command cmd out err exit_code "$binary" "$perm_prefix_dir" \
+        "-type" "f" "-perm" "-755"
+    if [[ $exit_code -eq 0 && "$out" =~ rwx.txt && ! "$out" =~ rw.txt ]]; then
+        print_test_result "find -perm -755 matches only rwx file" "PASS"
+    else
+        print_test_result "find -perm -755 matches only rwx file" "FAIL" \
+            "Expected only rwx.txt, exit: $exit_code, out: '$out', err: '$err'"
+    fi
+
+    # -perm /111: "any execute bit set" -- only rwx.txt matches
+    run_command cmd out err exit_code "$binary" "$perm_prefix_dir" \
+        "-type" "f" "-perm" "/111"
+    if [[ $exit_code -eq 0 && "$out" =~ rwx.txt && ! "$out" =~ rw.txt ]]; then
+        print_test_result "find -perm /111 matches executable files" "PASS"
+    else
+        print_test_result "find -perm /111 matches executable files" "FAIL" \
+            "Expected only rwx.txt, exit: $exit_code, out: '$out', err: '$err'"
+    fi
+    rm -rf "$perm_prefix_dir"
+
+    # ================================================================
+    # F6: find -exec {} + (batch form) broken
+    # GNU find: -exec CMD {} + collects args and executes CMD once
+    # with all matched files as arguments.
+    # Our parser only looks for ';' terminator, not '+'.
+    # ================================================================
+    echo -e "${CYAN}Testing -exec {} + batch form (F6)...${NC}"
+
+    local exec_batch_dir=$(create_temp_dir)
+    touch "$exec_batch_dir/file1.txt" \
+          "$exec_batch_dir/file2.txt" \
+          "$exec_batch_dir/file3.txt"
+
+    # -exec echo {} + should batch all files into one echo call
+    run_command cmd out err exit_code "$binary" "$exec_batch_dir" \
+        "-type" "f" "-exec" "echo" "{}" "+"
+    if [[ $exit_code -eq 0 ]]; then
+        local line_count
+        line_count=$(echo "$out" | wc -l | tr -d ' ')
+        if [[ "$out" =~ file1.txt && "$out" =~ file2.txt \
+              && "$out" =~ file3.txt ]]; then
+            # Batch mode: echo produces one line with all files
+            if [[ "$line_count" -le 1 ]]; then
+                print_test_result "find -exec {} + batches args" "PASS"
+            else
+                print_test_result "find -exec {} + batches args" "FAIL" \
+                    "Expected 1 line (batched), got $line_count: '$out'"
+            fi
+        else
+            print_test_result "find -exec {} + batches args" "FAIL" \
+                "Expected all 3 files in output, got: '$out'"
+        fi
+    else
+        print_test_result "find -exec {} + batches args" "FAIL" \
+            "Expected exit 0, got $exit_code, err: '$err'"
+    fi
+    rm -rf "$exec_batch_dir"
+
+    # ================================================================
+    # F7: find -execdir {} + also broken
+    # Same issue as F6 but for -execdir.
+    # ================================================================
+    echo -e "${CYAN}Testing -execdir {} + batch form (F7)...${NC}"
+
+    local execdir_batch_dir=$(create_temp_dir)
+    touch "$execdir_batch_dir/alpha.txt" "$execdir_batch_dir/beta.txt"
+
+    # -execdir echo {} + should batch files per-directory
+    run_command cmd out err exit_code "$binary" "$execdir_batch_dir" \
+        "-type" "f" "-execdir" "echo" "{}" "+"
+    if [[ $exit_code -eq 0 ]]; then
+        local edir_line_count
+        edir_line_count=$(echo "$out" | wc -l | tr -d ' ')
+        if [[ "$out" =~ alpha.txt && "$out" =~ beta.txt ]]; then
+            if [[ "$edir_line_count" -le 1 ]]; then
+                print_test_result "find -execdir {} + batches args" "PASS"
+            else
+                print_test_result "find -execdir {} + batches args" "FAIL" \
+                    "Expected 1 line, got $edir_line_count: '$out'"
+            fi
+        else
+            print_test_result "find -execdir {} + batches args" "FAIL" \
+                "Expected both files, got: '$out'"
+        fi
+    else
+        print_test_result "find -execdir {} + batches args" "FAIL" \
+            "Expected exit 0, got $exit_code, err: '$err'"
+    fi
+    rm -rf "$execdir_batch_dir"
 }

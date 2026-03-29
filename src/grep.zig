@@ -2102,3 +2102,114 @@ test "runGrep -f pattern file does not leak file contents buffer" {
     const exit_code = runGrep(testing.allocator, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
+
+// =============================================================
+// F27: grep -x broken in BRE mode
+// The -x flag wraps the pattern as ^(pattern)$ but in BRE mode
+// ( and ) are literal characters, not grouping. So ^(foo)$
+// matches the literal string "(foo)" rather than "foo".
+// =============================================================
+
+test "F27: grep -x matches whole line in BRE mode" {
+    // In BRE mode (default), -x should match "foo" as a whole line.
+    // Bug: wraps as ^(foo)$ where parens are literal in BRE.
+    var result = try testRunGrepOutput("foo\nfoo bar\n", &.{ "-x", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\n", result.output);
+}
+
+test "F27: grep -x BRE no match returns exit 1" {
+    // "foo bar" does not match -x "foo" because "foo bar" != "foo"
+    var result = try testRunGrepOutput("foo bar\nbaz\n", &.{ "-x", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+}
+
+test "F27: grep -x with regex metachar in BRE mode" {
+    // f.o should match "foo" or "fXo" as whole line but not "f.o bar"
+    var result = try testRunGrepOutput("foo\nfXo\nf.o bar\n", &.{ "-x", "f.o" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\nfXo\n", result.output);
+}
+
+test "F27: grep -Ex works in ERE mode (control test)" {
+    // ERE mode should work correctly since ( ) are grouping in ERE.
+    var result = try testRunGrepOutput("foo\nfoo bar\n", &.{ "-Ex", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\n", result.output);
+}
+
+test "F27: grep -x BRE with alternation" {
+    // In BRE, \| is alternation. -x "foo\|bar" should match "foo" or "bar"
+    // as whole lines.
+    var result = try testRunGrepOutput("foo\nbar\nbaz\n", &.{ "-x", "foo\\|bar" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\nbar\n", result.output);
+}
+
+// =============================================================
+// F28: grep -o prints only first match per line
+// GNU grep -o prints each non-overlapping match on its own line.
+// Our implementation prints only the first match per line.
+// =============================================================
+
+test "F28: grep -o prints all matches per line" {
+    // "foobarfoo" contains "foo" twice. -o should print two lines.
+    var result = try testRunGrepOutput("foobarfoo\n", &.{ "-o", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\nfoo\n", result.output);
+}
+
+test "F28: grep -Eo prints all matches per line" {
+    // Same test with ERE mode explicitly.
+    var result = try testRunGrepOutput("foobarfoo\n", &.{ "-Eo", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\nfoo\n", result.output);
+}
+
+test "F28: grep -o with single match per line unchanged" {
+    // When there's only one match per line, behavior should be the same.
+    var result = try testRunGrepOutput("say hello world\n", &.{ "-Eo", "hello" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("hello\n", result.output);
+}
+
+test "F28: grep -o no match returns exit 1" {
+    var result = try testRunGrepOutput("hello world\n", &.{ "-o", "zzzzz" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 1), result.exit_code);
+}
+
+test "F28: grep -o multiple matches across multiple lines" {
+    // Line 1: "abcabc" has "abc" twice
+    // Line 2: "xyzabc" has "abc" once
+    // Total: 3 lines of output
+    var result = try testRunGrepOutput("abcabc\nxyzabc\n", &.{ "-o", "abc" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("abc\nabc\nabc\n", result.output);
+}
+
+test "F28: grep -o with single-char pattern multiple matches" {
+    // "aababaa" has 5 'a' characters
+    var result = try testRunGrepOutput("aababaa\n", &.{ "-o", "a" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("a\na\na\na\na\n", result.output);
+}
+
+test "F28: grep -on prints line number for each match" {
+    // GNU grep -on prints the line number with each match occurrence.
+    // "foobarfoo" on line 1 has two "foo" matches, both get line number 1.
+    var result = try testRunGrepOutput("foobarfoo\n", &.{ "-on", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("1:foo\n1:foo\n", result.output);
+}
