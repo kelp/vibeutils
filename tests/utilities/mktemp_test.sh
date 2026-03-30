@@ -291,4 +291,54 @@ test_mktemp() {
             "Expected non-zero exit, got 0 (output: $f55_stderr)"
         rm -f "$f55_stderr" 2>/dev/null || true
     fi
+
+    echo -e "${CYAN}Testing IMPORTANT audit findings...${NC}"
+
+    # AUDIT: Implicit suffix should be accepted (GNU mktemp behavior)
+    # GNU mktemp treats characters after the last run of X's as an
+    # implicit suffix. For example, "myapp.XXXXXXtxt" is treated as
+    # template "myapp.XXXXXX" with implicit suffix "txt".
+    # Our implementation counts only strictly trailing X's and rejects
+    # this template with "too few X's".
+    local imp_testcwd="$TEMP_DIR/mktemp_implicit_suffix_test"
+    mkdir -p "$imp_testcwd"
+
+    local imp_out
+    imp_out=$(cd "$imp_testcwd" && "$binary" "myapp.XXXXXXtxt" 2>&1)
+    local imp_exit=$?
+    if [[ $imp_exit -eq 0 ]]; then
+        # Verify the file was created and has the right suffix
+        local imp_base
+        imp_base=$(basename "$imp_out")
+        if [[ "$imp_base" == myapp.* && "$imp_base" == *txt ]]; then
+            print_test_result "mktemp implicit suffix myapp.XXXXXXtxt succeeds (audit)" "PASS"
+        else
+            print_test_result "mktemp implicit suffix myapp.XXXXXXtxt succeeds (audit)" "FAIL" \
+                "Created file '$imp_base' doesn't match expected pattern myapp.*txt"
+        fi
+        rm -f "$imp_out" 2>/dev/null || true
+    else
+        print_test_result "mktemp implicit suffix myapp.XXXXXXtxt succeeds (audit)" "FAIL" \
+            "Expected exit 0, got $imp_exit (output: $imp_out)"
+    fi
+
+    # Also test with .log suffix
+    imp_out=$(cd "$imp_testcwd" && "$binary" "test.XXXXXX.log" 2>&1)
+    imp_exit=$?
+    if [[ $imp_exit -eq 0 ]]; then
+        local imp_base2
+        imp_base2=$(basename "$imp_out")
+        if [[ "$imp_base2" == test.*.log ]]; then
+            print_test_result "mktemp implicit suffix test.XXXXXX.log succeeds (audit)" "PASS"
+        else
+            print_test_result "mktemp implicit suffix test.XXXXXX.log succeeds (audit)" "FAIL" \
+                "Created file '$imp_base2' doesn't match expected pattern test.*.log"
+        fi
+        rm -f "$imp_out" 2>/dev/null || true
+    else
+        print_test_result "mktemp implicit suffix test.XXXXXX.log succeeds (audit)" "FAIL" \
+            "Expected exit 0, got $imp_exit (output: $imp_out)"
+    fi
+
+    rm -rf "$imp_testcwd"
 }

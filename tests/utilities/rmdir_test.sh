@@ -369,4 +369,26 @@ test_rmdir() {
         print_test_result "rmdir .. refused with message" "FAIL" \
             "Expected non-zero exit and 'refusing' in stderr, got exit=$dotdot_exit stderr='$dotdot_err'"
     fi
+
+    echo -e "${CYAN}Testing IMPORTANT audit findings...${NC}"
+
+    # AUDIT: -v --ignore-fail-on-non-empty should still print verbose output
+    # GNU rmdir -v --ignore-fail-on-non-empty prints the "removing directory"
+    # message even when the directory cannot be removed because it is non-empty.
+    # Our implementation suppresses verbose output because it returns early
+    # before the verbose print when ignore_fail_on_non_empty is true.
+    local audit_vi_dir=$(create_temp_dir)
+    create_temp_file "content" "$audit_vi_dir/file.txt"
+    local audit_vi_out=""
+    local audit_vi_err=""
+    local audit_vi_exit=""
+    run_command audit_vi_cmd audit_vi_out audit_vi_err audit_vi_exit \
+        "$binary" -v --ignore-fail-on-non-empty "$audit_vi_dir"
+    if [[ $audit_vi_exit -eq 0 && "$audit_vi_out" =~ "removing directory" ]]; then
+        print_test_result "rmdir -v --ignore-fail-on-non-empty still prints verbose (audit)" "PASS"
+    else
+        print_test_result "rmdir -v --ignore-fail-on-non-empty still prints verbose (audit)" "FAIL" \
+            "Expected 'removing directory' in stdout, got: '$audit_vi_out' (exit: $audit_vi_exit)"
+    fi
+    rm -rf "$audit_vi_dir"
 }
