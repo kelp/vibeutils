@@ -47,6 +47,15 @@ fn parseTotalTime(args: []const []const u8) !u64 {
     return total_nanos;
 }
 
+/// Find the first token that fails to parse as a valid time string.
+/// Used to include the offending token in error messages (GNU behavior).
+fn findBadToken(args: []const []const u8) ?[]const u8 {
+    for (args) |arg| {
+        _ = time.parseTimeString(arg) catch return arg;
+    }
+    return null;
+}
+
 /// Print help message
 fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
     try common.help.printColorized(allocator, writer,
@@ -99,7 +108,7 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Parse time arguments
+    // Parse time arguments, tracking which token failed for error reporting
     const total_nanos = parseTotalTime(parsed_args.positionals) catch |err| {
         switch (err) {
             error.MissingTimeArgument => {
@@ -108,11 +117,22 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.InvalidTimeFormat => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
+                // Find the offending token for the error message (GNU includes it)
+                const bad_token = findBadToken(parsed_args.positionals);
+                if (bad_token) |token| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval '{s}'", .{token});
+                } else {
+                    common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
+                }
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.NegativeTime => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
+                const bad_token = findBadToken(parsed_args.positionals);
+                if (bad_token) |token| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval '{s}'", .{token});
+                } else {
+                    common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid time interval", .{});
+                }
                 return @intFromEnum(common.ExitCode.misuse);
             },
             error.TimeOverflow => {
@@ -213,12 +233,13 @@ test "parseTimeString - invalid formats" {
     try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try time.parseTimeString(".5"));
 }
 
-test "parseTimeString - reject NaN and Inf" {
+test "parseTimeString - reject NaN and Inf (except GNU-compatible inf/infinity)" {
     try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("nan"));
     try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("NaN"));
-    try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("inf"));
+    // GNU sleep accepts 'inf' and 'infinity' as meaning sleep forever
+    try testing.expectEqual(std.math.maxInt(u64), try time.parseTimeString("inf"));
     try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("Inf"));
-    try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("infinity"));
+    try testing.expectEqual(std.math.maxInt(u64), try time.parseTimeString("infinity"));
     try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("nans"));
     try testing.expectError(error.InvalidTimeFormat, time.parseTimeString("infm"));
 }

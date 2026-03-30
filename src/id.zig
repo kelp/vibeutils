@@ -134,8 +134,8 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // -a is a compatibility alias for -G (show all groups)
-    const show_groups = parsed.groups or parsed.all;
+    // GNU id: -a is a no-op (ignored), not an alias for -G
+    const show_groups = parsed.groups;
 
     // -n and -r only make sense with -u, -g, or -G
     if (parsed.name and !parsed.user and !parsed.group and !show_groups) {
@@ -147,7 +147,13 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Mutually exclusive: -u, -g, -G/-a
+    // GNU id: -z requires a format flag (-u, -g, or -G)
+    if (parsed.zero and !parsed.user and !parsed.group and !show_groups) {
+        common.printErrorWithProgram(allocator, stderr_writer, "id", "option --zero not permitted in default format", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // Mutually exclusive: -u, -g, -G
     const mode_count: u8 = @as(u8, @intFromBool(parsed.user)) +
         @as(u8, @intFromBool(parsed.group)) +
         @as(u8, @intFromBool(show_groups));
@@ -303,7 +309,7 @@ pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Handle -G (all groups) or -a (compatibility alias)
+    // Handle -G (all groups)
     if (show_groups) {
         const group_separator: u8 = if (parsed.zero) 0 else ' ';
 
@@ -1050,32 +1056,33 @@ test "id -p does not contain uid= format" {
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid=") == null);
 }
 
-test "id -a shows all groups (same as -G)" {
+test "id -a is a no-op (GNU behavior), produces default format" {
     var stdout_a = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_a.deinit(testing.allocator);
-    var stdout_g = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_g.deinit(testing.allocator);
+    var stdout_default = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_default.deinit(testing.allocator);
 
     const args_a = [_][]const u8{"-a"};
     const result_a = try runId(testing.allocator, &args_a, stdout_a.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_a);
 
-    const args_g = [_][]const u8{"-G"};
-    const result_g = try runId(testing.allocator, &args_g, stdout_g.writer(testing.allocator), common.null_writer);
-    try testing.expectEqual(@as(u8, 0), result_g);
+    const args_default = [_][]const u8{};
+    const result_default = try runId(testing.allocator, &args_default, stdout_default.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_default);
 
-    // -a and -G should produce identical output
-    try testing.expectEqualStrings(stdout_g.items, stdout_a.items);
+    // GNU: -a is a no-op, so output should match plain id
+    try testing.expectEqualStrings(stdout_default.items, stdout_a.items);
 }
 
-test "id -a with -n shows group names" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+test "id -a with -n is rejected (GNU: -a is no-op, -n alone is invalid)" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-a", "-n" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
-    try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buffer.items.len > 1);
+    const result = try runId(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    // -a is no-op, -n without -u/-g/-G is an error
+    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expect(stderr_buffer.items.len > 0);
 }
 
 test "id -A prints audit stub and exits 1" {

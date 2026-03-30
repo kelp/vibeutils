@@ -29,8 +29,14 @@ pub fn runYes(
     const parsed_args = common.argparse.ArgParser.parse(YesArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                // GNU yes exits 1 for unrecognized options and includes the flag name
+                const bad_flag = findUnknownFlag(args);
+                if (bad_flag) |flag| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option '{s}'", .{flag});
+                } else {
+                    common.printErrorWithProgram(allocator, stderr_writer, "yes", "unrecognized option", .{});
+                }
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "yes", "option requires an argument", .{});
@@ -100,6 +106,39 @@ pub fn runYes(
             return @intFromEnum(common.ExitCode.success);
         };
     }
+}
+
+/// Find the first unrecognized flag in args for error reporting.
+/// Returns the full flag string (e.g., "--bad-flag") or null.
+fn findUnknownFlag(args: []const []const u8) ?[]const u8 {
+    for (args) |arg| {
+        if (arg.len > 1 and arg[0] == '-') {
+            if (std.mem.eql(u8, arg, "--")) break;
+            // Check if it's a known flag
+            if (arg.len > 2 and arg[1] == '-') {
+                // Long flag
+                const flag_content = arg[2..];
+                const flag_name = if (std.mem.indexOfScalar(u8, flag_content, '=')) |eq_pos|
+                    flag_content[0..eq_pos]
+                else
+                    flag_content;
+                if (std.mem.eql(u8, flag_name, "help") or
+                    std.mem.eql(u8, flag_name, "version"))
+                {
+                    continue;
+                }
+                return arg;
+            } else {
+                // Short flag - check each character
+                for (arg[1..]) |c| {
+                    if (c != 'h' and c != 'V') {
+                        return arg;
+                    }
+                }
+            }
+        }
+    }
+    return null;
 }
 
 /// Prints help text for the yes utility.
