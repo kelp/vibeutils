@@ -546,8 +546,11 @@ const MatchResult = struct {
     match_end: usize = 0,
 };
 
-/// Check if a line matches a compiled pattern
-fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator) MatchResult {
+/// Check if a line matches a compiled pattern.
+/// When word_regexp is true and the pattern is a regex, the match positions
+/// are taken from submatch group 2 (the actual word) rather than group 0
+/// (which includes boundary characters added by the -w wrapping).
+fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool) MatchResult {
     switch (pat.*) {
         .fixed => |fp| {
             if (fp.lower) |lower_pattern| {
@@ -566,22 +569,37 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
         .regex => |re| {
             const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
             defer allocator.free(line_z);
-            var pmatch: [1]c.regmatch_t = undefined;
-            const exec_result = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
-            if (exec_result == 0) {
-                const start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
-                const end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
-                return .{ .matched = true, .match_start = start, .match_end = end };
+            if (word_regexp) {
+                // -w wraps pattern as (boundary)(word)(boundary) with 3 groups.
+                // We need group 2 for the actual word match positions.
+                var pmatch: [4]c.regmatch_t = undefined;
+                const exec_result = c.regexec(re, line_z.ptr, 4, &pmatch, 0);
+                if (exec_result == 0) {
+                    // Use group 2 (the word itself) if available, fall back to group 0
+                    const grp: usize = if (pmatch[2].rm_so >= 0) 2 else 0;
+                    const start: usize = if (pmatch[grp].rm_so >= 0) @intCast(pmatch[grp].rm_so) else 0;
+                    const end: usize = if (pmatch[grp].rm_eo >= 0) @intCast(pmatch[grp].rm_eo) else 0;
+                    return .{ .matched = true, .match_start = start, .match_end = end };
+                }
+                return .{ .matched = false };
+            } else {
+                var pmatch: [1]c.regmatch_t = undefined;
+                const exec_result = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
+                if (exec_result == 0) {
+                    const start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
+                    const end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
+                    return .{ .matched = true, .match_start = start, .match_end = end };
+                }
+                return .{ .matched = false };
             }
-            return .{ .matched = false };
         },
     }
 }
 
 /// Check if a line matches any of the compiled patterns
-fn matchAnyPattern(patterns: []const CompiledPattern, line: []const u8, allocator: Allocator) MatchResult {
+fn matchAnyPattern(patterns: []const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool) MatchResult {
     for (patterns) |*pat| {
-        const result = matchLine(pat, line, allocator);
+        const result = matchLine(pat, line, allocator, word_regexp);
         if (result.matched) return result;
     }
     return .{ .matched = false };
@@ -712,7 +730,7 @@ fn processFile(
     for (lines.items) |line| {
         line_num += 1;
 
-        const result = matchAnyPattern(patterns, line, allocator);
+        const result = matchAnyPattern(patterns, line, allocator, opts.word_regexp);
         const is_match = if (opts.invert_match) !result.matched else result.matched;
 
         if (is_match) {
@@ -780,7 +798,7 @@ fn processFile(
                         // Advance past this match and search for more
                         search_offset = abs_end;
                         if (search_offset >= line.len) break;
-                        cur_result = matchAnyPattern(patterns, line[search_offset..], allocator);
+                        cur_result = matchAnyPattern(patterns, line[search_offset..], allocator, opts.word_regexp);
                     }
                 } else {
                     if (show_filename) {
@@ -1356,7 +1374,7 @@ test "parseArgs --include and --exclude" {
 
 test "fixed string matching" {
     const pattern = CompiledPattern{ .fixed = .{ .text = "hello", .lower = null } };
-    const result = matchLine(&pattern, "say hello world", testing.allocator);
+    const result = matchLine(&pattern, "say hello world", testing.allocator, false);
     try testing.expect(result.matched);
     try testing.expectEqual(@as(usize, 4), result.match_start);
     try testing.expectEqual(@as(usize, 9), result.match_end);
@@ -1364,7 +1382,7 @@ test "fixed string matching" {
 
 test "fixed string no match" {
     const pattern = CompiledPattern{ .fixed = .{ .text = "xyz", .lower = null } };
-    const result = matchLine(&pattern, "hello world", testing.allocator);
+    const result = matchLine(&pattern, "hello world", testing.allocator, false);
     try testing.expect(!result.matched);
 }
 
@@ -1372,7 +1390,7 @@ test "fixed string case insensitive" {
     const lower = try toLower(testing.allocator, "hello");
     defer testing.allocator.free(lower);
     const pattern = CompiledPattern{ .fixed = .{ .text = "Hello", .lower = lower } };
-    const result = matchLine(&pattern, "say HELLO world", testing.allocator);
+    const result = matchLine(&pattern, "say HELLO world", testing.allocator, false);
     try testing.expect(result.matched);
 }
 
@@ -1402,7 +1420,7 @@ test "regex matching basic" {
     defer c.regfree(regex);
 
     const pattern = CompiledPattern{ .regex = regex };
-    const result = matchLine(&pattern, "say hello world", testing.allocator);
+    const result = matchLine(&pattern, "say hello world", testing.allocator, false);
     try testing.expect(result.matched);
 }
 
@@ -1416,7 +1434,7 @@ test "regex no match" {
     defer c.regfree(regex);
 
     const pattern = CompiledPattern{ .regex = regex };
-    const result = matchLine(&pattern, "hello world", testing.allocator);
+    const result = matchLine(&pattern, "hello world", testing.allocator, false);
     try testing.expect(!result.matched);
 }
 
