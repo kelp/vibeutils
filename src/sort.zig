@@ -1463,15 +1463,8 @@ test "sort --version shows version" {
     try testing.expect(std.mem.indexOf(u8, buffer.items, "sort") != null);
 }
 
-test "sort -V shows version" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
-
-    const args = [_][]const u8{"-V"};
-    const result = try runSort(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
-    try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "sort") != null);
-}
+// -V test removed: -V is now version-sort (not --version).
+// The --version test above covers version output.
 
 test "sort unknown flag returns misuse" {
     var stderr_buf = std.ArrayListUnmanaged(u8){};
