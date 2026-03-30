@@ -873,3 +873,105 @@ test "getMemInfo returns valid data" {
     // Used + free should not exceed total (approximately)
     try testing.expect(info.used <= info.total);
 }
+
+// ========== AUDIT WAVE 4: free IMPORTANT findings ==========
+
+// IMPORTANT: -w wide mode always shows 0 for the buffers column
+// GNU free -w shows the actual kernel buffer allocation in the buffers
+// column. Our implementation hardcodes 0 for buffers regardless of
+// platform, because MemInfo.buff_cache merges buffers + cached and
+// the individual buffers value is lost.
+// Currently: printReport wide mode shows 0 for buffers even when
+// buff_cache is nonzero. Expected: nonzero buffers value.
+test "audit: free -w wide mode should show nonzero buffers" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    // Mock data with nonzero buff_cache — buffers should be part of it
+    const info = MemInfo{
+        .total = 16 * 1024 * 1024 * 1024,
+        .used = 8 * 1024 * 1024 * 1024,
+        .free = 4 * 1024 * 1024 * 1024,
+        .shared = 512 * 1024 * 1024,
+        .buff_cache = 4 * 1024 * 1024 * 1024, // 4 GiB combined
+        .available = 12 * 1024 * 1024 * 1024,
+        .swap_total = 0,
+        .swap_used = 0,
+        .swap_free = 0,
+    };
+
+    try printReport(stdout_buf.writer(testing.allocator), info, .kibi, false, false, true);
+
+    const output = stdout_buf.items;
+    // In wide mode, the Mem: row has 7 numeric columns:
+    // total, used, free, shared, buffers, cache, available
+    // Find the Mem: line
+    const mem_line_start = std.mem.indexOf(u8, output, "Mem:") orelse
+        return error.TestExpectedEqual;
+    const mem_line_end = std.mem.indexOfScalarPos(u8, output, mem_line_start, '\n') orelse output.len;
+    const mem_line = output[mem_line_start..mem_line_end];
+
+    // Parse numeric values from the Mem: line
+    // Skip "Mem:" label, then extract whitespace-separated numbers
+    var values: [7]u64 = undefined;
+    var val_count: usize = 0;
+    var iter = std.mem.tokenizeScalar(u8, mem_line, ' ');
+    _ = iter.next(); // skip "Mem:"
+    while (iter.next()) |token| {
+        if (val_count < 7) {
+            values[val_count] = std.fmt.parseInt(u64, token, 10) catch continue;
+            val_count += 1;
+        }
+    }
+
+    // We should have 7 values
+    try testing.expectEqual(@as(usize, 7), val_count);
+
+    // values[4] is the buffers column — should be nonzero when
+    // buff_cache is nonzero, since buffers is a component of it
+    // Currently fails because buffers is hardcoded to 0
+    try testing.expect(values[4] > 0);
+}
+
+// IMPORTANT: -c without -s should error (GNU rejects it)
+// GNU free: "free: -c requires -s option"
+// Currently: -c without -s silently displays once.
+// Expected: error exit code 2 with message about -s requirement.
+test "audit: free -c without -s should error" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "3" };
+    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    // GNU exits 2 (misuse) when -c is given without -s
+    try testing.expectEqual(@as(u8, 2), result);
+    // stderr should mention -s requirement
+    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "-s") != null);
+}
+
+// IMPORTANT: -s short flag is hijacked by the si bool field
+// The argparse getShortFlag maps "si" -> 's' (first char), so -s
+// sets si=true instead of being parsed as --seconds. This means
+// `free -s 1` sets SI mode and treats "1" as a positional (error).
+// Expected: -s 1 should set seconds=1 for continuous display.
+test "audit: free -s should set seconds not si" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // free -s 1 -c 1 should run continuous mode (1 second, 1 count)
+    // and succeed. With the bug, -s sets si=true, "1" becomes a
+    // positional, and we get "extra operand '1'" (exit 2).
+    const args = [_][]const u8{ "-s", "1", "-c", "1" };
+    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+
+    // Should succeed (exit 0) — continuous mode with 1-second interval, 1 count
+    try testing.expectEqual(@as(u8, 0), result);
+    // Should produce output (at least one display)
+    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Mem:") != null);
+}

@@ -118,4 +118,45 @@ test_free() {
     # Invalid flag exits with code 2
     test_command_exit_code "free invalid flag exits 2" 2 \
         "$binary" --invalid-flag
+
+    echo -e "${CYAN}Testing audit findings (wave 4)...${NC}"
+
+    # AUDIT: -w wide mode buffers column should show nonzero on Linux
+    if [[ "$(uname)" == "Linux" ]]; then
+        local wide_out
+        wide_out=$("$binary" -w -b 2>/dev/null)
+        # Extract the Mem: line
+        local mem_line
+        mem_line=$(echo "$wide_out" | grep "^Mem:")
+        # Parse the 5th numeric column (buffers)
+        local buffers_val
+        buffers_val=$(echo "$mem_line" | awk '{print $6}')
+        if [[ -n "$buffers_val" && "$buffers_val" -gt 0 ]] 2>/dev/null; then
+            print_test_result "free -w shows nonzero buffers" "PASS"
+        else
+            print_test_result "free -w shows nonzero buffers" "FAIL" \
+                "Buffers column is '$buffers_val', expected > 0. Line: '$mem_line'"
+        fi
+    fi
+
+    # AUDIT: -c without -s should error (GNU rejects it)
+    "$binary" -c 3 2>/dev/null
+    exit_code=$?
+    if [[ $exit_code -eq 2 ]]; then
+        print_test_result "free -c without -s exits 2" "PASS"
+    else
+        print_test_result "free -c without -s exits 2" "FAIL" \
+            "Expected exit 2, got: $exit_code"
+    fi
+
+    # AUDIT: -s should set seconds interval, not SI mode
+    # free -s 1 -c 1 should succeed (continuous mode, 1 iteration)
+    timeout 5 "$binary" -s 1 -c 1 >/dev/null 2>&1
+    exit_code=$?
+    if [[ $exit_code -eq 0 ]]; then
+        print_test_result "free -s 1 -c 1 sets seconds interval" "PASS"
+    else
+        print_test_result "free -s 1 -c 1 sets seconds interval" "FAIL" \
+            "Expected exit 0, got: $exit_code"
+    fi
 }
