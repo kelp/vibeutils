@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   integration:
     strategy:
@@ -15,13 +19,13 @@ jobs:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
       - name: Install bash 4+ (macOS)
         if: runner.os == 'macOS'
         run: brew install bash
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
       - name: Run integration tests
         run: just it
