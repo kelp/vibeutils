@@ -102,6 +102,21 @@ The project includes a pre-commit hook that automatically:
 The hook is located at `.git/hooks/pre-commit` and is
 automatically set up for this repository.
 
+## Commit Signing
+
+**All commits must be signed.** The repository enforces
+verified signatures on all branches. Never bypass this:
+
+- Never use `-c commit.gpgsign=false`
+- Never disable or work around signature verification
+- If signing fails (agent unavailable, key not loaded,
+  "communication with agent failed"), **stop and wait
+  for instructions**. Do not attempt workarounds.
+- The SSH signing key is managed by 1Password and
+  requires an active agent connection from the host.
+  If the agent drops (laptop sleep, SSH reconnect),
+  signing will fail until the session is refreshed.
+
 ## Releases
 
 **Always use `just release x.y.z`** to cut a release.
