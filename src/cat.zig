@@ -323,9 +323,17 @@ fn processFormattedLineChunk(writer: anytype, chunk: []const u8, has_newline: bo
         at_line_start.* = false; // We've processed the line start
     }
 
-    // Write the chunk content with optional special character handling
+    // Write the chunk content with optional special character handling.
+    // When -E is active (without -v), a trailing \r before \n must be
+    // rendered as "^M$" to match GNU cat behavior.
+    const trailing_cr = has_newline and options.show_ends and
+        !options.show_nonprinting and chunk.len > 0 and chunk[chunk.len - 1] == '\r';
+
     if (options.show_tabs or options.show_nonprinting) {
         try writeWithSpecialChars(writer, chunk, options);
+    } else if (trailing_cr) {
+        try writer.writeAll(chunk[0 .. chunk.len - 1]);
+        try writer.writeAll("^M");
     } else {
         try writer.writeAll(chunk);
     }

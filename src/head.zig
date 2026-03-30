@@ -10,12 +10,14 @@ const HeadArgs = struct {
     help: bool = false,
     /// Output version information and exit
     version: bool = false,
-    /// Number of lines to output (default: 10)
-    lines: ?u64 = null,
+    /// Number of lines to output (default: 10); accepts negative values like "-3"
+    lines: ?[]const u8 = null,
     /// Number of bytes to output (overrides -n)
     bytes: ?u64 = null,
     /// Quiet flag - never print headers
     quiet: bool = false,
+    /// Suppress headers (alias for --quiet)
+    silent: bool = false,
     /// Verbose flag - always print headers
     verbose: bool = false,
     /// Use NUL as line delimiter instead of newline
@@ -28,24 +30,52 @@ const HeadArgs = struct {
         .help = .{ .short = 'h', .desc = "Display this help and exit" },
         .lines = .{ .short = 'n', .desc = "Print the first NUM lines instead of the first 10" },
         .quiet = .{ .short = 'q', .desc = "Never print headers giving file names" },
+        .silent = .{ .short = 0, .desc = "Never print headers giving file names (alias for --quiet)" },
         .verbose = .{ .short = 'v', .desc = "Always print headers giving file names" },
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .zero_terminated = .{ .short = 'z', .desc = "Line delimiter is NUL, not newline" },
     };
 };
 
-/// Expand obsolete -NUM syntax (e.g., -5) to -n NUM for backwards compatibility
+/// Expand obsolete -NUM syntax (e.g., -5) to -n NUM for backwards compatibility.
+/// Does not expand -NUM when it follows -n or -c (where it is a value, not obsolete syntax).
 fn expandObsoleteArgs(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
     // Count how many extra args we need (one extra per -NUM arg)
     var extra: usize = 0;
+    var prev_expects_value = false;
     for (args) |arg| {
+        if (prev_expects_value) {
+            prev_expects_value = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--lines") or std.mem.eql(u8, arg, "--bytes"))
+        {
+            prev_expects_value = true;
+            continue;
+        }
         if (isObsoleteNumArg(arg)) extra += 1;
     }
     if (extra == 0) return allocator.dupe([]const u8, args);
 
     const expanded = try allocator.alloc([]const u8, args.len + extra);
     var i: usize = 0;
+    prev_expects_value = false;
     for (args) |arg| {
+        if (prev_expects_value) {
+            prev_expects_value = false;
+            expanded[i] = arg;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "-n") or std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--lines") or std.mem.eql(u8, arg, "--bytes"))
+        {
+            prev_expects_value = true;
+            expanded[i] = arg;
+            i += 1;
+            continue;
+        }
         if (isObsoleteNumArg(arg)) {
             expanded[i] = "-n";
             i += 1;
@@ -105,13 +135,31 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Create options struct
-    const line_count = parsed_args.lines orelse DEFAULT_LINE_COUNT;
+    // Parse line count, handling negative values (e.g., -n -3 means "all but last 3")
+    var line_count: u64 = DEFAULT_LINE_COUNT;
+    var negative_count: u64 = 0;
+    if (parsed_args.lines) |lines_str| {
+        if (lines_str.len > 0 and lines_str[0] == '-') {
+            // Negative: output all but last N lines
+            negative_count = std.fmt.parseUnsigned(u64, lines_str[1..], 10) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines: '{s}'", .{lines_str});
+                return @intFromEnum(common.ExitCode.misuse);
+            };
+        } else {
+            line_count = std.fmt.parseUnsigned(u64, lines_str, 10) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines: '{s}'", .{lines_str});
+                return @intFromEnum(common.ExitCode.misuse);
+            };
+        }
+    }
+
+    const is_quiet = parsed_args.quiet or parsed_args.silent;
 
     const options = HeadOptions{
         .line_count = line_count,
+        .negative_count = negative_count,
         .byte_count = parsed_args.bytes,
-        .show_headers = if (parsed_args.quiet) false else if (parsed_args.verbose) true else parsed_args.positionals.len > 1,
+        .show_headers = if (is_quiet) false else if (parsed_args.verbose) true else parsed_args.positionals.len > 1,
         .line_delimiter = if (parsed_args.zero_terminated) 0 else '\n',
     };
 
@@ -121,7 +169,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        try processInput(stdin, stdout_writer, options);
+        try processInput(stdin, stdout_writer, options, allocator);
     } else {
         var had_error = false;
         // Process each file in order
@@ -135,7 +183,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 if (options.show_headers) {
                     try stdout_writer.writeAll("==> standard input <==\n");
                 }
-                try processInput(stdin, stdout_writer, options);
+                try processInput(stdin, stdout_writer, options, allocator);
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
@@ -161,7 +209,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 }
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
-                try processInput(&file_reader.interface, stdout_writer, options);
+                try processInput(&file_reader.interface, stdout_writer, options, allocator);
             }
         }
         if (had_error) {
@@ -226,8 +274,10 @@ fn printVersion(writer: anytype) !void {
 
 /// Options for head behavior
 const HeadOptions = struct {
-    /// Number of lines to output (ignored if byte_count is set)
+    /// Number of lines to output (ignored if byte_count is set or negative_count > 0)
     line_count: u64 = 10,
+    /// When > 0, output all but the last N lines (from -n -N)
+    negative_count: u64 = 0,
     /// Number of bytes to output (overrides line_count if set)
     byte_count: ?u64 = null,
     /// Whether to show file headers
@@ -237,8 +287,51 @@ const HeadOptions = struct {
 };
 
 /// Process input from a reader and output first lines/bytes to writer.
-/// Streams data without reading the entire input into memory.
-pub fn processInput(reader: anytype, writer: anytype, options: HeadOptions) !void {
+/// Streams data without reading the entire input into memory (except for
+/// negative line counts which require buffering the entire input).
+pub fn processInput(reader: anytype, writer: anytype, options: HeadOptions, allocator: ?std.mem.Allocator) !void {
+    if (options.negative_count > 0) {
+        // Negative count: output all but the last N lines.
+        // Must buffer the entire input to know where the last N lines start.
+        const alloc = allocator orelse return;
+        const delimiter = options.line_delimiter;
+        var all_lines = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (all_lines.items) |line| alloc.free(line);
+            all_lines.deinit(alloc);
+        }
+        // Read all lines from the reader
+        while (true) {
+            const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
+                error.EndOfStream => {
+                    // Handle remaining partial line (no trailing delimiter)
+                    const remaining = reader.buffered();
+                    if (remaining.len > 0) {
+                        const owned = alloc.dupe(u8, remaining) catch return;
+                        all_lines.append(alloc, owned) catch {
+                            alloc.free(owned);
+                            return;
+                        };
+                        reader.toss(remaining.len);
+                    }
+                    break;
+                },
+                else => |e| return e,
+            };
+            const owned = alloc.dupe(u8, line) catch return;
+            all_lines.append(alloc, owned) catch {
+                alloc.free(owned);
+                return;
+            };
+        }
+        // Output all but the last N lines
+        const total = all_lines.items.len;
+        const to_output = if (total > options.negative_count) total - options.negative_count else 0;
+        for (all_lines.items[0..to_output]) |line| {
+            try writer.writeAll(line);
+        }
+        return;
+    }
     if (options.byte_count) |byte_count| {
         // Byte mode: read chunks and write until byte_count reached
         var remaining: u64 = byte_count;

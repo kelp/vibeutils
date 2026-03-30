@@ -177,44 +177,127 @@ fn padFractional(buf: []u8, formatted: []const u8, precision: usize) []const u8 
     return buf[0..end];
 }
 
-/// Format number according to -f format specifier
+/// Format number according to -f format specifier.
+/// Supports prefix/suffix text around the %specifier and width/precision.
 fn formatWithSpec(buf: []u8, value: f64, fmt_str: []const u8) ![]const u8 {
-    // Parse the format string to find the specifier
-    // Support: %g (default), %f (fixed 6 decimals), %e (scientific)
-    // Look for the conversion specifier
+    var pos: usize = 0;
+
+    // Find the format specifier
     var i: usize = 0;
     while (i < fmt_str.len) : (i += 1) {
         if (fmt_str[i] == '%') {
             if (i + 1 < fmt_str.len and fmt_str[i + 1] == '%') {
-                i += 1; // Skip %%
+                // Literal %%
+                buf[pos] = '%';
+                pos += 1;
+                i += 1;
                 continue;
             }
-            // Found format spec, skip to conversion char
+            // Found format spec start - copy prefix text already done
+            const spec_start = i;
+            _ = spec_start;
             var j = i + 1;
-            // Skip flags
+
+            // Parse flags
+            var zero_pad = false;
+            var left_justify = false;
             while (j < fmt_str.len and (fmt_str[j] == '-' or fmt_str[j] == '+' or
                 fmt_str[j] == ' ' or fmt_str[j] == '0' or fmt_str[j] == '#')) : (j += 1)
-            {}
-            // Skip width
-            while (j < fmt_str.len and fmt_str[j] >= '0' and fmt_str[j] <= '9') : (j += 1) {}
-            // Skip precision
+            {
+                if (fmt_str[j] == '0') zero_pad = true;
+                if (fmt_str[j] == '-') left_justify = true;
+            }
+
+            // Parse width
+            var width: usize = 0;
+            while (j < fmt_str.len and fmt_str[j] >= '0' and fmt_str[j] <= '9') : (j += 1) {
+                width = width * 10 + (fmt_str[j] - '0');
+            }
+
+            // Parse precision
+            var precision: usize = 6; // default for %f
+            var has_precision = false;
             if (j < fmt_str.len and fmt_str[j] == '.') {
                 j += 1;
-                while (j < fmt_str.len and fmt_str[j] >= '0' and fmt_str[j] <= '9') : (j += 1) {}
-            }
-            // Conversion character
-            if (j < fmt_str.len) {
-                switch (fmt_str[j]) {
-                    'f' => return formatDecimal(buf, value, 6),
-                    'e', 'E' => return formatScientific(buf, value),
-                    'g', 'G' => return formatGeneral(buf, value),
-                    else => return formatGeneral(buf, value),
+                precision = 0;
+                has_precision = true;
+                while (j < fmt_str.len and fmt_str[j] >= '0' and fmt_str[j] <= '9') : (j += 1) {
+                    precision = precision * 10 + (fmt_str[j] - '0');
                 }
             }
+
+            // Conversion character
+            if (j < fmt_str.len) {
+                var num_buf: [64]u8 = undefined;
+                const formatted = switch (fmt_str[j]) {
+                    'f' => try formatDecimal(&num_buf, value, precision),
+                    'e', 'E' => try formatScientific(&num_buf, value),
+                    'g', 'G' => blk: {
+                        if (has_precision) {
+                            // %g with precision: use fixed-point with trailing zero removal
+                            break :blk try formatDecimal(&num_buf, value, precision);
+                        }
+                        break :blk try formatGeneral(&num_buf, value);
+                    },
+                    else => try formatGeneral(&num_buf, value),
+                };
+
+                // Apply width and padding
+                if (width > 0 and formatted.len < width) {
+                    const padding = width - formatted.len;
+                    if (left_justify) {
+                        @memcpy(buf[pos .. pos + formatted.len], formatted);
+                        pos += formatted.len;
+                        for (0..padding) |_| {
+                            buf[pos] = ' ';
+                            pos += 1;
+                        }
+                    } else if (zero_pad) {
+                        // Zero-pad: put sign first, then zeros, then digits
+                        var fmt_start: usize = 0;
+                        if (formatted.len > 0 and (formatted[0] == '-' or formatted[0] == '+')) {
+                            buf[pos] = formatted[0];
+                            pos += 1;
+                            fmt_start = 1;
+                        }
+                        for (0..padding) |_| {
+                            buf[pos] = '0';
+                            pos += 1;
+                        }
+                        @memcpy(buf[pos .. pos + formatted.len - fmt_start], formatted[fmt_start..]);
+                        pos += formatted.len - fmt_start;
+                    } else {
+                        for (0..padding) |_| {
+                            buf[pos] = ' ';
+                            pos += 1;
+                        }
+                        @memcpy(buf[pos .. pos + formatted.len], formatted);
+                        pos += formatted.len;
+                    }
+                } else {
+                    @memcpy(buf[pos .. pos + formatted.len], formatted);
+                    pos += formatted.len;
+                }
+
+                // Copy suffix (everything after the conversion character)
+                const suffix = fmt_str[j + 1 ..];
+                @memcpy(buf[pos .. pos + suffix.len], suffix);
+                pos += suffix.len;
+
+                return buf[0..pos];
+            }
+        } else {
+            // Prefix text before the format specifier
+            buf[pos] = fmt_str[i];
+            pos += 1;
         }
     }
+
     // No format spec found, use default
-    return formatGeneral(buf, value);
+    const formatted = try formatGeneral(buf[pos..], value);
+    // Move formatted data to fill after pos
+    // Since formatGeneral writes to buf[pos..], the data is already in place
+    return buf[0 .. pos + formatted.len];
 }
 
 /// Format in scientific notation (like %e)
@@ -293,22 +376,114 @@ fn numberWidth(value: f64, use_decimal: bool, precision: usize) usize {
     return formatted.len;
 }
 
+/// Check if a string looks like a negative number (e.g., "-1", "-3.5", "-.5")
+fn looksLikeNegativeNumber(s: []const u8) bool {
+    if (s.len < 2 or s[0] != '-') return false;
+    // Must start with digit or decimal point after the minus sign
+    return (s[1] >= '0' and s[1] <= '9') or s[1] == '.';
+}
+
+/// Pre-process args to handle negative numbers that argparse would
+/// misinterpret as flags. Inserts "--" before the first negative number
+/// that appears in a positional context (i.e., not a known flag value).
+fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []const u8 {
+    // Check if any arg looks like a negative number that would confuse argparse
+    var needs_fixup = false;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) break; // Already has separator
+        if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
+            // Short flag or negative number
+            // Known seq flags: -h, -V, -s, -f, -w
+            if (arg.len == 2) {
+                switch (arg[1]) {
+                    'h', 'V', 'w' => continue, // Known boolean flags
+                    's', 'f' => {
+                        i += 1; // Skip the value arg
+                        continue;
+                    },
+                    else => {},
+                }
+            }
+            if (looksLikeNegativeNumber(arg)) {
+                needs_fixup = true;
+                break;
+            }
+        }
+    }
+
+    if (!needs_fixup) return @constCast(args);
+
+    // Build new args array with "--" inserted before the negative number
+    var new_args = try std.ArrayList([]const u8).initCapacity(allocator, args.len + 1);
+    var j: usize = 0;
+    var inserted = false;
+    while (j < args.len) : (j += 1) {
+        const arg = args[j];
+        if (!inserted and std.mem.eql(u8, arg, "--")) {
+            // Already has separator, pass through rest
+            try new_args.append(allocator, arg);
+            j += 1;
+            while (j < args.len) : (j += 1) {
+                try new_args.append(allocator, args[j]);
+            }
+            break;
+        }
+        if (!inserted and arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
+            if (arg.len == 2) {
+                switch (arg[1]) {
+                    'h', 'V', 'w' => {
+                        try new_args.append(allocator, arg);
+                        continue;
+                    },
+                    's', 'f' => {
+                        try new_args.append(allocator, arg);
+                        j += 1;
+                        if (j < args.len) try new_args.append(allocator, args[j]);
+                        continue;
+                    },
+                    else => {},
+                }
+            }
+            if (looksLikeNegativeNumber(arg)) {
+                try new_args.append(allocator, "--");
+                inserted = true;
+                try new_args.append(allocator, arg);
+                continue;
+            }
+        }
+        try new_args.append(allocator, arg);
+    }
+
+    return new_args.toOwnedSlice(allocator);
+}
+
 /// Main entry point for the seq utility
 pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    // Pre-process args to handle negative numbers before argparse
+    const processed_args = try preprocessArgs(allocator, args);
+    defer {
+        // Only free if we allocated new args
+        if (processed_args.ptr != args.ptr) {
+            allocator.free(processed_args);
+        }
+    }
+
     // Parse command-line arguments
-    const parsed_args = common.argparse.ArgParser.parse(SeqArgs, allocator, args) catch |err| {
+    const parsed_args = common.argparse.ArgParser.parse(SeqArgs, allocator, processed_args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "option missing required argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         }
@@ -331,11 +506,11 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
     const positionals = parsed_args.positionals;
     if (positionals.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "seq", "missing operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
     if (positionals.len > 3) {
         common.printErrorWithProgram(allocator, stderr_writer, "seq", "extra operand '{s}'", .{positionals[3]});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Parse FIRST, INCREMENT, LAST
@@ -350,46 +525,60 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
         1 => {
             last = std.fmt.parseFloat(f64, positionals[0]) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[0]});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             last_str = positionals[0];
         },
         2 => {
             first = std.fmt.parseFloat(f64, positionals[0]) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[0]});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             first_str = positionals[0];
             last = std.fmt.parseFloat(f64, positionals[1]) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[1]});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             last_str = positionals[1];
         },
         3 => {
             first = std.fmt.parseFloat(f64, positionals[0]) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[0]});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             first_str = positionals[0];
             increment = std.fmt.parseFloat(f64, positionals[1]) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[1]});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             incr_str = positionals[1];
             last = std.fmt.parseFloat(f64, positionals[2]) catch {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{positionals[2]});
-                return @intFromEnum(common.ExitCode.misuse);
+                return @intFromEnum(common.ExitCode.general_error);
             };
             last_str = positionals[2];
         },
         else => unreachable,
     }
 
+    // Reject NaN and Inf values (GNU seq rejects these)
+    if (std.math.isNan(first) or std.math.isInf(first)) {
+        common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{first_str});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    if (std.math.isNan(increment) or std.math.isInf(increment)) {
+        common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{incr_str});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    if (std.math.isNan(last) or std.math.isInf(last)) {
+        common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid floating point argument: '{s}'", .{last_str});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+
     // Validate increment
     if (increment == 0.0) {
         common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid Zero increment value: '{s}'", .{incr_str});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Determine formatting mode
@@ -661,7 +850,7 @@ test "seq error: no args" {
 
     const args = [_][]const u8{};
     const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "missing operand") != null);
 }
 
@@ -673,7 +862,7 @@ test "seq error: too many args" {
 
     const args = [_][]const u8{ "1", "2", "3", "4" };
     const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "extra operand") != null);
 }
 
@@ -685,7 +874,7 @@ test "seq error: invalid number" {
 
     const args = [_][]const u8{"abc"};
     const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "invalid floating point argument") != null);
 }
 
@@ -697,7 +886,7 @@ test "seq error: zero increment" {
 
     const args = [_][]const u8{ "1", "0", "5" };
     const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
-    try testing.expectEqual(@as(u8, 2), result);
+    try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "Zero increment") != null);
 }
 

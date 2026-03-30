@@ -111,6 +111,12 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
         return 0;
     }
 
+    // Per macOS spec: -0 and utility may not be specified together
+    if (options.null_delimiter and options.command.len > 0) {
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "cannot specify -0 with a utility", .{});
+        return 125;
+    }
+
     // Handle -S: split string into tokens, process as assignments/command
     if (options.split_string) |split_str| {
         var split_assignments = std.ArrayListUnmanaged(Assignment){};
@@ -198,17 +204,6 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
         }
     }
 
-    // Handle -P: set alternate PATH for command search
-    if (options.alt_path) |alt| {
-        if (options.verbose) {
-            stderr_writer.print("env: using alternate PATH: {s}\n", .{alt}) catch {};
-        }
-        env_map.put("PATH", alt) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to set alternate PATH", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    }
-
     // Handle -C/--chdir
     if (options.chdir) |dir| {
         std.posix.chdir(dir) catch |err| {
@@ -225,6 +220,20 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
         return 0;
     }
 
+    // Handle -P: set alternate PATH for command search.
+    // Per macOS spec, -P only affects where the utility is searched,
+    // not the child's environment. We set PATH in env_map here only
+    // for process.Child's search; it does not apply when printing.
+    if (options.alt_path) |alt| {
+        if (options.verbose) {
+            stderr_writer.print("env: using alternate PATH: {s}\n", .{alt}) catch {};
+        }
+        env_map.put("PATH", alt) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to set alternate PATH", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+
     // Execute the command
     return execCommand(allocator, options.command, &env_map, stderr_writer);
 }
@@ -238,6 +247,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
     errdefer assignments.deinit(allocator);
     var i: usize = 0;
     var past_options = false;
+    var seen_assignment = false;
 
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -260,16 +270,24 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
             continue;
         }
 
-        // Check for NAME=VALUE assignment
+        // Check for NAME=VALUE assignment or command start
         if (!past_options and !std.mem.startsWith(u8, arg, "-")) {
             if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
                 assignments.append(allocator, .{
                     .name = arg[0..eq_pos],
                     .value = arg[eq_pos + 1 ..],
                 }) catch return error.OutOfMemory;
+                seen_assignment = true;
                 continue;
             }
             // Not an assignment and not a flag -- it's the command
+            options.command = args[i..];
+            break;
+        }
+
+        // Per POSIX/macOS spec: once a NAME=VALUE has been seen,
+        // subsequent flag-like tokens start the command.
+        if (seen_assignment) {
             options.command = args[i..];
             break;
         }
@@ -927,7 +945,7 @@ test "env parseArgs: -v flag" {
     try testing.expect(options.verbose);
 }
 
-test "env runEnv: -P sets alternate PATH in environment" {
+test "env runEnv: -P does not set PATH when printing environment" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
@@ -935,9 +953,9 @@ test "env runEnv: -P sets alternate PATH in environment" {
 
     const exit_code = runEnv(testing.allocator, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    // Environment should contain the alternate PATH
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "PATH=/custom/path\n") != null);
-    // And the assignment
+    // Per spec, -P only affects utility search path, not the environment
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "PATH=") == null);
+    // Assignment should still appear
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar\n") != null);
 }
 

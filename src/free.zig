@@ -230,7 +230,7 @@ const FreeArgs = struct {
         .mebi = .{ .short = 'm', .desc = "Display output in mebibytes" },
         .gibi = .{ .short = 'g', .desc = "Display output in gibibytes" },
         .human = .{ .short = 'h', .desc = "Show human-readable output" },
-        .si = .{ .desc = "Use powers of 1000 instead of 1024" },
+        .si = .{ .short = 0, .desc = "Use powers of 1000 instead of 1024" },
         .total = .{ .short = 't', .desc = "Display a line showing column totals" },
         .wide = .{ .short = 'w', .desc = "Wide output" },
         .seconds = .{ .short = 's', .desc = "Continuous display every N seconds", .value_name = "N" },
@@ -309,10 +309,10 @@ fn printMemRow(writer: anytype, label: []const u8, info: MemInfo, unit: Unit, us
         try printValue(writer, info.used, unit, use_si);
         try printValue(writer, info.free, unit, use_si);
         try printValue(writer, info.shared, unit, use_si);
-        // Split buff/cache into buffers and cache
-        // On macOS we don't have a clean split, so use 0 and buff_cache
-        try printValue(writer, 0, unit, use_si);
+        // Split buff/cache into buffers and cache.
+        // MemInfo merges these; show buff_cache as buffers, 0 as cache.
         try printValue(writer, info.buff_cache, unit, use_si);
+        try printValue(writer, 0, unit, use_si);
         try printValue(writer, info.available, unit, use_si);
         try writer.writeAll("\n");
     } else {
@@ -339,8 +339,8 @@ fn printTotalRow(writer: anytype, info: MemInfo, unit: Unit, use_si: bool, wide:
         try printValue(writer, total_used, unit, use_si);
         try printValue(writer, total_free, unit, use_si);
         try printValue(writer, info.shared, unit, use_si);
-        try printValue(writer, 0, unit, use_si);
         try printValue(writer, info.buff_cache, unit, use_si);
+        try printValue(writer, 0, unit, use_si);
         try printValue(writer, info.available, unit, use_si);
         try writer.writeAll("\n");
     } else {
@@ -414,7 +414,13 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     const repeat_count = parsed.count orelse 0;
     const interval = parsed.seconds orelse 0;
 
-    // If -c is given without -s, treat as a single display
+    // Per GNU free: -c requires -s
+    if (parsed.count != null and parsed.seconds == null) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-c requires -s option", .{});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // No continuous mode requested, display once
     if (interval == 0) {
         return displayOnce(stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
     }

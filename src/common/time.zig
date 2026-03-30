@@ -62,6 +62,11 @@ pub fn parseTimeString(time_str: []const u8) !u64 {
         return error.InvalidTimeFormat;
     }
 
+    // GNU sleep accepts 'inf' and 'infinity' to mean sleep forever.
+    if (std.mem.eql(u8, time_str, "inf") or std.mem.eql(u8, time_str, "infinity")) {
+        return std.math.maxInt(u64);
+    }
+
     // Find the unit suffix (if any)
     var number_part = time_str;
     var unit = TimeUnit.seconds; // default unit
@@ -182,12 +187,13 @@ test "parseTimeString - invalid formats" {
     try testing.expectEqual(@as(u64, @intFromFloat(0.5 * std.time.ns_per_s)), try parseTimeString(".5"));
 }
 
-test "parseTimeString - reject NaN and Inf" {
+test "parseTimeString - reject NaN and Inf (except GNU-compatible inf/infinity)" {
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("nan"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("NaN"));
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString("inf"));
+    // GNU sleep accepts 'inf' and 'infinity' as meaning sleep forever
+    try testing.expectEqual(std.math.maxInt(u64), try parseTimeString("inf"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("Inf"));
-    try testing.expectError(error.InvalidTimeFormat, parseTimeString("infinity"));
+    try testing.expectEqual(std.math.maxInt(u64), try parseTimeString("infinity"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("nans"));
     try testing.expectError(error.InvalidTimeFormat, parseTimeString("infm"));
 }

@@ -99,6 +99,21 @@ fn resolveLogical(allocator: Allocator, path: []const u8) ![]u8 {
     return result;
 }
 
+/// Convert a Zig error to a POSIX-style error string (matching GNU coreutils output).
+fn posixErrorName(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AccessDenied => "Permission denied",
+        error.FileNotFound => "No such file or directory",
+        error.NotDir => "Not a directory",
+        error.NameTooLong => "File name too long",
+        error.SymLinkLoop => "Too many levels of symbolic links",
+        error.OutOfMemory => "Cannot allocate memory",
+        error.InvalidPath => "Invalid argument",
+        error.ReadOnlyFileSystem => "Read-only file system",
+        else => @errorName(err),
+    };
+}
+
 /// Process a single path and write the result
 fn processPath(
     allocator: Allocator,
@@ -110,14 +125,14 @@ fn processPath(
     const resolved = if (opts.no_symlinks) blk: {
         break :blk resolveLogical(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
             }
             return false;
         };
     } else if (opts.canonicalize_missing) blk: {
         break :blk path_utils.canonicalizeMissing(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
             }
             return false;
         };
@@ -125,7 +140,7 @@ fn processPath(
         // -e: all components must exist
         break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
             }
             return false;
         };
@@ -139,21 +154,21 @@ fn processPath(
                     const base = std.fs.path.basename(path);
                     const resolved_dir = std.fs.cwd().realpathAlloc(allocator, dir.?) catch |dir_err| {
                         if (!opts.quiet) {
-                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(dir_err) });
+                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(dir_err) });
                         }
                         return false;
                     };
                     defer allocator.free(resolved_dir);
                     break :blk std.fs.path.join(allocator, &.{ resolved_dir, base }) catch |join_err| {
                         if (!opts.quiet) {
-                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(join_err) });
+                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(join_err) });
                         }
                         return false;
                     };
                 }
             }
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
             }
             return false;
         };
@@ -168,21 +183,21 @@ fn processPath(
         const resolved_base = if (opts.no_symlinks)
             resolveLogical(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, posixErrorName(err) });
                 }
                 return false;
             }
         else if (opts.canonicalize_missing)
             path_utils.canonicalizeMissing(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, posixErrorName(err) });
                 }
                 return false;
             }
         else
             std.fs.cwd().realpathAlloc(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, posixErrorName(err) });
                 }
                 return false;
             };
