@@ -144,8 +144,8 @@ test_readlink() {
             "Exit code: $long_canon_exit"
     fi
 
-    # Canonicalize nonexistent path (should fail with -f)
-    test_command_exit_code "readlink -f nonexistent fails" 1 \
+    # GNU -f allows missing last component when parent exists
+    test_command_exit_code "readlink -f nonexistent parent exists" 0 \
         "$binary" -f "/tmp/nonexistent_readlink_canon_$$"
 
     echo -e "${CYAN}Testing canonicalize-existing (-e)...${NC}"
