@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   update:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -40,6 +41,7 @@ jobs:
           git push
 
   push-cachix:
+    timeout-minutes: 60
     needs: update
     strategy:
       matrix:

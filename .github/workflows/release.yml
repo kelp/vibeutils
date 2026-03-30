@@ -11,6 +11,7 @@ on:
 
 jobs:
   build:
+    timeout-minutes: 30
     strategy:
       fail-fast: true
       matrix:
@@ -72,6 +73,7 @@ jobs:
           path: vibeutils-*.tar.gz
 
   release:
+    timeout-minutes: 30
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -162,7 +164,7 @@ jobs:
           --generate-notes
 
       - name: Checkout Homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: kelp/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -203,6 +205,7 @@ jobs:
           git push
 
   push-cachix:
+    timeout-minutes: 60
     strategy:
       matrix:
         include:
