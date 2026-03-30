@@ -180,4 +180,36 @@ test_timeout() {
         print_test_result "timeout --bad-flag exits 2" "FAIL" \
             "Expected exit 2, got $exit_code"
     fi
+
+    echo -e "${CYAN}Testing audit findings (wave 5)...${NC}"
+
+    # Audit: --kill-after should send KILL if command survives initial signal
+    # Use a trap-ignoring script that ignores TERM but can be killed by KILL
+    local ka_exit
+    "$binary" -k 0.5 -s TERM 0.5 bash -c 'trap "" TERM; sleep 60' >/dev/null 2>&1
+    ka_exit=$?
+    if [[ $ka_exit -eq 137 ]]; then
+        print_test_result "timeout --kill-after sends KILL after grace" "PASS"
+    else
+        print_test_result "timeout --kill-after sends KILL after grace" "FAIL" \
+            "Expected exit 137 (128+KILL), got $ka_exit"
+    fi
+
+    # Audit: --verbose should print diagnostic to stderr when signal is sent
+    local verbose_stderr
+    verbose_stderr=$("$binary" --verbose 0.5 sleep 60 2>&1 >/dev/null)
+    local verbose_exit=$?
+    if [[ "$verbose_stderr" == *"sending signal"* ]]; then
+        print_test_result "timeout --verbose prints signal diagnostic" "PASS"
+    else
+        print_test_result "timeout --verbose prints signal diagnostic" "FAIL" \
+            "Expected 'sending signal' in stderr, got: '$verbose_stderr'"
+    fi
+
+    # Audit: --foreground should not create a new process group
+    # Basic test: command should still complete normally
+    test_command_exit_code "timeout --foreground basic" 0 "$binary" --foreground 10 true
+
+    # --foreground with timeout should still produce exit 124
+    test_command_exit_code "timeout --foreground with timeout" 124 "$binary" --foreground 0.5 sleep 60
 }

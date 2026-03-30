@@ -173,4 +173,27 @@ test_id() {
         print_test_result "id -gn group name (regression)" "FAIL" \
             "Exit code: $reg_gn_exit, output: '$reg_gn_output'"
     fi
+
+    echo -e "${CYAN}Testing audit findings (wave 5)...${NC}"
+
+    # Audit: id -z alone should be rejected (GNU rejects without -u/-g/-G)
+    "$binary" -z >/dev/null 2>&1
+    exit_code=$?
+    if [[ $exit_code -eq 2 ]]; then
+        print_test_result "id -z alone exits 2 (GNU rejects)" "PASS"
+    else
+        print_test_result "id -z alone exits 2 (GNU rejects)" "FAIL" \
+            "Expected exit 2, got $exit_code"
+    fi
+
+    # Audit: id -a should be a no-op (GNU ignores it in default format)
+    local default_output a_output
+    default_output=$("$binary" 2>/dev/null)
+    a_output=$("$binary" -a 2>/dev/null)
+    if [[ "$a_output" == *"uid="* ]]; then
+        print_test_result "id -a produces default format (no-op)" "PASS"
+    else
+        print_test_result "id -a produces default format (no-op)" "FAIL" \
+            "Expected uid=... format, got '$a_output'"
+    fi
 }

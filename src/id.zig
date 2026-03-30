@@ -1287,3 +1287,48 @@ test "id default format with named user includes all groups" {
     // F47: default format with named user should list same number of groups
     try testing.expectEqual(no_user_comma_count, named_comma_count);
 }
+
+// ============================================================================
+// Audit finding tests (IMPORTANT) — wave 5
+// ============================================================================
+
+test "id -z alone without format flag should exit 2 (GNU rejects)" {
+    // GNU id: "id: cannot print only names or real IDs in default format"
+    // vibeutils currently accepts -z alone and outputs default format with NUL.
+    // GNU rejects -z without -u/-g/-G, exiting 2.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"-z"};
+    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // GNU behavior: -z alone is an error (exit 2)
+    try testing.expectEqual(@as(u8, 2), result);
+    // stderr should contain a diagnostic message
+    try testing.expect(stderr_buffer.items.len > 0);
+}
+
+test "id -a is a no-op in GNU, not an alias for -G" {
+    // GNU id: -a is ignored (has no effect in default format).
+    // vibeutils treats -a as -G, changing the output format.
+    // Expected: id -a should produce the SAME output as plain id.
+    var stdout_default = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_default.deinit(testing.allocator);
+    var stdout_with_a = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_with_a.deinit(testing.allocator);
+
+    const args_default = [_][]const u8{};
+    const result_default = try runId(testing.allocator, &args_default, stdout_default.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_default);
+
+    const args_a = [_][]const u8{"-a"};
+    const result_a = try runId(testing.allocator, &args_a, stdout_with_a.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result_a);
+
+    // GNU: id -a should produce default format (uid=... gid=... groups=...)
+    // not just the -G style group list
+    try testing.expect(std.mem.indexOf(u8, stdout_with_a.items, "uid=") != null);
+}

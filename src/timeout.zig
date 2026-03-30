@@ -671,3 +671,48 @@ test "runTimeout - missing command after duration returns 125" {
 
     try testing.expectEqual(@as(u8, 125), result);
 }
+
+// ============================================================================
+// Audit finding tests (IMPORTANT) — wave 5
+// ============================================================================
+
+test "runTimeout - --kill-after with quick command exits 0" {
+    // Verify --kill-after is accepted and does not interfere when
+    // the command completes before the timeout.
+    const result = try runTimeout(testing.allocator, &.{ "-k", "5", "10", "true" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+}
+
+test "runTimeout - --kill-after invalid duration exits 125" {
+    // Invalid --kill-after duration should exit 125 with an error message.
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const result = try runTimeout(testing.allocator, &.{ "--kill-after", "abc", "10", "true" }, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 125), result);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
+}
+
+test "runTimeout - --verbose emits signal diagnostic on timeout" {
+    // --verbose should print a diagnostic to stderr when a signal is sent.
+    // Skip on Linux: process group signal delivery is unreliable in the
+    // Zig test runner's IPC mode.
+    if (comptime builtin.os.tag == .linux) return error.SkipZigTest;
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const result = try runTimeout(testing.allocator, &.{ "--verbose", "1", "sleep", "100" }, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 124), result);
+    // --verbose should produce a diagnostic mentioning "sending signal"
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "sending signal") != null);
+}
+
+test "runTimeout - --foreground with quick command exits 0" {
+    // Verify --foreground is accepted and does not interfere when
+    // the command completes before the timeout.
+    const result = try runTimeout(testing.allocator, &.{ "--foreground", "10", "true" }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+}
