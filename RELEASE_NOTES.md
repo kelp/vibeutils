@@ -1,5 +1,79 @@
 # Release Notes
 
+## 0.8.3 — 2026-03-29
+
+Full correctness audit and remediation. 78 CRITICAL bugs
+fixed across 26 utilities, verified against GNU coreutils
+9.10 on both Linux and macOS.
+
+### Correctness Fixes (78 CRITICAL)
+
+**Crashes and safety:**
+- mv: no longer panics on move-into-subdirectory (EINVAL)
+- head: clean error on directory instead of stack trace
+- rm: -W no longer deletes files (was destroying data)
+- uniq: --all-repeated=METHOD no longer crashes
+- ln: --backup=CONTROL no longer panics
+- timeout: fix setpgid race that dropped signals
+
+**Wrong behavior fixed:**
+- basename: empty string returns "" per GNU (was ".")
+- chmod: mode strings starting with - parsed correctly
+- readlink: -f allows missing last component per GNU
+- realpath: default mode allows missing last component
+- mv: -i now prompts on Linux; last-flag-wins for -f/-i/-n
+- ln: -h/-n no-dereference now applied to symlink targets
+- tr: [c*] fill-to-SET1-length implemented
+- env: bare - clears environment; -S string splitting
+- touch: -d timezone offsets (Z, +HH:MM) now parsed
+- sort: -V does version-sort (was mapped to --version)
+- sort: -h uses suffix rank (K<M<G not raw bytes)
+- sort: -s omission triggers full-line tiebreaker
+- grep: -x works in BRE mode (was using ERE syntax)
+- grep: -o prints all matches per line (was first only)
+- nl: section delimiter resets on all transitions
+- nl: unnumbered lines use spaces per GNU (not separator)
+- nl: -b p:REGEX body numbering implemented
+- nl: -d '' (empty delimiter) accepted
+- printf: \NNN octal escapes in format string
+- printf: %b \0NNN off-by-one fixed
+- printf: \c halts output; %b \c halts reuse loop
+- printf: %F, %a, %A format specifiers implemented
+- date: -r accepts numeric epoch seconds
+- date: -d parses timezone offsets in ISO 8601
+- ls: exit code 2 on errors (was always 0)
+- ls: -a includes . and .. entries
+- stat: no spurious + on numeric fields
+- stat: -f honors -c format string
+- stat: terse output has 16 GNU-compatible fields
+- df: -P uses POSIX headers (1024-blocks, Capacity)
+- df: -n rejected on Linux per GNU
+- du: -L dedup guard covers symlink targets
+- du: -A excludes directory metadata
+- du: -S shows direct file sum (not inode blocks)
+- find: -size uses ceiling division for block rounding
+- id: -G with named user shows supplementary groups
+- tac: -b separator placement algorithm rewritten
+- timeout: command-not-found exits 127
+
+**Test infrastructure:**
+- 293 new tests encoding correct GNU coreutils behavior
+- Strict red-green TDD: every fix has a corresponding
+  test that fails without it
+
+### Documentation
+
+- CLAUDE.md: spec reference hierarchy (GNU primary,
+  macOS/OpenBSD for their exclusive flags, flag matrices
+  authoritative)
+- DESIGN_PHILOSOPHY.md: matching spec hierarchy and
+  per-utility exceptions (stat, test)
+- 141 audit reports in docs/audit/ covering all 47
+  utilities (code, unit tests, integration tests)
+- docs/audit/summary.md: per-utility finding breakdown
+- docs/audit/remediation-plan.md: prioritized fix list
+- docs/audit/stub-report.md: all stub flags cataloged
+
 ## 0.8.2 — 2026-03-28
 
 ### Features
