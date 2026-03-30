@@ -68,7 +68,7 @@ pub fn runPrintf(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // Process format string, reusing it if arguments remain
     while (true) {
         const start_arg_idx = arg_idx;
-        const halted = processFormat(format, arguments, &arg_idx, stdout_writer, stderr_writer, allocator) catch blk: {
+        const halted = processFormat(format, arguments, &arg_idx, stdout_writer, stderr_writer, allocator, &had_error) catch blk: {
             had_error = true;
             break :blk false;
         };
@@ -97,6 +97,7 @@ fn processFormat(
     writer: anytype,
     stderr_writer: anytype,
     allocator: Allocator,
+    had_error: *bool,
 ) !bool {
     var i: usize = 0;
     while (i < format.len) {
@@ -112,7 +113,7 @@ fn processFormat(
                 i += 2;
             } else {
                 // Format specifier
-                const result = try processSpecifier(format, i, arguments, arg_idx, writer, stderr_writer, allocator);
+                const result = try processSpecifier(format, i, arguments, arg_idx, writer, stderr_writer, allocator, had_error);
                 if (result.halt) return true;
                 i = result.pos;
             }
@@ -256,6 +257,7 @@ fn processSpecifier(
     writer: anytype,
     stderr_writer: anytype,
     allocator: Allocator,
+    had_error: *bool,
 ) !SpecifierResult {
     var i = pos + 1; // Skip the '%'
 
@@ -283,7 +285,14 @@ fn processSpecifier(
     if (i < format.len and format[i] == '*') {
         // Width from argument
         const w_str = getNextArg(arguments, arg_idx);
-        width = @as(usize, @intCast(@max(0, std.fmt.parseInt(i64, w_str, 10) catch 0)));
+        const w_val = std.fmt.parseInt(i64, w_str, 10) catch 0;
+        if (w_val < 0) {
+            // Negative width implies left-justify (GNU behavior)
+            left_justify = true;
+            width = @as(usize, @intCast(-w_val));
+        } else {
+            width = @as(usize, @intCast(w_val));
+        }
         i += 1;
     } else {
         var w: usize = 0;
@@ -354,8 +363,12 @@ fn processSpecifier(
         },
         'd', 'i' => {
             const arg = getNextArg(arguments, arg_idx);
-            const val = parseIntArg(arg);
-            try formatSignedInt(writer, val, 10, false, spec, stderr_writer, allocator, arg);
+            const parse_result = parseIntArgEx(arg);
+            if (!parse_result.ok and arg.len > 0) {
+                common.printErrorWithProgram(allocator, stderr_writer, "printf", "'{s}': expected a numeric value", .{arg});
+                had_error.* = true;
+            }
+            try formatSignedInt(writer, parse_result.value, 10, false, spec);
         },
         'u' => {
             const arg = getNextArg(arguments, arg_idx);
@@ -443,29 +456,67 @@ fn getNextArg(arguments: []const []const u8, arg_idx: *usize) []const u8 {
     return "";
 }
 
-/// Parse string as signed integer. Handles 0x, 0, and leading quote/dquote
-/// for character values. Returns 0 for unparseable strings.
-fn parseIntArg(s: []const u8) i64 {
-    if (s.len == 0) return 0;
+/// Result from parsing an integer argument
+const IntParseResult = struct {
+    value: i64,
+    ok: bool,
+};
+
+/// Parse string as signed integer with extended result reporting.
+/// Returns the parsed value and whether parsing was fully successful.
+/// For partial numeric input like "5abc", returns {.value=5, .ok=false}.
+fn parseIntArgEx(s: []const u8) IntParseResult {
+    if (s.len == 0) return .{ .value = 0, .ok = true };
 
     // Leading ' or " means character value
     if ((s[0] == '\'' or s[0] == '"') and s.len >= 2) {
-        return @as(i64, s[1]);
+        return .{ .value = @as(i64, s[1]), .ok = true };
     }
 
     // Try hex (0x or 0X prefix)
     if (s.len > 2 and s[0] == '0' and (s[1] == 'x' or s[1] == 'X')) {
-        return std.fmt.parseInt(i64, s[2..], 16) catch 0;
+        if (std.fmt.parseInt(i64, s[2..], 16)) |v| {
+            return .{ .value = v, .ok = true };
+        } else |_| {
+            return .{ .value = 0, .ok = false };
+        }
     }
 
     // Try octal (0 prefix, but not just "0")
     if (s.len > 1 and s[0] == '0') {
-        return std.fmt.parseInt(i64, s[1..], 8) catch {
-            return std.fmt.parseInt(i64, s, 10) catch 0;
-        };
+        if (std.fmt.parseInt(i64, s[1..], 8)) |v| {
+            return .{ .value = v, .ok = true };
+        } else |_| {
+            if (std.fmt.parseInt(i64, s, 10)) |v| {
+                return .{ .value = v, .ok = true };
+            } else |_| {
+                return .{ .value = 0, .ok = false };
+            }
+        }
     }
 
-    return std.fmt.parseInt(i64, s, 10) catch 0;
+    // Try full decimal parse first
+    if (std.fmt.parseInt(i64, s, 10)) |v| {
+        return .{ .value = v, .ok = true };
+    } else |_| {}
+
+    // Try partial parse: find longest leading numeric prefix
+    var end: usize = 0;
+    if (end < s.len and (s[end] == '-' or s[end] == '+')) end += 1;
+    while (end < s.len and s[end] >= '0' and s[end] <= '9') : (end += 1) {}
+    if (end > 0 and !(end == 1 and (s[0] == '-' or s[0] == '+'))) {
+        if (std.fmt.parseInt(i64, s[0..end], 10)) |v| {
+            return .{ .value = v, .ok = false };
+        } else |_| {}
+    }
+
+    return .{ .value = 0, .ok = false };
+}
+
+/// Parse string as signed integer. Handles 0x, 0, and leading quote/dquote
+/// for character values. Returns 0 for unparseable strings.
+fn parseIntArg(s: []const u8) i64 {
+    return parseIntArgEx(s).value;
 }
 
 /// Parse string as unsigned integer with same rules as parseIntArg.
@@ -650,13 +701,7 @@ fn formatSignedInt(
     radix: u8,
     _: bool,
     spec: FormatSpec,
-    stderr_writer: anytype,
-    allocator: Allocator,
-    arg_str: []const u8,
 ) !void {
-    _ = stderr_writer;
-    _ = allocator;
-    _ = arg_str;
     var buf: [128]u8 = undefined;
     const negative = val < 0;
     const abs_val: u64 = if (negative) @intCast(-val) else @intCast(val);
