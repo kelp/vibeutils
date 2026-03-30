@@ -682,11 +682,19 @@ fn printDefaultFormat(
         file_type,
     });
 
-    // Line 3: Device, Inode, Links
+    // Line 3: Device, Inode, Links (GNU format: decimal major,minor)
     const dev: u64 = @intCast(stat_buf.dev);
-    try writer.print("Device: {x}h/{d}d\tInode: {d: <12}Links: {d}\n", .{
-        dev,
-        dev,
+    const dev_major: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+        (dev >> 24) & 0xff
+    else
+        (dev >> 8) & 0xfff;
+    const dev_minor: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
+        dev & 0xffffff
+    else
+        dev & 0xff;
+    try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
+        dev_major,
+        dev_minor,
         stat_buf.ino,
         stat_buf.nlink,
     });

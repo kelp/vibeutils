@@ -562,6 +562,14 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
         depth_first = true;
     }
 
+    // -follow in expression position also enables symlink following
+    for (args[expr_start..]) |a| {
+        if (std.mem.eql(u8, a, "-follow")) {
+            follow_symlinks = true;
+            break;
+        }
+    }
+
     // If no action, wrap with implicit -print
     const result_expr = if (!has_action) blk: {
         const print_expr = try allocExpr(allocator, .print, .{ .none = {} });
@@ -698,6 +706,11 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
     if (std.mem.eql(u8, arg, "-d")) {
+        pos.* += 1;
+        return allocExpr(allocator, .true_expr, .{ .none = {} });
+    }
+    // -follow in expression position (deprecated GNU/macOS form)
+    if (std.mem.eql(u8, arg, "-follow")) {
         pos.* += 1;
         return allocExpr(allocator, .true_expr, .{ .none = {} });
     }
