@@ -724,3 +724,71 @@ test "cat continues processing files after error" {
     // And should have error message for bad file
     try testing.expect(stderr_buffer.items.len > 0);
 }
+
+test "cat -E renders trailing CR as ^M$ on CRLF lines" {
+    // BUG: GNU cat -E converts a trailing \r before \n into "^M$\n".
+    // Our implementation outputs the raw \r byte followed by "$\n",
+    // which on a terminal causes the cursor to return to column 0
+    // and "$" overwrites the first character.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // File content: "test\r\n" (CRLF line ending)
+    try common.test_utils.createTestFile(tmp_dir.dir, "crlf.txt", "test\r\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "crlf.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-E", file_path };
+    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
+    // Expected: "test^M$\n" — the \r is shown as ^M before the $ end marker
+    try testing.expectEqualStrings("test^M$\n", stdout_buffer.items);
+}
+
+test "cat -E preserves mid-line CR as raw byte" {
+    // Mid-line \r is NOT converted to ^M — only trailing \r (before \n).
+    // This matches GNU cat behavior.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // File content: "ab\rcd\n" — \r is mid-line, not before \n
+    try common.test_utils.createTestFile(tmp_dir.dir, "midcr.txt", "ab\rcd\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "midcr.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-E", file_path };
+    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
+    // Mid-line \r stays as raw \r, only the $ end marker is added
+    try testing.expectEqualStrings("ab\rcd$\n", stdout_buffer.items);
+}
+
+test "cat -E with multiple CRLF lines" {
+    // Each CRLF line should get ^M$ treatment.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "multi.txt", "line1\r\nline2\r\nline3\n");
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "multi.txt");
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-E", file_path };
+    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
+    try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_buffer.items);
+}

@@ -365,3 +365,35 @@ test "TimeUnit.toNanos - verify unit conversions" {
     try testing.expectEqual(std.time.ns_per_hour, time.TimeUnit.hours.toNanos());
     try testing.expectEqual(std.time.ns_per_day, time.TimeUnit.days.toNanos());
 }
+
+// ============================================================================
+// Audit finding tests (IMPORTANT) — wave 5
+// ============================================================================
+
+test "parseTimeString accepts 'inf' (GNU compatible)" {
+    // GNU sleep accepts 'inf' to mean sleep forever.
+    // vibeutils currently rejects 'inf' as InvalidTimeFormat.
+    // Expected: parseTimeString("inf") should succeed and return maxInt(u64).
+    const result = try time.parseTimeString("inf");
+    try testing.expectEqual(std.math.maxInt(u64), result);
+}
+
+test "parseTimeString accepts 'infinity' (GNU compatible)" {
+    // GNU sleep accepts 'infinity' to mean sleep forever.
+    // vibeutils currently rejects 'infinity' as InvalidTimeFormat.
+    const result = try time.parseTimeString("infinity");
+    try testing.expectEqual(std.math.maxInt(u64), result);
+}
+
+test "runSleep error message includes the invalid token" {
+    // GNU sleep: "sleep: invalid time interval 'xyz'"
+    // vibeutils currently says: "sleep: invalid time interval" (no token).
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const result = try runSleep(testing.allocator, &.{"xyz"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 2), result);
+    // The error message should include the invalid token 'xyz'
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "'xyz'") != null);
+}

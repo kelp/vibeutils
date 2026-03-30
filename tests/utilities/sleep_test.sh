@@ -42,4 +42,48 @@ test_sleep() {
     echo -e "${CYAN}Testing sleep 0 exits immediately (arena regression)...${NC}"
 
     test_command_exit_code "sleep 0 exits 0 (arena safety net)" 0 "$binary" 0
+
+    echo -e "${CYAN}Testing audit findings (wave 5)...${NC}"
+
+    # Audit: sleep inf should be accepted (GNU sleeps forever)
+    # Use timeout wrapper to prevent actual infinite sleep
+    timeout 2 "$binary" inf &
+    local inf_pid=$!
+    sleep 0.5
+    # If the process is still running after 0.5s, it accepted "inf"
+    if kill -0 "$inf_pid" 2>/dev/null; then
+        kill "$inf_pid" 2>/dev/null
+        wait "$inf_pid" 2>/dev/null
+        print_test_result "sleep inf accepted (GNU compat)" "PASS"
+    else
+        wait "$inf_pid" 2>/dev/null
+        local inf_exit=$?
+        print_test_result "sleep inf accepted (GNU compat)" "FAIL" \
+            "sleep inf exited immediately with code $inf_exit"
+    fi
+
+    # Audit: sleep infinity should be accepted (GNU sleeps forever)
+    timeout 2 "$binary" infinity &
+    local infinity_pid=$!
+    sleep 0.5
+    if kill -0 "$infinity_pid" 2>/dev/null; then
+        kill "$infinity_pid" 2>/dev/null
+        wait "$infinity_pid" 2>/dev/null
+        print_test_result "sleep infinity accepted (GNU compat)" "PASS"
+    else
+        wait "$infinity_pid" 2>/dev/null
+        local infinity_exit=$?
+        print_test_result "sleep infinity accepted (GNU compat)" "FAIL" \
+            "sleep infinity exited immediately with code $infinity_exit"
+    fi
+
+    # Audit: error message should include the invalid token
+    local sleep_err
+    sleep_err=$("$binary" xyz 2>&1)
+    if [[ "$sleep_err" == *"'xyz'"* ]]; then
+        print_test_result "sleep error includes invalid token" "PASS"
+    else
+        print_test_result "sleep error includes invalid token" "FAIL" \
+            "Expected 'xyz' in error, got: '$sleep_err'"
+    fi
 }

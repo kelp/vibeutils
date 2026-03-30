@@ -321,4 +321,39 @@ test_env() {
         print_test_result "env -S produces no stderr warning" "FAIL" \
             "Expected no stderr, got: '$stderr_output'"
     fi
+
+    echo -e "${CYAN}Testing audit findings (wave 4)...${NC}"
+
+    # AUDIT: -0 with utility should be an error
+    # macOS spec: "Both -0 and utility may not be specified together."
+    "$binary" -0 echo hello 2>/dev/null
+    exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        print_test_result "env -0 with utility is rejected" "PASS"
+    else
+        print_test_result "env -0 with utility is rejected" "FAIL" \
+            "Expected non-zero exit, got: $exit_code"
+    fi
+
+    # AUDIT: Flags after NAME=VALUE should not be parsed as options
+    # After FOO=bar, -u should be treated as the command name
+    "$binary" -i FOO=bar -u FOO 2>/dev/null
+    exit_code=$?
+    if [[ $exit_code -eq 127 ]]; then
+        print_test_result "env flags after NAME=VALUE treated as command" "PASS"
+    else
+        print_test_result "env flags after NAME=VALUE treated as command" "FAIL" \
+            "Expected exit 127, got: $exit_code"
+    fi
+
+    # AUDIT: -P should not set PATH in child's environment
+    # env -i -P /usr/bin FOO=bar should print only FOO=bar, not PATH
+    local p_output
+    p_output=$("$binary" -i -P /usr/bin FOO=bar 2>/dev/null)
+    if [[ "$p_output" == "FOO=bar" ]]; then
+        print_test_result "env -P does not set child PATH" "PASS"
+    else
+        print_test_result "env -P does not set child PATH" "FAIL" \
+            "Expected only 'FOO=bar', got: '$p_output'"
+    fi
 }

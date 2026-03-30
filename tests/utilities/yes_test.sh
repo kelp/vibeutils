@@ -72,6 +72,28 @@ test_yes() {
             "Expected exit code 0, got $exit_code"
     fi
 
+    echo -e "${CYAN}Testing audit findings (wave 5)...${NC}"
+
+    # Audit: unknown flag should exit 1 (GNU), not 2
+    "$binary" --unknown-flag >/dev/null 2>&1
+    exit_code=$?
+    if [[ $exit_code -eq 1 ]]; then
+        print_test_result "yes unknown flag exits 1 (GNU compat)" "PASS"
+    else
+        print_test_result "yes unknown flag exits 1 (GNU compat)" "FAIL" \
+            "Expected exit 1, got $exit_code"
+    fi
+
+    # Audit: error message should include the flag name
+    local yes_err
+    yes_err=$("$binary" --bad-flag 2>&1)
+    if [[ "$yes_err" == *"--bad-flag"* ]]; then
+        print_test_result "yes error includes flag name" "PASS"
+    else
+        print_test_result "yes error includes flag name" "FAIL" \
+            "Expected '--bad-flag' in error, got: '$yes_err'"
+    fi
+
     # Regression test: strings > 8192 bytes must produce output
     echo -e "${CYAN}Testing large string output...${NC}"
 

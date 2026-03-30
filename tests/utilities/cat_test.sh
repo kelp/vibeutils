@@ -204,4 +204,51 @@ test_cat() {
         print_test_result "cat -v shows non-printing chars (regression)" "FAIL" \
             "Expected ^A^B^C, got: '$reg_v_output'"
     fi
+
+    echo -e "${CYAN}Testing audit: -E with CRLF line endings...${NC}"
+
+    # BUG: cat -E should render trailing \r before \n as "^M$" not raw "\r$".
+    # GNU cat -E on "test\r\n" produces "test^M$\n".
+    # Our implementation writes the raw \r byte then "$\n".
+    local crlf_file="$TEMP_DIR/cat_crlf.txt"
+    printf 'test\r\n' > "$crlf_file"
+
+    local crlf_out crlf_err crlf_exit crlf_cmd
+    run_command crlf_cmd crlf_out crlf_err crlf_exit "$binary" -E "$crlf_file"
+
+    # Use od to inspect the actual bytes
+    local crlf_hex
+    crlf_hex=$("$binary" -E "$crlf_file" | od -c | head -1)
+    # Expected bytes: t e s t ^ M $ \n
+    # The "^M" is two characters: ^ and M
+    if [[ "$crlf_hex" == *"^"*"M"*"$"* ]] && [[ "$crlf_hex" != *$'\r'* ]] && [[ "$crlf_hex" != *"\\r"* ]]; then
+        print_test_result "cat -E CRLF shows ^M$ (od check)" "PASS"
+    else
+        print_test_result "cat -E CRLF shows ^M$ (od check)" "FAIL" \
+            "Expected '^M$' in output. od output: $crlf_hex"
+    fi
+
+    # Direct string check: output should contain "^M$" not a raw \r
+    if [[ "$crlf_out" == *"^M\$"* ]]; then
+        print_test_result "cat -E CRLF ^M$ in output" "PASS"
+    else
+        print_test_result "cat -E CRLF ^M$ in output" "FAIL" \
+            "Expected '^M\$' in output. Got: '$crlf_out'"
+    fi
+
+    # Multiple CRLF lines
+    local multi_crlf="$TEMP_DIR/cat_multi_crlf.txt"
+    printf 'line1\r\nline2\r\nline3\n' > "$multi_crlf"
+    local multi_out multi_err multi_exit multi_cmd
+    run_command multi_cmd multi_out multi_err multi_exit "$binary" -E "$multi_crlf"
+
+    # Count how many "^M$" appear (should be 2: line1 and line2 have CRLF)
+    local cr_count
+    cr_count=$(echo "$multi_out" | grep -o '\^M\$' | wc -l)
+    if [[ $cr_count -eq 2 ]]; then
+        print_test_result "cat -E multiple CRLF lines show ^M$" "PASS"
+    else
+        print_test_result "cat -E multiple CRLF lines show ^M$" "FAIL" \
+            "Expected 2 occurrences of ^M\$, got $cr_count. Output: '$multi_out'"
+    fi
 }

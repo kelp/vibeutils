@@ -789,3 +789,56 @@ test "head with obsolete -NUM syntax" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_buffer.items);
 }
+
+test "head --silent is alias for --quiet" {
+    // BUG: --silent is not recognized (exits 2). GNU coreutils accepts
+    // --silent as a synonym for --quiet/-q to suppress file headers.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content1 = "File A line 1\nFile A line 2\n";
+    const content2 = "File B line 1\nFile B line 2\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "a.txt", content1);
+    try common.test_utils.createTestFile(tmp_dir.dir, "b.txt", content2);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const path_a = try tmp_dir.dir.realpathAlloc(testing.allocator, "a.txt");
+    defer testing.allocator.free(path_a);
+    const path_b = try tmp_dir.dir.realpathAlloc(testing.allocator, "b.txt");
+    defer testing.allocator.free(path_b);
+
+    const args = [_][]const u8{ "--silent", path_a, path_b };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    // Should succeed (exit 0) and suppress headers, just like --quiet
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Output should be raw content without "==> ... <==" headers
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "==>") == null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "File A line 1") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "File B line 1") != null);
+}
+
+test "head -n -3 outputs all but last 3 lines" {
+    // BUG: -n -3 (negative count) is not implemented. GNU head treats
+    // -n -NUM as "output all but the last NUM lines". Currently exits 2.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    defer testing.allocator.free(file_path);
+
+    // -n -3 means "all but the last 3 lines" = first 2 lines
+    const args = [_][]const u8{ "-n", "-3", file_path };
+    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_buffer.items);
+}

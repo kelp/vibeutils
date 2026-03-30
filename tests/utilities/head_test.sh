@@ -301,4 +301,46 @@ test_head() {
         print_test_result "head --help no false [-]NUM advertising (regression)" "FAIL" \
             "Help text advertises unimplemented feature"
     fi
+
+    echo -e "${CYAN}Testing audit: --silent alias...${NC}"
+
+    # --silent should be accepted as alias for --quiet/-q (GNU compat).
+    # BUG: --silent returns exit 2 (unrecognized option).
+    local silent_file_a=$(create_temp_file $'File A line 1\nFile A line 2')
+    local silent_file_b=$(create_temp_file $'File B line 1\nFile B line 2')
+
+    local silent_out silent_err silent_exit silent_cmd
+    run_command silent_cmd silent_out silent_err silent_exit "$binary" --silent "$silent_file_a" "$silent_file_b"
+    if [[ $silent_exit -eq 0 ]]; then
+        print_test_result "head --silent exits 0" "PASS"
+    else
+        print_test_result "head --silent exits 0" "FAIL" \
+            "Expected exit 0, got $silent_exit. stderr: $silent_err"
+    fi
+
+    # --silent should suppress headers (no "==>")
+    if [[ "$silent_out" != *"==>"* ]]; then
+        print_test_result "head --silent suppresses headers" "PASS"
+    else
+        print_test_result "head --silent suppresses headers" "FAIL" \
+            "Expected no headers. Got: $silent_out"
+    fi
+
+    echo -e "${CYAN}Testing audit: -n -NUM negative count...${NC}"
+
+    # -n -3 means "all but the last 3 lines" (GNU semantics).
+    # BUG: currently exits 2 because negative values are rejected.
+    local neg_file=$(create_temp_file $'Line 1\nLine 2\nLine 3\nLine 4\nLine 5')
+
+    local neg_out neg_err neg_exit neg_cmd
+    run_command neg_cmd neg_out neg_err neg_exit "$binary" -n -3 "$neg_file"
+    if [[ $neg_exit -eq 0 ]]; then
+        print_test_result "head -n -3 exits 0" "PASS"
+    else
+        print_test_result "head -n -3 exits 0" "FAIL" \
+            "Expected exit 0, got $neg_exit. stderr: $neg_err"
+    fi
+
+    # Should output first 2 lines (5 total minus last 3)
+    test_command_output "head -n -3 outputs all but last 3" $'Line 1\nLine 2' "$binary" -n -3 "$neg_file"
 }

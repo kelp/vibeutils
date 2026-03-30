@@ -207,4 +207,182 @@ test_dd() {
         print_test_result "dd bs=1 count=5 copies 5 bytes (argsFree safety net)" "FAIL" \
             "Expected 'ABCDE', got '$args_result'"
     fi
+
+    # ==================================================================
+    #       AUDIT WAVE 4: FAILING INTEGRATION TESTS
+    # ==================================================================
+
+    echo -e "${CYAN}Testing audit findings (IMPORTANT)...${NC}"
+
+    # --- conv=swab even-length ---
+    local swab_input="$TEMP_DIR/dd_swab_even.bin"
+    local swab_output="$TEMP_DIR/dd_swab_even_out.bin"
+    printf 'ABCD' > "$swab_input"
+    "$binary" if="$swab_input" of="$swab_output" conv=swab status=none 2>/dev/null
+    content=$(cat "$swab_output")
+    if [[ "$content" == "BADC" ]]; then
+        print_test_result "dd conv=swab even length" "PASS"
+    else
+        print_test_result "dd conv=swab even length" "FAIL" \
+            "Expected 'BADC', got '$content'"
+    fi
+
+    # --- conv=swab odd-length preserves last byte ---
+    # GNU dd: odd last byte passes through unchanged.
+    # Bug: our dd zeroes it to 0x00.
+    local swab_odd_input="$TEMP_DIR/dd_swab_odd.bin"
+    local swab_odd_output="$TEMP_DIR/dd_swab_odd_out.bin"
+    printf 'ABC' > "$swab_odd_input"
+    "$binary" if="$swab_odd_input" of="$swab_odd_output" conv=swab bs=3 count=1 status=none 2>/dev/null
+    # Compare against GNU dd output
+    local gnu_swab_output="$TEMP_DIR/dd_swab_odd_gnu.bin"
+    printf 'ABC' | /usr/bin/dd conv=swab bs=3 count=1 2>/dev/null > "$gnu_swab_output"
+    if cmp -s "$swab_odd_output" "$gnu_swab_output"; then
+        print_test_result "dd conv=swab odd-length preserves last byte" "PASS"
+    else
+        local ours_hex
+        ours_hex=$(od -A n -t x1 < "$swab_odd_output" | tr -d ' \n')
+        local gnu_hex
+        gnu_hex=$(od -A n -t x1 < "$gnu_swab_output" | tr -d ' \n')
+        print_test_result "dd conv=swab odd-length preserves last byte" "FAIL" \
+            "ours='$ours_hex', GNU='$gnu_hex'"
+    fi
+
+    # --- conv=sync+block pads with spaces, not NUL ---
+    # GNU dd: when block/unblock is active, sync pads with spaces (0x20).
+    # Bug: our dd always pads with NUL (0x00).
+    local sync_block_input="$TEMP_DIR/dd_sync_block.txt"
+    local sync_block_output="$TEMP_DIR/dd_sync_block_out.bin"
+    printf 'AB\n' > "$sync_block_input"
+    "$binary" if="$sync_block_input" of="$sync_block_output" \
+        conv=sync,block cbs=10 ibs=10 obs=10 status=none 2>/dev/null
+    local gnu_sync_block="$TEMP_DIR/dd_sync_block_gnu.bin"
+    printf 'AB\n' | /usr/bin/dd conv=sync,block cbs=10 ibs=10 obs=10 2>/dev/null > "$gnu_sync_block"
+    if cmp -s "$sync_block_output" "$gnu_sync_block"; then
+        print_test_result "dd conv=sync+block pads with spaces" "PASS"
+    else
+        local ours_hex
+        ours_hex=$(od -A n -t x1 < "$sync_block_output" | tr -d '\n')
+        local gnu_hex
+        gnu_hex=$(od -A n -t x1 < "$gnu_sync_block" | tr -d '\n')
+        print_test_result "dd conv=sync+block pads with spaces" "FAIL" \
+            "ours='$ours_hex', GNU='$gnu_hex'"
+    fi
+
+    # --- conv=notrunc preserves existing file data ---
+    # Write a large file, then overwrite with smaller data using notrunc.
+    # The tail bytes of the original file must be preserved.
+    local notrunc_file="$TEMP_DIR/dd_notrunc.bin"
+    printf 'XXXXXXXXXXXXXXXXXXXX' > "$notrunc_file"  # 20 bytes of X
+    local notrunc_input="$TEMP_DIR/dd_notrunc_in.txt"
+    printf 'HELLO' > "$notrunc_input"
+    "$binary" if="$notrunc_input" of="$notrunc_file" conv=notrunc status=none 2>/dev/null
+    local notrunc_size
+    notrunc_size=$(get_file_size "$notrunc_file")
+    local notrunc_content
+    notrunc_content=$(cat "$notrunc_file")
+    if [[ "$notrunc_size" -eq 20 ]] && [[ "$notrunc_content" == "HELLOXXXXXXXXXXXXXXX" ]]; then
+        print_test_result "dd conv=notrunc preserves existing data" "PASS"
+    else
+        print_test_result "dd conv=notrunc preserves existing data" "FAIL" \
+            "Expected 20 bytes 'HELLOXXXXXXXXXXXXXXX', got $notrunc_size bytes '$notrunc_content'"
+    fi
+
+    # --- conv=ascii/ebcdic roundtrip ---
+    # Convert ASCII->EBCDIC->ASCII; result must match original.
+    local rt_input="$TEMP_DIR/dd_roundtrip_in.txt"
+    local rt_ebcdic="$TEMP_DIR/dd_roundtrip_ebc.bin"
+    local rt_output="$TEMP_DIR/dd_roundtrip_out.txt"
+    printf 'Hello World 123 !@#' > "$rt_input"
+    "$binary" if="$rt_input" of="$rt_ebcdic" conv=ebcdic status=none 2>/dev/null
+    "$binary" if="$rt_ebcdic" of="$rt_output" conv=ascii status=none 2>/dev/null
+    local rt_content
+    rt_content=$(cat "$rt_output")
+    if [[ "$rt_content" == "Hello World 123 !@#" ]]; then
+        print_test_result "dd conv=ascii/ebcdic roundtrip" "PASS"
+    else
+        print_test_result "dd conv=ascii/ebcdic roundtrip" "FAIL" \
+            "Expected 'Hello World 123 !@#', got '$rt_content'"
+    fi
+
+    # --- conv=ibm differs from conv=ebcdic ---
+    # '^' (0x5E) maps differently: ebcdic->0x9A, ibm->0x5F in GNU dd.
+    local ibm_input="$TEMP_DIR/dd_ibm_in.bin"
+    local ibm_output="$TEMP_DIR/dd_ibm_out.bin"
+    local ebc_output="$TEMP_DIR/dd_ebc_out.bin"
+    printf '^' > "$ibm_input"
+    "$binary" if="$ibm_input" of="$ebc_output" conv=ebcdic status=none 2>/dev/null
+    "$binary" if="$ibm_input" of="$ibm_output" conv=ibm status=none 2>/dev/null
+    local gnu_ebc_out="$TEMP_DIR/dd_gnu_ebc.bin"
+    local gnu_ibm_out="$TEMP_DIR/dd_gnu_ibm.bin"
+    printf '^' | /usr/bin/dd conv=ebcdic 2>/dev/null > "$gnu_ebc_out"
+    printf '^' | /usr/bin/dd conv=ibm 2>/dev/null > "$gnu_ibm_out"
+    local ebc_match=false
+    local ibm_match=false
+    cmp -s "$ebc_output" "$gnu_ebc_out" && ebc_match=true
+    cmp -s "$ibm_output" "$gnu_ibm_out" && ibm_match=true
+    if $ebc_match && $ibm_match; then
+        print_test_result "dd conv=ibm differs from conv=ebcdic" "PASS"
+    else
+        local ours_ebc_hex
+        ours_ebc_hex=$(od -A n -t x1 < "$ebc_output" | tr -d ' \n')
+        local gnu_ebc_hex
+        gnu_ebc_hex=$(od -A n -t x1 < "$gnu_ebc_out" | tr -d ' \n')
+        local ours_ibm_hex
+        ours_ibm_hex=$(od -A n -t x1 < "$ibm_output" | tr -d ' \n')
+        local gnu_ibm_hex
+        gnu_ibm_hex=$(od -A n -t x1 < "$gnu_ibm_out" | tr -d ' \n')
+        print_test_result "dd conv=ibm differs from conv=ebcdic" "FAIL" \
+            "ebcdic: ours=$ours_ebc_hex gnu=$gnu_ebc_hex; ibm: ours=$ours_ibm_hex gnu=$gnu_ibm_hex"
+    fi
+
+    # --- conv=block+cbs= pads records (behavioral) ---
+    local block_input="$TEMP_DIR/dd_block_in.txt"
+    local block_output="$TEMP_DIR/dd_block_out.bin"
+    printf 'ab\ncd\n' > "$block_input"
+    "$binary" if="$block_input" of="$block_output" cbs=5 conv=block status=none 2>/dev/null
+    local gnu_block_out="$TEMP_DIR/dd_block_gnu.bin"
+    printf 'ab\ncd\n' | /usr/bin/dd cbs=5 conv=block 2>/dev/null > "$gnu_block_out"
+    if cmp -s "$block_output" "$gnu_block_out"; then
+        print_test_result "dd conv=block+cbs= pads records" "PASS"
+    else
+        local ours_hex
+        ours_hex=$(od -A n -t x1 < "$block_output" | tr -d '\n')
+        local gnu_hex
+        gnu_hex=$(od -A n -t x1 < "$gnu_block_out" | tr -d '\n')
+        print_test_result "dd conv=block+cbs= pads records" "FAIL" \
+            "ours='$ours_hex', GNU='$gnu_hex'"
+    fi
+
+    # --- conv=unblock+cbs= converts records (behavioral) ---
+    local unblock_input="$TEMP_DIR/dd_unblock_in.bin"
+    local unblock_output="$TEMP_DIR/dd_unblock_out.txt"
+    printf 'ab   cd   ' > "$unblock_input"  # two 5-byte records
+    "$binary" if="$unblock_input" of="$unblock_output" cbs=5 conv=unblock status=none 2>/dev/null
+    local gnu_unblock_out="$TEMP_DIR/dd_unblock_gnu.txt"
+    printf 'ab   cd   ' | /usr/bin/dd cbs=5 conv=unblock 2>/dev/null > "$gnu_unblock_out"
+    if cmp -s "$unblock_output" "$gnu_unblock_out"; then
+        print_test_result "dd conv=unblock+cbs= converts records" "PASS"
+    else
+        local ours_content
+        ours_content=$(cat "$unblock_output" | od -A n -t x1 | tr -d '\n')
+        local gnu_content
+        gnu_content=$(cat "$gnu_unblock_out" | od -A n -t x1 | tr -d '\n')
+        print_test_result "dd conv=unblock+cbs= converts records" "FAIL" \
+            "ours='$ours_content', GNU='$gnu_content'"
+    fi
+
+    # --- ibs=/obs= separate path ---
+    # Use different ibs and obs values; output must match input.
+    local ibs_obs_input="$TEMP_DIR/dd_ibsobs_in.txt"
+    local ibs_obs_output="$TEMP_DIR/dd_ibsobs_out.txt"
+    printf 'ABCDEFGHIJKLMNOP' > "$ibs_obs_input"
+    "$binary" if="$ibs_obs_input" of="$ibs_obs_output" ibs=3 obs=7 status=none 2>/dev/null
+    content=$(cat "$ibs_obs_output")
+    if [[ "$content" == "ABCDEFGHIJKLMNOP" ]]; then
+        print_test_result "dd ibs/obs separate path preserves data" "PASS"
+    else
+        print_test_result "dd ibs/obs separate path preserves data" "FAIL" \
+            "Expected 'ABCDEFGHIJKLMNOP', got '$content'"
+    fi
 }

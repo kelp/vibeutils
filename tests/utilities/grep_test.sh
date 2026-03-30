@@ -297,6 +297,27 @@ test_grep() {
     printf 'hello world\nfoo bar\nhello again\n' > "$reg_data_file"
     test_command_output "grep -f with data file (regression)" $'hello world\nhello again' "$binary" --color=never -f "$reg_pattern_file" "$reg_data_file"
 
+    echo -e "${CYAN}Testing G-03: grep -wo boundary char exclusion...${NC}"
+
+    # G-03: -w with -o should print only the matched word, not boundary chars.
+    # BUG: pmatch[0] includes the boundary characters from the word-boundary
+    # groups, so "hello foo bar" with -wo "foo" prints " foo " with spaces.
+    local wo_file="$TEMP_DIR/grep_wo.txt"
+    printf 'hello foo bar\n' > "$wo_file"
+    test_command_output "grep -wo prints only the word (mid-line)" "foo" "$binary" --color=never -wo "foo" "$wo_file"
+
+    # Word at start of line
+    printf 'foo bar baz\n' > "$wo_file"
+    test_command_output "grep -wo word at start of line" "foo" "$binary" --color=never -wo "foo" "$wo_file"
+
+    # Word at end of line
+    printf 'baz bar foo\n' > "$wo_file"
+    test_command_output "grep -wo word at end of line" "foo" "$binary" --color=never -wo "foo" "$wo_file"
+
+    # Multiple word matches on one line with -wo
+    printf 'foo bar foo\n' > "$wo_file"
+    test_command_output "grep -wo multiple words on line" $'foo\nfoo' "$binary" --color=never -wo "foo" "$wo_file"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}grep tests completed${NC}"

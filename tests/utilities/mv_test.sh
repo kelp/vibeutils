@@ -785,4 +785,66 @@ test_mv() {
                 "GNU mv returned: '$gnu_nf_content'"
         fi
     fi
+
+    echo -e "${CYAN}Testing IMPORTANT audit findings...${NC}"
+
+    # AUDIT: Same-file move via hardlink should exit 0, not error
+    # GNU mv: when source and dest are hardlinks to the same file
+    # (same inode, same device, but different names), GNU mv exits 0
+    # and removes the source link. Our implementation detects same-file
+    # and aborts with an error message.
+    local audit_hl_src="$TEMP_DIR/audit_hardlink_src.txt"
+    local audit_hl_dst="$TEMP_DIR/audit_hardlink_dst.txt"
+    echo "hardlink content" > "$audit_hl_src"
+    ln "$audit_hl_src" "$audit_hl_dst"
+
+    # Verify hardlink was created (same inode)
+    local src_inode dst_inode
+    src_inode=$(stat -c %i "$audit_hl_src" 2>/dev/null || stat -f %i "$audit_hl_src" 2>/dev/null)
+    dst_inode=$(stat -c %i "$audit_hl_dst" 2>/dev/null || stat -f %i "$audit_hl_dst" 2>/dev/null)
+    if [[ "$src_inode" == "$dst_inode" ]]; then
+        print_test_result "mv hardlink audit: setup verified same inode" "PASS"
+    else
+        print_test_result "mv hardlink audit: setup verified same inode" "FAIL" \
+            "Inodes differ: src=$src_inode dst=$dst_inode"
+    fi
+
+    local audit_hl_stderr_file="$TEMP_DIR/audit_hl_stderr"
+    "$binary" "$audit_hl_src" "$audit_hl_dst" >"$TEMP_DIR/audit_hl_stdout" 2>"$audit_hl_stderr_file"
+    local audit_hl_exit=$?
+    local audit_hl_stderr
+    audit_hl_stderr=$(<"$audit_hl_stderr_file")
+
+    # GNU mv exits 0 for hardlink same-file move
+    if [[ $audit_hl_exit -eq 0 ]]; then
+        print_test_result "mv hardlink same-file exits 0 (audit)" "PASS"
+    else
+        print_test_result "mv hardlink same-file exits 0 (audit)" "FAIL" \
+            "Expected exit 0, got $audit_hl_exit (stderr: '$audit_hl_stderr')"
+    fi
+
+    # Source should be removed (the link is unlinked)
+    if [[ ! -e "$audit_hl_src" ]]; then
+        print_test_result "mv hardlink same-file removes source (audit)" "PASS"
+    else
+        print_test_result "mv hardlink same-file removes source (audit)" "FAIL" \
+            "Source still exists after same-file move"
+    fi
+
+    # Destination should still exist with original content
+    if [[ -f "$audit_hl_dst" ]]; then
+        local audit_hl_content
+        audit_hl_content=$(<"$audit_hl_dst")
+        if [[ "$audit_hl_content" == "hardlink content" ]]; then
+            print_test_result "mv hardlink same-file preserves dest content (audit)" "PASS"
+        else
+            print_test_result "mv hardlink same-file preserves dest content (audit)" "FAIL" \
+                "Content changed: '$audit_hl_content'"
+        fi
+    else
+        print_test_result "mv hardlink same-file preserves dest content (audit)" "FAIL" \
+            "Destination file missing after move"
+    fi
+
+    rm -f "$audit_hl_src" "$audit_hl_dst" "$audit_hl_stderr_file" "$TEMP_DIR/audit_hl_stdout" 2>/dev/null
 }

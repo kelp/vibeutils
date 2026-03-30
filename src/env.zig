@@ -1042,3 +1042,72 @@ test "env runEnv: -S splits string into assignment" {
     // Should NOT print a stub warning
     try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
 }
+
+// ========== AUDIT WAVE 4: env IMPORTANT findings ==========
+
+// IMPORTANT: -0 with utility argument should be rejected
+// macOS spec: "Both -0 and utility may not be specified together."
+// -0 is only valid when printing the environment (no utility given).
+// Currently: parseArgs allows -0 with a command. runEnv should reject
+// this combination before executing. We verify via parseArgs that
+// both null_delimiter and command are set, which the fix should prevent.
+test "audit: env -0 with utility should be detected" {
+    // Parse args: -0 echo hello — both null_delimiter and command are set
+    const options = try parseArgs(testing.allocator, &.{ "-0", "echo", "hello" });
+    defer options.deinit(testing.allocator);
+    // The bug: both null_delimiter and command are accepted simultaneously.
+    // After the fix, runEnv should reject this combination (exit 125).
+    // For now, verify the parser accepts both (proving the bug exists):
+    try testing.expect(options.null_delimiter);
+    try testing.expect(options.command.len > 0);
+    // Now verify runEnv rejects the combination with exit 125.
+    // (This avoids spawning a child process in tests.)
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Use -i so no inherited env, and a nonexistent command to avoid spawn.
+    // But the validation should reject BEFORE reaching exec.
+    const exit_code = runEnv(testing.allocator, &.{ "-i", "-0", "NONEXISTENT_CMD_AUDIT_TEST_12345" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    // Per spec, should exit 125 rejecting the -0+utility combination.
+    // Currently returns 127 (command not found) because validation is missing.
+    try testing.expectEqual(@as(u8, 125), exit_code);
+}
+
+// IMPORTANT: Flags after NAME=VALUE pairs should not be parsed as options
+// macOS spec: "The above options are only recognized when they are
+// specified before any name=value options." Once a NAME=VALUE token
+// is seen, subsequent flag-like tokens should start the command.
+// Currently: `env FOO=bar -u FOO` parses -u as a flag and unsets FOO.
+// Expected: -u should be treated as the start of the command.
+test "audit: env flags after NAME=VALUE should not be parsed" {
+    // env FOO=bar -u FOO — after FOO=bar, -u should be treated as command
+    const options = try parseArgs(testing.allocator, &.{ "FOO=bar", "-u", "FOO" });
+    defer options.deinit(testing.allocator);
+    // After the fix: -u should be treated as command start, not a flag.
+    // command should be ["-u", "FOO"], unsets should be empty.
+    try testing.expectEqual(@as(usize, 0), options.unsets.len);
+    try testing.expectEqual(@as(usize, 2), options.command.len);
+    try testing.expectEqualStrings("-u", options.command[0]);
+    try testing.expectEqualStrings("FOO", options.command[1]);
+}
+
+// IMPORTANT: -P should restrict utility search path, not set child's PATH
+// macOS spec: "-P replaces the directory search path used to locate
+// the utility". It should NOT appear in the child's environment.
+// Currently: `env -i -P /usr/bin FOO=bar` puts PATH=/usr/bin in output.
+// Expected: Only FOO=bar should appear (PATH should not be in child env).
+test "audit: env -P should not set PATH in child environment" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // env -i -P /custom/path FOO=bar — print env with -i, -P, and assignment
+    // -P should NOT inject PATH into the child's environment
+    const exit_code = runEnv(testing.allocator, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Only FOO=bar should be printed; PATH should NOT appear
+    try testing.expectEqualStrings("FOO=bar\n", stdout_buffer.items);
+}

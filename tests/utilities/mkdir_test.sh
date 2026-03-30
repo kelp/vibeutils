@@ -441,4 +441,89 @@ test_mkdir() {
 
         rm -rf "$pm_base"
     fi
+
+    echo -e "${CYAN}Testing IMPORTANT audit findings...${NC}"
+
+    # AUDIT: mkdir -m must accept symbolic mode strings (e.g. u=rwx,go=rx)
+    # GNU mkdir accepts symbolic modes like "u=rwx" or "a+rx".
+    # Our implementation only accepts octal modes and rejects symbolic ones.
+    if [[ "$PLATFORM" != "windows" ]]; then
+        # Symbolic mode: u=rwx,go=rx should produce 755
+        local sym_mode_dir="$TEMP_DIR/sym_mode_test"
+        rm -rf "$sym_mode_dir" 2>/dev/null || true
+        test_command_succeeds "mkdir -m symbolic mode u=rwx,go=rx" \
+            "$binary" -m "u=rwx,go=rx" "$sym_mode_dir"
+        if [[ -d "$sym_mode_dir" ]]; then
+            local sym_perms
+            sym_perms=$(get_file_permissions "$sym_mode_dir")
+            if [[ "$sym_perms" == "755" ]]; then
+                print_test_result "mkdir -m symbolic mode u=rwx,go=rx permissions" "PASS"
+            else
+                print_test_result "mkdir -m symbolic mode u=rwx,go=rx permissions" "FAIL" \
+                    "Expected 755, got $sym_perms"
+            fi
+        fi
+        rm -rf "$sym_mode_dir"
+
+        # Symbolic mode: a+rx
+        local sym_mode_dir2="$TEMP_DIR/sym_mode_test2"
+        rm -rf "$sym_mode_dir2" 2>/dev/null || true
+        test_command_succeeds "mkdir -m symbolic mode a+rx" \
+            "$binary" -m "a+rx" "$sym_mode_dir2"
+        rm -rf "$sym_mode_dir2"
+
+        # Symbolic mode: go-w
+        local sym_mode_dir3="$TEMP_DIR/sym_mode_test3"
+        rm -rf "$sym_mode_dir3" 2>/dev/null || true
+        test_command_succeeds "mkdir -m symbolic mode go-w" \
+            "$binary" -m "go-w" "$sym_mode_dir3"
+        rm -rf "$sym_mode_dir3"
+    fi
+
+    # AUDIT: mkdir -p -m applies mode to leaf only (GNU behavior)
+    # GNU mkdir -p -m MODE applies MODE only to the final (leaf) directory.
+    # Intermediate directories are created with default permissions
+    # (modified by umask), not MODE. Our implementation applies MODE
+    # to ALL directories (intermediates and leaf alike).
+    if [[ "$PLATFORM" != "windows" ]]; then
+        local leaf_base="$TEMP_DIR/leaf_mode_test"
+        rm -rf "$leaf_base" 2>/dev/null || true
+
+        # Use mode 700 which is clearly different from the default ~755
+        test_command_succeeds "mkdir -p -m 700 creates tree (leaf-only audit)" \
+            "$binary" -p -m 700 "$leaf_base/a/b/c"
+
+        # Leaf directory should have mode 700
+        local leaf_perms
+        leaf_perms=$(get_file_permissions "$leaf_base/a/b/c")
+        if [[ "$leaf_perms" == "700" ]]; then
+            print_test_result "mkdir -p -m 700 leaf dir has mode 700 (audit)" "PASS"
+        else
+            print_test_result "mkdir -p -m 700 leaf dir has mode 700 (audit)" "FAIL" \
+                "Expected 700, got $leaf_perms"
+        fi
+
+        # Intermediate directories should NOT have mode 700 -- they should
+        # have the default mode (typically 755, affected by umask).
+        # GNU mkdir: intermediates get (0777 & ~umask) | u+wx
+        local mid_perms
+        mid_perms=$(get_file_permissions "$leaf_base/a/b")
+        if [[ "$mid_perms" != "700" ]]; then
+            print_test_result "mkdir -p -m 700 intermediate dir is NOT 700 (audit)" "PASS"
+        else
+            print_test_result "mkdir -p -m 700 intermediate dir is NOT 700 (audit)" "FAIL" \
+                "Expected default mode (not 700) for intermediate, got $mid_perms"
+        fi
+
+        local top_perms
+        top_perms=$(get_file_permissions "$leaf_base/a")
+        if [[ "$top_perms" != "700" ]]; then
+            print_test_result "mkdir -p -m 700 top dir is NOT 700 (audit)" "PASS"
+        else
+            print_test_result "mkdir -p -m 700 top dir is NOT 700 (audit)" "FAIL" \
+                "Expected default mode (not 700) for top-level, got $top_perms"
+        fi
+
+        rm -rf "$leaf_base"
+    fi
 }

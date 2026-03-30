@@ -814,4 +814,54 @@ test_touch() {
     # This is a baseline test - bare datetimes should work as before
     local f53_bare_file="$TEMP_DIR/f53_bare_test.txt"
     test_command_succeeds "touch -d bare datetime (no tz)" "$binary" -d "2024-01-15T00:00:00" "$f53_bare_file"
+
+    echo -e "${CYAN}Testing IMPORTANT audit findings...${NC}"
+
+    # AUDIT: touch -h should imply -c (no-create) for non-existent paths
+    # GNU touch -h (--no-dereference) does not create new files. It only
+    # operates on existing symlinks (changing the symlink's own timestamp
+    # without following it). When the target path does not exist at all,
+    # GNU touch -h silently does nothing and exits 0.
+    # Our implementation creates a regular file when -h is used on a
+    # non-existent path, because -h does not set no_create.
+    local audit_h_file="$TEMP_DIR/audit_touch_h_nonexistent.txt"
+    rm -f "$audit_h_file" 2>/dev/null || true
+
+    # touch -h on a non-existent path should NOT create the file
+    local audit_h_out="" audit_h_err="" audit_h_exit=""
+    run_command audit_h_cmd audit_h_out audit_h_err audit_h_exit \
+        "$binary" -h "$audit_h_file"
+
+    # Exit code should be 0 (not an error, just a no-op like -c)
+    if [[ $audit_h_exit -eq 0 ]]; then
+        print_test_result "touch -h nonexistent exits 0 (audit)" "PASS"
+    else
+        print_test_result "touch -h nonexistent exits 0 (audit)" "FAIL" \
+            "Expected exit 0, got $audit_h_exit (stderr: '$audit_h_err')"
+    fi
+
+    # The file must NOT have been created
+    if [[ ! -e "$audit_h_file" ]]; then
+        print_test_result "touch -h does not create file (audit)" "PASS"
+    else
+        print_test_result "touch -h does not create file (audit)" "FAIL" \
+            "File was created despite -h flag (should imply -c)"
+        rm -f "$audit_h_file"
+    fi
+
+    # Also verify with --no-dereference long form
+    local audit_nd_file="$TEMP_DIR/audit_touch_nodereference_nonexistent.txt"
+    rm -f "$audit_nd_file" 2>/dev/null || true
+
+    local audit_nd_out="" audit_nd_err="" audit_nd_exit=""
+    run_command audit_nd_cmd audit_nd_out audit_nd_err audit_nd_exit \
+        "$binary" --no-dereference "$audit_nd_file"
+
+    if [[ ! -e "$audit_nd_file" ]]; then
+        print_test_result "touch --no-dereference does not create file (audit)" "PASS"
+    else
+        print_test_result "touch --no-dereference does not create file (audit)" "FAIL" \
+            "File was created despite --no-dereference flag"
+        rm -f "$audit_nd_file"
+    fi
 }

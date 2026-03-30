@@ -388,6 +388,34 @@ test "yes with string of exactly 8193 bytes works correctly" {
     try testing.expectEqual(@as(u8, '\n'), output[str_8193.len]);
 }
 
+// ============================================================================
+// Audit finding tests (IMPORTANT) — wave 5
+// ============================================================================
+
+test "yes unknown flag exits 1 (GNU behavior), not 2" {
+    // GNU yes: unknown flags exit 1, not 2.
+    // vibeutils currently exits 2 (misuse).
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const result = try runYes(testing.allocator, &.{"--unknown-flag"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // GNU yes exits 1 for unrecognized options
+    try testing.expectEqual(@as(u8, 1), result);
+}
+
+test "yes error message includes the unrecognized flag name" {
+    // GNU yes: "yes: unrecognized option '--unknown-flag'"
+    // vibeutils currently says: "yes: unrecognized option" (no flag name).
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    _ = try runYes(testing.allocator, &.{"--bad-flag"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    // The error message should include the flag name
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "--bad-flag") != null);
+}
+
 test "yes with string much larger than buffer produces output" {
     // String that is 3x the buffer size
     const huge_str = "C" ** (8192 * 3);

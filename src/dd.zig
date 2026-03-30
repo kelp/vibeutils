@@ -1994,3 +1994,103 @@ test "runDd - multi-block copy with bs and count" {
     try testing.expectEqual(@as(usize, 12), content.len);
     try testing.expectEqualStrings("AAAABBBBCCCC", content);
 }
+
+// ============================================================================
+//          AUDIT WAVE 4: FAILING TESTS FOR IMPORTANT FINDINGS
+// ============================================================================
+
+test "audit: conv=swab odd-length input preserves last byte" {
+    // Audit finding: conv=swab with odd-length input zeroes last byte instead
+    // of preserving it. GNU dd preserves the unpaired last byte unchanged.
+    // Location: src/dd.zig:318-321
+    var buf = [_]u8{ 'A', 'B', 'C' };
+    applyConversions(&buf, .{ .conv_swab = true });
+    // First pair swapped: B, A
+    try testing.expectEqual(@as(u8, 'B'), buf[0]);
+    try testing.expectEqual(@as(u8, 'A'), buf[1]);
+    // Last byte must be preserved as 'C', not zeroed
+    try testing.expectEqual(@as(u8, 'C'), buf[2]);
+}
+
+test "audit: conv=swab odd-length 5-byte input preserves last byte" {
+    // Same bug, verified with 5 bytes: "ABCDE" -> "BADCE"
+    var buf = [_]u8{ 'A', 'B', 'C', 'D', 'E' };
+    applyConversions(&buf, .{ .conv_swab = true });
+    try testing.expectEqual(@as(u8, 'B'), buf[0]);
+    try testing.expectEqual(@as(u8, 'A'), buf[1]);
+    try testing.expectEqual(@as(u8, 'D'), buf[2]);
+    try testing.expectEqual(@as(u8, 'C'), buf[3]);
+    // Last byte must be preserved as 'E', not zeroed
+    try testing.expectEqual(@as(u8, 'E'), buf[4]);
+}
+
+test "audit: conv=sync pads with spaces when conv=block is active" {
+    // Audit finding: conv=sync always pads with NUL; should use spaces when
+    // block-oriented conversion (block/unblock) is specified.
+    // Location: src/dd.zig:674-677
+    //
+    // This test creates a 2-byte input "X\n" with ibs=6, conv=sync,block, cbs=6.
+    // The sync should pad "X\n" to 6 bytes with spaces (not NUL) because
+    // conv=block is active. Then conv=block processes the 6-byte record:
+    // "X\n" triggers a record end at the newline. The record "X" gets padded
+    // to cbs=6 with fillchar (space). The remaining 4 space-padded bytes
+    // form a record of all spaces -> padded to cbs=6.
+    // If sync pads with NUL, those NUL bytes leak into the block output.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "X\n");
+
+    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    // ibs=6, conv=sync,block, cbs=6: sync pads input to 6 bytes,
+    // then block processes newline-terminated records.
+    // With correct space padding: "X\n    " -> record "X" padded to "X     ",
+    // then 4 trailing spaces form another record "    " padded to "      ".
+    // Output = "X     " (6 bytes) + "      " (6 bytes) = 12 bytes, no NUL.
+    const args = [_][]const u8{ if_arg, of_arg, "ibs=6", "obs=6", "cbs=6", "conv=sync,block", "status=none" };
+    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    defer testing.allocator.free(content);
+
+    // The output should contain NO NUL bytes - all padding should be spaces
+    for (content) |byte| {
+        try testing.expect(byte != 0);
+    }
+}
+
+test "audit: conv=ibm produces different output than conv=ebcdic for caret" {
+    // Audit finding: conv=ibm EBCDIC variant table not distinct from conv=ebcdic.
+    // GNU dd produces different output for '^' (0x5E):
+    //   conv=ebcdic: '^' -> 0x9A
+    //   conv=ibm:    '^' -> 0x5F
+    // Our implementation has the tables present but they may not match GNU.
+    // This test verifies against GNU's expected mapping.
+
+    // Test ebcdic mapping for '^'
+    var ebcdic_buf = [_]u8{'^'};
+    applyConversions(&ebcdic_buf, .{ .conv_ebcdic = true });
+
+    // Test ibm mapping for '^'
+    var ibm_buf = [_]u8{'^'};
+    applyConversions(&ibm_buf, .{ .conv_ibm = true });
+
+    // The two conversions must produce DIFFERENT results for '^'
+    // GNU dd: ebcdic maps '^' to 0x9A, ibm maps '^' to 0x5F
+    try testing.expect(ebcdic_buf[0] != ibm_buf[0]);
+    try testing.expectEqual(@as(u8, 0x9A), ebcdic_buf[0]);
+    try testing.expectEqual(@as(u8, 0x5F), ibm_buf[0]);
+}

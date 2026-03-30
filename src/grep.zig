@@ -2227,3 +2227,30 @@ test "F28: grep -on prints line number for each match" {
     try testing.expectEqual(@as(u8, 0), result.exit_code);
     try testing.expectEqualStrings("1:foo\n1:foo\n", result.output);
 }
+
+test "G-03: grep -wo prints only the word, not boundary characters" {
+    // BUG: -w wraps pattern with boundary groups; pmatch[0] includes
+    // the boundary characters (e.g. leading/trailing space). With -o,
+    // output should be "foo\n" not " foo \n".
+    var result = try testRunGrepOutput("hello foo bar\n", &.{ "-wo", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\n", result.output);
+}
+
+test "G-03: grep -wo at start of line prints only the word" {
+    // Word at the start of line: boundary is ^, not a space character.
+    // pmatch[0] should still cover only "foo", not include any extra.
+    var result = try testRunGrepOutput("foo bar baz\n", &.{ "-wo", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\n", result.output);
+}
+
+test "G-03: grep -wo at end of line prints only the word" {
+    // Word at the end of line: boundary is $, not a space character.
+    var result = try testRunGrepOutput("baz bar foo\n", &.{ "-wo", "foo" });
+    defer result.arena.deinit();
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expectEqualStrings("foo\n", result.output);
+}
