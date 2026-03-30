@@ -500,11 +500,11 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
                         continue;
                     }
                 }
-                // Default: don't follow symlinks (-P, -H during recursion)
-                const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
-                if (!result) {
-                    had_errors = true;
-                }
+                // Default (-P, -H during recursion): skip symlinks entirely.
+                // GNU chmod does not follow symlinks during recursive traversal
+                // and cannot change symlink permissions on Linux, so they are
+                // silently skipped.
+                continue;
             },
             else => {
                 // Handle all other file types (regular files, devices, etc.)
@@ -2351,4 +2351,67 @@ test "behavioral: chmod -w via runUtility removes write permission" {
     // Should have removed write permission: 0o644 -> 0o444
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o444), actual_mode);
+}
+
+test "chmod: -R -P should not follow symlinks during traversal" {
+    // GNU chmod -R does not follow symlinks during recursive traversal.
+    // When -P is active (default for -R), symlinks encountered inside a
+    // directory should be skipped — chmod must NOT modify the target file's
+    // permissions through the symlink.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create target file OUTSIDE the directory tree being chmod'd
+    const target_file = try tmp_dir.dir.createFile("outside_target.txt", .{});
+    target_file.close();
+
+    // Create the directory to recurse into
+    try tmp_dir.dir.makeDir("mydir");
+    var mydir = try tmp_dir.dir.openDir("mydir", .{});
+    defer mydir.close();
+
+    // Create a regular file inside mydir
+    const inner_file = try mydir.createFile("regular.txt", .{});
+    inner_file.close();
+
+    // Create a symlink inside mydir pointing to the outside target
+    mydir.symLink("../outside_target.txt", "link_to_outside", .{}) catch |err| switch (err) {
+        error.AccessDenied => return, // symlinks not supported
+        else => return,
+    };
+
+    var mydir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const mydir_abs = try tmp_dir.dir.realpath("mydir", &mydir_buf);
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const target_abs = try tmp_dir.dir.realpath("outside_target.txt", &target_buf);
+
+    // Set known modes: target=0o644, regular=0o644
+    try setFileModeOctal(target_abs, 0o644);
+
+    var inner_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const regular_abs = try tmp_dir.dir.realpath("mydir/regular.txt", &inner_buf);
+    try setFileModeOctal(regular_abs, 0o644);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // chmod -R -P 755 mydir — should NOT follow symlinks during traversal
+    const files = [_][]const u8{mydir_abs};
+    try chmodFiles(testing.allocator, "755", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{
+        .recursive = true,
+        .no_traverse_symlinks = true,
+    });
+
+    // regular.txt inside mydir should be 755
+    const regular_mode = try getFileMode(regular_abs);
+    try testing.expectEqual(@as(u32, 0o755), regular_mode);
+
+    // outside_target.txt should still be 0o644 — the symlink must not
+    // have been followed to chmod the target
+    const target_mode = try getFileMode(target_abs);
+    try testing.expectEqual(@as(u32, 0o644), target_mode);
 }

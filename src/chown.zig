@@ -384,8 +384,15 @@ fn chownRecursive(
     stderr_writer: anytype,
     root_dev: ?u64,
 ) !void {
-    // Check if it's a directory to recurse into
-    const stat_info = common.file.FileInfo.stat(path) catch |err| {
+    // Check if it's a directory to recurse into.
+    // With -P (or default -R with no -H/-L), use lstat so a cmdline
+    // symlink-to-directory is not followed — we change the symlink itself.
+    const use_lstat = options.no_traverse_symlinks or
+        (!options.traverse_all_symlinks and !options.traverse_cmdline_symlinks);
+    const stat_info = (if (use_lstat)
+        common.file.FileInfo.lstat(path)
+    else
+        common.file.FileInfo.stat(path)) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, @errorName(err) });
         return;
     };
@@ -1269,6 +1276,61 @@ test "runChown production path with valid file and owner spec" {
     const exit_code = try runChown(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
+}
+
+test "privileged: chown -RP should not follow cmdline symlink to directory" {
+    // GNU/POSIX: -P means "Do not traverse any symbolic links."
+    // When a symlink-to-directory is passed on the command line with -RP,
+    // chown should change the symlink itself, NOT recurse into the target.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege();
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            // Create target directory with a file inside
+            try tmp_dir.dir.makeDir("target");
+            var subdir = try tmp_dir.dir.openDir("target", .{});
+            defer subdir.close();
+            const file = try subdir.createFile("file.txt", .{});
+            file.close();
+
+            // Create a symlink to the target directory
+            try tmp_dir.dir.symLink("target", "link", .{});
+
+            var path_buf: [fs.max_path_bytes]u8 = undefined;
+            const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+
+            const link_path = try std.fmt.allocPrint(inner_allocator, "{s}/link", .{tmp_path});
+
+            const current_uid = common.user_group.getCurrentUserId();
+            const current_gid = common.user_group.getCurrentGroupId();
+            const owner_spec = try std.fmt.allocPrint(inner_allocator, "{d}:{d}", .{ current_uid, current_gid });
+
+            // -R with -P (no_traverse_symlinks): should NOT follow the symlink
+            const options = ChownOptions{
+                .recursive = true,
+                .no_traverse_symlinks = true,
+                .verbose = true,
+            };
+
+            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stdout_buffer.deinit(inner_allocator);
+            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
+            defer stderr_buffer.deinit(inner_allocator);
+
+            try chownFile(inner_allocator, link_path, owner_spec, options, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
+
+            // Verbose output should only mention "link", not "target/file.txt"
+            const output = stdout_buffer.items;
+            try testing.expect(std.mem.indexOf(u8, output, "file.txt") == null);
+        }
+    }.testFn);
 }
 
 test "chown help text includes new flags" {

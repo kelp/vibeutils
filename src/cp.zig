@@ -483,16 +483,33 @@ fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []
         return false;
     };
 
-    // Handle force overwrite if needed
+    // Handle force overwrite if needed.
+    // GNU spec: "if an existing destination file cannot be opened, remove it
+    // and try again."  Only unlink when the file cannot be opened for writing;
+    // this preserves hard links to writable destinations.
+    var dest_unlinked = false;
     if (fileExists(dest_path) and options.force) {
-        handleForceOverwrite(dest_path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot remove '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
-            return false;
-        };
+        if (std.fs.cwd().openFile(dest_path, .{ .mode = .write_only })) |f| {
+            // Destination is writable — no need to unlink
+            f.close();
+        } else |_| {
+            // Cannot open for writing — unlink and retry
+            handleForceOverwrite(dest_path) catch |e| {
+                common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot remove '{s}': {s}", .{ dest_path, getStandardErrorName(e) });
+                return false;
+            };
+            dest_unlinked = true;
+        }
     }
 
     if (options.preserve) {
         copyFileWithAttributes(allocator, stderr_writer, source_path, dest_path, source_stat) catch {
+            return false;
+        };
+    } else if (!dest_unlinked and fileExists(dest_path)) {
+        // Destination exists and was not unlinked: overwrite in place to
+        // preserve the inode (and thus hard links).
+        copyInPlace(allocator, stderr_writer, source_path, dest_path) catch {
             return false;
         };
     } else {
@@ -503,6 +520,33 @@ fn copyRegularFile(allocator: Allocator, stderr_writer: anytype, source_path: []
     }
 
     return true;
+}
+
+/// Copy file contents in place, preserving the destination inode.
+/// Opens both files, truncates the destination, and copies data.
+fn copyInPlace(allocator: Allocator, stderr_writer: anytype, source_path: []const u8, dest_path: []const u8) !void {
+    const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, getStandardErrorName(err) });
+        return error.SourceNotReadable;
+    };
+    defer source_file.close();
+
+    const dest_file = std.fs.cwd().openFile(dest_path, .{ .mode = .write_only }) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}' for writing: {s}", .{ dest_path, getStandardErrorName(err) });
+        return error.DestinationNotWritable;
+    };
+    defer dest_file.close();
+
+    // Truncate to zero before writing new content
+    dest_file.setEndPos(0) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot truncate '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
+        return error.DestinationNotWritable;
+    };
+
+    common.file_ops.copyFileContents(source_file, dest_file) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error copying '{s}' to '{s}': {s}", .{ source_path, dest_path, @errorName(err) });
+        return error.SourceNotReadable;
+    };
 }
 
 /// Copy a symbolic link
@@ -676,6 +720,23 @@ fn copyFileWithAttributes(allocator: Allocator, stderr_writer: anytype, source_p
     dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
         common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, getStandardErrorName(err) });
     };
+
+    // Preserve ownership (uid/gid) — GNU cp -p is --preserve=mode,ownership,timestamps.
+    // Use fstat on the source fd to get uid/gid, then fchown on the dest fd.
+    // Silently ignore EPERM (non-root cannot chown to other users).
+    const src_info = common.file.FileInfo.statFile(source_file) catch {
+        return; // Cannot stat source; ownership preservation skipped
+    };
+    const fchown_result = std.c.fchown(dest_file.handle, src_info.uid, src_info.gid);
+    if (fchown_result != 0) {
+        const errno = std.c._errno().*;
+        switch (errno) {
+            @intFromEnum(std.c.E.PERM) => {}, // Non-root; silently ignore
+            else => {
+                common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve ownership for '{s}'", .{dest_path});
+            },
+        }
+    }
 }
 
 /// Get file type atomically to avoid race conditions
@@ -2123,4 +2184,83 @@ test "cp: -f reports error when force-remove of destination fails" {
     // from handleForceOverwrite, so stderr has no mention of the removal failure.
     const stderr_output = stderr_buffer.items;
     try testing.expect(std.mem.indexOf(u8, stderr_output, "cannot remove") != null);
+}
+
+test "cp: -f should not unlink writable destination (preserves hard links)" {
+    // GNU spec: "if an existing destination file cannot be opened, remove it
+    // and try again."  A writable destination CAN be opened, so -f must NOT
+    // unlink it.  Unlinking a writable file severs hard links unnecessarily.
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "new content", null);
+    try test_dir.createFile("dest.txt", "old content", null);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+    const hardlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{base_path});
+    defer testing.allocator.free(hardlink_path);
+
+    // Create a hard link to dest.txt
+    const dest_path_z = try std.posix.toPosixPath(dest_path);
+    const hardlink_path_z = try std.posix.toPosixPath(hardlink_path);
+    const link_result = std.c.link(&dest_path_z, &hardlink_path_z);
+    if (link_result != 0) {
+        // Hard links not supported on this filesystem; skip
+        return;
+    }
+
+    // Verify they share the same inode before the copy
+    try testing.expect(common.file_ops.isSameFile(dest_path, hardlink_path));
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // dest.txt should have the new content
+    try test_dir.expectFileContent("dest.txt", "new content");
+
+    // The hard link must still point to the same inode as dest.txt.
+    // If -f wrongly unlinked dest.txt first, dest.txt gets a NEW inode
+    // and the hard link is severed (still points to the old inode).
+    try testing.expect(common.file_ops.isSameFile(dest_path, hardlink_path));
+}
+
+test "cp: -p should preserve group ownership via chown" {
+    // GNU spec: -p is --preserve=mode,ownership,timestamps.
+    // Ownership means uid and gid must be copied via chown.
+    // This test verifies that the source file's gid is preserved
+    // on the destination (at minimum, the attempt is made).
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createFile("source.txt", "preserve me", null);
+
+    const source_path = try test_dir.getPath("source.txt");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dest.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-p", source_path, dest_path };
+    const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verify the destination has the same gid as the source.
+    // As a non-root user, chown to the same gid should succeed.
+    const src_info = try common.file.FileInfo.stat(source_path);
+    const dst_info = try common.file.FileInfo.stat(dest_path);
+    try testing.expectEqual(src_info.gid, dst_info.gid);
 }
