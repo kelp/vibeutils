@@ -846,3 +846,147 @@ test "formatDecimal" {
     try testing.expectEqualStrings("1.0", try formatDecimal(&buf, 1.0, 1));
     try testing.expectEqualStrings("0.5", try formatDecimal(&buf, 0.5, 1));
 }
+
+// ========== AUDIT WAVE 4: seq IMPORTANT findings ==========
+
+// IMPORTANT: Negative increment without -- rejected as unknown option
+// GNU seq 5 -1 1 outputs "5\n4\n3\n2\n1\n" (countdown).
+// Our argparse sees -1 as an unknown short flag and exits with error.
+test "audit: seq negative increment without double-dash" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    // seq 5 -1 1 should count down without needing --
+    const args = [_][]const u8{ "5", "-1", "1" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_buf.items);
+}
+
+// IMPORTANT: Error exit code is 2 (misuse) where GNU uses 1
+// GNU seq with invalid input exits 1, not 2.
+test "audit: seq invalid number exits 1 not 2" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"abc"};
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU uses exit code 1, not 2
+    try testing.expectEqual(@as(u8, 1), result);
+}
+
+// IMPORTANT: seq with zero increment should exit 1 not 2
+test "audit: seq zero increment exits 1 not 2" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "1", "0", "5" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU uses exit code 1, not 2
+    try testing.expectEqual(@as(u8, 1), result);
+}
+
+// IMPORTANT: seq with no args should exit 1 not 2
+test "audit: seq no args exits 1 not 2" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{};
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU uses exit code 1, not 2
+    try testing.expectEqual(@as(u8, 1), result);
+}
+
+// IMPORTANT: nan input silently produces empty output instead of error
+// GNU seq nan outputs error and exits 1.
+test "audit: seq nan input produces error" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"nan"};
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // Must exit non-zero (GNU uses 1)
+    try testing.expect(result != 0);
+    // Must emit error on stderr
+    try testing.expect(stderr_buf.items.len > 0);
+}
+
+// nan as increment should also be rejected
+test "audit: seq nan as increment produces error" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "1", "nan", "5" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expect(result != 0);
+    try testing.expect(stderr_buf.items.len > 0);
+}
+
+// IMPORTANT: -f format prefix/suffix text dropped
+// GNU seq -f 'val=%g!' 3 outputs "val=1!\nval=2!\nval=3!\n"
+// Our implementation drops prefix "val=" and suffix "!"
+test "audit: seq -f format preserves prefix and suffix" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "val=%g!", "3" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("val=1!\nval=2!\nval=3!\n", stdout_buf.items);
+}
+
+// IMPORTANT: -f format width and precision ignored
+// GNU seq -f '%05.1f' 3 outputs "001.0\n002.0\n003.0\n"
+test "audit: seq -f format respects width and precision" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "%05.1f", "3" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("001.0\n002.0\n003.0\n", stdout_buf.items);
+}
+
+// Test gap: float sequences
+test "audit: seq float sequence 0.1 0.1 0.5" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "0.1", "0.1", "0.5" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("0.1\n0.2\n0.3\n0.4\n0.5\n", stdout_buf.items);
+}
+
+// Test gap: countdown (without -- workaround, using -- for now to
+// verify the basic countdown logic works, independent of the
+// argparse issue tested above)
+test "audit: seq countdown with double-dash" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "10", "--", "-2", "1" };
+    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("10\n8\n6\n4\n2\n", stdout_buf.items);
+}

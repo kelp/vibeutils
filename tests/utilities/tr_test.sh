@@ -165,6 +165,31 @@ test_tr() {
     # [c*] with other chars before repeat
     test_command_output "tr [c*] fill after literal" "yxxx" bash -c "printf 'abcd' | '$binary' 'abcd' 'y[x*]'"
 
+    echo -e "${CYAN}Testing [x*N] explicit repeat (regression)...${NC}"
+
+    # [x*3] explicit repeat count: first 3 chars map to x, rest to yz
+    test_command_output "tr [x*3] explicit repeat" "xxxyz" \
+        bash -c "printf 'abcde' | '$binary' 'abcde' '[x*3]yz'"
+
+    # [x*1] single repeat
+    test_command_output "tr [x*1] single repeat" "xbc" \
+        bash -c "printf 'abc' | '$binary' 'abc' '[x*1]bc'"
+
+    echo -e "${CYAN}Testing -C complement flag behavioral (audit gap)...${NC}"
+
+    # -C should be functionally identical to -c for single-byte locales
+    # Test -C delete: keep only specified chars
+    test_command_output "tr -Cd keep digits" "123" \
+        bash -c "echo -n 'hello123world' | '$binary' -Cd '0-9'"
+
+    # -C translate: replace non-digits with dots
+    test_command_output "tr -C complement translate" ".....123....." \
+        bash -c "echo -n 'hello123world' | '$binary' -C '0-9' '.'"
+
+    # -C with character class
+    test_command_output "tr -Cd keep alpha" "helloworld" \
+        bash -c "echo -n 'hello 123 world!' | '$binary' -Cd '[:alpha:]'"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}tr tests completed${NC}"

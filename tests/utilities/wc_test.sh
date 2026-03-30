@@ -451,6 +451,17 @@ test_wc() {
     test_command_output "wc -L only tabs" "      24" \
         bash -c "printf '\t\t\t' | '$binary' -L"
 
+    echo -e "${CYAN}Testing -L CJK display width (audit gap)...${NC}"
+
+    # CJK characters are display-width 2 each.
+    # GNU wc -L counts display columns, so two CJK chars = 4 columns.
+    test_command_output "wc -L CJK display width" "       4" \
+        bash -c "printf '\\xe4\\xb8\\xad\\xe6\\x96\\x87' | '$binary' -L"
+
+    # Mix of ASCII and CJK: "a中b" = 1 + 2 + 1 = 4 columns
+    test_command_output "wc -L mixed ASCII CJK" "       4" \
+        bash -c "printf 'a\\xe4\\xb8\\xadb' | '$binary' -L"
+
     echo -e "${CYAN}Testing error recovery and continuation...${NC}"
 
     # Error recovery: continue processing after errors

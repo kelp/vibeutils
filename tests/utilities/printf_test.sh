@@ -331,4 +331,95 @@ test_printf() {
         print_test_result "printf F35: %A hex float uppercase" "FAIL" \
             "Expected '0X...P...', got '$output'"
     fi
+
+    # ========== AUDIT WAVE 4: printf IMPORTANT findings ==========
+
+    echo -e "${CYAN}Testing audit: %d with non-numeric input...${NC}"
+
+    # IMPORTANT: Invalid numeric argument does not emit warning or set exit 1
+    # GNU printf '%d\n' abc prints "0" AND emits warning to stderr AND exits 1
+    local aud_out="" aud_err="" aud_exit=""
+    run_command aud_cmd aud_out aud_err aud_exit "$binary" '%d' abc
+    if [[ $aud_exit -eq 1 ]]; then
+        print_test_result "printf audit: %d abc exits 1" "PASS"
+    else
+        print_test_result "printf audit: %d abc exits 1" "FAIL" \
+            "Expected exit 1, got $aud_exit"
+    fi
+    if [[ -n "$aud_err" ]]; then
+        print_test_result "printf audit: %d abc emits warning" "PASS"
+    else
+        print_test_result "printf audit: %d abc emits warning" "FAIL" \
+            "Expected non-empty stderr"
+    fi
+
+    echo -e "${CYAN}Testing audit: %i format specifier...${NC}"
+
+    # Test gap: %i is synonym for %d
+    output=$("$binary" '%i' 42)
+    if [[ "$output" == "42" ]]; then
+        print_test_result "printf audit: %i format specifier" "PASS"
+    else
+        print_test_result "printf audit: %i format specifier" "FAIL" \
+            "Expected '42', got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing audit: %E and %G format specifiers...${NC}"
+
+    # Test gap: %E uppercase scientific notation
+    output=$("$binary" '%E' 1234.5)
+    if [[ "$output" == *"E+"* ]]; then
+        print_test_result "printf audit: %E uppercase scientific" "PASS"
+    else
+        print_test_result "printf audit: %E uppercase scientific" "FAIL" \
+            "Expected output with 'E+', got '$output'"
+    fi
+
+    # Test gap: %G uppercase general float
+    output=$("$binary" '%G' 0.00001)
+    if [[ "$output" == *"E"* ]]; then
+        print_test_result "printf audit: %G uppercase general" "PASS"
+    else
+        print_test_result "printf audit: %G uppercase general" "FAIL" \
+            "Expected output with 'E', got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing audit: dynamic width with *...${NC}"
+
+    # Test gap: * dynamic width
+    output=$("$binary" '%*d' 10 42)
+    if [[ "$output" == "        42" ]]; then
+        print_test_result "printf audit: dynamic width *" "PASS"
+    else
+        print_test_result "printf audit: dynamic width *" "FAIL" \
+            "Expected '        42', got '$output'"
+    fi
+
+    # IMPORTANT: negative * width implies left-justify
+    output=$("$binary" '%*d' -5 42)
+    if [[ "$output" == "42   " ]]; then
+        print_test_result "printf audit: negative * width left-justify" "PASS"
+    else
+        print_test_result "printf audit: negative * width left-justify" "FAIL" \
+            "Expected '42   ', got '$output'"
+    fi
+
+    echo -e "${CYAN}Testing audit: space-sign flag...${NC}"
+
+    # Test gap: space flag on %d
+    output=$("$binary" '% d' 42)
+    if [[ "$output" == " 42" ]]; then
+        print_test_result "printf audit: space-sign flag positive" "PASS"
+    else
+        print_test_result "printf audit: space-sign flag positive" "FAIL" \
+            "Expected ' 42', got '$output'"
+    fi
+
+    output=$("$binary" '% d' -42)
+    if [[ "$output" == "-42" ]]; then
+        print_test_result "printf audit: space-sign flag negative" "PASS"
+    else
+        print_test_result "printf audit: space-sign flag negative" "FAIL" \
+            "Expected '-42', got '$output'"
+    fi
 }

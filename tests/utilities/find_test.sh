@@ -836,6 +836,155 @@ test_find() {
     rm -rf "$perm_prefix_dir"
 
     # ================================================================
+    # U4: -exec {} ; basic functionality
+    # Verify that -exec actually runs the command and the exit
+    # code gates the expression (true => subsequent -print fires,
+    # false => it does not).
+    # ================================================================
+    echo -e "${CYAN}Testing -exec {} ; basic (U4)...${NC}"
+
+    local exec_basic_dir=$(create_temp_dir)
+    touch "$exec_basic_dir/found.txt"
+
+    # -exec true {} ; -print => file should be printed
+    run_command cmd out err exit_code "$binary" "$exec_basic_dir" \
+        "-type" "f" "-exec" "true" "{}" ";" "-print"
+    if [[ $exit_code -eq 0 && "$out" =~ found.txt ]]; then
+        print_test_result "find -exec true {} ; -print shows file" "PASS"
+    else
+        print_test_result "find -exec true {} ; -print shows file" "FAIL" \
+            "Expected found.txt, exit: $exit_code, out: '$out', err: '$err'"
+    fi
+
+    # -exec false {} ; -print => file should NOT be printed
+    run_command cmd out err exit_code "$binary" "$exec_basic_dir" \
+        "-type" "f" "-exec" "false" "{}" ";" "-print"
+    if [[ $exit_code -eq 0 && ! "$out" =~ found.txt ]]; then
+        print_test_result "find -exec false {} ; -print suppresses file" "PASS"
+    else
+        print_test_result "find -exec false {} ; -print suppresses file" "FAIL" \
+            "Expected no output, exit: $exit_code, out: '$out', err: '$err'"
+    fi
+    rm -rf "$exec_basic_dir"
+
+    # ================================================================
+    # U9: -group predicate has no test
+    # ================================================================
+    echo -e "${CYAN}Testing -group predicate (U9)...${NC}"
+
+    local group_dir=$(create_temp_dir)
+    create_temp_file "content" "$group_dir/grpfile.txt"
+
+    # Get the group name of the file
+    local grp_name
+    grp_name=$(stat -c '%G' "$group_dir/grpfile.txt" 2>/dev/null \
+        || stat -f '%Sg' "$group_dir/grpfile.txt")
+    run_command cmd out err exit_code "$binary" "$group_dir" \
+        "-type" "f" "-group" "$grp_name"
+    if [[ $exit_code -eq 0 && "$out" =~ grpfile.txt ]]; then
+        print_test_result "find -group $grp_name" "PASS"
+    else
+        print_test_result "find -group $grp_name" "FAIL" \
+            "Expected grpfile.txt, got: '$out', err: '$err'"
+    fi
+    rm -rf "$group_dir"
+
+    # ================================================================
+    # U10: -nogroup predicate has no test
+    # ================================================================
+    echo -e "${CYAN}Testing -nogroup predicate (U10)...${NC}"
+
+    local nogroup_dir=$(create_temp_dir)
+    create_temp_file "content" "$nogroup_dir/normal.txt"
+
+    # Files owned by real groups should not match -nogroup
+    run_command cmd out err exit_code "$binary" "$nogroup_dir" \
+        "-type" "f" "-nogroup"
+    if [[ $exit_code -eq 0 && ! "$out" =~ normal.txt ]]; then
+        print_test_result "find -nogroup excludes normal files" "PASS"
+    else
+        print_test_result "find -nogroup excludes normal files" "FAIL" \
+            "Expected empty, got: '$out', err: '$err'"
+    fi
+    rm -rf "$nogroup_dir"
+
+    # ================================================================
+    # U13: -H follows only command-line symlinks
+    # ================================================================
+    echo -e "${CYAN}Testing -H option (U13)...${NC}"
+
+    local h_dir=$(create_temp_dir)
+    mkdir "$h_dir/target"
+    create_temp_file "content" "$h_dir/target/inner.txt"
+    ln -s "$h_dir/target" "$h_dir/toplink"
+
+    # -H with symlink as starting path should follow it
+    run_command cmd out err exit_code "$binary" "-H" "$h_dir/toplink" \
+        "-name" "inner.txt"
+    if [[ $exit_code -eq 0 && "$out" =~ inner.txt ]]; then
+        print_test_result "find -H follows cmdline symlinks" "PASS"
+    else
+        print_test_result "find -H follows cmdline symlinks" "FAIL" \
+            "Expected inner.txt, got: '$out', err: '$err'"
+    fi
+    rm -rf "$h_dir"
+
+    # ================================================================
+    # H7: -follow in expression position
+    # macOS/GNU find accept -follow as a deprecated expression primary.
+    # Our implementation only recognizes it before paths, so
+    #   find <path> -maxdepth 1 -follow
+    # gives "unknown predicate '-follow'".
+    # ================================================================
+    echo -e "${CYAN}Testing -follow in expression position (H7)...${NC}"
+
+    local follow_dir=$(create_temp_dir)
+    create_temp_file "content" "$follow_dir/file.txt"
+
+    run_command cmd out err exit_code "$binary" "$follow_dir" \
+        "-maxdepth" "1" "-follow"
+    if [[ $exit_code -eq 0 && -z "$err" ]]; then
+        print_test_result "find -follow in expression position" "PASS"
+    else
+        print_test_result "find -follow in expression position" "FAIL" \
+            "Expected exit 0, got $exit_code, err: '$err'"
+    fi
+    rm -rf "$follow_dir"
+
+    # ================================================================
+    # U14: -a / -and operator has no test
+    # ================================================================
+    echo -e "${CYAN}Testing -a / -and operator (U14)...${NC}"
+
+    local and_dir=$(create_temp_dir)
+    create_temp_file "content" "$and_dir/hello.txt"
+    create_temp_file "content" "$and_dir/hello.md"
+    create_temp_file "content" "$and_dir/world.txt"
+
+    # -name "hello*" -a -name "*.txt" should match only hello.txt
+    run_command cmd out err exit_code "$binary" "$and_dir" \
+        "-name" "hello*" "-a" "-name" "*.txt"
+    if [[ $exit_code -eq 0 && "$out" =~ hello.txt \
+          && ! "$out" =~ hello.md && ! "$out" =~ world.txt ]]; then
+        print_test_result "find -a operator" "PASS"
+    else
+        print_test_result "find -a operator" "FAIL" \
+            "Expected only hello.txt, got: '$out', err: '$err'"
+    fi
+
+    # Same test with -and (long form)
+    run_command cmd out err exit_code "$binary" "$and_dir" \
+        "-name" "hello*" "-and" "-name" "*.txt"
+    if [[ $exit_code -eq 0 && "$out" =~ hello.txt \
+          && ! "$out" =~ hello.md && ! "$out" =~ world.txt ]]; then
+        print_test_result "find -and operator" "PASS"
+    else
+        print_test_result "find -and operator" "FAIL" \
+            "Expected only hello.txt, got: '$out', err: '$err'"
+    fi
+    rm -rf "$and_dir"
+
+    # ================================================================
     # F6: find -exec {} + (batch form) broken
     # GNU find: -exec CMD {} + collects args and executes CMD once
     # with all matched files as arguments.

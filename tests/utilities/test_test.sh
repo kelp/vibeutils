@@ -321,6 +321,98 @@ test_test() {
     # 1 -eq 2 -a 1 -eq 1 should fail (first condition false, -a requires both)
     test_command_exit_code "test -a left-to-right eval (regression)" 1 \
         "$binary" 1 -eq 2 -a 1 -eq 1
+
+    echo -e "${CYAN}Testing MUST-tier file primaries (audit gaps)...${NC}"
+
+    # -h: symbolic link (legacy alias for -L)
+    local h_target=$(create_temp_file "symlink target")
+    local h_link="$TEMP_DIR/h_test_link"
+    ln -s "$h_target" "$h_link"
+    test_command_exit_code "test -h symlink (true)" 0 "$binary" -h "$h_link"
+    test_command_exit_code "test -h regular file (false)" 1 "$binary" -h "$h_target"
+    rm -f "$h_link"
+
+    # -p: named pipe (FIFO)
+    local test_fifo="$TEMP_DIR/test_fifo"
+    mkfifo "$test_fifo"
+    test_command_exit_code "test -p named pipe (true)" 0 "$binary" -p "$test_fifo"
+    test_command_exit_code "test -p regular file (false)" 1 "$binary" -p "$test_file"
+    rm -f "$test_fifo"
+
+    # -G: owned by effective group ID (files we create should match)
+    test_command_exit_code "test -G own file (true)" 0 "$binary" -G "$test_file"
+
+    # -O: owned by effective user ID (files we create should match)
+    test_command_exit_code "test -O own file (true)" 0 "$binary" -O "$test_file"
+
+    # -t: file descriptor is a terminal (stdin in pipe is not a tty)
+    test_command_exit_code "test -t 0 in pipe (false)" 1 \
+        bash -c "echo '' | '$binary' -t 0"
+
+    # -u: set-user-ID bit
+    local suid_file=$(create_temp_file "suid test")
+    chmod u+s "$suid_file" 2>/dev/null
+    if [[ -u "$suid_file" ]]; then
+        test_command_exit_code "test -u setuid file (true)" 0 "$binary" -u "$suid_file"
+    fi
+    test_command_exit_code "test -u regular file (false)" 1 "$binary" -u "$test_file"
+    rm -f "$suid_file"
+
+    # -g: set-group-ID bit
+    local sgid_file=$(create_temp_file "sgid test")
+    chmod g+s "$sgid_file" 2>/dev/null
+    if [[ -g "$sgid_file" ]]; then
+        test_command_exit_code "test -g setgid file (true)" 0 "$binary" -g "$sgid_file"
+    fi
+    test_command_exit_code "test -g regular file (false)" 1 "$binary" -g "$test_file"
+    rm -f "$sgid_file"
+
+    # -k: sticky bit
+    local sticky_dir=$(create_temp_dir)
+    chmod +t "$sticky_dir" 2>/dev/null
+    if [[ -k "$sticky_dir" ]]; then
+        test_command_exit_code "test -k sticky dir (true)" 0 "$binary" -k "$sticky_dir"
+    fi
+    test_command_exit_code "test -k regular file (false)" 1 "$binary" -k "$test_file"
+    rm -rf "$sticky_dir"
+
+    echo -e "${CYAN}Testing string < > operators (audit gaps)...${NC}"
+
+    # String lexicographic comparison operators
+    test_command_exit_code "test < string less-than (true)" 0 \
+        "$binary" "apple" \< "banana"
+    test_command_exit_code "test < string less-than (false)" 1 \
+        "$binary" "banana" \< "apple"
+    test_command_exit_code "test > string greater-than (true)" 0 \
+        "$binary" "banana" \> "apple"
+    test_command_exit_code "test > string greater-than (false)" 1 \
+        "$binary" "apple" \> "banana"
+    test_command_exit_code "test < equal strings (false)" 1 \
+        "$binary" "same" \< "same"
+    test_command_exit_code "test > equal strings (false)" 1 \
+        "$binary" "same" \> "same"
+
+    # Bracket form
+    test_command_exit_code "[ < bracket form ]" 0 \
+        "$bracket_binary" "apple" \< "banana" ]
+    test_command_exit_code "[ > bracket form ]" 0 \
+        "$bracket_binary" "banana" \> "apple" ]
+
+    echo -e "${CYAN}Testing -nt/-ot file comparison (audit gaps)...${NC}"
+
+    # -nt: newer than; -ot: older than
+    local older_file=$(create_temp_file "older")
+    sleep 1
+    local newer_file=$(create_temp_file "newer")
+    test_command_exit_code "test -nt newer than (true)" 0 \
+        "$binary" "$newer_file" -nt "$older_file"
+    test_command_exit_code "test -nt not newer than (false)" 1 \
+        "$binary" "$older_file" -nt "$newer_file"
+    test_command_exit_code "test -ot older than (true)" 0 \
+        "$binary" "$older_file" -ot "$newer_file"
+    test_command_exit_code "test -ot not older than (false)" 1 \
+        "$binary" "$newer_file" -ot "$older_file"
+    rm -f "$older_file" "$newer_file"
 }
 
 # Export the test function

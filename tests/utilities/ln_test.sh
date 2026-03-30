@@ -751,4 +751,338 @@ test_ln() {
         print_test_result "ln --backup=numbered clean exit" "FAIL" \
             "Expected exit 0 or 2, got $f66n_exit (stderr: $f66n_err)"
     fi
+
+    # ================================================================
+    # AUDIT: ln -i interactive 'y' fails to remove existing destination
+    # Bug: after user confirms 'y', code does not delete the existing
+    # file before creating the new link, causing PathAlreadyExists.
+    # ================================================================
+    echo -e "${CYAN}Testing ln -i interactive confirmation...${NC}"
+
+    local i_target=$(create_temp_file "interactive target")
+    local i_existing=$(create_temp_file "existing content")
+
+    # Pipe 'y' to confirm replacement; should succeed
+    local i_out=""
+    local i_err=""
+    local i_exit=""
+    run_command i_cmd i_out i_err i_exit \
+        bash -c "echo y | '$binary' -si '$i_target' '$i_existing'"
+
+    if [[ $i_exit -eq 0 ]]; then
+        print_test_result "ln -si y confirms replacement" "PASS"
+    else
+        print_test_result "ln -si y confirms replacement" "FAIL" \
+            "Expected exit 0, got $i_exit (stderr: $i_err)"
+    fi
+
+    # The existing file should now be a symlink to the target
+    if [[ -L "$i_existing" ]]; then
+        local i_readlink
+        i_readlink=$(readlink "$i_existing")
+        if [[ "$i_readlink" == "$i_target" ]]; then
+            print_test_result "ln -si y creates correct symlink" "PASS"
+        else
+            print_test_result "ln -si y creates correct symlink" "FAIL" \
+                "Expected -> $i_target, got -> $i_readlink"
+        fi
+    else
+        print_test_result "ln -si y creates correct symlink" "FAIL" \
+            "Destination is not a symlink after 'y' confirmation"
+    fi
+
+    # Pipe 'n' to decline; existing file should be preserved
+    local i_n_target=$(create_temp_file "n target")
+    local i_n_existing=$(create_temp_file "n existing content")
+
+    local i_n_out=""
+    local i_n_err=""
+    local i_n_exit=""
+    run_command i_n_cmd i_n_out i_n_err i_n_exit \
+        bash -c "echo n | '$binary' -si '$i_n_target' '$i_n_existing'"
+
+    local i_n_content
+    i_n_content=$(cat "$i_n_existing")
+    if [[ "$i_n_content" == "n existing content" ]]; then
+        print_test_result "ln -si n preserves existing file" "PASS"
+    else
+        print_test_result "ln -si n preserves existing file" "FAIL" \
+            "Expected original content, got '$i_n_content'"
+    fi
+
+    # ================================================================
+    # AUDIT: ln -b ignores SIMPLE_BACKUP_SUFFIX env var
+    # GNU ln reads SIMPLE_BACKUP_SUFFIX to override the default '~'.
+    # Our implementation hardcodes '~'.
+    # ================================================================
+    echo -e "${CYAN}Testing ln -b SIMPLE_BACKUP_SUFFIX...${NC}"
+
+    local bsuf_target=$(create_temp_file "bsuf target")
+    local bsuf_link="$TEMP_DIR/bsuf_link"
+    ln -s "/some/original" "$bsuf_link"
+
+    local bsuf_out=""
+    local bsuf_err=""
+    local bsuf_exit=""
+    run_command bsuf_cmd bsuf_out bsuf_err bsuf_exit \
+        env SIMPLE_BACKUP_SUFFIX=".bak" "$binary" -sb "$bsuf_target" "$bsuf_link"
+
+    if [[ $bsuf_exit -eq 0 ]]; then
+        print_test_result "ln -sb with SIMPLE_BACKUP_SUFFIX exits 0" "PASS"
+    else
+        print_test_result "ln -sb with SIMPLE_BACKUP_SUFFIX exits 0" "FAIL" \
+            "Exit $bsuf_exit, stderr: $bsuf_err"
+    fi
+
+    # Backup should use .bak suffix, not ~
+    if [[ -e "${bsuf_link}.bak" || -L "${bsuf_link}.bak" ]]; then
+        print_test_result "ln -sb uses SIMPLE_BACKUP_SUFFIX=.bak" "PASS"
+    else
+        print_test_result "ln -sb uses SIMPLE_BACKUP_SUFFIX=.bak" "FAIL" \
+            "Expected ${bsuf_link}.bak, found: $(ls ${bsuf_link}* 2>/dev/null)"
+    fi
+
+    rm -f "$bsuf_link" "${bsuf_link}.bak" "${bsuf_link}~"
+
+    # ================================================================
+    # AUDIT: ln -v with -r shows original target, not relative path
+    # GNU ln -svr shows the computed relative path in verbose output.
+    # Our code shows the original target argument instead.
+    # ================================================================
+    echo -e "${CYAN}Testing ln -vr verbose shows relative path...${NC}"
+
+    local vr_dir="$TEMP_DIR/vr_test"
+    mkdir -p "$vr_dir/subdir"
+    create_temp_file "vr target" "$vr_dir/target.txt"
+
+    local vr_out=""
+    local vr_err=""
+    local vr_exit=""
+    run_command vr_cmd vr_out vr_err vr_exit \
+        "$binary" -svr "$vr_dir/target.txt" "$vr_dir/subdir/link.txt"
+
+    if [[ $vr_exit -eq 0 ]]; then
+        print_test_result "ln -svr exit code" "PASS"
+    else
+        print_test_result "ln -svr exit code" "FAIL" \
+            "Expected exit 0, got $vr_exit"
+    fi
+
+    # Verbose output should show the relative path '../target.txt',
+    # not the original absolute/relative path
+    if [[ "$vr_out" == *"../target.txt"* ]]; then
+        print_test_result "ln -svr verbose shows relative path" "PASS"
+    else
+        print_test_result "ln -svr verbose shows relative path" "FAIL" \
+            "Expected '../target.txt' in output, got: $vr_out"
+    fi
+
+    rm -rf "$vr_dir"
+
+    # ================================================================
+    # AUDIT: ln -F without -s incorrectly enables force
+    # macOS spec: -F is a no-op unless -s is specified.
+    # Our code sets force=true when -F is given without -s.
+    # ================================================================
+    echo -e "${CYAN}Testing ln -F without -s...${NC}"
+
+    local fdir_source=$(create_temp_file "F source")
+    local fdir_existing=$(create_temp_file "F existing content")
+
+    # -F without -s should NOT force-replace an existing hard link dest
+    local fdir_out=""
+    local fdir_err=""
+    local fdir_exit=""
+    run_command fdir_cmd fdir_out fdir_err fdir_exit \
+        "$binary" -F "$fdir_source" "$fdir_existing"
+
+    if [[ $fdir_exit -ne 0 ]]; then
+        print_test_result "ln -F without -s does not force-replace" "PASS"
+    else
+        print_test_result "ln -F without -s does not force-replace" "FAIL" \
+            "Expected failure (file exists), got exit 0"
+    fi
+
+    # Verify existing file was not overwritten
+    local fdir_content
+    fdir_content=$(cat "$fdir_existing")
+    if [[ "$fdir_content" == "F existing content" ]]; then
+        print_test_result "ln -F without -s preserves existing file" "PASS"
+    else
+        print_test_result "ln -F without -s preserves existing file" "FAIL" \
+            "File was overwritten despite -F being no-op without -s"
+    fi
+
+    # -F WITH -s should enable force (this is correct behavior)
+    local fdir_sf_source=$(create_temp_file "Fs source")
+    local fdir_sf_existing=$(create_temp_file "Fs existing")
+
+    local fdir_sf_out=""
+    local fdir_sf_err=""
+    local fdir_sf_exit=""
+    run_command fdir_sf_cmd fdir_sf_out fdir_sf_err fdir_sf_exit \
+        "$binary" -sF "$fdir_sf_source" "$fdir_sf_existing"
+
+    if [[ $fdir_sf_exit -eq 0 && -L "$fdir_sf_existing" ]]; then
+        print_test_result "ln -sF force-replaces with symlink" "PASS"
+    else
+        print_test_result "ln -sF force-replaces with symlink" "FAIL" \
+            "Expected exit 0 and symlink, got exit $fdir_sf_exit"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -w (warn dangling)
+    # ================================================================
+    echo -e "${CYAN}Testing ln -w warns on dangling symlink...${NC}"
+
+    local w_link="$TEMP_DIR/w_dangling_link"
+
+    local w_out=""
+    local w_err=""
+    local w_exit=""
+    run_command w_cmd w_out w_err w_exit \
+        "$binary" -sw "/nonexistent/target/path" "$w_link"
+
+    # Should succeed (dangling symlinks are allowed)
+    if [[ $w_exit -eq 0 ]]; then
+        print_test_result "ln -sw dangling symlink exits 0" "PASS"
+    else
+        print_test_result "ln -sw dangling symlink exits 0" "FAIL" \
+            "Expected exit 0, got $w_exit"
+    fi
+
+    # Should emit a warning about the missing target on stderr
+    if [[ "$w_err" =~ "warning" || "$w_err" =~ "dangling" \
+          || "$w_err" =~ "does not exist" \
+          || "$w_err" =~ "No such file" ]]; then
+        print_test_result "ln -sw emits dangling warning" "PASS"
+    else
+        print_test_result "ln -sw emits dangling warning" "FAIL" \
+            "Expected warning about missing target, got stderr: '$w_err'"
+    fi
+
+    if [[ -L "$w_link" ]]; then
+        print_test_result "ln -sw still creates dangling symlink" "PASS"
+    else
+        print_test_result "ln -sw still creates dangling symlink" "FAIL" \
+            "Symlink not created"
+    fi
+
+    rm -f "$w_link"
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -r (relative symlink)
+    # ================================================================
+    echo -e "${CYAN}Testing ln -r relative symlink...${NC}"
+
+    local r_dir="$TEMP_DIR/r_test"
+    mkdir -p "$r_dir/a/b"
+    create_temp_file "relative target" "$r_dir/a/target.txt"
+
+    test_command_exit_code "ln -sr creates relative symlink" 0 \
+        "$binary" -sr "$r_dir/a/target.txt" "$r_dir/a/b/link.txt"
+
+    if [[ -L "$r_dir/a/b/link.txt" ]]; then
+        local r_readlink
+        r_readlink=$(readlink "$r_dir/a/b/link.txt")
+        if [[ "$r_readlink" == "../target.txt" ]]; then
+            print_test_result "ln -sr stores relative path" "PASS"
+        else
+            print_test_result "ln -sr stores relative path" "FAIL" \
+                "Expected '../target.txt', got '$r_readlink'"
+        fi
+    else
+        print_test_result "ln -sr stores relative path" "FAIL" \
+            "Symlink not created"
+    fi
+
+    # Verify the relative symlink actually resolves
+    if [[ -f "$r_dir/a/b/link.txt" ]]; then
+        local r_content
+        r_content=$(cat "$r_dir/a/b/link.txt")
+        if [[ "$r_content" == "relative target" ]]; then
+            print_test_result "ln -sr relative symlink resolves" "PASS"
+        else
+            print_test_result "ln -sr relative symlink resolves" "FAIL" \
+                "Expected 'relative target', got '$r_content'"
+        fi
+    else
+        print_test_result "ln -sr relative symlink resolves" "FAIL" \
+            "Symlink does not resolve to target"
+    fi
+
+    rm -rf "$r_dir"
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -t (target directory)
+    # ================================================================
+    echo -e "${CYAN}Testing ln -t target directory...${NC}"
+
+    local t_target=$(create_temp_file "t target content")
+    local t_dir=$(create_temp_dir)
+
+    test_command_exit_code "ln -st target-dir source" 0 \
+        "$binary" -st "$t_dir" "$t_target"
+
+    local t_base
+    t_base=$(basename "$t_target")
+    if [[ -L "$t_dir/$t_base" ]]; then
+        print_test_result "ln -t creates link in target dir" "PASS"
+    else
+        print_test_result "ln -t creates link in target dir" "FAIL" \
+            "Expected symlink $t_dir/$t_base"
+    fi
+
+    # -t with multiple sources
+    local t_target2=$(create_temp_file "t target 2")
+    local t_dir2=$(create_temp_dir)
+
+    test_command_exit_code "ln -st dir src1 src2" 0 \
+        "$binary" -st "$t_dir2" "$t_target" "$t_target2"
+
+    local t_base2
+    t_base2=$(basename "$t_target2")
+    if [[ -L "$t_dir2/$t_base" && -L "$t_dir2/$t_base2" ]]; then
+        print_test_result "ln -t multiple sources" "PASS"
+    else
+        print_test_result "ln -t multiple sources" "FAIL" \
+            "Expected both symlinks in $t_dir2"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -T (treat LINK_NAME as normal file)
+    # ================================================================
+    echo -e "${CYAN}Testing ln -T no-target-directory...${NC}"
+
+    local T_target=$(create_temp_file "T target content")
+    local T_dir=$(create_temp_dir)
+
+    # With -T, even if link_name is an existing directory, treat it
+    # as a plain name (should fail because you can't replace a dir
+    # with a symlink without -f)
+    local T_out=""
+    local T_err=""
+    local T_exit=""
+    run_command T_cmd T_out T_err T_exit \
+        "$binary" -sT "$T_target" "$T_dir"
+
+    # Should fail: cannot create symlink over existing directory
+    if [[ $T_exit -ne 0 ]]; then
+        print_test_result "ln -sT refuses to replace directory" "PASS"
+    else
+        print_test_result "ln -sT refuses to replace directory" "FAIL" \
+            "Expected failure, got exit 0"
+    fi
+
+    # -T with a non-directory name should work normally
+    local T_link="$TEMP_DIR/T_plain_link"
+    test_command_exit_code "ln -sT with plain name" 0 \
+        "$binary" -sT "$T_target" "$T_link"
+
+    if [[ -L "$T_link" ]]; then
+        print_test_result "ln -sT creates symlink" "PASS"
+    else
+        print_test_result "ln -sT creates symlink" "FAIL" \
+            "Symlink not created at $T_link"
+    fi
 }

@@ -303,6 +303,58 @@ test_cut() {
             "Expected 'vibeutils' in version output, got: '$cut_ver_out'"
     fi
 
+    # ========== AUDIT WAVE 4: cut IMPORTANT findings ==========
+
+    echo -e "${CYAN}Testing audit: range list with whitespace separators...${NC}"
+
+    # IMPORTANT: Range list rejects whitespace separators
+    # GNU and macOS cut accept spaces as separators in range lists:
+    #   cut -b '1 3 5' should work like cut -b '1,3,5'
+    test_command_output "cut audit range list space separator" "ace" \
+        bash -c "printf 'abcde' | '$binary' -b '1 3 5'"
+
+    echo -e "${CYAN}Testing audit: -w whitespace delimiter...${NC}"
+
+    # IMPORTANT: -w flag has zero integration tests
+    # -w treats consecutive whitespace (spaces/tabs) as a single delimiter
+    test_command_output "cut audit -w -f2 spaces" "two" \
+        bash -c "printf 'one  two   three' | '$binary' -w -f 2"
+
+    # Mixed whitespace: tab + space
+    test_command_output "cut audit -w -f2 mixed whitespace" "two" \
+        bash -c "printf 'one\t two\tthree' | '$binary' -w -f 2"
+
+    # -w with multiple fields
+    test_command_output "cut audit -w -f1,3 whitespace" $'one three' \
+        bash -c "printf 'one  two   three' | '$binary' -w -f 1,3"
+
+    echo -e "${CYAN}Testing audit: -z NUL-terminated lines...${NC}"
+
+    # IMPORTANT: -z flag has zero integration tests
+    # -z uses NUL as line terminator instead of newline
+    # Note: bash variables strip NUL bytes, so we pipe through od directly
+    # Input: "a:b\0c:d" -- two NUL-terminated records
+    # cut -z -d: -f1 should output "a\0c" or "a\0c\0"
+    local cut_z_hex
+    cut_z_hex=$(printf 'a:b\0c:d' | "$binary" -z -d: -f1 | od -An -tx1 | tr -d ' \n')
+    # Expected: 61 00 63 (a NUL c) or 61 00 63 00 (a NUL c NUL)
+    if [[ "$cut_z_hex" == "610063" || "$cut_z_hex" == "61006300" ]]; then
+        print_test_result "cut audit -z NUL-terminated field extraction" "PASS"
+    else
+        print_test_result "cut audit -z NUL-terminated field extraction" "FAIL" \
+            "Expected hex '610063' or '61006300', got '$cut_z_hex'"
+    fi
+
+    # -z with byte selection
+    cut_z_hex=$(printf 'abc\0def' | "$binary" -z -b 1 | od -An -tx1 | tr -d ' \n')
+    # Expected: 61 00 64 (a NUL d) or 61 00 64 00
+    if [[ "$cut_z_hex" == "610064" || "$cut_z_hex" == "61006400" ]]; then
+        print_test_result "cut audit -z NUL-terminated byte selection" "PASS"
+    else
+        print_test_result "cut audit -z NUL-terminated byte selection" "FAIL" \
+            "Expected hex '610064' or '61006400', got '$cut_z_hex'"
+    fi
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}cut tests completed${NC}"

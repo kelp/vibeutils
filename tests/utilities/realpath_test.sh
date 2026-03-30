@@ -318,4 +318,41 @@ test_realpath() {
         print_test_result "default vs -e: different behavior for missing last" "FAIL" \
             "default exit=$default_rc2 -e exit=$e_rc2 (expected 0 and nonzero)"
     fi
+
+    # Audit: error messages use @errorName (Zig symbols) not POSIX strings
+    echo -e "${CYAN}Testing POSIX error messages...${NC}"
+
+    local err_msg
+    err_msg=$("$binary" -e /nonexistent_vibeutils_xyz 2>&1 >/dev/null)
+    if [[ "$err_msg" == *"No such file or directory"* ]]; then
+        print_test_result "error message uses POSIX 'No such file or directory'" "PASS"
+    else
+        print_test_result "error message uses POSIX 'No such file or directory'" "FAIL" \
+            "Got: $err_msg"
+    fi
+
+    # Must NOT contain Zig error name
+    if [[ "$err_msg" != *"FileNotFound"* ]]; then
+        print_test_result "error message does not contain 'FileNotFound'" "PASS"
+    else
+        print_test_result "error message does not contain 'FileNotFound'" "FAIL" \
+            "Got: $err_msg"
+    fi
+
+    # Audit: --relative-to only tested with -s; verify it works in default mode
+    echo -e "${CYAN}Testing --relative-to without -s...${NC}"
+
+    local rel_dir="$TEMP_DIR/realpath_rel_test"
+    mkdir -p "$rel_dir/subdir"
+    echo "test" > "$rel_dir/subdir/file.txt"
+
+    local rel_out
+    rel_out=$("$binary" --relative-to="$rel_dir" "$rel_dir/subdir/file.txt" 2>/dev/null)
+    if [[ "$rel_out" == "subdir/file.txt" ]]; then
+        print_test_result "--relative-to without -s resolves existing paths" "PASS"
+    else
+        print_test_result "--relative-to without -s resolves existing paths" "FAIL" \
+            "Expected 'subdir/file.txt', got '$rel_out'"
+    fi
+    rm -rf "$rel_dir"
 }

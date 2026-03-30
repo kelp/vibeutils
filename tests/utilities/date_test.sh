@@ -192,4 +192,77 @@ test_date() {
         print_test_result "date -d ISO8601 +00:00 same as Z" "FAIL" \
             "Expected '1705276800' exit 0, got '$d00_out' exit $d00_exit stderr='$d00_err'"
     fi
+
+    # ================================================================
+    # -R: RFC 2822 output format
+    # ================================================================
+    echo -e "${CYAN}Testing -R (RFC 2822 output)...${NC}"
+
+    # -R should output RFC 2822 format: "Day, DD Mon YYYY HH:MM:SS +ZZZZ"
+    local rfc_cmd rfc_out rfc_err rfc_exit
+    run_command rfc_cmd rfc_out rfc_err rfc_exit "$binary" -R
+    if [[ $rfc_exit -eq 0 ]]; then
+        print_test_result "date -R exits 0" "PASS"
+    else
+        print_test_result "date -R exits 0" "FAIL" \
+            "Expected exit 0, got $rfc_exit stderr='$rfc_err'"
+    fi
+
+    # Validate RFC 2822 format pattern: "Day, DD Mon YYYY HH:MM:SS +ZZZZ"
+    if [[ "$rfc_out" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [+-][0-9]{4}$ ]]; then
+        print_test_result "date -R output format matches RFC 2822" "PASS"
+    else
+        print_test_result "date -R output format matches RFC 2822" "FAIL" \
+            "Expected 'Day, DD Mon YYYY HH:MM:SS +ZZZZ', got '$rfc_out'"
+    fi
+
+    # -R -u should show +0000 offset
+    local rfc_u_cmd rfc_u_out rfc_u_err rfc_u_exit
+    run_command rfc_u_cmd rfc_u_out rfc_u_err rfc_u_exit "$binary" -R -u
+    if [[ "$rfc_u_out" == *"+0000" ]]; then
+        print_test_result "date -R -u shows +0000" "PASS"
+    else
+        print_test_result "date -R -u shows +0000" "FAIL" \
+            "Expected '+0000' suffix, got '$rfc_u_out'"
+    fi
+
+    # ================================================================
+    # -I: ISO 8601 output format
+    # ================================================================
+    echo -e "${CYAN}Testing -I (ISO 8601 output)...${NC}"
+
+    # -I with no argument should output date only: YYYY-MM-DD
+    local iso_cmd iso_out iso_err iso_exit
+    run_command iso_cmd iso_out iso_err iso_exit "$binary" -I
+    if [[ $iso_exit -eq 0 ]]; then
+        print_test_result "date -I exits 0" "PASS"
+    else
+        print_test_result "date -I exits 0" "FAIL" \
+            "Expected exit 0, got $iso_exit stderr='$iso_err'"
+    fi
+
+    if [[ "$iso_out" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        print_test_result "date -I outputs YYYY-MM-DD" "PASS"
+    else
+        print_test_result "date -I outputs YYYY-MM-DD" "FAIL" \
+            "Expected 'YYYY-MM-DD', got '$iso_out'"
+    fi
+
+    # -Iseconds should include time and timezone offset
+    local isos_cmd isos_out isos_err isos_exit
+    run_command isos_cmd isos_out isos_err isos_exit "$binary" -Iseconds
+    if [[ $isos_exit -eq 0 ]]; then
+        print_test_result "date -Iseconds exits 0" "PASS"
+    else
+        print_test_result "date -Iseconds exits 0" "FAIL" \
+            "Expected exit 0, got $isos_exit stderr='$isos_err'"
+    fi
+
+    # Format: YYYY-MM-DDTHH:MM:SS+HH:MM (or Z)
+    if [[ "$isos_out" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+        print_test_result "date -Iseconds includes time" "PASS"
+    else
+        print_test_result "date -Iseconds includes time" "FAIL" \
+            "Expected ISO 8601 datetime, got '$isos_out'"
+    fi
 }

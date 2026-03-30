@@ -85,4 +85,84 @@ test_seq() {
         print_test_result "seq -w equal width" "FAIL" \
             "Expected '$expected_width', got '$width_output'"
     fi
+
+    # ========== AUDIT WAVE 4: seq IMPORTANT findings ==========
+
+    echo -e "${CYAN}Testing audit: negative increment without --...${NC}"
+
+    # IMPORTANT: seq 5 -1 1 should count down without needing --
+    # GNU handles this; our argparse rejects -1 as unknown flag
+    local neg_output
+    neg_output=$("$binary" 5 -1 1 2>/dev/null)
+    local neg_exit=$?
+    if [[ $neg_exit -eq 0 && "$neg_output" == $'5\n4\n3\n2\n1' ]]; then
+        print_test_result "seq audit: negative increment without --" "PASS"
+    else
+        print_test_result "seq audit: negative increment without --" "FAIL" \
+            "Expected countdown 5..1 (exit 0), got exit=$neg_exit output='$neg_output'"
+    fi
+
+    echo -e "${CYAN}Testing audit: error exit code should be 1...${NC}"
+
+    # IMPORTANT: Error exit code is 2 (misuse) where GNU uses 1
+    local err_out="" err_err="" err_exit=""
+    run_command err_cmd err_out err_err err_exit "$binary" abc
+    if [[ $err_exit -eq 1 ]]; then
+        print_test_result "seq audit: invalid number exits 1" "PASS"
+    else
+        print_test_result "seq audit: invalid number exits 1" "FAIL" \
+            "Expected exit 1, got $err_exit"
+    fi
+
+    run_command err_cmd err_out err_err err_exit "$binary" 1 0 5
+    if [[ $err_exit -eq 1 ]]; then
+        print_test_result "seq audit: zero increment exits 1" "PASS"
+    else
+        print_test_result "seq audit: zero increment exits 1" "FAIL" \
+            "Expected exit 1, got $err_exit"
+    fi
+
+    echo -e "${CYAN}Testing audit: nan input rejected...${NC}"
+
+    # IMPORTANT: nan input silently produces empty output instead of error
+    run_command err_cmd err_out err_err err_exit "$binary" nan
+    if [[ $err_exit -ne 0 && -n "$err_err" ]]; then
+        print_test_result "seq audit: nan input produces error" "PASS"
+    else
+        print_test_result "seq audit: nan input produces error" "FAIL" \
+            "Expected non-zero exit with stderr, got exit=$err_exit stderr='$err_err'"
+    fi
+
+    echo -e "${CYAN}Testing audit: -f format prefix/suffix...${NC}"
+
+    # IMPORTANT: -f format string prefix/suffix text dropped
+    local fmt_output
+    fmt_output=$("$binary" -f 'val=%g!' 3 2>/dev/null)
+    local fmt_expected=$'val=1!\nval=2!\nval=3!'
+    if [[ "$fmt_output" == "$fmt_expected" ]]; then
+        print_test_result "seq audit: -f format preserves prefix/suffix" "PASS"
+    else
+        print_test_result "seq audit: -f format preserves prefix/suffix" "FAIL" \
+            "Expected '$fmt_expected', got '$fmt_output'"
+    fi
+
+    # -f with width and precision
+    fmt_output=$("$binary" -f '%05.1f' 3 2>/dev/null)
+    fmt_expected=$'001.0\n002.0\n003.0'
+    if [[ "$fmt_output" == "$fmt_expected" ]]; then
+        print_test_result "seq audit: -f format width and precision" "PASS"
+    else
+        print_test_result "seq audit: -f format width and precision" "FAIL" \
+            "Expected '$fmt_expected', got '$fmt_output'"
+    fi
+
+    echo -e "${CYAN}Testing audit: countdown and float sequences...${NC}"
+
+    # Test gap: countdown
+    test_command_output "seq audit: countdown 10 -2 1" $'10\n8\n6\n4\n2' \
+        "$binary" 10 -- -2 1
+
+    # Test gap: float sequence
+    test_command_output "seq audit: float 0.1 0.1 0.5" $'0.1\n0.2\n0.3\n0.4\n0.5' \
+        "$binary" 0.1 0.1 0.5
 }

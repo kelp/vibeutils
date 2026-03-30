@@ -240,6 +240,92 @@ test_stat() {
             "Block size $block_size_val is outside 512-1048576 range"
     fi
 
+    # --- Audit: Device line format should be GNU major,minor decimal ---
+    echo -e "${CYAN}Testing Device line format (GNU major,minor)...${NC}"
+
+    local dev_line
+    dev_line=$(echo "$stat_default_out" | grep "Device:")
+    # GNU format: "Device: 0,31" — no letter suffixes like 'h' or 'd'
+    # BSD format: "Device: 1fh/31d" — has 'h/' and 'd' suffixes
+    if [[ "$dev_line" != *"h/"* ]]; then
+        print_test_result "Device line has no BSD 'h/' suffix" "PASS"
+    else
+        print_test_result "Device line has no BSD 'h/' suffix" "FAIL" \
+            "Found BSD format: $dev_line"
+    fi
+
+    # --- Audit: %N on symlink should show arrow notation ---
+    echo -e "${CYAN}Testing %N format directive...${NC}"
+
+    local n_out
+    n_out=$("$binary" -c '%N' "$tmplink" 2>/dev/null)
+    if [[ "$n_out" == *" -> "* ]]; then
+        print_test_result "stat -c '%N' symlink shows arrow" "PASS"
+    else
+        print_test_result "stat -c '%N' symlink shows arrow" "FAIL" \
+            "Expected arrow notation, got '$n_out'"
+    fi
+
+    # %N on regular file should be single-quoted
+    local n_reg_out
+    n_reg_out=$("$binary" -c '%N' "$tmpfile" 2>/dev/null)
+    if [[ "$n_reg_out" == "'$tmpfile'" ]]; then
+        print_test_result "stat -c '%N' regular file is quoted" "PASS"
+    else
+        print_test_result "stat -c '%N' regular file is quoted" "FAIL" \
+            "Expected '${tmpfile}', got '$n_reg_out'"
+    fi
+
+    # --- Audit: --printf no trailing newline ---
+    echo -e "${CYAN}Testing --printf no trailing newline...${NC}"
+
+    local printf_out
+    printf_out=$("$binary" --printf='%s' "$tmpfile" 2>/dev/null)
+    if [[ "$printf_out" == "6" ]]; then
+        print_test_result "stat --printf='%s' has no trailing newline" "PASS"
+    else
+        print_test_result "stat --printf='%s' has no trailing newline" "FAIL" \
+            "Expected '6' (no newline), got '$printf_out'"
+    fi
+
+    # --- Audit: %x %y %z human-readable timestamp format ---
+    echo -e "${CYAN}Testing %x %y %z timestamp format...${NC}"
+
+    local mtime_human
+    mtime_human=$("$binary" -c '%y' "$tmpfile" 2>/dev/null)
+    # GNU format: YYYY-MM-DD HH:MM:SS.NNNNNNNNN +ZZZZ
+    if [[ "$mtime_human" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2} ]]; then
+        print_test_result "stat -c '%y' mtime has YYYY-MM-DD HH:MM:SS format" "PASS"
+    else
+        print_test_result "stat -c '%y' mtime has YYYY-MM-DD HH:MM:SS format" "FAIL" \
+            "Got: '$mtime_human'"
+    fi
+
+    # --- Audit: %b blocks allocated ---
+    echo -e "${CYAN}Testing %b format directive...${NC}"
+
+    local blocks_out
+    blocks_out=$("$binary" -c '%b' "$tmpfile" 2>/dev/null)
+    if [[ "$blocks_out" =~ ^[0-9]+$ ]]; then
+        print_test_result "stat -c '%b' blocks is numeric" "PASS"
+    else
+        print_test_result "stat -c '%b' blocks is numeric" "FAIL" \
+            "Expected integer, got '$blocks_out'"
+    fi
+
+    # --- Audit: %G group name ---
+    echo -e "${CYAN}Testing %G format directive...${NC}"
+
+    local group_out
+    group_out=$("$binary" -c '%G' "$tmpfile" 2>/dev/null)
+    # Group name should not be empty and not purely numeric
+    if [[ -n "$group_out" && ! "$group_out" =~ ^[0-9]+$ ]]; then
+        print_test_result "stat -c '%G' group name is not numeric fallback" "PASS"
+    else
+        print_test_result "stat -c '%G' group name is not numeric fallback" "FAIL" \
+            "Got: '$group_out'"
+    fi
+
     # Cleanup
     rm -f "$tmpfile" "$tmplink"
 }

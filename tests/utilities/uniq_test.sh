@@ -160,6 +160,43 @@ test_uniq() {
     long_line=$(printf 'A%.0s' {1..1000})
     test_command_exit_code "uniq very long line" 0 bash -c "printf '%s\n%s\n' '$long_line' '$long_line' | '$binary' >/dev/null"
 
+    echo -e "${CYAN}Testing -z (NUL-terminated) flag...${NC}"
+
+    # -z should use NUL as line delimiter instead of newline
+    # Input: three NUL-separated records with adjacent duplicates
+    # "aaa\0aaa\0bbb\0" -> deduplicated: "aaa\0bbb\0"
+    local nul_out
+    nul_out=$(printf 'aaa\0aaa\0bbb\0' | "$binary" -z | od -An -tx1 | tr -d ' \n')
+    # Expected: 61 61 61 00 62 62 62 00 (aaa\0bbb\0)
+    # GNU uniq -z uses NUL-terminated output throughout.
+    local nul_expected="6161610062626200"
+    if [[ "$nul_out" == "$nul_expected" ]]; then
+        print_test_result "uniq -z deduplicates NUL records" "PASS"
+    else
+        print_test_result "uniq -z deduplicates NUL records" "FAIL" \
+            "Expected hex '$nul_expected', got '$nul_out'"
+    fi
+
+    # -z with -c: count NUL-separated duplicate records
+    local nul_c_out
+    nul_c_out=$(printf 'x\0x\0x\0y\0' | "$binary" -z -c 2>/dev/null)
+    if [[ "$nul_c_out" == *"3 x"* && "$nul_c_out" == *"1 y"* ]]; then
+        print_test_result "uniq -z -c counts NUL records" "PASS"
+    else
+        print_test_result "uniq -z -c counts NUL records" "FAIL" \
+            "Expected counts for NUL records, got: '$nul_c_out'"
+    fi
+
+    # -z with -d: only repeated NUL-separated records
+    local nul_d_out
+    nul_d_out=$(printf 'a\0a\0b\0' | "$binary" -z -d 2>/dev/null)
+    if [[ "$nul_d_out" == *"a"* && "$nul_d_out" != *"b"* ]]; then
+        print_test_result "uniq -z -d repeated NUL records" "PASS"
+    else
+        print_test_result "uniq -z -d repeated NUL records" "FAIL" \
+            "Expected only 'a' (repeated), got: '$nul_d_out'"
+    fi
+
     echo -e "${CYAN}Testing error diagnostics...${NC}"
 
     # Regression test: uniq must print error message for nonexistent files

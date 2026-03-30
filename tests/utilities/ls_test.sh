@@ -548,4 +548,409 @@ test_ls() {
         print_test_result "ls -A excludes . and .. (contrast with -a)" "FAIL" \
             "Found . or .. in -A output: '$f50_big_a_output'"
     fi
+
+    # ================================================================
+    # AUDIT F05: ls -n does not imply -l
+    # GNU spec: "-n, --numeric-uid-gid: like -l, but list numeric
+    # user and group IDs."
+    # Bug: ls -n produces multi-column output, not long format.
+    # ================================================================
+    echo -e "${CYAN}Testing ls -n implies long format (F05)...${NC}"
+
+    local f05_dir=$(create_temp_dir)
+    create_temp_file "n content" "$f05_dir/nfile.txt"
+
+    local f05_output
+    f05_output=$(NO_COLOR=1 "$binary" -n "$f05_dir" 2>/dev/null | strip_ansi)
+
+    # -n must produce long format (permissions string present)
+    if echo "$f05_output" | grep -qE '^[-dlrwxst]{10}'; then
+        print_test_result "ls -n implies long format" "PASS"
+    else
+        print_test_result "ls -n implies long format" "FAIL" \
+            "Expected long format (permissions), got: '$f05_output'"
+    fi
+
+    # -n must show numeric UID/GID (all digits, no names)
+    if echo "$f05_output" | grep -qE '[0-9]+[[:space:]]+[0-9]+'; then
+        print_test_result "ls -n shows numeric uid/gid" "PASS"
+    else
+        print_test_result "ls -n shows numeric uid/gid" "FAIL" \
+            "Expected numeric IDs in output: '$f05_output'"
+    fi
+
+    # ================================================================
+    # AUDIT F06: ls -s with -l missing per-entry block count column
+    # GNU: each long-format line begins with the block count when -s.
+    # Bug: -sl output has no per-entry block count.
+    # ================================================================
+    echo -e "${CYAN}Testing ls -sl per-entry block count (F06)...${NC}"
+
+    local f06_dir=$(create_temp_dir)
+    dd if=/dev/zero of="$f06_dir/blockfile" bs=1024 count=4 2>/dev/null
+
+    local f06_output
+    f06_output=$(NO_COLOR=1 "$binary" -sl "$f06_dir" 2>/dev/null | strip_ansi)
+
+    # Each file line in -sl output should start with a block count
+    # (a number) followed by the permissions field.
+    # Expected pattern: "  8 -rw-r--r-- ..."
+    if echo "$f06_output" | grep "blockfile" | grep -qE '^ *[0-9]+ +[-dlrwxst]'; then
+        print_test_result "ls -sl shows per-entry block count" "PASS"
+    else
+        print_test_result "ls -sl shows per-entry block count" "FAIL" \
+            "Expected block count before permissions, got: $(echo "$f06_output" | grep blockfile)"
+    fi
+
+    # ================================================================
+    # AUDIT F07: Multi-operand: file operands get spurious header
+    # GNU: non-directory operands are listed bare (no header);
+    # directory operands get "dirname:" only when mixed.
+    # Bug: file operands get "filename:" header.
+    # ================================================================
+    echo -e "${CYAN}Testing ls multi-operand file header (F07)...${NC}"
+
+    local f07_dir=$(create_temp_dir)
+    create_temp_file "f07 content" "$f07_dir/plainfile.txt"
+    mkdir -p "$f07_dir/subdir"
+    create_temp_file "f07 sub" "$f07_dir/subdir/infile.txt"
+
+    local f07_output
+    f07_output=$(NO_COLOR=1 "$binary" "$f07_dir/plainfile.txt" "$f07_dir/subdir" 2>/dev/null | strip_ansi)
+
+    # The plain file should NOT have a "plainfile.txt:" header
+    if echo "$f07_output" | grep -q "plainfile.txt:"; then
+        print_test_result "ls multi-operand file has no header" "FAIL" \
+            "File operand has spurious header: $(echo "$f07_output" | head -3)"
+    else
+        print_test_result "ls multi-operand file has no header" "PASS"
+    fi
+
+    # The directory should still have its header
+    if echo "$f07_output" | grep -q "subdir:"; then
+        print_test_result "ls multi-operand dir has header" "PASS"
+    else
+        print_test_result "ls multi-operand dir has header" "FAIL" \
+            "Expected 'subdir:' header in output: '$f07_output'"
+    fi
+
+    # ================================================================
+    # AUDIT F08: Error messages use Zig names, not POSIX strings
+    # Bug: ls /nonexistent prints "error.FileNotFound" instead of
+    # "No such file or directory".
+    # ================================================================
+    echo -e "${CYAN}Testing ls POSIX error messages (F08)...${NC}"
+
+    local f08_stderr
+    f08_stderr=$("$binary" "/tmp/vibeutils_f08_nonexistent_$$" 2>&1 >/dev/null)
+
+    # Should say "No such file or directory", not "error.FileNotFound"
+    if [[ "$f08_stderr" =~ "No such file or directory" ]]; then
+        print_test_result "ls error: No such file or directory" "PASS"
+    else
+        print_test_result "ls error: No such file or directory" "FAIL" \
+            "Expected POSIX error string, got: '$f08_stderr'"
+    fi
+
+    # Should not contain Zig error names like "error.FileNotFound"
+    if [[ "$f08_stderr" == *"error."* ]]; then
+        print_test_result "ls error: no Zig error names" "FAIL" \
+            "Found Zig error name in message: '$f08_stderr'"
+    else
+        print_test_result "ls error: no Zig error names" "PASS"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -r (reverse sort)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -r reverse sort...${NC}"
+
+    local r_dir=$(create_temp_dir)
+    create_temp_file "a" "$r_dir/aaa.txt"
+    create_temp_file "b" "$r_dir/bbb.txt"
+    create_temp_file "c" "$r_dir/ccc.txt"
+
+    local r_output
+    r_output=$(NO_COLOR=1 "$binary" -1r "$r_dir" 2>/dev/null | strip_ansi)
+
+    local r_first
+    r_first=$(echo "$r_output" | head -1)
+    local r_last
+    r_last=$(echo "$r_output" | tail -1)
+
+    if [[ "$r_first" == "ccc.txt" && "$r_last" == "aaa.txt" ]]; then
+        print_test_result "ls -r reverse alphabetical order" "PASS"
+    else
+        print_test_result "ls -r reverse alphabetical order" "FAIL" \
+            "Expected ccc first, aaa last; got first='$r_first' last='$r_last'"
+    fi
+
+    # -r with -t: oldest first
+    local rt_dir=$(create_temp_dir)
+    create_temp_file "old" "$rt_dir/old.txt"
+    sleep 1
+    create_temp_file "new" "$rt_dir/new.txt"
+
+    local rt_output
+    rt_output=$(NO_COLOR=1 "$binary" -1rt "$rt_dir" 2>/dev/null | strip_ansi)
+    local rt_first
+    rt_first=$(echo "$rt_output" | head -1)
+
+    if [[ "$rt_first" == "old.txt" ]]; then
+        print_test_result "ls -rt oldest first" "PASS"
+    else
+        print_test_result "ls -rt oldest first" "FAIL" \
+            "Expected old.txt first, got '$rt_first'"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -F (classify)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -F classify indicators...${NC}"
+
+    local F_dir=$(create_temp_dir)
+    create_temp_file "regular" "$F_dir/regular.txt"
+    mkdir -p "$F_dir/subdir"
+    ln -s "$F_dir/regular.txt" "$F_dir/symlink.txt"
+    chmod +x "$F_dir/regular.txt"
+
+    local F_output
+    F_output=$(NO_COLOR=1 "$binary" -1F "$F_dir" 2>/dev/null | strip_ansi)
+
+    # Directories should have trailing /
+    if echo "$F_output" | grep -q "subdir/"; then
+        print_test_result "ls -F directory has /" "PASS"
+    else
+        print_test_result "ls -F directory has /" "FAIL" \
+            "Expected 'subdir/' in output: '$F_output'"
+    fi
+
+    # Symlinks should have trailing @
+    if echo "$F_output" | grep -q "symlink.txt@"; then
+        print_test_result "ls -F symlink has @" "PASS"
+    else
+        print_test_result "ls -F symlink has @" "FAIL" \
+            "Expected 'symlink.txt@' in output: '$F_output'"
+    fi
+
+    # Executable files should have trailing *
+    if echo "$F_output" | grep -q "regular.txt\*"; then
+        print_test_result "ls -F executable has *" "PASS"
+    else
+        print_test_result "ls -F executable has *" "FAIL" \
+            "Expected 'regular.txt*' in output: '$F_output'"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -m (comma-separated)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -m comma-separated...${NC}"
+
+    local m_dir=$(create_temp_dir)
+    create_temp_file "a" "$m_dir/alpha.txt"
+    create_temp_file "b" "$m_dir/beta.txt"
+    create_temp_file "c" "$m_dir/gamma.txt"
+
+    local m_output
+    m_output=$(NO_COLOR=1 "$binary" -m "$m_dir" 2>/dev/null | strip_ansi)
+
+    # Output should be comma-separated on one line
+    if [[ "$m_output" == *"alpha.txt"*","*"beta.txt"*","*"gamma.txt"* ]]; then
+        print_test_result "ls -m comma-separated output" "PASS"
+    else
+        print_test_result "ls -m comma-separated output" "FAIL" \
+            "Expected comma-separated list, got: '$m_output'"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -i (inode numbers)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -i inode numbers...${NC}"
+
+    local i_dir=$(create_temp_dir)
+    create_temp_file "inode content" "$i_dir/inodefile.txt"
+
+    local i_output
+    i_output=$(NO_COLOR=1 "$binary" -i -1 "$i_dir" 2>/dev/null | strip_ansi)
+
+    # Output should have a numeric inode before the filename
+    if echo "$i_output" | grep -qE '^[[:space:]]*[0-9]+ inodefile.txt$'; then
+        print_test_result "ls -i shows inode number" "PASS"
+    else
+        print_test_result "ls -i shows inode number" "FAIL" \
+            "Expected inode number before filename, got: '$i_output'"
+    fi
+
+    # Inode should match system stat
+    local i_expected_inode
+    i_expected_inode=$(stat -c %i "$i_dir/inodefile.txt" 2>/dev/null \
+        || /usr/bin/stat -f %i "$i_dir/inodefile.txt" 2>/dev/null)
+    if echo "$i_output" | grep -q "$i_expected_inode"; then
+        print_test_result "ls -i inode matches stat" "PASS"
+    else
+        print_test_result "ls -i inode matches stat" "FAIL" \
+            "Expected inode $i_expected_inode in output: '$i_output'"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -s (block size)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -s block sizes...${NC}"
+
+    local s_dir=$(create_temp_dir)
+    dd if=/dev/zero of="$s_dir/sfile" bs=1024 count=8 2>/dev/null
+
+    local s_output
+    s_output=$(NO_COLOR=1 "$binary" -s -1 "$s_dir" 2>/dev/null | strip_ansi)
+
+    # Should show a "total" line
+    if echo "$s_output" | grep -qE '^total [0-9]+'; then
+        print_test_result "ls -s shows total line" "PASS"
+    else
+        print_test_result "ls -s shows total line" "FAIL" \
+            "Expected 'total NNN' line, got: '$s_output'"
+    fi
+
+    # Each entry should have a block count prefix
+    if echo "$s_output" | grep "sfile" | grep -qE '^ *[0-9]+'; then
+        print_test_result "ls -s shows per-entry block count" "PASS"
+    else
+        print_test_result "ls -s shows per-entry block count" "FAIL" \
+            "Expected block count for sfile, got: $(echo "$s_output" | grep sfile)"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -c (ctime display)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -c ctime display...${NC}"
+
+    local c_dir=$(create_temp_dir)
+    create_temp_file "c content" "$c_dir/cfile.txt"
+    # Set mtime to a known past date
+    touch -t 202001010000 "$c_dir/cfile.txt"
+
+    local c_output
+    c_output=$(NO_COLOR=1 "$binary" -lc "$c_dir" 2>/dev/null | strip_ansi)
+
+    # -c shows ctime, which should be recent (not Jan 2020 mtime).
+    # The ctime is set when we create the file, so it should show
+    # current year/month, not "Jan  1  2020".
+    if echo "$c_output" | grep "cfile" | grep -q "Jan  1  2020"; then
+        print_test_result "ls -lc shows ctime not mtime" "FAIL" \
+            "Shows mtime (Jan 2020) instead of ctime"
+    else
+        print_test_result "ls -lc shows ctime not mtime" "PASS"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -u (atime display)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -u atime display...${NC}"
+
+    local u_dir=$(create_temp_dir)
+    create_temp_file "u content" "$u_dir/ufile.txt"
+    # Set both atime and mtime to known past date
+    touch -t 202501150000 "$u_dir/ufile.txt"
+
+    local u_output
+    u_output=$(NO_COLOR=1 "$binary" -lu "$u_dir" 2>/dev/null | strip_ansi)
+
+    # -u shows atime. touch -t sets both atime and mtime,
+    # so output should reflect Jan 15 2025.
+    if echo "$u_output" | grep "ufile" | grep -q "Jan"; then
+        print_test_result "ls -lu shows access time" "PASS"
+    else
+        print_test_result "ls -lu shows access time" "FAIL" \
+            "Expected Jan date for atime, got: $(echo "$u_output" | grep ufile)"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -p (append / to directories)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -p directory indicator...${NC}"
+
+    local p_dir=$(create_temp_dir)
+    create_temp_file "p content" "$p_dir/pfile.txt"
+    mkdir -p "$p_dir/psubdir"
+
+    local p_output
+    p_output=$(NO_COLOR=1 "$binary" -1p "$p_dir" 2>/dev/null | strip_ansi)
+
+    # Directories should have trailing /
+    if echo "$p_output" | grep -q "psubdir/"; then
+        print_test_result "ls -p appends / to directory" "PASS"
+    else
+        print_test_result "ls -p appends / to directory" "FAIL" \
+            "Expected 'psubdir/' in output: '$p_output'"
+    fi
+
+    # Regular files should NOT have trailing /
+    if echo "$p_output" | grep -q "pfile.txt/"; then
+        print_test_result "ls -p no / on regular file" "FAIL" \
+            "Regular file has trailing slash"
+    else
+        print_test_result "ls -p no / on regular file" "PASS"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -k (block size in KB)
+    # ================================================================
+    echo -e "${CYAN}Testing ls -k kilobyte block size...${NC}"
+
+    local k_dir=$(create_temp_dir)
+    dd if=/dev/zero of="$k_dir/kfile" bs=1024 count=8 2>/dev/null
+
+    # -sk should show blocks in 1K units
+    local k_output
+    k_output=$(NO_COLOR=1 "$binary" -sk -1 "$k_dir" 2>/dev/null | strip_ansi)
+
+    # Block count for an 8K file should be around 8 in 1K blocks
+    local k_blocks
+    k_blocks=$(echo "$k_output" | grep "kfile" | awk '{print $1}')
+    if [[ -n "$k_blocks" && "$k_blocks" -ge 8 && "$k_blocks" -le 16 ]]; then
+        print_test_result "ls -sk shows 1K block count" "PASS"
+    else
+        print_test_result "ls -sk shows 1K block count" "FAIL" \
+            "Expected ~8 blocks for 8K file, got: '$k_blocks' (line: $(echo "$k_output" | grep kfile))"
+    fi
+
+    # -k with -l should also show per-entry blocks
+    local kl_output
+    kl_output=$(NO_COLOR=1 "$binary" -slk "$k_dir" 2>/dev/null | strip_ansi)
+
+    if echo "$kl_output" | grep "kfile" | grep -qE '^ *[0-9]+ +[-dlrwxst]'; then
+        print_test_result "ls -slk shows per-entry 1K blocks" "PASS"
+    else
+        print_test_result "ls -slk shows per-entry 1K blocks" "FAIL" \
+            "Expected block count before permissions: $(echo "$kl_output" | grep kfile)"
+    fi
+
+    # ================================================================
+    # AUDIT: Test gap coverage for -n (numeric IDs, long format)
+    # Verifies -n shows numeric UID/GID instead of names.
+    # ================================================================
+    echo -e "${CYAN}Testing ls -n numeric ID format...${NC}"
+
+    local n_dir=$(create_temp_dir)
+    create_temp_file "n content" "$n_dir/nfile.txt"
+
+    local n_output
+    n_output=$(NO_COLOR=1 "$binary" -n "$n_dir" 2>/dev/null | strip_ansi)
+
+    # Should show numeric UID and GID (not username/groupname)
+    # The UID/GID fields should be all digits
+    local n_line
+    n_line=$(echo "$n_output" | grep "nfile.txt")
+
+    # Extract owner and group fields (fields 3 and 4 in long format)
+    local n_owner n_group
+    n_owner=$(echo "$n_line" | awk '{print $3}')
+    n_group=$(echo "$n_line" | awk '{print $4}')
+
+    if [[ "$n_owner" =~ ^[0-9]+$ && "$n_group" =~ ^[0-9]+$ ]]; then
+        print_test_result "ls -n shows numeric owner and group" "PASS"
+    else
+        print_test_result "ls -n shows numeric owner and group" "FAIL" \
+            "Expected numeric IDs, got owner='$n_owner' group='$n_group' (line: '$n_line')"
+    fi
 }

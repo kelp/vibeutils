@@ -270,6 +270,72 @@ test_nl() {
      2	\\:\\:\\:
      3	world" "$binary" -d '' -b a "$f43_file"
 
+    # ========== AUDIT WAVE 4: nl IMPORTANT findings ==========
+
+    echo -e "${CYAN}Testing audit: -f footer numbering style...${NC}"
+
+    # CRITICAL: -f flag has zero behavioral tests
+    # GNU nl with -f a should number footer lines
+    local aud_sec_file=$(create_temp_file $'\\:\\:\\:\nHEADER\n\\:\\:\nbody1\nbody2\n\\:\nFOOTER')
+
+    # -f a: footer lines are numbered (counter continues from body)
+    test_command_output "nl audit -f a numbers footer lines" \
+$'\n       HEADER\n\n     1\tbody1\n     2\tbody2\n\n     3\tFOOTER' \
+        "$binary" -f a "$aud_sec_file"
+
+    # Default: footer lines should NOT be numbered
+    test_command_output "nl audit default footer not numbered" \
+$'\n       HEADER\n\n     1\tbody1\n     2\tbody2\n\n       FOOTER' \
+        "$binary" "$aud_sec_file"
+
+    echo -e "${CYAN}Testing audit: -d custom section delimiter...${NC}"
+
+    # CRITICAL: -d flag has zero behavioral tests
+    # GNU nl -d '@@' treats @@@@@@ as header, @@@@ as body, @@ as footer
+    local aud_dfile=$(create_temp_file $'@@@@@@\nHEADER\n@@@@\nbody1\nbody2\n@@\nFOOTER')
+    test_command_output "nl audit -d @@ custom delimiter" \
+$'\n       HEADER\n\n     1\tbody1\n     2\tbody2\n\n       FOOTER' \
+        "$binary" -d '@@' "$aud_dfile"
+
+    echo -e "${CYAN}Testing audit: -l join blank lines...${NC}"
+
+    # IMPORTANT: -l N has zero tests
+    # With -b a -l 2: consecutive blank lines are joined; only every Nth
+    # blank in a run gets a number, others are not numbered.
+    # GNU behavior: with -l 2, in a run of 3 blank lines, the 2nd gets
+    # a number (it completes the first group of 2), the 3rd does not.
+    local aud_lfile=$(create_temp_file $'line1\n\n\n\nline2')
+
+    # -b a -l 2: two consecutive blanks count as one logical blank
+    # GNU nl -b a -l 2 on "line1\n\n\n\nline2":
+    #   1  line1
+    #
+    #   2
+    #
+    #   3  line2
+    test_command_output "nl audit -b a -l 2 join blanks" \
+"     1	line1
+
+     2
+
+     3	line2" \
+        "$binary" -b a -l 2 "$aud_lfile"
+
+    echo -e "${CYAN}Testing audit: -p stronger behavioral test...${NC}"
+
+    # IMPORTANT: -p test was grep-only; verify full output
+    local aud_pfile=$(create_temp_file $'line1\nline2\n\\:\\:\\:\nline3\nline4')
+
+    # Without -p: number resets to 1 at header boundary
+    test_command_output "nl audit reset at header boundary" \
+$'     1\tline1\n     2\tline2\n\n     1\tline3\n     2\tline4' \
+        "$binary" -b a -h a "$aud_pfile"
+
+    # With -p: number continues across page boundary
+    test_command_output "nl audit -p continues numbering across pages" \
+$'     1\tline1\n     2\tline2\n\n     3\tline3\n     4\tline4' \
+        "$binary" -p -b a -h a "$aud_pfile"
+
     # Cleanup
     cleanup_test_session
     echo -e "${GREEN}nl tests completed${NC}"

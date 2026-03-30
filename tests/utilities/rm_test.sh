@@ -825,4 +825,62 @@ test_rm() {
         fi
     fi
     rm -rf "$symlink_target_dir"
+
+    echo -e "${CYAN}Testing -d flag (remove empty directories)...${NC}"
+
+    # -d removes empty directories without -r
+    local d_empty_dir=$(create_temp_dir)
+    test_command_exit_code "rm -d empty directory exits 0" 0 "$binary" -d "$d_empty_dir"
+    if [[ ! -d "$d_empty_dir" ]]; then
+        print_test_result "rm -d empty directory removed" "PASS"
+    else
+        print_test_result "rm -d empty directory removed" "FAIL" "Directory still exists"
+        rmdir "$d_empty_dir" 2>/dev/null
+    fi
+
+    # -d refuses non-empty directory
+    local d_nonempty_dir=$(create_temp_dir)
+    create_temp_file "content" "$d_nonempty_dir/file.txt"
+    test_command_exit_code "rm -d non-empty directory fails" 1 "$binary" -d "$d_nonempty_dir" 2>/dev/null
+    if [[ -d "$d_nonempty_dir" ]]; then
+        print_test_result "rm -d non-empty dir preserved" "PASS"
+    else
+        print_test_result "rm -d non-empty dir preserved" "FAIL" "Directory was removed"
+    fi
+    rm -rf "$d_nonempty_dir"
+
+    # -d also removes regular files
+    local d_regular=$(create_temp_file "regular file")
+    test_command_exit_code "rm -d regular file exits 0" 0 "$binary" -d "$d_regular"
+    if [[ ! -e "$d_regular" ]]; then
+        print_test_result "rm -d regular file removed" "PASS"
+    else
+        print_test_result "rm -d regular file removed" "FAIL" "File still exists"
+        rm -f "$d_regular"
+    fi
+
+    echo -e "${CYAN}Testing -P flag (overwrite before removal)...${NC}"
+
+    # -P is a MUST-tier flag; must be accepted without error
+    local p_file=$(create_temp_file "overwrite test content")
+    test_command_exit_code "rm -P file exits 0" 0 "$binary" -P "$p_file"
+    if [[ ! -e "$p_file" ]]; then
+        print_test_result "rm -P file removed" "PASS"
+    else
+        print_test_result "rm -P file removed" "FAIL" "File still exists"
+        rm -f "$p_file"
+    fi
+
+    echo -e "${CYAN}Testing --no-preserve-root flag...${NC}"
+
+    # --no-preserve-root on a non-root target should work normally
+    local npr_file=$(create_temp_file "no-preserve-root test")
+    test_command_exit_code "rm --no-preserve-root file exits 0" 0 \
+        "$binary" --no-preserve-root "$npr_file"
+    if [[ ! -e "$npr_file" ]]; then
+        print_test_result "rm --no-preserve-root file removed" "PASS"
+    else
+        print_test_result "rm --no-preserve-root file removed" "FAIL" "File still exists"
+        rm -f "$npr_file"
+    fi
 }

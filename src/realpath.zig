@@ -742,3 +742,54 @@ test "realpath: -e flag fails when last component missing (stricter than default
     try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
     try testing.expect(stderr_buffer.items.len > 0);
 }
+
+// Audit: error messages use @errorName (Zig symbols like "FileNotFound")
+// instead of POSIX strings ("No such file or directory"). GNU realpath
+// uses POSIX error strings in all error messages.
+test "realpath: error message uses POSIX string not Zig @errorName" {
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // -e on a nonexistent path triggers the error message code path
+    const args = [_][]const u8{ "-e", "/nonexistent_vibeutils_xyz" };
+    const result = try runRealpath(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 1), result);
+    // GNU says "No such file or directory", not "FileNotFound"
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+    // Must NOT contain the Zig error name
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "FileNotFound") == null);
+}
+
+// Audit: -e output content never verified — existing tests only check
+// exit code. Verify that -e on an existing path outputs the resolved path.
+test "realpath: -e on existing path outputs resolved path" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-e", "/tmp" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    // Output must be an absolute path
+    try testing.expect(std.fs.path.isAbsolute(trimmed));
+    // Output must end with "tmp" (or be /tmp, or /private/tmp on macOS)
+    try testing.expect(std.mem.endsWith(u8, trimmed, "tmp"));
+}
+
+// Audit: --relative-to and --relative-base are only tested with -s.
+// Without -s, the base dir is resolved via realpathAlloc. Verify this
+// works for existing paths in default mode (no -s flag).
+test "realpath: --relative-to without -s resolves existing paths" {
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // Use well-known existing paths: /usr as base, /usr/bin as target
+    // Without -s, both paths are resolved via realpathAlloc (default mode)
+    const args = [_][]const u8{ "--relative-to=/usr", "/usr/bin" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("bin\n", stdout_buffer.items);
+}

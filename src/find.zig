@@ -4454,3 +4454,346 @@ test "find: -size -2 excludes 513-byte file (block rounding)" {
     // twoblk.txt (513 bytes = 2 blocks) should NOT match -size -2
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "twoblk.txt") == null);
 }
+
+// ================================================================
+// Audit finding U4: -exec MUST-tier primary has no unit test
+// ================================================================
+test "find: -exec runs command and filters on exit code" {
+    // -exec is an action, so it suppresses implicit -print.
+    // To verify it works, combine with explicit -print:
+    //   -exec /bin/true {} ; -print  => true AND print => file printed
+    //   -exec /bin/false {} ; -print => false AND print => nothing printed
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("target.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Test 1: -exec /bin/true {} ; -print => file printed
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/bin/true", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") != null);
+    }
+
+    // Test 2: -exec /bin/false {} ; -print => nothing printed
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/bin/false", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // -exec /bin/false returns false, so AND -print never fires
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") == null);
+    }
+}
+
+// ================================================================
+// Audit finding U8: -user MUST-tier primary has no unit test
+// ================================================================
+test "find: -user matches files by username" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("myfile.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Get the UID of the test file, then look up the username
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "myfile.txt" });
+    const stat_buf = try doStat(file_path, false);
+    const pw = getpwuid(stat_buf.uid);
+    try testing.expect(pw != null);
+    const username = std.mem.sliceTo(pw.?.pw_name, 0);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-user", username }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "myfile.txt") != null);
+}
+
+// ================================================================
+// Audit finding U9: -group MUST-tier primary has no unit test
+// ================================================================
+test "find: -group matches files by group name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("grpfile.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Get the GID of the test file, then look up the group name
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "grpfile.txt" });
+    const stat_buf = try doStat(file_path, false);
+    const gr = getgrgid(stat_buf.gid);
+    try testing.expect(gr != null);
+    const groupname = std.mem.sliceTo(gr.?.gr_name, 0);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-group", groupname }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "grpfile.txt") != null);
+}
+
+// ================================================================
+// Audit finding U10: -nogroup MUST-tier primary has no unit test
+// ================================================================
+test "find: -nogroup matches nothing for normal files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("normalfile.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // Files created by this user have a valid group; -nogroup should
+    // not match anything.
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-nogroup" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "normalfile.txt") == null);
+}
+
+// ================================================================
+// Audit finding U12: -newer MUST-tier primary has no unit test
+// (only -mnewer alias is tested)
+// ================================================================
+test "find: -newer matches files modified after reference" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create reference file first
+    const ref = try tmp.dir.createFile("old_ref.txt", .{});
+    ref.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Set the reference file's mtime to the past so newly created files
+    // will have a later modification time
+    const past = std.time.timestamp() - 3600; // 1 hour ago
+    const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
+    const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
+    var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    @memcpy(ref_path_buf[0..ref_abs_path.len], ref_abs_path);
+    ref_path_buf[ref_abs_path.len] = 0;
+    const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
+    var times = [2]std.posix.timespec{ past_ts, past_ts };
+    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+
+    // Create the test file (will have current mtime)
+    const f = try tmp.dir.createFile("newer.txt", .{});
+    f.close();
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -newer compares mtime of found file against mtime of reference file
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-newer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+    // old_ref.txt should NOT match -newer old_ref.txt (not newer than itself)
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "old_ref.txt") == null);
+}
+
+// ================================================================
+// Audit finding U13: -L MUST-tier option has no unit test
+// ================================================================
+test "find: -L follows symlinks to directories" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a real directory with a file
+    try tmp.dir.makeDir("realdir");
+    const f = try tmp.dir.createFile("realdir/deep.txt", .{});
+    f.close();
+
+    // Create a symlink to that directory
+    try tmp.dir.symLink("realdir", "linkdir", .{ .is_directory = true });
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Without -L, find should NOT descend into linkdir (it's a symlink)
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-name", "deep.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // Should find deep.txt under realdir but NOT under linkdir
+        const output = stdout_buf.items;
+        var count: usize = 0;
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, output, pos, "deep.txt")) |idx| {
+            count += 1;
+            pos = idx + 1;
+        }
+        try testing.expectEqual(@as(usize, 1), count);
+    }
+
+    // With -L, find should follow the symlink and descend into linkdir too
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ "-L", dir_path, "-name", "deep.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // With -L, should find deep.txt under both realdir and linkdir
+        const output = stdout_buf.items;
+        var count: usize = 0;
+        var pos: usize = 0;
+        while (std.mem.indexOfPos(u8, output, pos, "deep.txt")) |idx| {
+            count += 1;
+            pos = idx + 1;
+        }
+        try testing.expectEqual(@as(usize, 2), count);
+    }
+}
+
+// ================================================================
+// Audit finding U13: -H MUST-tier option has no unit test
+// ================================================================
+test "find: -H follows only command-line symlinks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a real directory with a file
+    try tmp.dir.makeDir("target");
+    const f = try tmp.dir.createFile("target/inner.txt", .{});
+    f.close();
+
+    // Create a symlink to that directory at top level
+    try tmp.dir.symLink("target", "toplink", .{ .is_directory = true });
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const link_path = try std.fs.path.join(allocator, &.{ dir_path, "toplink" });
+
+    // With -H, passing the symlink as the starting path should follow it
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    const exit_code = runFind(allocator, &[_][]const u8{ "-H", link_path, "-name", "inner.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // -H should follow the symlink given on the command line
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "inner.txt") != null);
+}
+
+// ================================================================
+// Audit finding U13: -follow in expression position has no unit test
+// Finding H7: -follow only recognized before paths, not in expression
+// ================================================================
+test "find: -follow in expression position is accepted" {
+    // GNU/macOS find allow -follow as a deprecated expression primary.
+    // Our implementation only recognizes it as a global option (before paths).
+    // When -follow appears after another primary, it should still work.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f = try tmp.dir.createFile("file.txt", .{});
+    f.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+    // -follow after -maxdepth should be accepted, not "unknown predicate"
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-maxdepth", "1", "-follow" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // Should not produce an error about unknown predicate
+    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+}
+
+// ================================================================
+// Audit finding U14: -and/-a MUST-tier operator has no unit test
+// ================================================================
+test "find: -a and -and operators combine predicates" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f1 = try tmp.dir.createFile("hello.txt", .{});
+    f1.close();
+    const f2 = try tmp.dir.createFile("hello.md", .{});
+    f2.close();
+    const f3 = try tmp.dir.createFile("world.txt", .{});
+    f3.close();
+
+    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+
+    // Test -a (short form)
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        // -name "hello*" -a -name "*.txt" should match only hello.txt
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-name", "hello*", "-a", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.txt") != null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.md") == null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.txt") == null);
+    }
+
+    // Test -and (long form)
+    {
+        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-name", "hello*", "-and", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.txt") != null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.md") == null);
+        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.txt") == null);
+    }
+}

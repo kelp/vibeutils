@@ -1864,3 +1864,137 @@ test "F35: percent-A hex float uppercase" {
     try testing.expect(std.mem.startsWith(u8, buffer.items, "0X"));
     try testing.expect(std.mem.indexOf(u8, buffer.items, "P") != null);
 }
+
+// ========== AUDIT WAVE 4: printf IMPORTANT findings ==========
+
+// IMPORTANT: %d with non-numeric input should warn on stderr and exit 1
+// GNU printf '%d\n' abc outputs "0\n" to stdout, warns on stderr, exits 1.
+// Our implementation silently returns "0\n" and exits 0.
+test "audit: printf %d with non-numeric input exits 1 and warns" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%d\\n", "abc" };
+    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU outputs "0\n" to stdout
+    try testing.expectEqualStrings("0\n", stdout_buf.items);
+    // Must exit 1 (not 0) when argument is not a valid number
+    try testing.expectEqual(@as(u8, 1), result);
+    // Must emit a warning on stderr
+    try testing.expect(stderr_buf.items.len > 0);
+}
+
+// IMPORTANT: %d with partial numeric input (e.g. "5abc") should also warn
+test "audit: printf %d with partial numeric input warns" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%d", "5abc" };
+    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU outputs "5" for partial numeric
+    try testing.expectEqualStrings("5", stdout_buf.items);
+    // Must exit 1 and warn
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(stderr_buf.items.len > 0);
+}
+
+// Test gap: %i format specifier (synonym for %d)
+// GNU printf '%i\n' 42 outputs "42\n"
+test "audit: printf %i format specifier" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%i", "42" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("42", buffer.items);
+}
+
+// Test gap: %i with negative number
+test "audit: printf %i negative" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%i", "-7" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-7", buffer.items);
+}
+
+// Test gap: %E format specifier (uppercase scientific notation)
+// GNU printf '%E\n' 1234.5 outputs "1.234500E+03\n"
+test "audit: printf %E uppercase scientific" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%E", "1234.5" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("1.234500E+03", buffer.items);
+}
+
+// Test gap: %G format specifier (uppercase general float)
+// GNU printf '%G\n' 0.00001 outputs "1E-05\n"
+test "audit: printf %G uppercase general" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%G", "0.00001" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    // Must contain uppercase E, not lowercase e
+    try testing.expect(std.mem.indexOf(u8, buffer.items, "E") != null);
+}
+
+// Test gap: * dynamic width
+// GNU printf '%*d\n' 10 42 outputs "        42\n"
+test "audit: printf dynamic width with *" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%*d", "10", "42" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("        42", buffer.items);
+}
+
+// IMPORTANT: Negative * width implies left-justify
+// GNU printf '"%*d"\n' -5 42 outputs '"42   "'
+test "audit: printf negative dynamic width implies left-justify" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%*d", "-5", "42" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("42   ", buffer.items);
+}
+
+// Test gap: space-sign flag
+// GNU printf '% d\n' 42 outputs " 42\n" (space before positive number)
+test "audit: printf space-sign flag positive" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "% d", "42" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(" 42", buffer.items);
+}
+
+// GNU printf '% d\n' -42 outputs "-42\n" (negative sign replaces space)
+test "audit: printf space-sign flag negative" {
+    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "% d", "-42" };
+    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-42", buffer.items);
+}
+
+// %u is already tested in "printf unsigned integer" above -- no gap.

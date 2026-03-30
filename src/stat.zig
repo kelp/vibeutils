@@ -1976,3 +1976,205 @@ test "stat -f produces sane block size on this platform" {
     try testing.expect(block_size >= 512);
     try testing.expect(block_size <= 1048576);
 }
+
+// Audit: Device line uses BSD format "1fh/31d" instead of GNU "major,minor"
+// decimal. GNU stat outputs "Device: 0,31" (decimal major,minor with no
+// letter suffixes). Our implementation outputs "Device: 1fh/31d".
+test "stat default output Device line uses GNU major,minor format" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{test_path};
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+
+    // Find the Device line
+    const dev_pos = std.mem.indexOf(u8, stdout_buffer.items, "Device:") orelse
+        return error.TestExpectedEqual;
+    const rest = stdout_buffer.items[dev_pos..];
+    const eol = std.mem.indexOf(u8, rest, "\n") orelse rest.len;
+    const dev_line = rest[0..eol];
+
+    // GNU format: "Device: <dec>,<dec>" — no 'h' or 'd' suffix
+    // BSD format: "Device: <hex>h/<dec>d" — has letter suffixes
+    // Must NOT contain the BSD letter suffixes
+    try testing.expect(std.mem.indexOf(u8, dev_line, "h/") == null);
+    try testing.expect(std.mem.indexOf(u8, dev_line, "d\t") == null);
+}
+
+// Audit: %b (blocks allocated) has no unit test.
+test "stat -c format: blocks allocated %b" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    try test_file.writeAll("hello");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "%b", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    // %b must be a non-negative integer
+    const blocks = try std.fmt.parseInt(i64, trimmed, 10);
+    try testing.expect(blocks >= 0);
+    // The value should be a reasonable number for a 5-byte file
+    // (typically 8 blocks of 512 bytes each)
+    try testing.expect(blocks <= 1024);
+}
+
+// Audit: %G (group name) has no unit test. Verify it outputs the
+// group name matching the file's GID, not a numeric fallback.
+test "stat -c format: group name %G" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "%G", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    // Group name should not be empty
+    try testing.expect(trimmed.len > 0);
+    // Group name should not be purely numeric (that would mean the
+    // name lookup failed and fell back to printing the GID)
+    const is_numeric = for (trimmed) |ch| {
+        if (ch < '0' or ch > '9') break false;
+    } else true;
+    try testing.expect(!is_numeric);
+}
+
+// Audit: %N (quoted file name with symlink arrow) has no unit test.
+// For a regular file, %N should output '<path>' (single-quoted).
+// For a symlink, %N should output '<link>' -> '<target>'.
+test "stat -c format: %N regular file is quoted" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "%N", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
+}
+
+test "stat -c format: %N symlink shows arrow" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("target.txt", .{});
+    try test_file.writeAll("content");
+    test_file.close();
+
+    try tmp_dir.dir.symLink("target.txt", "link.txt", .{});
+
+    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
+    defer testing.allocator.free(symlink_path);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "%N", symlink_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // GNU stat -c '%N' on a symlink: 'link' -> 'target'
+    const expected = try std.fmt.allocPrint(testing.allocator, "'{s}' -> 'target.txt'\n", .{symlink_path});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, stdout_buffer.items);
+}
+
+// Audit: %x, %y, %z (human-readable timestamps) have no unit tests.
+// Verify %y output is a human-readable timestamp, not an epoch number.
+// GNU format: "YYYY-MM-DD HH:MM:SS.NNNNNNNNN +ZZZZ"
+test "stat -c format: %y mtime human-readable timestamp" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-c", "%y", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    // Must be non-empty
+    try testing.expect(trimmed.len > 0);
+    // A human-readable timestamp contains dashes and colons
+    // An epoch-seconds value would contain only digits
+    try testing.expect(std.mem.indexOf(u8, trimmed, "-") != null);
+    try testing.expect(std.mem.indexOf(u8, trimmed, ":") != null);
+    // Must contain a dot separating seconds from nanoseconds
+    try testing.expect(std.mem.indexOf(u8, trimmed, ".") != null);
+}
+
+// Audit: --printf no-trailing-newline not tested. The key behavioral
+// difference from -c/--format is that --printf does NOT add a trailing
+// newline when the format string has none.
+test "stat --printf does not add trailing newline" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
+    try test_file.writeAll("hello");
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    // --printf=%s without \n should produce "5" with no trailing newline
+    const args = [_][]const u8{ "--printf=%s", test_path };
+    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Must be exactly "5" with no newline
+    try testing.expectEqualStrings("5", stdout_buffer.items);
+}

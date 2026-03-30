@@ -295,6 +295,70 @@ test_tail() {
     local expected_mixed=$'==> '"$test_file1"$' <==\nSingle line file\n==> /dev/null <=='
     test_command_output "tail mixed normal and special" "$expected_mixed" "$binary" -n 1 "$test_file1" /dev/null
 
+    echo -e "${CYAN}Testing block count flag (-b)...${NC}"
+
+    # -b N: last N 512-byte blocks
+    # Create a 2048-byte file (4 blocks of 512)
+    local block_file="$TEMP_DIR/block_test.bin"
+    dd if=/dev/zero bs=512 count=4 2>/dev/null | tr '\0' 'A' > "$block_file"
+    # Overwrite second half with B's for distinguishable content
+    dd if=/dev/zero bs=512 count=2 2>/dev/null | tr '\0' 'B' >> "$block_file"
+    # Now file is: 2048 A's + 1024 B's = 3072 bytes = 6 blocks
+
+    # tail -b 2 should return last 1024 bytes (2 blocks of B's)
+    local block_out
+    block_out=$("$binary" -b 2 "$block_file" | wc -c | tr -d ' ')
+    if [[ "$block_out" -eq 1024 ]]; then
+        print_test_result "tail -b 2 returns 1024 bytes" "PASS"
+    else
+        print_test_result "tail -b 2 returns 1024 bytes" "FAIL" \
+            "Expected 1024 bytes, got $block_out"
+    fi
+
+    # tail -b 1 should return last 512 bytes
+    local block_out1
+    block_out1=$("$binary" -b 1 "$block_file" | wc -c | tr -d ' ')
+    if [[ "$block_out1" -eq 512 ]]; then
+        print_test_result "tail -b 1 returns 512 bytes" "PASS"
+    else
+        print_test_result "tail -b 1 returns 512 bytes" "FAIL" \
+            "Expected 512 bytes, got $block_out1"
+    fi
+
+    # --blocks= long form
+    local block_long_out
+    block_long_out=$("$binary" --blocks=1 "$block_file" | wc -c | tr -d ' ')
+    if [[ "$block_long_out" -eq 512 ]]; then
+        print_test_result "tail --blocks=1 returns 512 bytes" "PASS"
+    else
+        print_test_result "tail --blocks=1 returns 512 bytes" "FAIL" \
+            "Expected 512 bytes, got $block_long_out"
+    fi
+    rm -f "$block_file"
+
+    echo -e "${CYAN}Testing reverse flag (-r)...${NC}"
+
+    local rev_file=$(create_temp_file $'alpha\nbeta\ngamma\ndelta')
+
+    # -r reverses all lines
+    test_command_output "tail -r reverses all lines" \
+        $'delta\ngamma\nbeta\nalpha' \
+        "$binary" -r "$rev_file"
+
+    # -r -n 3 reverses last 3 lines
+    test_command_output "tail -r -n 3 reverses last 3" \
+        $'delta\ngamma\nbeta' \
+        "$binary" -r -n 3 "$rev_file"
+
+    # -r single line file
+    local rev_single=$(create_temp_file "only")
+    test_command_output "tail -r single line" "only" \
+        "$binary" -r "$rev_single"
+
+    # -r from stdin
+    test_command_output "tail -r from stdin" $'c\nb\na' \
+        bash -c "printf 'a\nb\nc' | '$binary' -r"
+
     echo -e "${CYAN}Testing large -c value via stdin (OOM bug F64)...${NC}"
 
     # F64: tail -c with large value on empty stdin should exit 0, not OOM.
