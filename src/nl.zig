@@ -613,6 +613,22 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     } orelse {
         return @intFromEnum(common.ExitCode.misuse);
     };
+    defer {
+        // Free compiled regex patterns to prevent leaks
+        inline for (.{ opts.body_style, opts.header_style, opts.footer_style }) |style| {
+            switch (style) {
+                .regex => |regex| {
+                    c.regfree(regex);
+                    if (comptime is_linux) {
+                        regex_c.regex_heap_free(regex);
+                    } else {
+                        allocator.destroy(regex);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
 
     var state = NlState{ .line_number = opts.start };
     var has_error = false;
