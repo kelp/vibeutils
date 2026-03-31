@@ -63,7 +63,7 @@ fn parseRangeList(allocator: Allocator, list_str: []const u8) ![]Range {
     var ranges = std.ArrayListUnmanaged(Range){};
     defer ranges.deinit(allocator);
 
-    var iter = std.mem.tokenizeScalar(u8, list_str, ',');
+    var iter = std.mem.tokenizeAny(u8, list_str, ", ");
     while (iter.next()) |token| {
         const trimmed = std.mem.trim(u8, token, " ");
         if (trimmed.len == 0) continue;
