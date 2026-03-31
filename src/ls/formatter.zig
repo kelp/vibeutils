@@ -325,6 +325,12 @@ pub fn printLongFormatEntry(allocator: std.mem.Allocator, entry: Entry, writer: 
 
 /// Print a single entry in long format with time column alignment
 fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, writer: anytype, options: LsOptions, style: anytype, max_time_width: usize) !void {
+    // Per-entry block count if -s is active
+    if (options.show_blocks) {
+        const blocks = calculateDisplayBlocks(entry, options);
+        try writer.print("{d: >4} ", .{blocks});
+    }
+
     // Permission string
     var perm_buf: [10]u8 = undefined;
     const perms = if (entry.stat) |stat|
@@ -471,7 +477,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
     if (options.show_blocks) {
         var max_block_width: usize = 0;
         for (entries) |entry| {
-            max_block_width = @max(max_block_width, blockCountWidth(calculateBlocks(entry)));
+            max_block_width = @max(max_block_width, blockCountWidth(calculateDisplayBlocks(entry, options)));
         }
         block_prefix_width = max_block_width + 1; // block count + space
     }
@@ -503,7 +509,7 @@ pub fn printColumnar(allocator: std.mem.Allocator, entries: []Entry, writer: any
 
             // Print block count prefix if -s
             if (options.show_blocks) {
-                const blocks = calculateBlocks(entry);
+                const blocks = calculateDisplayBlocks(entry, options);
                 // Right-align block count to max_block_width
                 const bw = blockCountWidth(blocks);
                 const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
@@ -538,6 +544,17 @@ fn calculateBlocks(entry: Entry) u64 {
     return 0;
 }
 
+/// Calculate display blocks, respecting -k (1024-byte units)
+fn calculateDisplayBlocks(entry: Entry, options: LsOptions) u64 {
+    if (entry.stat) |stat| {
+        if (options.kilobytes) {
+            return (stat.size + 1023) / 1024;
+        }
+        return (stat.size + BLOCK_ROUNDING) / BLOCK_SIZE;
+    }
+    return 0;
+}
+
 /// Print entries in columnar format sorted across rows (-x flag)
 pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, writer: anytype, options: LsOptions, style: anytype) !void {
     if (entries.len == 0) return;
@@ -550,7 +567,7 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
     if (options.show_blocks) {
         var max_block_width: usize = 0;
         for (entries) |entry| {
-            max_block_width = @max(max_block_width, blockCountWidth(calculateBlocks(entry)));
+            max_block_width = @max(max_block_width, blockCountWidth(calculateDisplayBlocks(entry, options)));
         }
         block_prefix_width = max_block_width + 1; // block count + space
     }
@@ -572,7 +589,7 @@ pub fn printColumnarAcross(allocator: std.mem.Allocator, entries: []Entry, write
     for (entries, 0..) |entry, idx| {
         // Print block count prefix if -s
         if (options.show_blocks) {
-            const blocks = calculateBlocks(entry);
+            const blocks = calculateDisplayBlocks(entry, options);
             const bw = blockCountWidth(blocks);
             const pad_count = if (block_prefix_width > bw + 1) block_prefix_width - bw - 1 else 0;
             for (0..pad_count) |_| {
@@ -611,7 +628,7 @@ pub fn printEntries(
     // Calculate total blocks for -s or -l
     if (options.show_blocks or options.long_format) {
         for (entries) |entry| {
-            total_blocks += calculateBlocks(entry);
+            total_blocks += calculateDisplayBlocks(entry, options);
         }
     }
 
@@ -624,7 +641,7 @@ pub fn printEntries(
         for (entries) |entry| {
             // Print block count if -s
             if (options.show_blocks) {
-                try writer.print("{d: >4} ", .{calculateBlocks(entry)});
+                try writer.print("{d: >4} ", .{calculateDisplayBlocks(entry, options)});
             }
             // Print inode number if requested
             if (options.show_inodes) {

@@ -208,9 +208,9 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
     }
 
     // Create options (-h and -n are both aliases for --no-dereference)
-    // -F implies -f (force removal including directories)
+    // -F implies -f only when -s is also given (macOS spec: -F is no-op without -s)
     const options = LinkOptions{
-        .force = parsed_args.force or parsed_args.force_dir,
+        .force = parsed_args.force or (parsed_args.force_dir and parsed_args.symbolic),
         .interactive = parsed_args.interactive,
         .no_dereference = parsed_args.no_dereference or parsed_args.no_deref_h,
         .physical = parsed_args.P,
@@ -219,7 +219,7 @@ pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writ
         .target_directory = parsed_args.target_directory,
         .no_target_directory = parsed_args.no_target_directory,
         .verbose = parsed_args.verbose,
-        .force_dir = parsed_args.force_dir,
+        .force_dir = parsed_args.force_dir and parsed_args.symbolic,
         .warn_missing = parsed_args.warn_missing,
         .backup = parsed_args.backup,
     };
@@ -464,6 +464,15 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 if (input.len == 0 or (input[0] != 'y' and input[0] != 'Y')) {
                     return;
                 }
+
+                // User confirmed: remove existing file before creating new link
+                std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
+                    error.FileNotFound => {}, // Already removed
+                    else => {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                        return err;
+                    },
+                };
             }
         } else {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "'{s}': File exists", .{link_name});
@@ -473,7 +482,8 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
     // Create backup of destination if it exists and backup mode is enabled
     if (link_exists and options.backup) {
-        const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{link_name});
+        const suffix = std.posix.getenv("SIMPLE_BACKUP_SUFFIX") orelse "~";
+        const backup_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ link_name, suffix });
         defer allocator.free(backup_name);
         std.posix.rename(link_name, backup_name) catch |backup_err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create backup '{s}': {s}", .{ backup_name, @errorName(backup_err) });
@@ -508,11 +518,16 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         }
     }
 
+    // Track the effective target path for verbose output (may differ from
+    // the original target when --relative computes a relative path).
+    var effective_target = target;
+    // Arena for relative path computation; must outlive verbose output.
+    var rel_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer rel_arena.deinit();
+
     if (options.symbolic) {
         // Create symbolic link
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const temp_allocator = arena.allocator();
+        const temp_allocator = rel_arena.allocator();
 
         var target_path = target;
 
@@ -548,6 +563,8 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 return err;
             };
         }
+
+        effective_target = target_path;
 
         std.fs.cwd().symLink(target_path, link_name, .{}) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
@@ -602,8 +619,8 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
     if (options.verbose) {
         if (options.symbolic) {
-            // Use -> for symbolic links
-            try stdout_writer.print("'{s}' -> '{s}'\n", .{ link_name, target });
+            // Use -> for symbolic links; show the effective target (relative if -r)
+            try stdout_writer.print("'{s}' -> '{s}'\n", .{ link_name, effective_target });
         } else {
             // Use => for hard links
             try stdout_writer.print("'{s}' => '{s}'\n", .{ link_name, target });

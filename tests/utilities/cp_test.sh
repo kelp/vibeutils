@@ -828,6 +828,7 @@ test_cp() {
     local ro_dir=$(create_temp_dir)
     local ro_src=$(create_temp_file "force overwrite source")
     create_temp_file "existing dest" "$ro_dir/dest.txt"
+    chmod 444 "$ro_dir/dest.txt"
     chmod 555 "$ro_dir"
 
     local ro_cmd ro_out ro_err ro_exit

@@ -173,24 +173,141 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
     }
 }
 
-/// Parse octal mode string (e.g. "755") into file mode
+/// Parse octal or symbolic mode string (e.g. "755" or "u=rwx,go=rx") into file mode
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
-    // For now, support only octal modes
-    // TODO: Support symbolic modes like u+rwx
     if (mode_str.len == 0) {
         return error.InvalidMode;
     }
 
-    const mode = std.fmt.parseInt(u32, mode_str, 8) catch {
-        return error.InvalidMode;
-    };
+    // Try octal first: 1-4 octal digits
+    if (mode_str.len >= 1 and mode_str.len <= 4) {
+        var is_octal = true;
+        for (mode_str) |c| {
+            if (c < '0' or c > '7') {
+                is_octal = false;
+                break;
+            }
+        }
+        if (is_octal) {
+            var octal: u32 = 0;
+            for (mode_str) |c| {
+                octal = octal * 8 + (c - '0');
+            }
+            if (octal > 0o7777) {
+                return error.InvalidMode;
+            }
+            return @intCast(octal);
+        }
+    }
 
-    // Validate mode is reasonable (3 or 4 digits)
-    if (mode > 0o7777) {
+    // Reject purely numeric strings that aren't valid octal
+    var all_numeric = true;
+    for (mode_str) |c| {
+        if (!std.ascii.isDigit(c)) {
+            all_numeric = false;
+            break;
+        }
+    }
+    if (all_numeric) {
         return error.InvalidMode;
     }
 
-    return @intCast(mode);
+    // Try symbolic mode parsing (e.g. "u=rwx,go=rx", "a+rx", "go-w")
+    return parseSymbolicMode(mode_str);
+}
+
+/// Parse a symbolic mode string into a file mode value.
+/// Starts from mode 0 and applies each comma-separated clause.
+fn parseSymbolicMode(mode_str: []const u8) !std.fs.File.Mode {
+    // Accumulate permission bits: user(6..8), group(3..5), other(0..2)
+    var result: u32 = 0;
+
+    var iter = std.mem.splitScalar(u8, mode_str, ',');
+    while (iter.next()) |clause| {
+        result = try applySymbolicClause(result, clause);
+    }
+
+    return @intCast(result);
+}
+
+/// Apply a single symbolic mode clause (e.g. "u=rwx", "go-w", "a+rx")
+fn applySymbolicClause(current: u32, clause: []const u8) !u32 {
+    if (clause.len < 2) return error.InvalidMode;
+
+    var i: usize = 0;
+    var who: u8 = 0; // bitmask: 1=user, 2=group, 4=other
+
+    // Parse who characters
+    while (i < clause.len) {
+        switch (clause[i]) {
+            'u' => who |= 1,
+            'g' => who |= 2,
+            'o' => who |= 4,
+            'a' => who |= 7,
+            '+', '-', '=' => break,
+            else => return error.InvalidMode,
+        }
+        i += 1;
+    }
+
+    // Default to 'a' (all) when no who specified
+    if (who == 0) who = 7;
+
+    if (i >= clause.len) return error.InvalidMode;
+
+    const op = clause[i];
+    i += 1;
+
+    // Parse permission characters
+    var perms: u3 = 0;
+    while (i < clause.len) {
+        switch (clause[i]) {
+            'r' => perms |= 4,
+            'w' => perms |= 2,
+            'x' => perms |= 1,
+            else => return error.InvalidMode,
+        }
+        i += 1;
+    }
+
+    var result = current;
+
+    // Apply to each target
+    if (who & 1 != 0) { // user
+        switch (op) {
+            '+' => result |= @as(u32, perms) << 6,
+            '-' => result &= ~(@as(u32, perms) << 6),
+            '=' => {
+                result &= ~@as(u32, 0o700);
+                result |= @as(u32, perms) << 6;
+            },
+            else => return error.InvalidMode,
+        }
+    }
+    if (who & 2 != 0) { // group
+        switch (op) {
+            '+' => result |= @as(u32, perms) << 3,
+            '-' => result &= ~(@as(u32, perms) << 3),
+            '=' => {
+                result &= ~@as(u32, 0o070);
+                result |= @as(u32, perms) << 3;
+            },
+            else => return error.InvalidMode,
+        }
+    }
+    if (who & 4 != 0) { // other
+        switch (op) {
+            '+' => result |= @as(u32, perms),
+            '-' => result &= ~@as(u32, perms),
+            '=' => {
+                result &= ~@as(u32, 0o007);
+                result |= @as(u32, perms);
+            },
+            else => return error.InvalidMode,
+        }
+    }
+
+    return result;
 }
 
 /// Convert system error to user-friendly POSIX-style message
@@ -228,10 +345,18 @@ fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u
     }
 }
 
-/// Create path components one at a time, supporting -v and -m per intermediate directory.
+/// Create path components one at a time, supporting -v per directory
+/// and -m on the leaf directory only (GNU behavior).
 fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     // Handle absolute paths - start with "/"
     const is_absolute = path.len > 0 and path[0] == '/';
+
+    // Count non-empty components to identify the leaf
+    var count_iter = std.mem.splitScalar(u8, path, '/');
+    var total_components: usize = 0;
+    while (count_iter.next()) |component| {
+        if (component.len > 0) total_components += 1;
+    }
 
     // Split path into components
     var iter = std.mem.splitScalar(u8, path, '/');
@@ -245,9 +370,13 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
     }
 
     var first = true;
+    var component_index: usize = 0;
     while (iter.next()) |component| {
         // Skip empty components (from double slashes or trailing slashes)
         if (component.len == 0) continue;
+
+        component_index += 1;
+        const is_leaf = (component_index == total_components);
 
         // Add separator between components (not before first)
         if (!first and !(cumulative.items.len == 1 and cumulative.items[0] == '/')) {
@@ -269,9 +398,11 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         };
 
         // Directory was created successfully
-        // Set mode if specified
-        if (options.mode) |mode| {
-            try setDirectoryMode(current_path, mode, prog_name, stderr_writer, allocator);
+        // GNU behavior: -m mode applies to the leaf directory only
+        if (is_leaf) {
+            if (options.mode) |mode| {
+                try setDirectoryMode(current_path, mode, prog_name, stderr_writer, allocator);
+            }
         }
 
         // Print verbose message for each directory created
@@ -485,6 +616,19 @@ test "parseMode rejects invalid modes" {
     try testing.expectError(error.InvalidMode, parseMode("1234567890")); // Too long/large
 }
 
+test "parseMode handles symbolic modes" {
+    // u=rwx,go=rx -> 755
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("u=rwx,go=rx"));
+    // a+rx -> 555 (from base 0)
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o555), try parseMode("a+rx"));
+    // u=rwx -> 700
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o700), try parseMode("u=rwx"));
+    // go-w from base 0 -> 0 (no change)
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o000), try parseMode("go-w"));
+    // a=rwx -> 777
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a=rwx"));
+}
+
 test "mkdir handles paths with double slashes" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
@@ -570,7 +714,7 @@ test "mkdir -pv prints each intermediate directory" {
     try testing.expect(std.mem.indexOf(u8, output, "test_pv_each/a/b'") != null);
 }
 
-test "mkdir -pm sets mode on intermediate directories" {
+test "mkdir -pm sets mode on leaf only (GNU behavior)" {
     if (builtin.os.tag == .windows) return;
 
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
@@ -582,18 +726,18 @@ test "mkdir -pm sets mode on intermediate directories" {
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify mode on the deepest directory
+    // Verify mode on the leaf directory
     const stat = try std.fs.cwd().statFile("test_pm_mode/sub/deep");
     const mode = stat.mode & 0o777;
     try testing.expectEqual(@as(u32, 0o700), mode);
 
-    // Verify mode on intermediate directory
+    // Intermediate directory should NOT have mode 700 (GNU behavior)
     const stat_mid = try std.fs.cwd().statFile("test_pm_mode/sub");
     const mode_mid = stat_mid.mode & 0o777;
-    try testing.expectEqual(@as(u32, 0o700), mode_mid);
+    try testing.expect(mode_mid != 0o700);
 }
 
-test "mkdir -pm sets mode on all directories including first parent" {
+test "mkdir -pm applies mode to leaf only, not parents (GNU behavior)" {
     if (builtin.os.tag == .windows) return;
 
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
@@ -605,17 +749,17 @@ test "mkdir -pm sets mode on all directories including first parent" {
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify mode on the first (root) parent directory
+    // First parent should NOT have mode 700 (GNU: intermediates get default)
     const stat_root = try std.fs.cwd().statFile("test_pm_all_levels");
     const mode_root = stat_root.mode & 0o777;
-    try testing.expectEqual(@as(u32, 0o700), mode_root);
+    try testing.expect(mode_root != 0o700);
 
-    // Verify mode on the middle intermediate directory
+    // Middle intermediate should NOT have mode 700
     const stat_mid = try std.fs.cwd().statFile("test_pm_all_levels/mid");
     const mode_mid = stat_mid.mode & 0o777;
-    try testing.expectEqual(@as(u32, 0o700), mode_mid);
+    try testing.expect(mode_mid != 0o700);
 
-    // Verify mode on the leaf directory
+    // Leaf directory should have mode 700
     const stat_leaf = try std.fs.cwd().statFile("test_pm_all_levels/mid/leaf");
     const mode_leaf = stat_leaf.mode & 0o777;
     try testing.expectEqual(@as(u32, 0o700), mode_leaf);

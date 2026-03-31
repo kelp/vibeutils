@@ -65,6 +65,8 @@ pub const OwnershipSpec = struct {
     warn_octal_confusion: bool = false,
 
     /// Parse ownership specification string like "user:group", "user:", ":group", "user"
+    /// Per GNU coreutils: if a colon follows the user name but no group name is
+    /// given, the user's login group is used as the new group.
     pub fn parse(spec: []const u8, allocator: std.mem.Allocator) Error!OwnershipSpec {
         if (spec.len == 0) return Error.InvalidFormat;
 
@@ -81,9 +83,17 @@ pub const OwnershipSpec = struct {
                 result.user = try parseUser(user_part, allocator);
             }
 
-            // Parse group part (if not empty)
+            // Parse group part
             if (group_part.len > 0) {
                 result.group = try parseGroup(group_part, allocator);
+            } else if (user_part.len > 0) {
+                // "user:" with no group — set to user's login group
+                if (result.user) |uid| {
+                    const user_info = getUserById(uid, allocator) catch
+                        return Error.UserNotFound;
+                    defer allocator.free(user_info.name);
+                    result.group = user_info.gid;
+                }
             }
         } else {
             // User only format

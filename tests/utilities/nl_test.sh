@@ -278,9 +278,9 @@ test_nl() {
     # GNU nl with -f a should number footer lines
     local aud_sec_file=$(create_temp_file $'\\:\\:\\:\nHEADER\n\\:\\:\nbody1\nbody2\n\\:\nFOOTER')
 
-    # -f a: footer lines are numbered (counter continues from body)
+    # -f a: footer lines are numbered (counter resets per POSIX/GNU)
     test_command_output "nl audit -f a numbers footer lines" \
-$'\n       HEADER\n\n     1\tbody1\n     2\tbody2\n\n     3\tFOOTER' \
+$'\n       HEADER\n\n     1\tbody1\n     2\tbody2\n\n     1\tFOOTER' \
         "$binary" -f a "$aud_sec_file"
 
     # Default: footer lines should NOT be numbered
@@ -308,18 +308,15 @@ $'\n       HEADER\n\n     1\tbody1\n     2\tbody2\n\n       FOOTER' \
 
     # -b a -l 2: two consecutive blanks count as one logical blank
     # GNU nl -b a -l 2 on "line1\n\n\n\nline2":
-    #   1  line1
-    #
-    #   2
-    #
-    #   3  line2
+    #   1\tline1   (numbered)
+    #   (7 spaces) (unnumbered blank)
+    #   2\t        (numbered blank, completes group of 2)
+    #   (7 spaces) (unnumbered blank)
+    #   3\tline2   (numbered)
+    local aud_l_expected
+    aud_l_expected=$(printf '     1\tline1\n       \n     2\t\n       \n     3\tline2')
     test_command_output "nl audit -b a -l 2 join blanks" \
-"     1	line1
-
-     2
-
-     3	line2" \
-        "$binary" -b a -l 2 "$aud_lfile"
+        "$aud_l_expected" "$binary" -b a -l 2 "$aud_lfile"
 
     echo -e "${CYAN}Testing audit: -p stronger behavioral test...${NC}"
 

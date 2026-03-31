@@ -107,8 +107,10 @@ pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     // Map long form aliases to short form
     const access_only = parsed_args.a;
     const modify_only = parsed_args.m;
-    const no_create = parsed_args.c or parsed_args.no_create;
     const no_dereference = parsed_args.h or parsed_args.no_dereference;
+    // -h/--no-dereference implies -c: creating a regular file when the
+    // intent is to act on a symlink makes no sense (GNU behavior).
+    const no_create = parsed_args.c or parsed_args.no_create or no_dereference;
 
     // Create options struct
     const options = TouchOptions{

@@ -505,7 +505,7 @@ fn runTrWithInput(
     const max_positionals: usize = if (args.delete and !args.squeeze_repeats) 1 else 2;
     if (args.positionals.len > max_positionals) {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'", .{args.positionals[max_positionals]});
-        return @intFromEnum(common.ExitCode.misuse);
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     // Parse SET1

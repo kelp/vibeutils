@@ -475,7 +475,7 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
         switch (err) {
             error.UnknownFlag => {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+                return @intFromEnum(common.ExitCode.misuse);
             },
             error.MissingValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, "seq", "option missing required argument", .{});

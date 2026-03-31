@@ -296,7 +296,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     const options = LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
-        .long_format = args.long_format or args.omit_owner or args.omit_group,
+        .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
         .human_readable = args.human_readable,
         .kilobytes = args.kilobytes,
         .one_per_line = args.one_per_line,
@@ -356,17 +356,57 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     if (paths.len == 0) {
         // No paths specified, list current directory
         try listDirectory(".", writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
+    } else if (paths.len == 1) {
+        // Single path: no headers needed
+        listDirectory(paths[0], writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+            had_error = true;
+        };
     } else {
-        // List each specified path
-        // When multiple paths are given, print headers between them
-        for (paths, 0..) |path, i| {
-            if (paths.len > 1) {
-                if (i > 0) try writer.writeAll("\n");
-                try writer.print("{s}:\n", .{path});
+        // Multiple operands: GNU-style separation.
+        // 1. List file operands first (no headers).
+        // 2. List directory operands with "dir:" headers.
+        var file_count: usize = 0;
+        var dir_count: usize = 0;
+
+        for (paths) |path| {
+            const stat = common.file.FileInfo.stat(path) catch {
+                // Errors are handled later during listDirectory
+                dir_count += 1; // count as dir so it gets its own section
+                continue;
+            };
+            if (stat.kind == .directory) {
+                dir_count += 1;
+            } else {
+                file_count += 1;
             }
+        }
+
+        // First pass: list file operands (no headers)
+        for (paths) |path| {
+            const stat = common.file.FileInfo.stat(path) catch continue;
+            if (stat.kind != .directory) {
+                listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+                    had_error = true;
+                };
+            }
+        }
+
+        // Second pass: list directory operands with headers
+        var dir_idx: usize = 0;
+        for (paths) |path| {
+            const is_dir = blk: {
+                const stat = common.file.FileInfo.stat(path) catch break :blk true;
+                break :blk stat.kind == .directory;
+            };
+            if (!is_dir) continue;
+
+            // Blank line separator between sections
+            if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
+            try writer.print("{s}:\n", .{path});
             listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
                 had_error = true;
             };
+            dir_idx += 1;
         }
     }
 
@@ -499,18 +539,31 @@ fn printIconTest(writer: anytype) !void {
     try writer.writeAll("  3. Restart your terminal\n");
 }
 
+/// Convert a Zig error to a POSIX-style error string.
+fn posixErrorName(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "No such file or directory",
+        error.AccessDenied => "Permission denied",
+        error.NotDir => "Not a directory",
+        error.NameTooLong => "File name too long",
+        error.SymLinkLoop => "Too many levels of symbolic links",
+        error.InputOutput => "Input/output error",
+        else => @errorName(err),
+    };
+}
+
 /// List a directory or file, handling both files and directories appropriately
 /// Errors are printed but don't stop execution except for BrokenPipe
 fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {}", .{err});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {s}", .{posixErrorName(err)});
         return err;
     };
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, posixErrorName(err) });
         return err;
     };
 
@@ -555,7 +608,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     }
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ path, err });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, posixErrorName(err) });
         return err;
     };
     defer dir.close();

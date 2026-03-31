@@ -178,34 +178,9 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.general_error);
     }
 
-    // Handle -c/-m mutual exclusion: "last flag wins" behavior (GNU wc compatibility)
+    // GNU wc: -c and -m are NOT mutually exclusive.
+    // When both are specified, both columns are printed (chars before bytes).
     var opts = options;
-    if (opts.bytes and opts.chars) {
-        // Both -c and -m specified, need to determine which was last
-        // Use a sequence counter to handle combined flags like -cm/-mc correctly
-        var last_byte_char: enum { none, bytes, chars } = .none;
-
-        for (args) |arg| {
-            if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--bytes")) {
-                last_byte_char = .bytes;
-            } else if (std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "--chars")) {
-                last_byte_char = .chars;
-            } else if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
-                // Handle combined flags like -cm or -mc
-                for (arg[1..]) |flag_char| {
-                    if (flag_char == 'c') last_byte_char = .bytes;
-                    if (flag_char == 'm') last_byte_char = .chars;
-                }
-            }
-        }
-
-        // Last flag wins
-        switch (last_byte_char) {
-            .bytes => opts.chars = false,
-            .chars => opts.bytes = false,
-            .none => opts.bytes = false, // fallback
-        }
-    }
 
     // If no count options specified, default to lines, words, and bytes
     if (!opts.lines and !opts.words and !opts.bytes and !opts.chars and !opts.max_line_length) {
@@ -301,6 +276,10 @@ fn countReader(reader: anytype, options: WcOptions) !FileStats {
     var in_word = false;
     var current_line_length: u64 = 0;
 
+    // UTF-8 decoding state for -L display width calculation
+    var utf8_remaining: u3 = 0; // continuation bytes remaining
+    var utf8_codepoint: u21 = 0; // accumulated codepoint
+
     while (true) {
         const chunk = reader.peekGreedy(1) catch |err| switch (err) {
             error.EndOfStream => break,
@@ -320,8 +299,49 @@ fn countReader(reader: anytype, options: WcOptions) !FileStats {
                     stats.max_line_length = current_line_length;
                 }
                 current_line_length = 0;
+                utf8_remaining = 0; // reset UTF-8 state on newline
                 in_word = false; // newline breaks words
+            } else if (options.max_line_length) {
+                // Compute display width for -L flag
+                if (byte == '\t') {
+                    // Tab: advance to next 8-column tab stop
+                    current_line_length = (current_line_length + 8) & ~@as(u64, 7);
+                    utf8_remaining = 0;
+                } else if (utf8_remaining > 0) {
+                    // UTF-8 continuation byte
+                    utf8_codepoint = (utf8_codepoint << 6) | @as(u21, byte & 0x3F);
+                    utf8_remaining -= 1;
+                    if (utf8_remaining == 0) {
+                        // Codepoint complete - add its display width
+                        current_line_length += common.unicode.codepointWidth(utf8_codepoint);
+                    }
+                } else if (byte < 0x80) {
+                    // ASCII character
+                    if (byte >= 0x20 and byte != 0x7F) {
+                        current_line_length += 1;
+                    }
+                    // Control chars (except tab/newline handled above): width 0
+                } else {
+                    // UTF-8 start byte
+                    if (byte & 0xE0 == 0xC0) {
+                        // 2-byte sequence
+                        utf8_remaining = 1;
+                        utf8_codepoint = @as(u21, byte & 0x1F);
+                    } else if (byte & 0xF0 == 0xE0) {
+                        // 3-byte sequence
+                        utf8_remaining = 2;
+                        utf8_codepoint = @as(u21, byte & 0x0F);
+                    } else if (byte & 0xF8 == 0xF0) {
+                        // 4-byte sequence
+                        utf8_remaining = 3;
+                        utf8_codepoint = @as(u21, byte & 0x07);
+                    } else {
+                        // Invalid start byte - count as width 1
+                        current_line_length += 1;
+                    }
+                }
             } else {
+                // No -L flag: simple byte count for line length
                 current_line_length += 1;
             }
 
@@ -373,8 +393,8 @@ fn addStats(total: *FileStats, stats: FileStats) void {
 
 /// Print statistics for a file
 fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options: WcOptions, style_inst: anytype) !void {
-    // Print counts in the order: lines words bytes/chars max_line_length filename
-    // Mutual exclusion between -c and -m is handled during argument processing
+    // Print counts in GNU column order: lines words chars bytes max_line_length filename
+    // When both -c and -m are given, both columns appear (chars before bytes).
     if (options.lines) {
         try applyWcColumnColor(style_inst, .lines);
         try writer.print("{d: >8}", .{stats.lines});
@@ -385,14 +405,14 @@ fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options:
         try writer.print("{d: >8}", .{stats.words});
         try style_inst.reset();
     }
-    if (options.bytes) {
-        try applyWcColumnColor(style_inst, .bytes_chars);
-        try writer.print("{d: >8}", .{stats.bytes});
-        try style_inst.reset();
-    }
     if (options.chars) {
         try applyWcColumnColor(style_inst, .bytes_chars);
         try writer.print("{d: >8}", .{stats.chars});
+        try style_inst.reset();
+    }
+    if (options.bytes) {
+        try applyWcColumnColor(style_inst, .bytes_chars);
+        try writer.print("{d: >8}", .{stats.bytes});
         try style_inst.reset();
     }
     if (options.max_line_length) {
@@ -433,7 +453,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\      --color=WHEN      colorize columns; WHEN is 'always', 'auto' (default),
         \\                          or 'never'
         \\
-        \\The options -c and -m are mutually exclusive.
+        \\When both -c and -m are given, both character and byte counts are shown.
         \\
     );
 }

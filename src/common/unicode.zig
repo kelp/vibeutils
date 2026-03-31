@@ -89,7 +89,7 @@ fn calculateUnicodeWidth(str: []const u8) usize {
 }
 
 /// Get the display width of a single Unicode codepoint
-fn codepointWidth(codepoint: u21) usize {
+pub fn codepointWidth(codepoint: u21) usize {
     // Control characters have zero width
     if (codepoint < 0x20 or (codepoint >= 0x7F and codepoint < 0xA0)) {
         return 0;

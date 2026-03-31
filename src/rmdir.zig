@@ -210,16 +210,18 @@ fn removeSingleDirectory(path: []const u8, stdout_writer: anytype, stderr_writer
     // stderr_writer unused here, errors handled by caller
     _ = stderr_writer;
 
+    // Print verbose message before attempting removal (GNU behavior:
+    // the message indicates the attempt, not success).
+    if (options.verbose) {
+        try stdout_writer.print("rmdir: removing directory, '{s}'\n", .{path});
+    }
+
     std.fs.cwd().deleteDir(path) catch |err| {
         return switch (err) {
             error.DirNotEmpty => if (options.ignore_fail_on_non_empty) return else err,
             else => err,
         };
     };
-
-    if (options.verbose) {
-        try stdout_writer.print("rmdir: removing directory, '{s}'\n", .{path});
-    }
 }
 
 /// Remove directory with its parent directories.

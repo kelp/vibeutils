@@ -401,9 +401,8 @@ test_mkdir() {
     fi
     rm -rf "$mkdir_dup_dir"
 
-    # Regression test: mkdir -p -m 700 applies mode to intermediate dirs
-    # All created directories (including intermediates) should have mode 700,
-    # not just the leaf directory.
+    # GNU behavior: mkdir -p -m 700 applies mode to leaf only.
+    # Intermediate directories get default permissions (umask-based).
     echo -e "${CYAN}Testing -p -m mode on intermediate directories...${NC}"
 
     if [[ "$PLATFORM" != "windows" ]]; then
@@ -412,7 +411,7 @@ test_mkdir() {
         test_command_succeeds "mkdir -p -m 700 creates tree" \
             "$binary" -p -m 700 "$pm_base/a/b/c"
 
-        # Check leaf directory
+        # Check leaf directory - should have mode 700
         local pm_leaf_perms=$(get_file_permissions "$pm_base/a/b/c")
         if [[ "$pm_leaf_perms" == "700" ]]; then
             print_test_result "mkdir -p -m 700 leaf dir mode" "PASS"
@@ -421,22 +420,22 @@ test_mkdir() {
                 "Expected 700, got $pm_leaf_perms"
         fi
 
-        # Check intermediate directory
+        # Intermediate directory should NOT have mode 700 (GNU behavior)
         local pm_mid_perms=$(get_file_permissions "$pm_base/a/b")
-        if [[ "$pm_mid_perms" == "700" ]]; then
+        if [[ "$pm_mid_perms" != "700" ]]; then
             print_test_result "mkdir -p -m 700 intermediate dir mode" "PASS"
         else
             print_test_result "mkdir -p -m 700 intermediate dir mode" "FAIL" \
-                "Expected 700, got $pm_mid_perms"
+                "Expected default mode (not 700), got $pm_mid_perms"
         fi
 
-        # Check top-level created directory
+        # Top-level created directory should NOT have mode 700 (GNU behavior)
         local pm_top_perms=$(get_file_permissions "$pm_base/a")
-        if [[ "$pm_top_perms" == "700" ]]; then
+        if [[ "$pm_top_perms" != "700" ]]; then
             print_test_result "mkdir -p -m 700 top dir mode" "PASS"
         else
             print_test_result "mkdir -p -m 700 top dir mode" "FAIL" \
-                "Expected 700, got $pm_top_perms"
+                "Expected default mode (not 700), got $pm_top_perms"
         fi
 
         rm -rf "$pm_base"
