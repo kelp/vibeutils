@@ -597,7 +597,9 @@ test "head handles invalid line count" {
     var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-n", TEST_NEGATIVE_VALUE };
+    // -n -5 is now valid (means "all but last 5 lines"), so use
+    // a truly invalid value instead
+    const args = [_][]const u8{ "-n", "abc" };
     const result = try runHead(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 2), result);
