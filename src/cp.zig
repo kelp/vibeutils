@@ -50,15 +50,16 @@ const CpConfig = struct {
         const is_preserve = self.preserve or is_archive;
 
         // Resolve symlink mode from flags:
-        // -L → follow_all, -H → follow_cmdline, -P or -d or -N → follow_none
+        // -L → follow_all, -H → follow_cmdline, -P or -d → follow_none
         // -a implies -P (follow_none)
+        // -N suppresses BSD file flags with -p; does NOT affect symlink following
         // Default: follow_all without -R, follow_none with -R
-        // Priority: -L > -H > -P/-d/-N > default (resolveConflicts ensures last-wins)
+        // Priority: -L > -H > -P/-d > default (resolveConflicts ensures last-wins)
         const symlink_mode: SymlinkMode = if (self.L)
             .follow_all
         else if (self.H)
             .follow_cmdline
-        else if (self.P or self.no_dereference or self.N or is_archive)
+        else if (self.P or self.no_dereference or is_archive)
             .follow_none
         else if (is_recursive)
             .follow_none
@@ -1882,13 +1883,14 @@ test "cp: -s creates symbolic link instead of copy" {
     try testing.expect(try test_dir.isSymlink("dest_link.txt"));
 }
 
-test "cp: -N flag sets follow_none (alias for -P)" {
+test "cp: -N flag does not affect symlink following" {
     const args = [_][]const u8{ "-N", "/tmp/src", "/tmp/dst" };
     var config = try common.argparse.ArgParser.parse(CpConfig, testing.allocator, &args);
     defer testing.allocator.free(config.positionals);
     resolveConflicts(&config, &args);
     const rt = config.runtime();
-    try testing.expectEqual(SymlinkMode.follow_none, rt.symlink_mode);
+    // -N suppresses BSD file flags; default symlink mode without -R is follow_all
+    try testing.expectEqual(SymlinkMode.follow_all, rt.symlink_mode);
 }
 
 test "cp: --parents creates intermediate directories" {

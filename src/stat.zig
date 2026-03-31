@@ -17,8 +17,22 @@ const c = std.c;
 const time = common.time;
 extern "c" fn statfs(path: [*:0]const u8, buf: *StatFs) c_int;
 
-// macOS statfs structure
-const StatFs = extern struct {
+// Platform-specific statfs structure
+const StatFs = if (builtin.os.tag == .linux) extern struct {
+    f_type: c_long,
+    f_bsize: c_long,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: extern struct { val: [2]i32 },
+    f_namelen: c_long,
+    f_frsize: c_long,
+    f_flags: c_long,
+    f_spare: [4]c_long,
+} else extern struct {
+    // macOS statfs structure
     f_bsize: u32,
     f_iosize: i32,
     f_blocks: u64,
@@ -262,7 +276,7 @@ fn formatTimestamp(sec: i64, nsec: i64, fmt_buf: []u8) ![]const u8 {
         return error.TimeConversion;
     }
 
-    const year = @as(i32, tm.tm_year) + 1900;
+    const year: u32 = @intCast(@as(i32, tm.tm_year) + 1900);
     const mon = @as(u32, @intCast(tm.tm_mon)) + 1;
     const day: u32 = @intCast(tm.tm_mday);
     const hour: u32 = @intCast(tm.tm_hour);
@@ -421,22 +435,29 @@ fn expandFormatDirective(
             try writer.print("{d}", .{stat_buf.ino});
         },
         'm' => {
-            // Mount point -- requires statfs
-            var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-            if (path.len > std.fs.max_path_bytes) {
-                try writer.writeAll("?");
-                return;
-            }
-            @memcpy(path_buf[0..path.len], path);
-            path_buf[path.len] = 0;
-            const c_path = path_buf[0..path.len :0];
-
-            var fs_buf: StatFs = undefined;
-            if (statfs(c_path, &fs_buf) == 0) {
-                const mntonname = std.mem.sliceTo(&fs_buf.f_mntonname, 0);
-                try writer.writeAll(mntonname);
+            // Mount point -- requires statfs or /proc/self/mountinfo
+            if (builtin.os.tag == .linux) {
+                var mount_buf: [1024]u8 = undefined;
+                var dev_buf: [1024]u8 = undefined;
+                const info = lookupMountInfo(path, &mount_buf, &dev_buf);
+                try writer.writeAll(info.mount);
             } else {
-                try writer.writeAll("?");
+                var path_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
+                if (path.len > std.fs.max_path_bytes) {
+                    try writer.writeAll("?");
+                    return;
+                }
+                @memcpy(path_buf2[0..path.len], path);
+                path_buf2[path.len] = 0;
+                const c_path2 = path_buf2[0..path.len :0];
+
+                var fs_buf2: StatFs = undefined;
+                if (statfs(c_path2, &fs_buf2) == 0) {
+                    const mntonname = std.mem.sliceTo(&fs_buf2.f_mntonname, 0);
+                    try writer.writeAll(mntonname);
+                } else {
+                    try writer.writeAll("?");
+                }
             }
         },
         'n' => {
@@ -836,6 +857,110 @@ fn printTerseFormat(stat_buf: c.Stat, path: []const u8, writer: anytype) !void {
 // File system stat (statfs) output
 // ============================================================================
 
+/// Look up the filesystem type name from the magic number (Linux only).
+fn fsTypeName(f_type: c_long) []const u8 {
+    return switch (@as(u64, @bitCast(f_type))) {
+        0xEF53 => "ext2/ext3",
+        0x9123683E => "btrfs",
+        0x58465342 => "xfs",
+        0x3153464A => "jfs",
+        0x52654973 => "reiserfs",
+        0x01021994 => "tmpfs",
+        0x28cd3d45 => "cramfs",
+        0x73717368 => "squashfs",
+        0x9fa0 => "proc",
+        0x62656572 => "sysfs",
+        0x64626720 => "debugfs",
+        0xcafe4a11 => "bpf_fs",
+        0x63677270 => "cgroup2",
+        0x27e0eb => "cgroup",
+        0x1cd1 => "devpts",
+        0x2011bab0 => "autofs",
+        0x6969 => "nfs",
+        0xFF534D42 => "cifs",
+        0x137F => "minix",
+        0x4d44 => "msdos",
+        0x4006 => "fat",
+        0x65735546 => "fuse",
+        0x794c7630 => "overlayfs",
+        0xadf5 => "adfs",
+        0x00011954 => "ufs",
+        0x9fa2 => "usbdevice",
+        0x62646576 => "devtmpfs",
+        0x50495045 => "pipefs",
+        0x6e736673 => "nsfs",
+        else => "unknown",
+    };
+}
+
+/// Read mount point and device for a given path from /proc/self/mountinfo (Linux).
+/// Uses longest-prefix matching on mount points.
+fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) struct { mount: []const u8, dev: []const u8 } {
+    const file = std.fs.openFileAbsolute("/proc/self/mountinfo", .{}) catch
+        return .{ .mount = "?", .dev = "?" };
+    defer file.close();
+
+    // Resolve the path to an absolute path for matching
+    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch path;
+
+    // Read /proc/self/mountinfo into a buffer
+    var content_buf: [32768]u8 = undefined;
+    const bytes_read = file.readAll(&content_buf) catch
+        return .{ .mount = "?", .dev = "?" };
+    const content = content_buf[0..bytes_read];
+
+    var best_mount: []const u8 = "/";
+    var best_dev: []const u8 = "?";
+    var best_len: usize = 0;
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        // mountinfo format: id parent major:minor root mount_point ...
+        var fields: [10][]const u8 = undefined;
+        var count: usize = 0;
+        var iter = std.mem.splitScalar(u8, line, ' ');
+        while (iter.next()) |field| {
+            if (count < 10) {
+                fields[count] = field;
+                count += 1;
+            }
+        }
+        if (count < 5) continue;
+
+        const mount_point = fields[4];
+        // Match: mount_point is a prefix of abs_path (with boundary check)
+        const is_match = if (std.mem.eql(u8, mount_point, "/"))
+            true
+        else if (std.mem.startsWith(u8, abs_path, mount_point))
+            (abs_path.len == mount_point.len or abs_path[mount_point.len] == '/')
+        else
+            false;
+
+        if (is_match and mount_point.len > best_len) {
+            best_len = mount_point.len;
+            if (mount_point.len <= mount_buf.len) {
+                @memcpy(mount_buf[0..mount_point.len], mount_point);
+                best_mount = mount_buf[0..mount_point.len];
+            }
+            // Find device name after the " - " separator
+            if (std.mem.indexOf(u8, line, " - ")) |sep_pos| {
+                const after_sep = line[sep_pos + 3 ..];
+                // Format: fstype device options
+                var dev_iter = std.mem.splitScalar(u8, after_sep, ' ');
+                _ = dev_iter.next(); // fstype
+                if (dev_iter.next()) |device| {
+                    if (device.len <= dev_buf.len) {
+                        @memcpy(dev_buf[0..device.len], device);
+                        best_dev = dev_buf[0..device.len];
+                    }
+                }
+            }
+        }
+    }
+    return .{ .mount = best_mount, .dev = best_dev };
+}
+
 fn printFileSystemInfo(
     path: []const u8,
     writer: anytype,
@@ -851,21 +976,37 @@ fn printFileSystemInfo(
         return error.StatFsFailed;
     }
 
-    const fstype = std.mem.sliceTo(&fs_buf.f_fstypename, 0);
-    const mntonname = std.mem.sliceTo(&fs_buf.f_mntonname, 0);
-    const mntfromname = std.mem.sliceTo(&fs_buf.f_mntfromname, 0);
-
     try writer.print("  File: \"{s}\"\n", .{path});
-    try writer.print("    ID: {x}{x} Namelen: {d}     Type: {s}\n", .{
-        @as(u32, @bitCast(fs_buf.f_fsid.val[0])),
-        @as(u32, @bitCast(fs_buf.f_fsid.val[1])),
-        255, // macOS doesn't expose namelen in statfs
-        fstype,
-    });
-    try writer.print("Block size: {d}       Fundamental block size: {d}\n", .{
-        fs_buf.f_bsize,
-        fs_buf.f_bsize,
-    });
+
+    if (builtin.os.tag == .linux) {
+        const namelen: u64 = @intCast(fs_buf.f_namelen);
+        const fstype = fsTypeName(fs_buf.f_type);
+        try writer.print("    ID: {x}{x} Namelen: {d}     Type: {s}\n", .{
+            @as(u32, @bitCast(fs_buf.f_fsid.val[0])),
+            @as(u32, @bitCast(fs_buf.f_fsid.val[1])),
+            namelen,
+            fstype,
+        });
+        const bsize: u64 = @intCast(fs_buf.f_bsize);
+        const frsize: u64 = @intCast(fs_buf.f_frsize);
+        try writer.print("Block size: {d}       Fundamental block size: {d}\n", .{
+            bsize,
+            frsize,
+        });
+    } else {
+        const fstype = std.mem.sliceTo(&fs_buf.f_fstypename, 0);
+        try writer.print("    ID: {x}{x} Namelen: {d}     Type: {s}\n", .{
+            @as(u32, @bitCast(fs_buf.f_fsid.val[0])),
+            @as(u32, @bitCast(fs_buf.f_fsid.val[1])),
+            @as(u32, 255), // macOS doesn't expose namelen in statfs
+            fstype,
+        });
+        try writer.print("Block size: {d}       Fundamental block size: {d}\n", .{
+            fs_buf.f_bsize,
+            fs_buf.f_bsize,
+        });
+    }
+
     try writer.print("Blocks: Total: {d: <11}Free: {d: <11}Available: {d}\n", .{
         fs_buf.f_blocks,
         fs_buf.f_bfree,
@@ -875,8 +1016,19 @@ fn printFileSystemInfo(
         fs_buf.f_files,
         fs_buf.f_ffree,
     });
-    try writer.print(" Mount: {s}\n", .{mntonname});
-    try writer.print("  From: {s}\n", .{mntfromname});
+
+    if (builtin.os.tag == .linux) {
+        var mount_buf: [1024]u8 = undefined;
+        var dev_buf: [1024]u8 = undefined;
+        const info = lookupMountInfo(path, &mount_buf, &dev_buf);
+        try writer.print(" Mount: {s}\n", .{info.mount});
+        try writer.print("  From: {s}\n", .{info.dev});
+    } else {
+        const mntonname = std.mem.sliceTo(&fs_buf.f_mntonname, 0);
+        const mntfromname = std.mem.sliceTo(&fs_buf.f_mntfromname, 0);
+        try writer.print(" Mount: {s}\n", .{mntonname});
+        try writer.print("  From: {s}\n", .{mntfromname});
+    }
 }
 
 // ============================================================================
