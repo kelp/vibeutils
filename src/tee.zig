@@ -97,6 +97,7 @@ fn runTeeWithInput(
     defer multi_writer.deinit();
 
     var has_error = false;
+    var stdout_broken = false;
     var buffer: [8192]u8 = undefined;
 
     while (true) {
@@ -110,24 +111,88 @@ fn runTeeWithInput(
             break;
         }
 
-        multi_writer.write(buffer[0..bytes_read]) catch |err| {
-            if (args.diagnose_errors) {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "write error: {s}", .{@errorName(err)});
+        const data = buffer[0..bytes_read];
+
+        // Write to stdout unless it is already broken
+        if (!stdout_broken) {
+            stdout_writer.writeAll(data) catch |err| {
+                // Without -p, a broken stdout pipe means exit
+                // (matches GNU default SIGPIPE behavior).
+                if (!args.diagnose_errors) {
+                    has_error = true;
+                    break;
+                }
+                // With -p, mark stdout broken and continue
+                // writing to files.
+                stdout_broken = true;
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{errorToMessage(err)});
+                has_error = true;
+            };
+        }
+
+        // Write to each file output
+        for (multi_writer.files, multi_writer.is_stdout, args.positionals) |file, is_dash, name| {
+            if (is_dash) {
+                // "-" operand means another stdout copy
+                if (!stdout_broken) {
+                    stdout_writer.writeAll(data) catch |err| {
+                        if (!args.diagnose_errors) {
+                            has_error = true;
+                            // Don't break here; continue to
+                            // write to remaining files in this
+                            // iteration, then break outer loop
+                            stdout_broken = true;
+                        } else {
+                            stdout_broken = true;
+                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{errorToMessage(err)});
+                        }
+                        has_error = true;
+                    };
+                }
+            } else {
+                file.writeAll(data) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, errorToMessage(err) });
+                    has_error = true;
+                };
             }
-            has_error = true;
-            // Continue processing even if some writes fail
-        };
+        }
+
+        // Without -p, if stdout broke during file writes, stop
+        if (stdout_broken and !args.diagnose_errors) {
+            break;
+        }
     }
 
-    // Flush all outputs
-    multi_writer.flush() catch |err| {
-        if (args.diagnose_errors) {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", "flush error: {s}", .{@errorName(err)});
+    // Flush stdout
+    if (!stdout_broken) {
+        if (comptime std.meta.hasMethod(@TypeOf(stdout_writer), "flush")) {
+            stdout_writer.flush() catch |err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{errorToMessage(err)});
+                has_error = true;
+            };
         }
-        has_error = true;
-    };
+    }
 
     return @intFromEnum(if (has_error) common.ExitCode.general_error else common.ExitCode.success);
+}
+
+/// Convert Zig error to POSIX-style error message
+fn errorToMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AccessDenied => "Permission denied",
+        error.BrokenPipe => "Broken pipe",
+        error.ConnectionResetByPeer => "Connection reset by peer",
+        error.DiskQuota => "Disk quota exceeded",
+        error.FileNotFound => "No such file or directory",
+        error.FileTooBig => "File too large",
+        error.InputOutput => "Input/output error",
+        error.NoSpaceLeft => "No space left on device",
+        error.NotDir => "Not a directory",
+        error.OutOfMemory => "Cannot allocate memory",
+        error.PermissionDenied => "Permission denied",
+        error.ReadOnlyFileSystem => "Read-only file system",
+        else => @errorName(err),
+    };
 }
 
 /// Main entry point for the tee command
@@ -197,21 +262,21 @@ fn setupSignalIgnoring() !void {
     }
 }
 
-/// Multi-writer system that writes to stdout and multiple files simultaneously
-/// This version works with anytype writers for better testability
+/// Manages opened file handles for tee output targets.
+/// "-" operands are marked as stdout aliases; the caller
+/// writes to stdout directly and uses the is_stdout flag
+/// to skip them.
 fn MultiWriterGeneric(comptime StdoutWriter: type) type {
     return struct {
         const Self = @This();
 
         allocator: std.mem.Allocator,
-        stdout_writer: StdoutWriter,
         files: []std.fs.File,
         is_stdout: []bool,
 
-        /// Initialize multi-writer with stdout and file outputs.
-        /// Entries named "-" are treated as additional stdout
-        /// copies (GNU tee behavior).
-        pub fn init(allocator: std.mem.Allocator, stdout_writer: StdoutWriter, file_names: []const []const u8, append_mode: bool) !Self {
+        /// Open all output files. "-" entries are flagged as
+        /// stdout aliases (no file is opened for them).
+        pub fn init(allocator: std.mem.Allocator, _: StdoutWriter, file_names: []const []const u8, append_mode: bool) !Self {
             var files = try allocator.alloc(std.fs.File, file_names.len);
             errdefer allocator.free(files);
 
@@ -225,7 +290,6 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
                 }
             }
 
-            // Open all files ("-" means stdout)
             for (file_names, 0..) |file_name, i| {
                 if (std.mem.eql(u8, file_name, "-")) {
                     is_stdout[i] = true;
@@ -235,23 +299,13 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
                 }
                 is_stdout[i] = false;
                 if (append_mode) {
-                    // For append mode: try to open existing file, create if not found
                     files[i] = std.fs.cwd().openFile(file_name, .{ .mode = .write_only }) catch |open_err| switch (open_err) {
                         error.FileNotFound => try std.fs.cwd().createFile(file_name, .{ .read = false }),
-                        else => {
-                            // Error reporting is handled by caller
-                            return open_err;
-                        },
+                        else => return open_err,
                     };
-                    // Seek to end for append mode (only if file supports seeking)
-                    files[i].seekFromEnd(0) catch {
-                        // Some file types (pipes, devices) don't support seeking
-                        // This is expected and not an error for tee
-                    };
+                    files[i].seekFromEnd(0) catch {};
                 } else {
-                    // For normal mode, create/truncate file
                     files[i] = std.fs.cwd().createFile(file_name, .{ .read = false, .truncate = true }) catch |err| {
-                        // Error reporting is handled by caller
                         return err;
                     };
                 }
@@ -260,65 +314,18 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
 
             return Self{
                 .allocator = allocator,
-                .stdout_writer = stdout_writer,
                 .files = files,
                 .is_stdout = is_stdout,
             };
         }
 
-        /// Clean up resources
+        /// Close all opened file handles.
         pub fn deinit(self: *Self) void {
             for (self.files, self.is_stdout) |file, is_dash| {
                 if (!is_dash) file.close();
             }
             self.allocator.free(self.files);
             self.allocator.free(self.is_stdout);
-        }
-
-        /// Write data to all outputs
-        pub fn write(self: *Self, data: []const u8) !void {
-            var any_error = false;
-
-            // Always write to stdout (this is the core functionality of tee)
-            self.stdout_writer.writeAll(data) catch {
-                // Error will be handled by caller via any_error flag
-                any_error = true;
-            };
-
-            // Write to all file outputs; "-" entries go to stdout
-            for (self.files, self.is_stdout) |file, is_dash| {
-                if (is_dash) {
-                    self.stdout_writer.writeAll(data) catch {
-                        any_error = true;
-                    };
-                } else {
-                    file.writeAll(data) catch {
-                        any_error = true;
-                    };
-                }
-            }
-
-            if (any_error) {
-                return error.WriteError;
-            }
-        }
-
-        /// Flush all outputs
-        pub fn flush(self: *Self) !void {
-            var any_error = false;
-
-            // Try to flush stdout writer if it has a flush method
-            // In real usage, the main() function also handles flushing
-            // Use comptime check to see if flush method exists
-            if (comptime std.meta.hasMethod(@TypeOf(self.stdout_writer), "flush")) {
-                self.stdout_writer.flush() catch {
-                    any_error = true;
-                };
-            }
-
-            if (any_error) {
-                return error.FlushError;
-            }
         }
     };
 }
