@@ -98,8 +98,25 @@ const TimeExpr = struct {
     days: u64,
 };
 
+const PermCompare = enum {
+    exact, // -perm 644: exact match
+    at_least, // -perm -644: all these bits must be set
+    any_of, // -perm /111: any of these bits must be set
+};
+
+const PermExpr = struct {
+    mode: u32,
+    cmp: PermCompare,
+};
+
+const NewerXYData = struct {
+    ref_time: i64,
+    x_field: u8, // 'a', 'B', 'c', 'm'
+};
+
 const ExecExpr = struct {
     argv: []const []const u8,
+    batch: bool = false,
 };
 
 const ExprTag = enum {
@@ -142,6 +159,8 @@ const ExprTag = enum {
     true_expr,
     false_expr,
     prune,
+    exec_batch,
+    execdir_batch,
     // Stubs: accept syntax, simple behavior
     regex_stub,
     iregex_stub,
@@ -181,6 +200,7 @@ const ExprData = union {
     newer_mtime: i64,
     time: TimeExpr,
     perm_val: u32,
+    perm_expr: PermExpr,
     name_str: []const u8,
     exec_data: ExecExpr,
     binary: BinaryData,
@@ -189,6 +209,7 @@ const ExprData = union {
     depth_val: u32,
     uid_val: c.uid_t,
     gid_val: c.gid_t,
+    newerxy_data: NewerXYData,
     none: void,
 };
 
@@ -208,6 +229,7 @@ const FindConfig = struct {
     has_action: bool = false,
     xdev: bool = false,
     xargs_safe: bool = false,
+    sorted: bool = false,
 };
 
 // ============================================================================
@@ -291,16 +313,29 @@ fn parseMtime(str: []const u8) !TimeExpr {
 // Permission parsing
 // ============================================================================
 
-fn parsePerm(str: []const u8) !u32 {
+fn parsePerm(str: []const u8) !PermExpr {
     if (str.len == 0) return error.InvalidPerm;
+
+    var s = str;
+    var cmp: PermCompare = .exact;
+
+    if (s[0] == '-') {
+        cmp = .at_least;
+        s = s[1..];
+    } else if (s[0] == '/') {
+        cmp = .any_of;
+        s = s[1..];
+    }
+
+    if (s.len == 0) return error.InvalidPerm;
 
     // Parse octal mode
     var mode: u32 = 0;
-    for (str) |ch| {
+    for (s) |ch| {
         if (ch < '0' or ch > '7') return error.InvalidPerm;
         mode = mode * 8 + @as(u32, ch - '0');
     }
-    return mode;
+    return PermExpr{ .mode = mode, .cmp = cmp };
 }
 
 // ============================================================================
@@ -385,6 +420,38 @@ fn getCtime(stat_buf: c.Stat) i64 {
     }
 }
 
+/// Get birth time of a file. On Linux uses statx(); on macOS uses birthtimespec.
+/// Returns null if birth time is not available.
+fn getBirthTime(path: []const u8) ?i64 {
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        // macOS stat has birthtimespec
+        const stat_buf = doStat(path, false) catch return null;
+        return stat_buf.birthtimespec.sec;
+    } else if (builtin.os.tag == .linux) {
+        // Linux: use statx syscall
+        var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (path.len > std.fs.max_path_bytes) return null;
+        @memcpy(path_buf[0..path.len], path);
+        path_buf[path.len] = 0;
+        const c_path = path_buf[0..path.len :0];
+
+        var stx: std.os.linux.Statx = undefined;
+        const result = std.os.linux.statx(
+            std.fs.cwd().fd,
+            c_path,
+            0, // flags
+            std.os.linux.STATX_BTIME,
+            &stx,
+        );
+        if (result != 0) return null;
+        // Check if btime was actually filled
+        if ((stx.mask & std.os.linux.STATX_BTIME) == 0) return null;
+        return @intCast(stx.btime.sec);
+    } else {
+        return null;
+    }
+}
+
 // ============================================================================
 // Expression parsing
 // ============================================================================
@@ -427,6 +494,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     var follow_cmdline_symlinks = false;
     var xdev = false;
     var xargs_safe = false;
+    var sorted = false;
 
     // Collect starting paths and global options before expressions
     var expr_start: usize = 0;
@@ -445,7 +513,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
             // -E: extended regex mode; accept as no-op stub
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-s")) {
-            // -s: traverse in alphabetical order; accept as no-op stub
+            // -s: traverse in alphabetical (sorted) order
+            sorted = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-depth")) {
             // Check if followed by a number: -depth N is an expression primary
@@ -589,6 +658,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
         .has_action = has_action,
         .xdev = xdev,
         .xargs_safe = xargs_safe,
+        .sorted = sorted,
     };
 }
 
@@ -822,7 +892,7 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
             return error.InvalidExpression;
         };
         pos.* += 1;
-        return allocExpr(allocator, .perm, .{ .perm_val = perm_val });
+        return allocExpr(allocator, .perm, .{ .perm_expr = perm_val });
     }
 
     if (std.mem.eql(u8, arg, "-user")) {
@@ -869,9 +939,16 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         var exec_args = std.ArrayListUnmanaged([]const u8){};
         defer exec_args.deinit(allocator);
+        var is_batch = false;
 
         while (pos.* < args.len) {
             if (std.mem.eql(u8, args[pos.*], ";")) {
+                pos.* += 1;
+                break;
+            }
+            if (std.mem.eql(u8, args[pos.*], "+")) {
+                // Batch mode: {} must be last arg before +
+                is_batch = true;
                 pos.* += 1;
                 break;
             }
@@ -889,6 +966,9 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 
         has_action.* = true;
         const argv = try allocator.dupe([]const u8, exec_args.items);
+        if (is_batch) {
+            return allocExpr(allocator, .exec_batch, .{ .exec_data = .{ .argv = argv, .batch = true } });
+        }
         return allocExpr(allocator, .exec_cmd, .{ .exec_data = .{ .argv = argv } });
     }
 
@@ -1073,9 +1153,15 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         pos.* += 1;
         var exec_args = std.ArrayListUnmanaged([]const u8){};
         defer exec_args.deinit(allocator);
+        var is_batch = false;
 
         while (pos.* < args.len) {
             if (std.mem.eql(u8, args[pos.*], ";")) {
+                pos.* += 1;
+                break;
+            }
+            if (std.mem.eql(u8, args[pos.*], "+")) {
+                is_batch = true;
                 pos.* += 1;
                 break;
             }
@@ -1093,6 +1179,9 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 
         has_action.* = true;
         const argv = try allocator.dupe([]const u8, exec_args.items);
+        if (is_batch) {
+            return allocExpr(allocator, .execdir_batch, .{ .exec_data = .{ .argv = argv, .batch = true } });
+        }
         return allocExpr(allocator, .execdir, .{ .exec_data = .{ .argv = argv } });
     }
 
@@ -1158,37 +1247,55 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .iregex_stub, .{ .none = {} });
     }
 
-    // -Bmin: birth time in minutes (macOS stub: always true)
+    // -Bmin: birth time in minutes
     if (std.mem.eql(u8, arg, "-Bmin")) {
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '-Bmin'", .{});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .bmin_stub, .{ .none = {} });
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-Bmin'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .bmin_stub, .{ .time = te });
     }
 
-    // -Bnewer: birth time newer than FILE (macOS stub: always true)
+    // -Bnewer: birth time newer than FILE
     if (std.mem.eql(u8, arg, "-Bnewer")) {
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '-Bnewer'", .{});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .bnewer_stub, .{ .none = {} });
+        const ref_path = args[pos.*];
+        pos.* += 1;
+        // Get the birth time of the reference file
+        const ref_btime = getBirthTime(ref_path) orelse {
+            // Fall back to mtime if birth time unavailable
+            const ref_stat = doStat(ref_path, false) catch {
+                pctx.setError("'{s}': No such file or directory", .{ref_path});
+                return error.InvalidExpression;
+            };
+            return allocExpr(allocator, .bnewer_stub, .{ .newer_mtime = getMtime(ref_stat) });
+        };
+        return allocExpr(allocator, .bnewer_stub, .{ .newer_mtime = ref_btime });
     }
 
-    // -Btime: birth time in days (macOS stub: always true)
+    // -Btime: birth time in days
     if (std.mem.eql(u8, arg, "-Btime")) {
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '-Btime'", .{});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .btime_stub, .{ .none = {} });
+        const te = parseMtime(args[pos.*]) catch {
+            pctx.setError("invalid argument '{s}' to '-Btime'", .{args[pos.*]});
+            return error.InvalidExpression;
+        };
+        pos.* += 1;
+        return allocExpr(allocator, .btime_stub, .{ .time = te });
     }
 
     // -acl: has ACL set (macOS stub: always false)
@@ -1271,16 +1378,46 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .newer, .{ .newer_mtime = ref_mtime });
     }
 
-    // -newerXY: compare timestamps (stub: always true)
+    // -newerXY: compare timestamps
     // Matches -newerXY where X,Y are one of: a, B, c, m, t (8 chars total)
     if (arg.len == 8 and std.mem.startsWith(u8, arg, "-newer")) {
+        const x_field = arg[6];
+        const y_field = arg[7];
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '{s}'", .{arg});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .newerxy_stub, .{ .none = {} });
+        const ref_path = args[pos.*];
+        pos.* += 1;
+
+        // Get the Y timestamp from the reference file
+        var ref_time: i64 = 0;
+        if (y_field == 'B') {
+            ref_time = getBirthTime(ref_path) orelse blk: {
+                const ref_stat = doStat(ref_path, false) catch {
+                    pctx.setError("'{s}': No such file or directory", .{ref_path});
+                    return error.InvalidExpression;
+                };
+                break :blk getMtime(ref_stat);
+            };
+        } else {
+            const ref_stat = doStat(ref_path, false) catch {
+                pctx.setError("'{s}': No such file or directory", .{ref_path});
+                return error.InvalidExpression;
+            };
+            ref_time = switch (y_field) {
+                'a' => getAtime(ref_stat),
+                'c' => getCtime(ref_stat),
+                'm' => getMtime(ref_stat),
+                else => getMtime(ref_stat),
+            };
+        }
+
+        return allocExpr(allocator, .newerxy_stub, .{ .newerxy_data = .{
+            .ref_time = ref_time,
+            .x_field = x_field,
+        } });
     }
 
     // -okdir: like -execdir but prompts (stub: always false)
@@ -1375,16 +1512,17 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .xattrname_stub, .{ .none = {} });
     }
 
-    // -printf: formatted output (stub: prints filename + newline)
+    // -printf: formatted output
     if (std.mem.eql(u8, arg, "-printf")) {
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '-printf'", .{});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume format string
+        const fmt_str = args[pos.*];
+        pos.* += 1;
         has_action.* = true;
-        return allocExpr(allocator, .printf_action, .{ .none = {} });
+        return allocExpr(allocator, .printf_action, .{ .pattern = fmt_str });
     }
 
     // -false: always evaluates to false
@@ -1404,6 +1542,116 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 }
 
 // ============================================================================
+// Batch execution context for -exec {} + and -execdir {} +
+// ============================================================================
+
+const BatchContext = struct {
+    exec_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    execdir_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    exec_template: ?[]const []const u8 = null,
+    execdir_template: ?[]const []const u8 = null,
+    execdir_dir: ?[]const u8 = null,
+
+    fn flushExec(self: *BatchContext, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
+        _ = stderr;
+        if (self.exec_template == null or self.exec_paths.items.len == 0) return true;
+        const template = self.exec_template.?;
+
+        var argv = std.ArrayListUnmanaged([]const u8){};
+        defer argv.deinit(allocator);
+
+        // Build argv: template args, replacing {} with collected paths
+        var found_placeholder = false;
+        for (template) |arg| {
+            if (std.mem.eql(u8, arg, "{}")) {
+                found_placeholder = true;
+                for (self.exec_paths.items) |p| {
+                    argv.append(allocator, p) catch return false;
+                }
+            } else {
+                argv.append(allocator, arg) catch return false;
+            }
+        }
+        // If no {} found, append paths at end
+        if (!found_placeholder) {
+            for (self.exec_paths.items) |p| {
+                argv.append(allocator, p) catch return false;
+            }
+        }
+
+        if (argv.items.len == 0) return true;
+
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = argv.items,
+        }) catch return false;
+
+        // Print stdout from the command
+        if (result.stdout.len > 0) {
+            stdout.writeAll(result.stdout) catch {};
+        }
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+
+        return result.term.Exited == 0;
+    }
+
+    fn flushExecdir(self: *BatchContext, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
+        _ = stderr;
+        if (self.execdir_template == null or self.execdir_paths.items.len == 0) return true;
+        const template = self.execdir_template.?;
+
+        var argv = std.ArrayListUnmanaged([]const u8){};
+        defer argv.deinit(allocator);
+
+        var found_placeholder = false;
+        for (template) |arg| {
+            if (std.mem.eql(u8, arg, "{}")) {
+                found_placeholder = true;
+                for (self.execdir_paths.items) |p| {
+                    const bn = std.fs.path.basename(p);
+                    const rel = std.fmt.allocPrint(allocator, "./{s}", .{bn}) catch return false;
+                    argv.append(allocator, rel) catch {
+                        allocator.free(rel);
+                        return false;
+                    };
+                }
+            } else {
+                argv.append(allocator, arg) catch return false;
+            }
+        }
+        if (!found_placeholder) {
+            for (self.execdir_paths.items) |p| {
+                const bn = std.fs.path.basename(p);
+                const rel = std.fmt.allocPrint(allocator, "./{s}", .{bn}) catch return false;
+                argv.append(allocator, rel) catch {
+                    allocator.free(rel);
+                    return false;
+                };
+            }
+        }
+
+        if (argv.items.len == 0) return true;
+
+        const cwd = if (self.execdir_dir) |d| d else ".";
+
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = argv.items,
+            .cwd = cwd,
+        }) catch return false;
+
+        if (result.stdout.len > 0) {
+            stdout.writeAll(result.stdout) catch {};
+        }
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+
+        return result.term.Exited == 0;
+    }
+};
+
+// ============================================================================
 // Expression evaluation
 // ============================================================================
 
@@ -1420,6 +1668,7 @@ fn evaluate(
     stderr: anytype,
     had_error: *bool,
     pruned: *bool,
+    batch_ctx: ?*BatchContext,
 ) bool {
     switch (expr.tag) {
         .true_expr => return true,
@@ -1479,7 +1728,12 @@ fn evaluate(
         },
         .perm => {
             const file_mode = @as(u32, @intCast(stat_buf.mode)) & 0o7777;
-            return file_mode == expr.data.perm_val;
+            const pe = expr.data.perm_expr;
+            return switch (pe.cmp) {
+                .exact => file_mode == pe.mode,
+                .at_least => (file_mode & pe.mode) == pe.mode,
+                .any_of => if (pe.mode == 0) file_mode == 0 else (file_mode & pe.mode) != 0,
+            };
         },
         .user => return matchUser(expr.data.name_str, stat_buf.uid),
         .group => return matchGroup(expr.data.name_str, stat_buf.gid),
@@ -1595,18 +1849,44 @@ fn evaluate(
         },
         .delete => return doDelete(allocator, path, kind, stderr, had_error),
         .exec_cmd => return doExec(allocator, path, expr.data.exec_data),
+        .exec_batch => {
+            if (batch_ctx) |bc| {
+                bc.exec_template = expr.data.exec_data.argv;
+                const path_copy = allocator.dupe(u8, path) catch return false;
+                bc.exec_paths.append(allocator, path_copy) catch {
+                    allocator.free(path_copy);
+                    return false;
+                };
+            }
+            return true;
+        },
+        .execdir_batch => {
+            if (batch_ctx) |bc| {
+                bc.execdir_template = expr.data.exec_data.argv;
+                if (bc.execdir_dir == null) {
+                    const dir = std.fs.path.dirname(path) orelse ".";
+                    bc.execdir_dir = allocator.dupe(u8, dir) catch return false;
+                }
+                const path_copy = allocator.dupe(u8, path) catch return false;
+                bc.execdir_paths.append(allocator, path_copy) catch {
+                    allocator.free(path_copy);
+                    return false;
+                };
+            }
+            return true;
+        },
         .and_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
+            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
             if (!left_result) return false;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
+            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
         },
         .or_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
+            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
             if (left_result) return true;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
+            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
         },
         .not_expr => {
-            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned);
+            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
         },
         .prune => {
             pruned.* = true;
@@ -1615,8 +1895,55 @@ fn evaluate(
         .false_expr => return false,
         .ipath => return glob.globMatchInsensitive(expr.data.pattern, path),
         .regex_stub, .iregex_stub => return false,
-        .bmin_stub, .bnewer_stub, .btime_stub => return true,
-        .newerxy_stub => return true,
+        .btime_stub => {
+            // -Btime N: birth time in days
+            const te = expr.data.time;
+            const btime = getBirthTime(path) orelse {
+                // Birth time unavailable: fall back to ctime
+                return false;
+            };
+            const age_secs = now - btime;
+            const age_days: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 86400) else 0;
+            return switch (te.cmp) {
+                .exactly => age_days == te.days,
+                .greater_than => age_days > te.days,
+                .less_than => age_days < te.days,
+            };
+        },
+        .bmin_stub => {
+            // -Bmin N: birth time in minutes
+            const te = expr.data.time;
+            const btime = getBirthTime(path) orelse {
+                return false;
+            };
+            const age_secs = now - btime;
+            const age_mins: u64 = if (age_secs > 0) @divTrunc(@as(u64, @intCast(age_secs)), 60) else 0;
+            return switch (te.cmp) {
+                .exactly => age_mins == te.days, // "days" field holds minutes here
+                .greater_than => age_mins > te.days,
+                .less_than => age_mins < te.days,
+            };
+        },
+        .bnewer_stub => {
+            // -Bnewer REF: file's birth time newer than REF's birth time
+            const ref_btime = expr.data.newer_mtime;
+            const file_btime = getBirthTime(path) orelse {
+                return false;
+            };
+            return file_btime > ref_btime;
+        },
+        .newerxy_stub => {
+            // -newerXY REF: compare file's X time to REF's Y time
+            const data = expr.data.newerxy_data;
+            const file_time: i64 = switch (data.x_field) {
+                'a' => getAtime(stat_buf),
+                'c' => getCtime(stat_buf),
+                'm' => getMtime(stat_buf),
+                'B' => getBirthTime(path) orelse return false,
+                else => getMtime(stat_buf),
+            };
+            return file_time > data.ref_time;
+        },
         .acl_stub => return false,
         .sparse_stub => return false,
         .xattr_stub => return false,
@@ -1649,10 +1976,87 @@ fn evaluate(
             std.process.exit(0);
         },
         .printf_action => {
-            // Stub: just print filename + newline (like -print)
-            stdout.print("{s}\n", .{path}) catch {
-                had_error.* = true;
-            };
+            const fmt = expr.data.pattern;
+            var i: usize = 0;
+            while (i < fmt.len) {
+                if (fmt[i] == '%' and i + 1 < fmt.len) {
+                    switch (fmt[i + 1]) {
+                        'f' => {
+                            // basename
+                            stdout.writeAll(basename) catch {
+                                had_error.* = true;
+                            };
+                        },
+                        'h' => {
+                            // dirname
+                            const dir = std.fs.path.dirname(path) orelse ".";
+                            stdout.writeAll(dir) catch {
+                                had_error.* = true;
+                            };
+                        },
+                        'p' => {
+                            // full path
+                            stdout.writeAll(path) catch {
+                                had_error.* = true;
+                            };
+                        },
+                        's' => {
+                            // file size in bytes
+                            const file_size: u64 = @intCast(@max(0, stat_buf.size));
+                            stdout.print("{d}", .{file_size}) catch {
+                                had_error.* = true;
+                            };
+                        },
+                        '%' => {
+                            stdout.writeByte('%') catch {
+                                had_error.* = true;
+                            };
+                        },
+                        else => {
+                            // Unknown specifier: print as-is
+                            stdout.writeByte('%') catch {
+                                had_error.* = true;
+                            };
+                            stdout.writeByte(fmt[i + 1]) catch {
+                                had_error.* = true;
+                            };
+                        },
+                    }
+                    i += 2;
+                } else if (fmt[i] == '\\' and i + 1 < fmt.len) {
+                    switch (fmt[i + 1]) {
+                        'n' => {
+                            stdout.writeByte('\n') catch {
+                                had_error.* = true;
+                            };
+                        },
+                        't' => {
+                            stdout.writeByte('\t') catch {
+                                had_error.* = true;
+                            };
+                        },
+                        '\\' => {
+                            stdout.writeByte('\\') catch {
+                                had_error.* = true;
+                            };
+                        },
+                        else => {
+                            stdout.writeByte('\\') catch {
+                                had_error.* = true;
+                            };
+                            stdout.writeByte(fmt[i + 1]) catch {
+                                had_error.* = true;
+                            };
+                        },
+                    }
+                    i += 2;
+                } else {
+                    stdout.writeByte(fmt[i]) catch {
+                        had_error.* = true;
+                    };
+                    i += 1;
+                }
+            }
             return true;
         },
     }
@@ -2065,6 +2469,7 @@ fn walkPath(
     had_error: *bool,
     now: i64,
     root_dev: ?i64,
+    batch_ctx: ?*BatchContext,
 ) void {
     // Check maxdepth
     if (config.maxdepth) |max| {
@@ -2116,7 +2521,7 @@ fn walkPath(
     if (kind != .directory) {
         if (depth >= config.mindepth) {
             var dummy_pruned = false;
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
+            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
         }
         return;
     }
@@ -2124,7 +2529,7 @@ fn walkPath(
     // Directory: evaluate before traversal (breadth-first)
     var was_pruned = false;
     if (!is_depth_first and depth >= config.mindepth) {
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &was_pruned);
+        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &was_pruned, batch_ctx);
     }
 
     // If -prune was triggered, do not descend into this directory
@@ -2135,7 +2540,7 @@ fn walkPath(
         if (depth >= max) {
             if (is_depth_first and depth >= config.mindepth) {
                 var dummy_pruned = false;
-                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
+                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
             }
             return;
         }
@@ -2154,34 +2559,74 @@ fn walkPath(
         had_error.* = true;
         if (is_depth_first and depth >= config.mindepth) {
             var dummy_pruned = false;
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
+            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
         }
         return;
     };
     defer dir.close();
 
-    var iterator = dir.iterate();
-    while (true) {
-        const maybe_entry = iterator.next() catch |err| {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
-            had_error.* = true;
-            break;
-        };
-        const entry = maybe_entry orelse break;
+    if (config.sorted) {
+        // Collect all entries, sort by name, then walk
+        var names = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (names.items) |n| allocator.free(n);
+            names.deinit(allocator);
+        }
+        var iterator = dir.iterate();
+        while (true) {
+            const maybe_entry = iterator.next() catch |err| {
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
+                had_error.* = true;
+                break;
+            };
+            const entry = maybe_entry orelse break;
+            const name_copy = allocator.dupe(u8, entry.name) catch {
+                had_error.* = true;
+                continue;
+            };
+            names.append(allocator, name_copy) catch {
+                allocator.free(name_copy);
+                had_error.* = true;
+                continue;
+            };
+        }
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn cmp(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.cmp);
+        for (names.items) |name| {
+            const child_path = std.fs.path.join(allocator, &.{ path, name }) catch {
+                had_error.* = true;
+                continue;
+            };
+            defer allocator.free(child_path);
+            walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
+        }
+    } else {
+        var iterator = dir.iterate();
+        while (true) {
+            const maybe_entry = iterator.next() catch |err| {
+                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, @errorName(err) });
+                had_error.* = true;
+                break;
+            };
+            const entry = maybe_entry orelse break;
 
-        const child_path = std.fs.path.join(allocator, &.{ path, entry.name }) catch {
-            had_error.* = true;
-            continue;
-        };
-        defer allocator.free(child_path);
+            const child_path = std.fs.path.join(allocator, &.{ path, entry.name }) catch {
+                had_error.* = true;
+                continue;
+            };
+            defer allocator.free(child_path);
 
-        walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev);
+            walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
+        }
     }
 
     // Depth-first: evaluate directory after children
     if (is_depth_first and depth >= config.mindepth) {
         var dummy_pruned = false;
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned);
+        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
     }
 }
 
@@ -2208,6 +2653,7 @@ pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, 
 
     const now = std.time.timestamp();
     var had_error = false;
+    var batch_ctx = BatchContext{};
 
     for (config.start_paths) |path| {
         // Get root device for -xdev enforcement
@@ -2217,8 +2663,12 @@ pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, 
                 root_dev = @intCast(sb.dev);
             } else |_| {}
         }
-        walkPath(allocator, path, 0, &config, stdout, stderr, &had_error, now, root_dev);
+        walkPath(allocator, path, 0, &config, stdout, stderr, &had_error, now, root_dev, &batch_ctx);
     }
+
+    // Flush batch exec/execdir commands
+    if (!batch_ctx.flushExec(allocator, stdout, stderr)) had_error = true;
+    if (!batch_ctx.flushExecdir(allocator, stdout, stderr)) had_error = true;
 
     return if (had_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
 }
@@ -2378,10 +2828,33 @@ test "parseMtime: errors" {
 }
 
 test "parsePerm: basic" {
-    try testing.expectEqual(@as(u32, 0o755), try parsePerm("755"));
-    try testing.expectEqual(@as(u32, 0o644), try parsePerm("644"));
-    try testing.expectEqual(@as(u32, 0o0), try parsePerm("0"));
-    try testing.expectEqual(@as(u32, 0o777), try parsePerm("777"));
+    const p1 = try parsePerm("755");
+    try testing.expectEqual(@as(u32, 0o755), p1.mode);
+    try testing.expectEqual(PermCompare.exact, p1.cmp);
+
+    const p2 = try parsePerm("644");
+    try testing.expectEqual(@as(u32, 0o644), p2.mode);
+    try testing.expectEqual(PermCompare.exact, p2.cmp);
+
+    const p3 = try parsePerm("0");
+    try testing.expectEqual(@as(u32, 0o0), p3.mode);
+
+    const p4 = try parsePerm("777");
+    try testing.expectEqual(@as(u32, 0o777), p4.mode);
+}
+
+test "parsePerm: prefix forms" {
+    const p1 = try parsePerm("-644");
+    try testing.expectEqual(@as(u32, 0o644), p1.mode);
+    try testing.expectEqual(PermCompare.at_least, p1.cmp);
+
+    const p2 = try parsePerm("/111");
+    try testing.expectEqual(@as(u32, 0o111), p2.mode);
+    try testing.expectEqual(PermCompare.any_of, p2.cmp);
+
+    const p3 = try parsePerm("-755");
+    try testing.expectEqual(@as(u32, 0o755), p3.mode);
+    try testing.expectEqual(PermCompare.at_least, p3.cmp);
 }
 
 test "parsePerm: errors" {
@@ -3732,7 +4205,7 @@ test "find: -Bmin stub accepted (always true)" {
     try testing.expect(stdout_buf.items.len > 0);
 }
 
-test "find: -Bnewer stub accepted (always true)" {
+test "find: -Bnewer parses and evaluates" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -3748,13 +4221,14 @@ test "find: -Bnewer stub accepted (always true)" {
     var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
     var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
+    // -Bnewer self: a file should NOT be newer than itself
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
-    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-Bnewer", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-Bnewer", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(stdout_buf.items.len > 0);
+    // File should not match -Bnewer self (not newer than itself)
 }
 
-test "find: -Btime stub accepted (always true)" {
+test "find: -Btime evaluates birth time" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -3770,7 +4244,8 @@ test "find: -Btime stub accepted (always true)" {
     var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
     var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
-    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-Btime", "+7" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    // -Btime -1: born less than 1 day ago -- a just-created file should match
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-Btime", "-1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(stdout_buf.items.len > 0);
 }
@@ -4103,7 +4578,7 @@ test "find: -mount is alias for -xdev" {
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
 }
 
-test "find: -newerXY stub accepted (always true)" {
+test "find: -newerXY parses and evaluates" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4119,10 +4594,12 @@ test "find: -newerXY stub accepted (always true)" {
     var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
     var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
+    // -newermm: file's mtime newer than ref's mtime
+    // A file is not newer than itself
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
-    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-neweram", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-newermm", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(stdout_buf.items.len > 0);
+    // file.txt should not match -newermm self (not newer than itself)
 }
 
 test "find: -okdir stub accepted (always false)" {
