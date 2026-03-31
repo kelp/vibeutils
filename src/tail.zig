@@ -731,8 +731,21 @@ fn processInputByBytesFromBeginningStream(reader: anytype, writer: anytype, skip
     }
 }
 
+/// Maximum buffer size for the circular buffer in processInputByBytesNoSeek.
+/// When byte_count exceeds this, we use a dynamic list that grows with actual
+/// input rather than pre-allocating the full requested size.
+const MAX_CIRCULAR_BUFFER: usize = 64 * 1024 * 1024; // 64 MB
+
 /// Process input by bytes without seeking (for stdin/pipes) using circular buffer
 fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64) !void {
+    // When byte_count is larger than MAX_CIRCULAR_BUFFER, pre-allocating the
+    // full amount would OOM for huge values (e.g. 10 GB).  Instead, collect
+    // the actual input into a dynamic list (which grows only as data arrives)
+    // and then output the last byte_count bytes.
+    if (byte_count > MAX_CIRCULAR_BUFFER) {
+        return processInputByBytesNoSeekDynamic(allocator, reader, writer, byte_count);
+    }
+
     const buffer_size = @as(usize, @intCast(byte_count));
 
     // Allocate circular buffer to hold only the last byte_count bytes
@@ -765,6 +778,37 @@ fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: anytype, writ
     } else {
         // Buffer didn't wrap - output from start to total_bytes_read
         try writer.writeAll(circular_buffer[0..total_bytes_read]);
+    }
+}
+
+/// Fallback for processInputByBytesNoSeek when byte_count exceeds
+/// MAX_CIRCULAR_BUFFER.  Reads all input into a growable list (allocating
+/// only what the input actually contains) then outputs the trailing
+/// byte_count bytes.
+fn processInputByBytesNoSeekDynamic(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64) !void {
+    var data = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer data.deinit(allocator);
+
+    while (true) {
+        const available = reader.peekGreedy(1) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+        if (available.len == 0) break;
+
+        try data.appendSlice(allocator, available);
+        reader.toss(available.len);
+    }
+
+    const items = data.items;
+    if (items.len == 0) return;
+
+    if (byte_count >= items.len) {
+        // Requested more bytes than available -- output everything
+        try writer.writeAll(items);
+    } else {
+        const start = items.len - @as(usize, @intCast(byte_count));
+        try writer.writeAll(items[start..]);
     }
 }
 
