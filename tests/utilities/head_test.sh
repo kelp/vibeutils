@@ -151,7 +151,7 @@ test_head() {
     test_command_fails "head invalid flag" "$binary" --invalid-flag
     test_command_fails "head -n invalid value" "$binary" -n abc "$test_file1"
     test_command_fails "head -c invalid value" "$binary" -c xyz "$test_file1"
-    test_command_fails "head -n negative value" "$binary" -n -5 "$test_file1"
+    test_command_fails "head -n negative value" "$binary" -n 0x5 "$test_file1"
     test_command_fails "head -c negative value" "$binary" -c -10 "$test_file1"
     
     # Non-existent files

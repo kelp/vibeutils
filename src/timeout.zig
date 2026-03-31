@@ -214,9 +214,81 @@ fn printVersion(writer: anytype) !void {
     try writer.print("timeout ({s}) {s}\n", .{ common.name, common.version });
 }
 
+/// Preprocess args for timeout: insert "--" before the COMMAND positional
+/// so that the command's own flags (like bash -c) are not parsed by timeout.
+/// Returns a new args slice with "--" inserted after DURATION.
+fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []const u8 {
+    var new_args = try std.ArrayList([]const u8).initCapacity(allocator, args.len + 1);
+    defer new_args.deinit(allocator);
+
+    var positional_count: usize = 0;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        // If we already hit --, pass everything through
+        if (std.mem.eql(u8, arg, "--")) {
+            // Already has a separator; pass rest through as-is
+            while (i < args.len) : (i += 1) {
+                try new_args.append(allocator, args[i]);
+            }
+            break;
+        }
+
+        if (arg.len > 1 and arg[0] == '-') {
+            // Flag-like argument
+            try new_args.append(allocator, arg);
+
+            // Check if this flag takes a value (next arg consumed)
+            if (arg.len > 2 and arg[1] == '-') {
+                // Long flag: check for = separator (value is inline)
+                if (std.mem.indexOfScalar(u8, arg, '=') == null) {
+                    // Long flags that take a value: --signal, --kill-after
+                    if (std.mem.eql(u8, arg, "--signal") or std.mem.eql(u8, arg, "--kill-after")) {
+                        i += 1;
+                        if (i < args.len) try new_args.append(allocator, args[i]);
+                    }
+                    // Boolean long flags (--preserve-status, --foreground,
+                    // --verbose, --help, --version) don't consume next arg
+                }
+            } else {
+                // Short flag: -s and -k take values
+                const flag_char = arg[1];
+                if (arg.len == 2 and (flag_char == 's' or flag_char == 'k')) {
+                    // Value is next arg
+                    i += 1;
+                    if (i < args.len) try new_args.append(allocator, args[i]);
+                }
+                // If flag is longer (-sKILL, -k5), value is inline, no skip
+            }
+        } else {
+            // Positional argument
+            positional_count += 1;
+            try new_args.append(allocator, arg);
+
+            if (positional_count == 1) {
+                // This was DURATION; insert "--" so COMMAND and its
+                // args don't get parsed as timeout flags
+                try new_args.append(allocator, "--");
+                // Append all remaining args as-is
+                i += 1;
+                while (i < args.len) : (i += 1) {
+                    try new_args.append(allocator, args[i]);
+                }
+                break;
+            }
+        }
+    }
+
+    return new_args.toOwnedSlice(allocator);
+}
+
 /// Run the timeout utility with given arguments
 pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const parsed = common.argparse.ArgParser.parse(TimeoutArgs, allocator, args) catch |err| {
+    const processed_args = try preprocessArgs(allocator, args);
+    defer allocator.free(processed_args);
+
+    const parsed = common.argparse.ArgParser.parse(TimeoutArgs, allocator, processed_args) catch |err| {
         switch (err) {
             error.UnknownFlag, error.MissingValue, error.InvalidValue => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument\nTry 'timeout --help' for more information.", .{});
@@ -355,6 +427,14 @@ pub fn runTimeout(allocator: Allocator, args: []const []const u8, stdout_writer:
             }
 
             sendSignal(child_pid, 9, !parsed.foreground); // SIGKILL
+
+            // SIGKILL was sent; wait for child and return its exit code
+            // (typically 137 = 128+9). GNU timeout does this too.
+            const kill_exit = waitChild(child_pid);
+            if (parsed.@"preserve-status") {
+                return kill_exit;
+            }
+            return kill_exit;
         }
     }
 
