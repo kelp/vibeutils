@@ -677,10 +677,20 @@ fn isDestDirectory(path: []const u8, no_follow_symlink: bool) !bool {
 
 /// Move file or directory with atomic rename or cross-filesystem copy
 fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype, hinted_overwrite: *bool) !void {
-    // Check for same file using fstat to compare both inode and device
+    // Check for same file using fstat to compare both inode and device.
+    // If source and dest are hardlinks (same inode, different paths),
+    // just unlink the source and succeed.
     if (common.file_ops.isSameFile(source, dest)) {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
-        return error.SameFile;
+        if (std.mem.eql(u8, source, dest)) {
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
+            return error.SameFile;
+        }
+        // Different names for the same inode (hardlink): remove the source link.
+        std.fs.cwd().deleteFile(source) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot remove '{s}': {}", .{ source, err });
+            return error.SameFile;
+        };
+        return;
     }
 
     // For no-clobber mode, check if destination exists first

@@ -117,23 +117,27 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // Get template
     const raw_template = if (parsed.positionals.len == 1) parsed.positionals[0] else default_template;
 
-    // Validate suffix does not contain path separator
-    const suffix = parsed.suffix orelse "";
-    if (std.mem.indexOfScalar(u8, suffix, '/') != null) {
+    // Validate explicit --suffix does not contain path separator
+    const explicit_suffix = parsed.suffix orelse "";
+    if (std.mem.indexOfScalar(u8, explicit_suffix, '/') != null) {
         if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid suffix '{s}': contains directory separator", .{suffix});
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid suffix '{s}': contains directory separator", .{explicit_suffix});
         }
         return @intFromEnum(common.ExitCode.general_error);
     }
 
-    // Count trailing X's in the raw template (before suffix)
-    const x_count = countTrailingXs(raw_template);
-    if (x_count < 3) {
+    // Find X's in the template. Characters after the last run of X's
+    // are treated as an implicit suffix (GNU mktemp behavior).
+    const xs = findTemplateXs(raw_template);
+    if (xs.x_count < 3) {
         if (!parsed.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "too few X's in template '{s}'", .{raw_template});
         }
         return @intFromEnum(common.ExitCode.general_error);
     }
+
+    // Total suffix = implicit suffix from template + explicit --suffix flag
+    const total_suffix_len = xs.implicit_suffix_len + explicit_suffix.len;
 
     // Determine the directory to use
     const tmpdir = resolveTmpdir(allocator, parsed.tmpdir, parsed.t, raw_template) catch {
@@ -146,9 +150,9 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     // Extract just the filename part of the raw template
     const template_basename = std.fs.path.basename(raw_template);
 
-    // Build the filename: template_basename + suffix
-    const filename = if (suffix.len > 0)
-        std.fmt.allocPrint(allocator, "{s}{s}", .{ template_basename, suffix }) catch {
+    // Build the filename: template_basename + explicit suffix
+    const filename = if (explicit_suffix.len > 0)
+        std.fmt.allocPrint(allocator, "{s}{s}", .{ template_basename, explicit_suffix }) catch {
             if (!parsed.quiet) {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
             }
@@ -166,8 +170,8 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
     };
 
     // Generate the temporary file or directory
-    // x_count refers to X's in the template portion (before suffix)
-    const result_path = generateTemp(allocator, full_template, x_count, suffix.len, parsed.directory, parsed.@"dry-run") catch {
+    // total_suffix_len covers both implicit (chars after X's) and explicit --suffix
+    const result_path = generateTemp(allocator, full_template, xs.x_count, total_suffix_len, parsed.directory, parsed.@"dry-run") catch {
         if (!parsed.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to create {s} via template '{s}'", .{
                 if (parsed.directory) "directory" else "file",
@@ -183,18 +187,59 @@ pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: 
 }
 
 /// Count trailing 'X' characters in the template
-fn countTrailingXs(template: []const u8) usize {
-    var count: usize = 0;
+/// Result of parsing X's from a template.
+const TemplateXs = struct {
+    x_count: usize,
+    /// Number of characters after the X run (implicit suffix).
+    implicit_suffix_len: usize,
+};
+
+/// Find the last consecutive run of X's in the template.
+/// Characters after that run are treated as an implicit suffix
+/// (GNU mktemp behavior: "myapp.XXXXXXtxt" has 6 X's and
+/// implicit suffix "txt").
+fn findTemplateXs(template: []const u8) TemplateXs {
+    // First try strictly trailing X's (most common case)
+    var trailing: usize = 0;
     var i = template.len;
     while (i > 0) {
         i -= 1;
         if (template[i] == 'X') {
-            count += 1;
+            trailing += 1;
         } else {
             break;
         }
     }
-    return count;
+    if (trailing >= 3) {
+        return .{ .x_count = trailing, .implicit_suffix_len = 0 };
+    }
+
+    // Scan for the last run of 3+ consecutive X's
+    var best_end: usize = 0;
+    var best_count: usize = 0;
+    var pos = template.len;
+    while (pos > 0) {
+        pos -= 1;
+        if (template[pos] == 'X') {
+            // Count this run backwards
+            var run_start = pos;
+            while (run_start > 0 and template[run_start - 1] == 'X') {
+                run_start -= 1;
+            }
+            const run_len = pos - run_start + 1;
+            if (run_len >= 3) {
+                best_end = pos + 1;
+                best_count = run_len;
+                break;
+            }
+            pos = run_start; // skip past this short run
+        }
+    }
+
+    return .{
+        .x_count = best_count,
+        .implicit_suffix_len = if (best_count > 0) template.len - best_end else 0,
+    };
 }
 
 /// Resolve the temporary directory to use
@@ -337,14 +382,19 @@ fn printVersion(writer: anytype) !void {
 //                                TESTS
 // ============================================================================
 
-test "mktemp countTrailingXs" {
-    try testing.expectEqual(@as(usize, 10), countTrailingXs("tmp.XXXXXXXXXX"));
-    try testing.expectEqual(@as(usize, 3), countTrailingXs("tmp.XXX"));
-    try testing.expectEqual(@as(usize, 0), countTrailingXs("tmp.txt"));
-    try testing.expectEqual(@as(usize, 0), countTrailingXs(""));
-    try testing.expectEqual(@as(usize, 5), countTrailingXs("XXXXX"));
-    try testing.expectEqual(@as(usize, 0), countTrailingXs("XXXabc"));
-    try testing.expectEqual(@as(usize, 3), countTrailingXs("prefixXXX"));
+test "mktemp findTemplateXs" {
+    // Trailing X's (no implicit suffix)
+    try testing.expectEqual(TemplateXs{ .x_count = 10, .implicit_suffix_len = 0 }, findTemplateXs("tmp.XXXXXXXXXX"));
+    try testing.expectEqual(TemplateXs{ .x_count = 3, .implicit_suffix_len = 0 }, findTemplateXs("tmp.XXX"));
+    try testing.expectEqual(TemplateXs{ .x_count = 5, .implicit_suffix_len = 0 }, findTemplateXs("XXXXX"));
+    try testing.expectEqual(TemplateXs{ .x_count = 3, .implicit_suffix_len = 0 }, findTemplateXs("prefixXXX"));
+    // No X's at all
+    try testing.expectEqual(TemplateXs{ .x_count = 0, .implicit_suffix_len = 0 }, findTemplateXs("tmp.txt"));
+    try testing.expectEqual(TemplateXs{ .x_count = 0, .implicit_suffix_len = 0 }, findTemplateXs(""));
+    // Implicit suffix (X's not at end)
+    try testing.expectEqual(TemplateXs{ .x_count = 3, .implicit_suffix_len = 3 }, findTemplateXs("XXXabc"));
+    try testing.expectEqual(TemplateXs{ .x_count = 6, .implicit_suffix_len = 3 }, findTemplateXs("myapp.XXXXXXtxt"));
+    try testing.expectEqual(TemplateXs{ .x_count = 6, .implicit_suffix_len = 4 }, findTemplateXs("test.XXXXXX.log"));
 }
 
 test "mktemp fillRandom produces alphanumeric characters" {
