@@ -572,40 +572,72 @@ test_find() {
     fi
     rm -rf "$path_dir"
 
-    # Regression test: -regex stubs should reject all files (return no matches)
-    echo -e "${CYAN}Testing -regex stub regression...${NC}"
+    # Regression test: -regex rejects non-matching patterns
+    echo -e "${CYAN}Testing -regex non-matching pattern...${NC}"
     local regex_dir=$(create_temp_dir)
     touch "$regex_dir/a" "$regex_dir/b"
     run_command cmd out err exit_code "$binary" "$regex_dir" "-regex" "impossible_pattern"
     rm -rf "$regex_dir"
     if [[ $exit_code -eq 0 && -z "$out" ]]; then
-        print_test_result "find -regex stub returns no matches" "PASS"
+        print_test_result "find -regex rejects non-matching pattern" "PASS"
     else
-        print_test_result "find -regex stub returns no matches" "FAIL" \
+        print_test_result "find -regex rejects non-matching pattern" "FAIL" \
             "Expected empty output, got: '$out' (exit: $exit_code)"
     fi
 
     # ================================================================
-    # F1: find -regex/-iregex always returns false
+    # F1: find -regex/-iregex with C POSIX regex
     # GNU find: -regex '.*' should match every path (it matches the
-    # full path against the regex). Our stub returns false, matching
-    # nothing.
+    # full path against the regex).
     # ================================================================
-    echo -e "${CYAN}Testing -regex actually matches (F1)...${NC}"
+    echo -e "${CYAN}Testing -regex matching (F1)...${NC}"
 
     local regex_match_dir=$(create_temp_dir)
     touch "$regex_match_dir/hello.txt" "$regex_match_dir/world.txt"
 
-    # SKIP: Zig has no built-in regex library. Implementing full POSIX
-    # regex support is too complex for now. -regex/-iregex parse without
-    # error but always return false (no matches). See regex_stub in find.zig.
-    print_test_result "find -regex '.*' matches all entries" "SKIP" \
-        "No regex engine: Zig lacks built-in POSIX regex support"
-    print_test_result "find -regex filters specific pattern" "SKIP" \
-        "No regex engine: Zig lacks built-in POSIX regex support"
+    # -regex '.*' should match all entries (directory + both files)
+    run_command cmd out err exit_code "$binary" "$regex_match_dir" "-regex" ".*"
+    if [[ $exit_code -eq 0 && -n "$out" ]]; then
+        # Should contain at least the two files
+        if echo "$out" | grep -q "hello.txt" && echo "$out" | grep -q "world.txt"; then
+            print_test_result "find -regex '.*' matches all entries" "PASS"
+        else
+            print_test_result "find -regex '.*' matches all entries" "FAIL" \
+                "Expected hello.txt and world.txt in output, got: '$out'"
+        fi
+    else
+        print_test_result "find -regex '.*' matches all entries" "FAIL" \
+            "Expected non-empty output, got: '$out' (exit: $exit_code)"
+    fi
+
+    # -regex filtering: match only .txt files
+    run_command cmd out err exit_code "$binary" "$regex_match_dir" "-regex" ".*\.txt"
+    if [[ $exit_code -eq 0 && -n "$out" ]]; then
+        if echo "$out" | grep -q "hello.txt" && echo "$out" | grep -q "world.txt"; then
+            print_test_result "find -regex filters specific pattern" "PASS"
+        else
+            print_test_result "find -regex filters specific pattern" "FAIL" \
+                "Expected hello.txt and world.txt, got: '$out'"
+        fi
+    else
+        print_test_result "find -regex filters specific pattern" "FAIL" \
+            "Expected non-empty output, got: '$out' (exit: $exit_code)"
+    fi
+
+    # -iregex: case-insensitive match
     touch "$regex_match_dir/Upper.TXT"
-    print_test_result "find -iregex case-insensitive match" "SKIP" \
-        "No regex engine: Zig lacks built-in POSIX regex support"
+    run_command cmd out err exit_code "$binary" "$regex_match_dir" "-iregex" ".*\.txt"
+    if [[ $exit_code -eq 0 && -n "$out" ]]; then
+        if echo "$out" | grep -q "Upper.TXT"; then
+            print_test_result "find -iregex case-insensitive match" "PASS"
+        else
+            print_test_result "find -iregex case-insensitive match" "FAIL" \
+                "Expected Upper.TXT in output, got: '$out'"
+        fi
+    else
+        print_test_result "find -iregex case-insensitive match" "FAIL" \
+            "Expected non-empty output, got: '$out' (exit: $exit_code)"
+    fi
     rm -rf "$regex_match_dir"
 
     # ================================================================

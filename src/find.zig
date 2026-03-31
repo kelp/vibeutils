@@ -15,6 +15,19 @@ const Allocator = std.mem.Allocator;
 
 const c = std.c;
 
+const regex_h = @cImport({
+    @cInclude("regex.h");
+});
+
+const is_linux = builtin.os.tag == .linux;
+
+// On Linux, regex_t is opaque to Zig (glibc internal types can't be parsed).
+// Use C helper functions for heap allocation instead of Zig's allocator.
+const regex_c = if (is_linux) struct {
+    extern "c" fn regex_heap_alloc() ?*regex_h.regex_t;
+    extern "c" fn regex_heap_free(re: *regex_h.regex_t) void;
+} else struct {};
+
 // C library bindings
 extern "c" fn getpwnam(name: [*:0]const u8) ?*const extern struct {
     pw_name: [*:0]u8,
@@ -161,9 +174,9 @@ const ExprTag = enum {
     prune,
     exec_batch,
     execdir_batch,
+    regex_match,
+    iregex_match,
     // Stubs: accept syntax, simple behavior
-    regex_stub,
-    iregex_stub,
     bmin_stub,
     bnewer_stub,
     btime_stub,
@@ -210,6 +223,7 @@ const ExprData = union {
     uid_val: c.uid_t,
     gid_val: c.gid_t,
     newerxy_data: NewerXYData,
+    regex_ptr: *regex_h.regex_t,
     none: void,
 };
 
@@ -471,6 +485,7 @@ const ParseError = error{
 const ParseContext = struct {
     allocator: Allocator,
     error_msg: ?[]const u8 = null,
+    extended_regex: bool = false,
 
     fn setError(self: *ParseContext, comptime fmt: []const u8, fmt_args: anytype) void {
         self.error_msg = std.fmt.allocPrint(self.allocator, fmt, fmt_args) catch null;
@@ -481,6 +496,42 @@ fn allocExpr(allocator: Allocator, tag: ExprTag, data: ExprData) !*Expression {
     const expr = try allocator.create(Expression);
     expr.* = .{ .tag = tag, .data = data };
     return expr;
+}
+
+/// Compile a POSIX regex pattern. Returns null on failure.
+fn compileRegex(allocator: Allocator, pattern: []const u8, ignore_case: bool, extended: bool) ?*regex_h.regex_t {
+    const pattern_z = allocator.dupeZ(u8, pattern) catch return null;
+    defer allocator.free(pattern_z);
+
+    var cflags: c_int = regex_h.REG_NOSUB;
+    if (ignore_case) cflags |= regex_h.REG_ICASE;
+    if (extended) cflags |= regex_h.REG_EXTENDED;
+
+    const regex = if (comptime is_linux)
+        (regex_c.regex_heap_alloc() orelse return null)
+    else
+        (allocator.create(regex_h.regex_t) catch return null);
+
+    const result = regex_h.regcomp(regex, pattern_z.ptr, cflags);
+    if (result != 0) {
+        if (comptime is_linux) {
+            regex_c.regex_heap_free(regex);
+        } else {
+            allocator.destroy(regex);
+        }
+        return null;
+    }
+    return regex;
+}
+
+/// Free a compiled regex.
+fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
+    regex_h.regfree(regex);
+    if (comptime is_linux) {
+        regex_c.regex_heap_free(regex);
+    } else {
+        allocator.destroy(regex);
+    }
 }
 
 fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
@@ -495,6 +546,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     var xdev = false;
     var xargs_safe = false;
     var sorted = false;
+    var extended_regex = false;
 
     // Collect starting paths and global options before expressions
     var expr_start: usize = 0;
@@ -510,7 +562,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
             // -P: never follow symlinks (default behavior); accept as no-op
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-E")) {
-            // -E: extended regex mode; accept as no-op stub
+            extended_regex = true;
             expr_start += 1;
         } else if (std.mem.eql(u8, arg, "-s")) {
             // -s: traverse in alphabetical (sorted) order
@@ -613,7 +665,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     // Parse expression tree
     var pos: usize = expr_start;
     var has_action = false;
-    var pctx = ParseContext{ .allocator = allocator };
+    var pctx = ParseContext{ .allocator = allocator, .extended_regex = extended_regex };
     const expr = parseOr(allocator, args, &pos, &has_action, &pctx) catch |err| {
         if (pctx.error_msg) |msg| {
             common.printErrorWithProgram(allocator, stderr, prog_name, "{s}", .{msg});
@@ -1225,26 +1277,36 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
         return allocExpr(allocator, .ipath, .{ .pattern = pattern });
     }
 
-    // -regex: regex match on full path (stub: always true)
+    // -regex: regex match on full path
     if (std.mem.eql(u8, arg, "-regex")) {
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '-regex'", .{});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .regex_stub, .{ .none = {} });
+        const pattern = args[pos.*];
+        pos.* += 1;
+        const regex = compileRegex(allocator, pattern, false, pctx.extended_regex) orelse {
+            pctx.setError("invalid regular expression '{s}'", .{pattern});
+            return error.InvalidExpression;
+        };
+        return allocExpr(allocator, .regex_match, .{ .regex_ptr = regex });
     }
 
-    // -iregex: case-insensitive regex match on full path (stub: always true)
+    // -iregex: case-insensitive regex match on full path
     if (std.mem.eql(u8, arg, "-iregex")) {
         pos.* += 1;
         if (pos.* >= args.len) {
             pctx.setError("missing argument to '-iregex'", .{});
             return error.MissingArgument;
         }
-        pos.* += 1; // consume value
-        return allocExpr(allocator, .iregex_stub, .{ .none = {} });
+        const pattern = args[pos.*];
+        pos.* += 1;
+        const regex = compileRegex(allocator, pattern, true, pctx.extended_regex) orelse {
+            pctx.setError("invalid regular expression '{s}'", .{pattern});
+            return error.InvalidExpression;
+        };
+        return allocExpr(allocator, .iregex_match, .{ .regex_ptr = regex });
     }
 
     // -Bmin: birth time in minutes
@@ -1894,7 +1956,11 @@ fn evaluate(
         },
         .false_expr => return false,
         .ipath => return glob.globMatchInsensitive(expr.data.pattern, path),
-        .regex_stub, .iregex_stub => return false,
+        .regex_match, .iregex_match => {
+            const path_z = allocator.dupeZ(u8, path) catch return false;
+            defer allocator.free(path_z);
+            return regex_h.regexec(expr.data.regex_ptr, path_z.ptr, 0, null, 0) == 0;
+        },
         .btime_stub => {
             // -Btime N: birth time in days
             const te = expr.data.time;
@@ -4142,7 +4208,7 @@ test "find: -iwholename is alias for -ipath" {
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Test.TXT") != null);
 }
 
-test "find: -regex stub returns no matches" {
+test "find: -regex matches full path" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4160,10 +4226,10 @@ test "find: -regex stub returns no matches" {
 
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-regex", ".*\\.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
 }
 
-test "find: -iregex stub returns no matches" {
+test "find: -iregex matches case-insensitively" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4181,7 +4247,7 @@ test "find: -iregex stub returns no matches" {
 
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
 }
 
 test "find: -Bmin stub accepted (always true)" {
@@ -4799,7 +4865,7 @@ test "find: -false -o -true evaluates to true" {
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
 }
 
-test "find: -regex stub should not match everything" {
+test "find: -regex rejects non-matching pattern" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4815,9 +4881,6 @@ test "find: -regex stub should not match everything" {
     var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
     var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
-    // Use an impossible pattern that should match nothing.
-    // The stub currently returns true for all files, so this test
-    // will FAIL until the stub is fixed to return false.
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-regex", "^impossible_pattern_that_matches_nothing$" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -4825,7 +4888,7 @@ test "find: -regex stub should not match everything" {
     try testing.expectEqualStrings("", stdout_buf.items);
 }
 
-test "find: -iregex stub should not match everything" {
+test "find: -iregex rejects non-matching pattern" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4841,9 +4904,6 @@ test "find: -iregex stub should not match everything" {
     var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
     var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
-    // Use an impossible pattern that should match nothing.
-    // The stub currently returns true for all files, so this test
-    // will FAIL until the stub is fixed to return false.
     const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-iregex", "^impossible_pattern_that_matches_nothing$" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
