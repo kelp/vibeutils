@@ -462,6 +462,44 @@ fn loadPatternsFromFile(allocator: Allocator, patterns: *std.ArrayListUnmanaged(
 // Pattern Compilation
 // ============================================================================
 
+/// For BRE -x: split a pattern on \| alternation, anchor each
+/// alternative with ^...$, and rejoin with \|.  This produces
+/// correct whole-line matching on platforms where \(\) grouping
+/// around \| doesn't behave the same (e.g. macOS).
+fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) ?[]const u8 {
+    // Count alternatives by scanning for \| outside \(\) groups
+    var parts = std.ArrayListUnmanaged([]const u8){};
+    var start: usize = 0;
+    var i: usize = 0;
+    while (i < pattern.len) {
+        if (i + 1 < pattern.len and pattern[i] == '\\' and pattern[i + 1] == '|') {
+            parts.append(allocator, pattern[start..i]) catch return null;
+            start = i + 2;
+            i = start;
+        } else {
+            i += 1;
+        }
+    }
+    parts.append(allocator, pattern[start..]) catch return null;
+
+    if (parts.items.len == 1) {
+        // No alternation — simple anchor
+        return std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch return null;
+    }
+
+    // Build "^part1$\|^part2$\|..."
+    var buf = std.ArrayListUnmanaged(u8){};
+    for (parts.items, 0..) |part, idx| {
+        if (idx > 0) {
+            buf.appendSlice(allocator, "\\|") catch return null;
+        }
+        buf.append(allocator, '^') catch return null;
+        buf.appendSlice(allocator, part) catch return null;
+        buf.append(allocator, '$') catch return null;
+    }
+    return buf.toOwnedSlice(allocator) catch return null;
+}
+
 /// Compile a single pattern. Returns null on error.
 fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOptions, stderr_writer: anytype) ?CompiledPattern {
     if (opts.regex_mode == .fixed) {
@@ -479,7 +517,10 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
         if (opts.regex_mode == .extended) {
             actual_pattern = std.fmt.allocPrint(allocator, "^({s})$", .{pattern}) catch return null;
         } else {
-            actual_pattern = std.fmt.allocPrint(allocator, "^\\({s}\\)$", .{pattern}) catch return null;
+            // BRE mode: anchor each alternative separately so that
+            // \| alternation works correctly across platforms.
+            // Split on \|, wrap each part with ^...$, rejoin with \|.
+            actual_pattern = anchorBreAlternatives(allocator, pattern) orelse return null;
         }
     } else if (opts.word_regexp) {
         if (opts.regex_mode == .extended) {
@@ -546,10 +587,15 @@ const MatchResult = struct {
     match_end: usize = 0,
 };
 
+/// Returns true if a character is a "word" character (alphanumeric or underscore).
+/// Matches the [:alnum:]_ character class used in -w boundary patterns.
+fn isWordChar(ch: u8) bool {
+    return std.ascii.isAlphanumeric(ch) or ch == '_';
+}
+
 /// Check if a line matches a compiled pattern.
-/// When word_regexp is true and the pattern is a regex, the match positions
-/// are taken from submatch group 2 (the actual word) rather than group 0
-/// (which includes boundary characters added by the -w wrapping).
+/// When word_regexp is true, the match positions from pmatch[0] are trimmed
+/// to exclude leading/trailing boundary characters added by the -w wrapping.
 fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool) MatchResult {
     switch (pat.*) {
         .fixed => |fp| {
@@ -570,15 +616,23 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
             const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
             defer allocator.free(line_z);
             if (word_regexp) {
-                // -w wraps pattern as (boundary)(word)(boundary) with 3 groups.
-                // We need group 2 for the actual word match positions.
-                var pmatch: [4]c.regmatch_t = undefined;
-                const exec_result = c.regexec(re, line_z.ptr, 4, &pmatch, 0);
+                // -w wraps pattern as (boundary)(word)(boundary).
+                // Use pmatch[0] (full match) and trim any leading/trailing
+                // non-word boundary characters, since capture group indices
+                // differ between Linux and macOS regex implementations.
+                var pmatch: [1]c.regmatch_t = undefined;
+                const exec_result = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
                 if (exec_result == 0) {
-                    // Use group 2 (the word itself) if available, fall back to group 0
-                    const grp: usize = if (pmatch[2].rm_so >= 0) 2 else 0;
-                    const start: usize = if (pmatch[grp].rm_so >= 0) @intCast(pmatch[grp].rm_so) else 0;
-                    const end: usize = if (pmatch[grp].rm_eo >= 0) @intCast(pmatch[grp].rm_eo) else 0;
+                    var start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
+                    var end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
+                    // Trim leading non-word character (boundary match)
+                    if (start < end and start < line.len and !isWordChar(line[start])) {
+                        start += 1;
+                    }
+                    // Trim trailing non-word character (boundary match)
+                    if (end > start and end <= line.len and !isWordChar(line[end - 1])) {
+                        end -= 1;
+                    }
                     return .{ .matched = true, .match_start = start, .match_end = end };
                 }
                 return .{ .matched = false };

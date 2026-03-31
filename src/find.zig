@@ -5011,8 +5011,10 @@ test "find: -size -2 excludes 513-byte file (block rounding)" {
 test "find: -exec runs command and filters on exit code" {
     // -exec is an action, so it suppresses implicit -print.
     // To verify it works, combine with explicit -print:
-    //   -exec /bin/true {} ; -print  => true AND print => file printed
-    //   -exec /bin/false {} ; -print => false AND print => nothing printed
+    //   -exec true {} ; -print  => true AND print => file printed
+    //   -exec false {} ; -print => false AND print => nothing printed
+    // Use /usr/bin paths which exist on both Linux and macOS
+    // (/bin/true and /bin/false don't exist on macOS).
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -5025,24 +5027,24 @@ test "find: -exec runs command and filters on exit code" {
 
     const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
 
-    // Test 1: -exec /bin/true {} ; -print => file printed
+    // Test 1: -exec /usr/bin/true {} ; -print => file printed
     {
         var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
         var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
-        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/bin/true", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/true", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
         try testing.expectEqual(@as(u8, 0), exit_code);
         try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") != null);
     }
 
-    // Test 2: -exec /bin/false {} ; -print => nothing printed
+    // Test 2: -exec /usr/bin/false {} ; -print => nothing printed
     {
         var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
         var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
 
-        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/bin/false", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/false", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
         try testing.expectEqual(@as(u8, 0), exit_code);
-        // -exec /bin/false returns false, so AND -print never fires
+        // -exec /usr/bin/false returns false, so AND -print never fires
         try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") == null);
     }
 }

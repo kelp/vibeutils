@@ -102,6 +102,7 @@ const DfOptions = struct {
     exclude_type: ?[]const u8 = null,
     output_fields: ?[]const u8 = null,
     thousands_grouping: bool = false,
+    suppress_inodes: bool = false,
     positionals: []const []const u8 = &.{},
 };
 
@@ -304,18 +305,24 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
                     opts.human_readable = false;
                 },
                 'I' => {
-                    if (j + 1 < arg.len) {
-                        opts.exclude_type = arg[j + 1 ..];
+                    if (comptime is_darwin) {
+                        // macOS: -I is a boolean flag meaning "suppress inode counts"
+                        opts.suppress_inodes = true;
+                    } else {
+                        // Linux/GNU: -I is an exclude-type filter requiring an argument
+                        if (j + 1 < arg.len) {
+                            opts.exclude_type = arg[j + 1 ..];
+                            j = arg.len;
+                            break;
+                        } else if (i + 1 < args.len) {
+                            i += 1;
+                            opts.exclude_type = args[i];
+                        } else {
+                            err_msg = "option '-I' requires an argument";
+                        }
                         j = arg.len;
                         break;
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.exclude_type = args[i];
-                    } else {
-                        err_msg = "option '-I' requires an argument";
                     }
-                    j = arg.len;
-                    break;
                 },
                 'm' => {
                     opts.block_size = 1024 * 1024;
