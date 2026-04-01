@@ -1,5 +1,30 @@
 # Release Notes
 
+## Unreleased
+
+### Bug Fixes
+- grep: fix -w (word match) on macOS by replacing BRE
+  pattern wrapping with post-match boundary validation
+- grep: fix -x with BRE alternation on macOS by
+  converting to ERE when \| alternation is detected
+- grep: fix -o printing all matches per line with -w
+- df: fix -I test panic on macOS where -I is a boolean
+  flag (suppress inodes), not an exclude-type filter
+- cp: gate overwrite hint on isatty(stderr) so it only
+  appears in interactive terminals
+- head: fix -n -5 (negative suffix) test hang
+- find: implement -regex/-iregex with C POSIX regex
+
+### Correctness
+- Fix 6 macOS-specific test failures in grep and df
+- Fix integration test failures across 20 utilities
+- Fix IMPORTANT audit findings across 14 utilities
+
+### Infrastructure
+- Add job timeouts to all CI workflows
+- Update CI actions and add concurrency groups
+- Add commit signing rules to CLAUDE.md
+
 ## 0.8.3 — 2026-03-29
 
 Full correctness audit and remediation. 78 CRITICAL bugs
