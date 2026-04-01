@@ -426,8 +426,10 @@ fn copySingleFile(allocator: Allocator, stdout_writer: anytype, stderr_writer: a
         }
     }
 
-    // Print one-time overwrite hint when destination exists and neither -i nor -f is set
-    if (dest_exists and !options.interactive and !options.force and !hinted_overwrite.*) {
+    // Print one-time overwrite hint only in interactive terminals
+    if (dest_exists and !options.interactive and !options.force and !hinted_overwrite.* and
+        std.posix.isatty(std.fs.File.stderr().handle))
+    {
         common.printHintWithProgram(allocator, stderr_writer, "cp", "use -i for interactive prompts before overwriting", .{});
         hinted_overwrite.* = true;
     }
@@ -1213,7 +1215,7 @@ test "cp: same file detection across devices via hardlink" {
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "same file") != null);
 }
 
-test "cp: overwrite hint printed when destination exists without -i or -f" {
+test "cp: overwrite hint suppressed when stderr is not a TTY" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
@@ -1232,7 +1234,8 @@ test "cp: overwrite hint printed when destination exists without -i or -f" {
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint: use -i") != null);
+    // Hint is only printed when stderr is a TTY; in tests it is not
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
 }
 
 test "cp: overwrite hint NOT printed with -i flag" {
@@ -1279,7 +1282,7 @@ test "cp: overwrite hint NOT printed with -f flag" {
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
 }
 
-test "cp: overwrite hint printed only once for multiple files" {
+test "cp: overwrite hint suppressed for non-TTY with multiple files" {
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
@@ -1303,15 +1306,8 @@ test "cp: overwrite hint printed only once for multiple files" {
     const exit_code = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-
-    // Count occurrences of "hint:" in stderr - should be exactly 1
-    var count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, stderr_buffer.items, pos, "hint:")) |idx| {
-        count += 1;
-        pos = idx + 5;
-    }
-    try testing.expectEqual(@as(usize, 1), count);
+    // Hint is suppressed when stderr is not a TTY
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "hint:") == null);
 }
 
 test "cp: no hint when destination does not exist" {

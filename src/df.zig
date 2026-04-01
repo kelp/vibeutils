@@ -3259,6 +3259,7 @@ test "parseArgs - g flag sets 1G block size" {
 }
 
 test "parseArgs - I flag sets exclude type" {
+    if (comptime is_darwin) return error.SkipZigTest;
     const args = [_][]const u8{ "-I", "tmpfs" };
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
@@ -3267,6 +3268,7 @@ test "parseArgs - I flag sets exclude type" {
 }
 
 test "parseArgs - I flag inline value" {
+    if (comptime is_darwin) return error.SkipZigTest;
     const args = [_][]const u8{"-Itmpfs"};
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
@@ -3275,10 +3277,20 @@ test "parseArgs - I flag inline value" {
 }
 
 test "parseArgs - I flag missing argument" {
+    if (comptime is_darwin) return error.SkipZigTest;
     const args = [_][]const u8{"-I"};
     const parsed = parseArgs(testing.allocator, &args);
     defer testing.allocator.free(parsed.opts.positionals);
     try testing.expect(parsed.err != null);
+}
+
+test "parseArgs - I flag sets suppress_inodes on macOS" {
+    if (comptime !is_darwin) return error.SkipZigTest;
+    const args = [_][]const u8{"-I"};
+    const parsed = parseArgs(testing.allocator, &args);
+    defer testing.allocator.free(parsed.opts.positionals);
+    try testing.expect(parsed.err == null);
+    try testing.expect(parsed.opts.suppress_inodes);
 }
 
 test "parseArgs - m flag sets 1M block size" {

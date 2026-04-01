@@ -462,42 +462,50 @@ fn loadPatternsFromFile(allocator: Allocator, patterns: *std.ArrayListUnmanaged(
 // Pattern Compilation
 // ============================================================================
 
-/// For BRE -x: split a pattern on \| alternation, anchor each
-/// alternative with ^...$, and rejoin with \|.  This produces
-/// correct whole-line matching on platforms where \(\) grouping
-/// around \| doesn't behave the same (e.g. macOS).
-fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) ?[]const u8 {
-    // Count alternatives by scanning for \| outside \(\) groups
+const AnchorResult = struct {
+    pattern: ?[]const u8,
+    use_ere: bool,
+};
+
+/// For BRE -x: split a pattern on \| alternation and anchor each
+/// alternative with ^...$. When alternation is present, produce an
+/// ERE pattern instead of BRE to avoid \| which macOS doesn't support.
+fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult {
     var parts = std.ArrayListUnmanaged([]const u8){};
     var start: usize = 0;
     var i: usize = 0;
     while (i < pattern.len) {
         if (i + 1 < pattern.len and pattern[i] == '\\' and pattern[i + 1] == '|') {
-            parts.append(allocator, pattern[start..i]) catch return null;
+            parts.append(allocator, pattern[start..i]) catch return .{ .pattern = null, .use_ere = false };
             start = i + 2;
             i = start;
         } else {
             i += 1;
         }
     }
-    parts.append(allocator, pattern[start..]) catch return null;
+    parts.append(allocator, pattern[start..]) catch return .{ .pattern = null, .use_ere = false };
 
     if (parts.items.len == 1) {
-        // No alternation — simple anchor
-        return std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch return null;
+        return .{
+            .pattern = std.fmt.allocPrint(allocator, "^{s}$", .{pattern}) catch return .{ .pattern = null, .use_ere = false },
+            .use_ere = false,
+        };
     }
 
-    // Build "^part1$\|^part2$\|..."
+    // Alternation present: produce ERE "^(alt1|alt2|...)$"
     var buf = std.ArrayListUnmanaged(u8){};
+    buf.appendSlice(allocator, "^(") catch return .{ .pattern = null, .use_ere = false };
     for (parts.items, 0..) |part, idx| {
         if (idx > 0) {
-            buf.appendSlice(allocator, "\\|") catch return null;
+            buf.append(allocator, '|') catch return .{ .pattern = null, .use_ere = false };
         }
-        buf.append(allocator, '^') catch return null;
-        buf.appendSlice(allocator, part) catch return null;
-        buf.append(allocator, '$') catch return null;
+        buf.appendSlice(allocator, part) catch return .{ .pattern = null, .use_ere = false };
     }
-    return buf.toOwnedSlice(allocator) catch return null;
+    buf.appendSlice(allocator, ")$") catch return .{ .pattern = null, .use_ere = false };
+    return .{
+        .pattern = buf.toOwnedSlice(allocator) catch return .{ .pattern = null, .use_ere = false },
+        .use_ere = true,
+    };
 }
 
 /// Compile a single pattern. Returns null on error.
@@ -510,28 +518,24 @@ fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOp
         return .{ .fixed = .{ .text = pattern, .lower = null } };
     }
 
-    // Build the actual regex pattern, handling -w and -x wrapping
+    // Build the actual regex pattern, handling -x wrapping.
+    // Note: -w (word_regexp) is handled via post-match validation in matchLine,
+    // not by wrapping the pattern, to avoid \| in BRE on macOS.
     var actual_pattern: []const u8 = pattern;
+    var force_ere = false;
 
     if (opts.line_regexp) {
         if (opts.regex_mode == .extended) {
             actual_pattern = std.fmt.allocPrint(allocator, "^({s})$", .{pattern}) catch return null;
         } else {
-            // BRE mode: anchor each alternative separately so that
-            // \| alternation works correctly across platforms.
-            // Split on \|, wrap each part with ^...$, rejoin with \|.
-            actual_pattern = anchorBreAlternatives(allocator, pattern) orelse return null;
-        }
-    } else if (opts.word_regexp) {
-        if (opts.regex_mode == .extended) {
-            actual_pattern = std.fmt.allocPrint(allocator, "(^|[^[:alnum:]_])({s})([^[:alnum:]_]|$)", .{pattern}) catch return null;
-        } else {
-            actual_pattern = std.fmt.allocPrint(allocator, "\\(^\\|[^[:alnum:]_]\\)\\({s}\\)\\([^[:alnum:]_]\\|$\\)", .{pattern}) catch return null;
+            const bre_result = anchorBreAlternatives(allocator, pattern);
+            actual_pattern = bre_result.pattern orelse return null;
+            if (bre_result.use_ere) force_ere = true;
         }
     }
 
     var cflags: c_int = 0;
-    if (opts.regex_mode == .extended) cflags |= c.REG_EXTENDED;
+    if (opts.regex_mode == .extended or force_ere) cflags |= c.REG_EXTENDED;
     if (opts.ignore_case) cflags |= c.REG_ICASE;
     // Use REG_NOSUB only if we don't need match positions
     if (!opts.only_matching and !opts.word_regexp and opts.color == .off) cflags |= c.REG_NOSUB;
@@ -594,11 +598,40 @@ fn isWordChar(ch: u8) bool {
 }
 
 /// Check if a line matches a compiled pattern.
-/// When word_regexp is true, the match positions from pmatch[0] are trimmed
-/// to exclude leading/trailing boundary characters added by the -w wrapping.
-fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool) MatchResult {
+/// When word_regexp is true, post-validates word boundaries instead of
+/// relying on pattern wrapping (which uses \| unsupported in BRE on macOS).
+/// prev_char is the character immediately before line[0], needed when
+/// matching a substring (e.g. from the -o loop). Pass null when matching
+/// from the real start of the line.
+fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool, prev_char: ?u8) MatchResult {
     switch (pat.*) {
         .fixed => |fp| {
+            if (word_regexp) {
+                const search_info = if (fp.lower != null) blk: {
+                    const lower_line = toLower(allocator, line) catch return .{ .matched = false };
+                    break :blk .{ lower_line, fp.lower.?, true };
+                } else .{ line, fp.text, false };
+                const haystack = search_info[0];
+                const needle = search_info[1];
+                const need_free = search_info[2];
+                defer if (need_free) allocator.free(haystack);
+                var pos: usize = 0;
+                while (pos <= haystack.len) {
+                    const idx = std.mem.indexOf(u8, haystack[pos..], needle) orelse return .{ .matched = false };
+                    const abs_start = pos + idx;
+                    const abs_end = abs_start + needle.len;
+                    const left_ok = if (abs_start == 0)
+                        (if (prev_char) |pc| !isWordChar(pc) else true)
+                    else
+                        !isWordChar(line[abs_start - 1]);
+                    const right_ok = (abs_end >= line.len) or !isWordChar(line[abs_end]);
+                    if (left_ok and right_ok) {
+                        return .{ .matched = true, .match_start = abs_start, .match_end = abs_end };
+                    }
+                    pos = abs_start + 1;
+                }
+                return .{ .matched = false };
+            }
             if (fp.lower) |lower_pattern| {
                 const lower_line = toLower(allocator, line) catch return .{ .matched = false };
                 defer allocator.free(lower_line);
@@ -613,33 +646,41 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
             return .{ .matched = false };
         },
         .regex => |re| {
-            const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
-            defer allocator.free(line_z);
             if (word_regexp) {
-                // -w wraps pattern as (boundary)(word)(boundary).
-                // Use pmatch[0] (full match) and trim any leading/trailing
-                // non-word boundary characters, since capture group indices
-                // differ between Linux and macOS regex implementations.
-                var pmatch: [1]c.regmatch_t = undefined;
-                const exec_result = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
-                if (exec_result == 0) {
-                    var start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
-                    var end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
-                    // Trim leading non-word character (boundary match)
-                    if (start < end and start < line.len and !isWordChar(line[start])) {
-                        start += 1;
+                var search_start: usize = 0;
+                var eff_prev_char = prev_char;
+                while (search_start <= line.len) {
+                    const search_line = line[search_start..];
+                    const search_z = allocator.dupeZ(u8, search_line) catch return .{ .matched = false };
+                    defer allocator.free(search_z);
+                    var pmatch: [1]c.regmatch_t = undefined;
+                    var eflags: c_int = 0;
+                    if (search_start > 0 or (eff_prev_char != null)) eflags |= c.REG_NOTBOL;
+                    const exec_result_val = c.regexec(re, search_z.ptr, 1, &pmatch, eflags);
+                    if (exec_result_val != 0) return .{ .matched = false };
+                    const rel_start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
+                    const rel_end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
+                    const abs_start = search_start + rel_start;
+                    const abs_end = search_start + rel_end;
+                    const left_ok = if (abs_start == 0)
+                        (if (eff_prev_char) |pc| !isWordChar(pc) else true)
+                    else
+                        !isWordChar(line[abs_start - 1]);
+                    const right_ok = (abs_end >= line.len) or !isWordChar(line[abs_end]);
+                    if (left_ok and right_ok) {
+                        return .{ .matched = true, .match_start = abs_start, .match_end = abs_end };
                     }
-                    // Trim trailing non-word character (boundary match)
-                    if (end > start and end <= line.len and !isWordChar(line[end - 1])) {
-                        end -= 1;
-                    }
-                    return .{ .matched = true, .match_start = start, .match_end = end };
+                    if (abs_start + 1 > line.len) break;
+                    search_start = abs_start + 1;
+                    eff_prev_char = line[abs_start];
                 }
                 return .{ .matched = false };
             } else {
+                const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
+                defer allocator.free(line_z);
                 var pmatch: [1]c.regmatch_t = undefined;
-                const exec_result = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
-                if (exec_result == 0) {
+                const exec_result_val = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
+                if (exec_result_val == 0) {
                     const start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
                     const end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
                     return .{ .matched = true, .match_start = start, .match_end = end };
@@ -651,9 +692,9 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
 }
 
 /// Check if a line matches any of the compiled patterns
-fn matchAnyPattern(patterns: []const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool) MatchResult {
+fn matchAnyPattern(patterns: []const CompiledPattern, line: []const u8, allocator: Allocator, word_regexp: bool, prev_char: ?u8) MatchResult {
     for (patterns) |*pat| {
-        const result = matchLine(pat, line, allocator, word_regexp);
+        const result = matchLine(pat, line, allocator, word_regexp, prev_char);
         if (result.matched) return result;
     }
     return .{ .matched = false };
@@ -784,7 +825,7 @@ fn processFile(
     for (lines.items) |line| {
         line_num += 1;
 
-        const result = matchAnyPattern(patterns, line, allocator, opts.word_regexp);
+        const result = matchAnyPattern(patterns, line, allocator, opts.word_regexp, null);
         const is_match = if (opts.invert_match) !result.matched else result.matched;
 
         if (is_match) {
@@ -852,7 +893,7 @@ fn processFile(
                         // Advance past this match and search for more
                         search_offset = abs_end;
                         if (search_offset >= line.len) break;
-                        cur_result = matchAnyPattern(patterns, line[search_offset..], allocator, opts.word_regexp);
+                        cur_result = matchAnyPattern(patterns, line[search_offset..], allocator, opts.word_regexp, if (search_offset > 0) line[search_offset - 1] else null);
                     }
                 } else {
                     if (show_filename) {
@@ -1428,7 +1469,7 @@ test "parseArgs --include and --exclude" {
 
 test "fixed string matching" {
     const pattern = CompiledPattern{ .fixed = .{ .text = "hello", .lower = null } };
-    const result = matchLine(&pattern, "say hello world", testing.allocator, false);
+    const result = matchLine(&pattern, "say hello world", testing.allocator, false, null);
     try testing.expect(result.matched);
     try testing.expectEqual(@as(usize, 4), result.match_start);
     try testing.expectEqual(@as(usize, 9), result.match_end);
@@ -1436,7 +1477,7 @@ test "fixed string matching" {
 
 test "fixed string no match" {
     const pattern = CompiledPattern{ .fixed = .{ .text = "xyz", .lower = null } };
-    const result = matchLine(&pattern, "hello world", testing.allocator, false);
+    const result = matchLine(&pattern, "hello world", testing.allocator, false, null);
     try testing.expect(!result.matched);
 }
 
@@ -1444,7 +1485,7 @@ test "fixed string case insensitive" {
     const lower = try toLower(testing.allocator, "hello");
     defer testing.allocator.free(lower);
     const pattern = CompiledPattern{ .fixed = .{ .text = "Hello", .lower = lower } };
-    const result = matchLine(&pattern, "say HELLO world", testing.allocator, false);
+    const result = matchLine(&pattern, "say HELLO world", testing.allocator, false, null);
     try testing.expect(result.matched);
 }
 
@@ -1474,7 +1515,7 @@ test "regex matching basic" {
     defer c.regfree(regex);
 
     const pattern = CompiledPattern{ .regex = regex };
-    const result = matchLine(&pattern, "say hello world", testing.allocator, false);
+    const result = matchLine(&pattern, "say hello world", testing.allocator, false, null);
     try testing.expect(result.matched);
 }
 
@@ -1488,7 +1529,7 @@ test "regex no match" {
     defer c.regfree(regex);
 
     const pattern = CompiledPattern{ .regex = regex };
-    const result = matchLine(&pattern, "hello world", testing.allocator, false);
+    const result = matchLine(&pattern, "hello world", testing.allocator, false, null);
     try testing.expect(!result.matched);
 }
 
