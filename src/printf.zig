@@ -500,6 +500,14 @@ fn parseIntArgEx(s: []const u8) IntParseResult {
         return .{ .value = v, .ok = true };
     } else |_| {}
 
+    // Try float parse and truncate to integer (GNU behavior).
+    // GNU printf '%d' 3.9 outputs 3 (truncate), '%d' 1e2 outputs 100.
+    if (std.fmt.parseFloat(f64, s)) |fval| {
+        // Truncate toward zero, matching C (int) cast behavior
+        const truncated = @as(i64, @intFromFloat(@trunc(fval)));
+        return .{ .value = truncated, .ok = false };
+    } else |_| {}
+
     // Try partial parse: find longest leading numeric prefix
     var end: usize = 0;
     if (end < s.len and (s[end] == '-' or s[end] == '+')) end += 1;
@@ -2043,3 +2051,49 @@ test "audit: printf space-sign flag negative" {
 }
 
 // %u is already tested in "printf unsigned integer" above -- no gap.
+
+// CRITICAL: %d with float argument should truncate to integer like GNU.
+// GNU printf '%d' 3.9 outputs "3" (truncate float), exits 1 with warning.
+// GNU printf '%d' 1e2 outputs "100" (parse float 100.0, truncate).
+test "audit: printf %d with float argument truncates to integer" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%d", "3.9" };
+    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU truncates 3.9 to 3
+    try testing.expectEqualStrings("3", stdout_buf.items);
+    // Must exit 1 (not completely converted)
+    try testing.expectEqual(@as(u8, 1), result);
+    // Must emit a warning on stderr
+    try testing.expect(stderr_buf.items.len > 0);
+}
+
+test "audit: printf %d with scientific notation float" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%d", "1e2" };
+    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU parses 1e2 as 100.0, truncates to 100
+    try testing.expectEqualStrings("100", stdout_buf.items);
+    // Must exit 1
+    try testing.expectEqual(@as(u8, 1), result);
+}
+
+test "audit: printf %d with negative float truncates toward zero" {
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "%d", "-7.8" };
+    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    // GNU truncates -7.8 to -7 (truncation toward zero)
+    try testing.expectEqualStrings("-7", stdout_buf.items);
+    try testing.expectEqual(@as(u8, 1), result);
+}
