@@ -110,6 +110,17 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 return @intFromEnum(common.ExitCode.misuse);
             }
             cleaned_args.appendAssumeCapacity("--all-repeated");
+        } else if (std.mem.startsWith(u8, arg, "-D=")) {
+            const method_str = arg["-D=".len..];
+            all_repeated_method = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument '{s}' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{method_str});
+                return @intFromEnum(common.ExitCode.misuse);
+            };
+            if (all_repeated_method == .off) {
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument 'off' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{});
+                return @intFromEnum(common.ExitCode.misuse);
+            }
+            cleaned_args.appendAssumeCapacity("-D");
         } else {
             cleaned_args.appendAssumeCapacity(arg);
         }
@@ -848,6 +859,80 @@ test "uniq extra operand returns misuse" {
     const result = try runUniq(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+}
+
+test "uniq -D=none does not crash" {
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    // Create a temp file with input "a\na\nb\n"
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("a\na\nb\n");
+    input_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const input_path = try tmp_dir.dir.realpath("input.txt", &path_buf);
+
+    const args = [_][]const u8{ "-D=none", input_path };
+    const result = try runUniq(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    // Should work the same as --all-repeated=none
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("a\na\n", stdout_buffer.items);
+}
+
+test "uniq -D=prepend does not crash" {
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("a\na\nb\nb\nb\n");
+    input_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const input_path = try tmp_dir.dir.realpath("input.txt", &path_buf);
+
+    const args = [_][]const u8{ "-D=prepend", input_path };
+    const result = try runUniq(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("\na\na\n\nb\nb\nb\n", stdout_buffer.items);
+}
+
+test "uniq -D=separate does not crash" {
+    var stdout_buffer = std.ArrayListUnmanaged(u8){};
+    defer stdout_buffer.deinit(testing.allocator);
+
+    var stderr_buffer = std.ArrayListUnmanaged(u8){};
+    defer stderr_buffer.deinit(testing.allocator);
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
+    try input_file.writeAll("a\na\nb\nb\nc\nc\n");
+    input_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const input_path = try tmp_dir.dir.realpath("input.txt", &path_buf);
+
+    const args = [_][]const u8{ "-D=separate", input_path };
+    const result = try runUniq(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("a\na\n\nb\nb\n\nc\nc\n", stdout_buffer.items);
 }
 
 test "uniq --all-repeated=none does not crash" {
