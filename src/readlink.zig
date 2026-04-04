@@ -153,12 +153,8 @@ fn resolveLink(allocator: Allocator, path: []const u8, mode: CanonicalizeMode) !
         },
         .canonical_missing_ok => {
             // GNU -f: all but the last component must exist.
-            // Try full realpath first (handles existing paths).
-            if (std.fs.cwd().realpathAlloc(allocator, path)) |resolved| {
-                return resolved;
-            } else |_| {
-                return resolveCanonicalMissingOk(allocator, path);
-            }
+            // Use the common function for parent-must-exist semantics.
+            return resolveCanonicalMissingOk(allocator, path);
         },
         .strict => {
             // Canonicalize: resolve to absolute path, all components must exist
@@ -188,7 +184,7 @@ fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
         // If target is relative, make it relative to the symlink's directory.
         if (std.fs.path.isAbsolute(link_target)) {
             // Absolute target: resolve it directly with missing-ok logic
-            return resolveWithMissingLastComponent(allocator, link_target);
+            return path_utils.canonicalizeParentMustExist(allocator, link_target);
         } else {
             // Relative target: resolve relative to the symlink's parent dir
             const dir = std.fs.path.dirname(path) orelse ".";
@@ -200,24 +196,14 @@ fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
             if (std.fs.cwd().realpathAlloc(allocator, full_target)) |resolved| {
                 return resolved;
             } else |_| {
-                return resolveWithMissingLastComponent(allocator, full_target);
+                return path_utils.canonicalizeParentMustExist(allocator, full_target);
             }
         }
     } else |_| {
         // Not a symlink (or doesn't exist at all).
         // Try to resolve the parent directory and append the basename.
-        return resolveWithMissingLastComponent(allocator, path);
+        return path_utils.canonicalizeParentMustExist(allocator, path);
     }
-}
-
-/// Resolve a path where the last component may not exist.
-/// The parent directory must exist and be resolvable.
-fn resolveWithMissingLastComponent(allocator: Allocator, path: []const u8) ![]u8 {
-    const dir = std.fs.path.dirname(path) orelse ".";
-    const base = std.fs.path.basename(path);
-    const resolved_dir = try std.fs.cwd().realpathAlloc(allocator, dir);
-    defer allocator.free(resolved_dir);
-    return std.fs.path.join(allocator, &.{ resolved_dir, base });
 }
 
 /// Print help message

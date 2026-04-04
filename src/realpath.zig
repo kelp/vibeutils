@@ -146,27 +146,8 @@ fn processPath(
         };
     } else blk: {
         // Default (-E semantics): all but last component must exist.
-        // Try full path first; if last component is missing, resolve dirname and append basename.
-        break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
-            if (err == error.FileNotFound) {
-                const dir = std.fs.path.dirname(path);
-                if (dir != null and !std.mem.eql(u8, dir.?, "/")) {
-                    const base = std.fs.path.basename(path);
-                    const resolved_dir = std.fs.cwd().realpathAlloc(allocator, dir.?) catch |dir_err| {
-                        if (!opts.quiet) {
-                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(dir_err) });
-                        }
-                        return false;
-                    };
-                    defer allocator.free(resolved_dir);
-                    break :blk std.fs.path.join(allocator, &.{ resolved_dir, base }) catch |join_err| {
-                        if (!opts.quiet) {
-                            common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(join_err) });
-                        }
-                        return false;
-                    };
-                }
-            }
+        // Use the common function for parent-must-exist semantics.
+        break :blk path_utils.canonicalizeParentMustExist(allocator, path) catch |err| {
             if (!opts.quiet) {
                 common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
             }
@@ -517,20 +498,21 @@ test "realpath: multiple paths with some failing" {
     _ = result;
 }
 
-test "realpath: default mode fails on nonexistent" {
+test "realpath: default mode allows nonexistent last component" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
 
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    // Use default mode (canonicalize-existing) which requires all components exist
+    // Default mode is -E semantics: all but last component must exist
+    // Parent / exists, so /nonexistent_vibeutils_test should succeed
     const args = [_][]const u8{"/nonexistent_vibeutils_test"};
     const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("/nonexistent_vibeutils_test\n", stdout_buffer.items);
+    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
 }
 
 test "realpath: resolveLogical basic" {
