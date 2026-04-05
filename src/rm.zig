@@ -56,15 +56,7 @@ const RmOptions = struct {
 /// Main entry point for the rm command with writer-based interface.
 pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
-    const parsed_args = common.argparse.ArgParser.parse(RmArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(RmArgs, allocator, args, "rm", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help flag
@@ -111,31 +103,8 @@ pub fn runRm(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     return if (success) @intFromEnum(common.ExitCode.success) else @intFromEnum(common.ExitCode.general_error);
 }
 
-/// Main entry point for the rm command.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runRm(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runRm);
 }
 
 /// Prints help information to the specified writer.
@@ -222,7 +191,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                         switch (dir_err) {
                             error.InteractiveUserCancelled => {}, // User said no in interactive mode, continue
                             else => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(dir_err) });
                                 any_errors = true;
                             },
                         }
@@ -240,7 +209,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                                 any_errors = true;
                             },
                             else => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(dir_err) });
+                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(dir_err) });
                                 any_errors = true;
                             },
                         }
@@ -261,7 +230,7 @@ fn removeFiles(allocator: Allocator, files: []const []const u8, stdout_writer: a
                 any_errors = true;
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(err) });
                 any_errors = true;
             },
         };
@@ -386,7 +355,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
     {
         var iterator = dir.iterate();
         while (iterator.next() catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot read directory '{s}': {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot read directory '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
             dir.close();
             return err;
         }) |entry| {
@@ -401,7 +370,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
     // Process entries depth-first
     for (entries.items) |entry| {
         const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot construct path: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot construct path: {s}", .{common.posixErrorString(err)});
             had_errors = true;
             continue;
         };
@@ -436,7 +405,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
                     continue;
                 },
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ full_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ full_path, common.posixErrorString(err) });
                     had_errors = true;
                     continue;
                 },
@@ -463,7 +432,7 @@ fn removeDirectoryRecursive(allocator: Allocator, dir_path: []const u8, stdout_w
             had_errors = true;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
             had_errors = true;
         },
     };

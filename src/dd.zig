@@ -474,7 +474,7 @@ fn printVersion(writer: anytype) !void {
 }
 
 /// Execute the dd copy operation
-pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) u8 {
+pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
     const config = parseOperands(args) catch |err| {
         switch (err) {
             error.InvalidValue => {
@@ -549,7 +549,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // Open input
     const input_file: std.fs.File = if (config.input_file) |path| blk: {
         break :blk std.fs.cwd().openFile(path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
     } else std.fs.File.stdin();
@@ -561,7 +561,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             .truncate = !config.conv_notrunc,
         };
         break :blk std.fs.cwd().createFile(path, flags) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
     } else std.fs.File.stdout();
@@ -572,7 +572,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         var skipped: usize = 0;
         while (skipped < config.skip) : (skipped += 1) {
             const bytes_read = input_file.read(in_buf) catch |err| {
-                common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{common.posixErrorString(err)});
                 return @intFromEnum(common.ExitCode.general_error);
             };
             if (bytes_read == 0) break; // EOF before all skips done
@@ -588,7 +588,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             @memset(out_buf, 0);
             while (seeked < config.seek) : (seeked += 1) {
                 output_file.writeAll(out_buf) catch |write_err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "error seeking output: {s}", .{@errorName(write_err)});
+                    common.printErrorWithProgram(allocator, stderr, "dd", "error seeking output: {s}", .{common.posixErrorString(write_err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
             }
@@ -631,7 +631,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         const bytes_read = input_file.read(in_buf) catch |err| {
             if (config.conv_noerror) {
                 // Continue after read errors
-                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
                 if (config.conv_sync) {
                     // Fill with NULs when sync is specified
                     @memset(in_buf, 0);
@@ -641,7 +641,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                     if (simple_copy) {
                         // Write the NUL-filled block
                         output_file.writeAll(in_buf) catch |werr| {
-                            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(werr)});
+                            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(werr)});
                             return @intFromEnum(common.ExitCode.general_error);
                         };
                         stats.full_blocks_out += 1;
@@ -650,7 +650,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 }
                 continue;
             }
-            common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -691,7 +691,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                         @memset(record_buf[cbs_pos..], config.fillchar);
                     }
                     output_file.writeAll(record_buf[0..cbs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
@@ -728,12 +728,12 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                     var end: usize = cbs;
                     while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
                     output_file.writeAll(out_buf[0..end]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                     output_file.writeAll("\n") catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
@@ -752,7 +752,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 @memcpy(out_buf[0..data.len], data);
                 @memset(out_buf[data.len..obs], 0);
                 output_file.writeAll(out_buf[0..obs]) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
                     printStats(stderr, stats, config.status);
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -760,7 +760,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 stats.full_blocks_out += 1;
             } else {
                 output_file.writeAll(data) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
                     printStats(stderr, stats, config.status);
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -784,7 +784,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 if (out_pos == obs) {
                     // Output buffer is full, write it
                     output_file.writeAll(out_buf[0..obs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
                         printStats(stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
@@ -801,7 +801,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         const record_buf = cbs_buf.?;
         @memset(record_buf[cbs_pos..], config.fillchar);
         output_file.writeAll(record_buf[0..cbs]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -814,12 +814,12 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         var end: usize = unblock_pos;
         while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
         output_file.writeAll(out_buf[0..end]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
         output_file.writeAll("\n") catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -835,7 +835,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             break :blk obs;
         } else out_pos;
         output_file.writeAll(out_buf[0..write_len]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
             printStats(stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -851,7 +851,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // fsync the output file if requested
     if (config.conv_fsync) {
         output_file.sync() catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "fsync error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr, "dd", "fsync error: {s}", .{common.posixErrorString(err)});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
@@ -864,25 +864,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 
 /// Process files or stdin with dd operands
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = runDd(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-    if (exit_code != 0) std.process.exit(exit_code);
+    common.utilityMain(runDd);
 }
 
 // ============================================================================
@@ -1086,7 +1068,7 @@ test "runDd - help flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const exit_code = runDd(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: dd") != null);
@@ -1099,7 +1081,7 @@ test "runDd - version flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--version"};
-    const exit_code = runDd(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "dd (vibeutils)") != null);
@@ -1128,7 +1110,7 @@ test "runDd - basic file copy" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ if_arg, of_arg, "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1160,7 +1142,7 @@ test "runDd - copy with count" {
 
     // Copy 1 block of 10 bytes
     const args = [_][]const u8{ if_arg, of_arg, "bs=10", "count=1", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1189,7 +1171,7 @@ test "runDd - copy with conv=ucase" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ucase", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1217,7 +1199,7 @@ test "runDd - copy with conv=lcase" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=lcase", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1246,7 +1228,7 @@ test "runDd - skip blocks" {
 
     // Skip 1 block of 4 bytes, should get "BBBB"
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "skip=1", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1277,7 +1259,7 @@ test "runDd - statistics output" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ if_arg, of_arg };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain records in/out
@@ -1308,7 +1290,7 @@ test "runDd - status=none suppresses output" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ if_arg, of_arg, "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
@@ -1336,7 +1318,7 @@ test "runDd - status=noxfer omits transfer line" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ if_arg, of_arg, "status=noxfer" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have records but not bytes line
@@ -1350,7 +1332,7 @@ test "runDd - mutually exclusive lcase and ucase" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"conv=lcase,ucase"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1360,7 +1342,7 @@ test "runDd - nonexistent input file" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "if=/nonexistent/path/to/file.txt", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(stderr_buf.items.len > 0);
@@ -1371,7 +1353,7 @@ test "runDd - invalid operand" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"invalid=operand"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1381,7 +1363,7 @@ test "runDd - zero block size" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"bs=0"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1406,7 +1388,7 @@ test "runDd - different ibs and obs" {
 
     // Read 4 bytes at a time, write 8 bytes at a time
     const args = [_][]const u8{ if_arg, of_arg, "ibs=4", "obs=8", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1434,7 +1416,7 @@ test "runDd - count=0 copies nothing" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "count=0", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1577,7 +1559,7 @@ test "runDd - conv=swab swaps byte pairs" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=swab", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1605,7 +1587,7 @@ test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ebcdic", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1634,7 +1616,7 @@ test "runDd - conv=ascii converts EBCDIC to ASCII" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ascii", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1663,7 +1645,7 @@ test "runDd - conv=osync pads final block" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "obs=8", "conv=osync", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1698,7 +1680,7 @@ test "runDd - conv=block pads records to cbs size" {
 
     // cbs=5: each record padded to 5 bytes with spaces
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1730,7 +1712,7 @@ test "runDd - conv=unblock replaces trailing spaces with newline" {
 
     // cbs=5: each 5-byte record, trailing spaces replaced with newline
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=unblock", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1744,7 +1726,7 @@ test "runDd - conv=noxfer is rejected" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"conv=noxfer"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     // conv=noxfer should be rejected; noxfer is only valid as status=noxfer
     try testing.expect(exit_code != 0);
@@ -1755,7 +1737,7 @@ test "runDd - mutually exclusive ascii and ebcdic" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"conv=ascii,ebcdic"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1765,7 +1747,7 @@ test "runDd - mutually exclusive block and unblock" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"conv=block,unblock"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1775,7 +1757,7 @@ test "runDd - block requires cbs" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"conv=block"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1785,7 +1767,7 @@ test "runDd - unblock requires cbs" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"conv=unblock"};
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1928,7 +1910,7 @@ test "runDd - conv=block with fillchar" {
 
     // cbs=5, fillchar=X: record "ab" padded to "abXXX"
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "fillchar=X", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1958,7 +1940,7 @@ test "runDd - iseek skips input blocks" {
 
     // iseek=1 with bs=4 should skip first 4 bytes, get "BBBB"
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "iseek=1", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1987,7 +1969,7 @@ test "runDd - multi-block copy with bs and count" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "count=3", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2061,7 +2043,7 @@ test "audit: conv=sync pads with spaces when conv=block is active" {
     // then 4 trailing spaces form another record "    " padded to "      ".
     // Output = "X     " (6 bytes) + "      " (6 bytes) = 12 bytes, no NUL.
     const args = [_][]const u8{ if_arg, of_arg, "ibs=6", "obs=6", "cbs=6", "conv=sync,block", "status=none" };
-    const exit_code = runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 

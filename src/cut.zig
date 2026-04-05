@@ -276,23 +276,7 @@ fn cutFieldsWhitespace(
 /// Main entry point for cut utility
 pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
-    const parsed = common.argparse.ArgParser.parse(CutArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "unrecognized option\nTry 'cut --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "option requires an argument\nTry 'cut --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "invalid argument value\nTry 'cut --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed = common.argparse.ArgParser.parseOrExit(CutArgs, allocator, args, "cut", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -422,7 +406,7 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
             if (result > 0) has_error = true;
         } else {
             const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                 has_error = true;
                 continue;
             };
@@ -478,7 +462,7 @@ fn processFile(
 
         // Read until line terminator or EOF
         const eof = readLine(&reader.interface, &line_buf, allocator, line_terminator) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "read error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "cut", "read error: {s}", .{common.posixErrorString(err)});
             return @intFromEnum(common.ExitCode.general_error);
         };
 
@@ -488,11 +472,11 @@ fn processFile(
         switch (mode) {
             .bytes, .characters => {
                 cutBytesOrChars(line_buf.items, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
             },
@@ -506,11 +490,11 @@ fn processFile(
                         only_delimited,
                         stdout_writer,
                     ) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                     stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{@errorName(err)});
+                        common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                 } else {
@@ -528,11 +512,11 @@ fn processFile(
                             only_delimited,
                             stdout_writer,
                         ) catch |err| {
-                            common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{@errorName(err)});
+                            common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                             return @intFromEnum(common.ExitCode.general_error);
                         };
                         stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                            common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{@errorName(err)});
+                            common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                             return @intFromEnum(common.ExitCode.general_error);
                         };
                     }
@@ -578,26 +562,7 @@ fn readLine(
 
 /// Main entry point for the cut command
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runCut(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-    std.process.exit(exit_code);
+    common.utilityMain(runCut);
 }
 
 /// Print help message

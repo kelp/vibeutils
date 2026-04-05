@@ -460,7 +460,7 @@ fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []con
 }
 
 /// Main entry point for the seq utility
-pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Pre-process args to handle negative numbers before argparse
     const processed_args = try preprocessArgs(allocator, args);
     defer {
@@ -470,24 +470,7 @@ pub fn runSeq(allocator: Allocator, args: []const []const u8, stdout_writer: any
         }
     }
 
-    // Parse command-line arguments
-    const parsed_args = common.argparse.ArgParser.parse(SeqArgs, allocator, processed_args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", "option missing required argument", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "seq", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(SeqArgs, allocator, processed_args, "seq", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -668,27 +651,7 @@ fn printNumber(writer: anytype, value: f64, all_integers: bool, precision: usize
 }
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runSeq(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Print help message
@@ -740,7 +703,7 @@ test "seq basic: seq 5" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"5"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1\n2\n3\n4\n5\n", stdout_buf.items);
 }
@@ -752,7 +715,7 @@ test "seq basic: seq 3 5" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "3", "5" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("3\n4\n5\n", stdout_buf.items);
 }
@@ -764,7 +727,7 @@ test "seq basic: seq 1 2 10" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "1", "2", "10" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1\n3\n5\n7\n9\n", stdout_buf.items);
 }
@@ -776,7 +739,7 @@ test "seq countdown: seq 5 -1 1" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "5", "--", "-1", "1" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_buf.items);
 }
@@ -788,7 +751,7 @@ test "seq separator: seq -s ', ' 3" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-s", ", ", "3" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1, 2, 3\n", stdout_buf.items);
 }
@@ -800,7 +763,7 @@ test "seq equal width: seq -w 1 10" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-w", "1", "10" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n", stdout_buf.items);
 }
@@ -813,7 +776,7 @@ test "seq empty output when direction wrong" {
 
     // seq 5 1 with default increment 1 should print nothing
     const args = [_][]const u8{ "5", "1" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("", stdout_buf.items);
 }
@@ -825,7 +788,7 @@ test "seq single number" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"1"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1\n", stdout_buf.items);
 }
@@ -837,7 +800,7 @@ test "seq float: seq 0.5 0.5 2.0" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "0.5", "0.5", "2.0" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.5\n1.0\n1.5\n2.0\n", stdout_buf.items);
 }
@@ -849,7 +812,7 @@ test "seq error: no args" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "missing operand") != null);
 }
@@ -861,7 +824,7 @@ test "seq error: too many args" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "1", "2", "3", "4" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "extra operand") != null);
 }
@@ -873,7 +836,7 @@ test "seq error: invalid number" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"abc"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "invalid floating point argument") != null);
 }
@@ -885,7 +848,7 @@ test "seq error: zero increment" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "1", "0", "5" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "Zero increment") != null);
 }
@@ -897,7 +860,7 @@ test "seq negative numbers" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "--", "-3", "-1" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-3\n-2\n-1\n", stdout_buf.items);
 }
@@ -909,7 +872,7 @@ test "seq negative to positive" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "--", "-2", "2" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("-2\n-1\n0\n1\n2\n", stdout_buf.items);
 }
@@ -921,7 +884,7 @@ test "seq equal width with negative" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-w", "1", "100" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     // First few should be zero-padded
     try testing.expect(std.mem.startsWith(u8, stdout_buf.items, "001\n002\n003\n"));
@@ -936,7 +899,7 @@ test "seq format %f" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-f", "%f", "3" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.000000\n2.000000\n3.000000\n", stdout_buf.items);
 }
@@ -948,7 +911,7 @@ test "seq help" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: seq") != null);
 }
@@ -960,7 +923,7 @@ test "seq version" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--version"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "seq") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, common.name) != null);
@@ -973,7 +936,7 @@ test "seq large step" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "0", "5", "20" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0\n5\n10\n15\n20\n", stdout_buf.items);
 }
@@ -985,7 +948,7 @@ test "seq decimal precision preserved" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "1.0", "0.1", "1.3" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("1.0\n1.1\n1.2\n1.3\n", stdout_buf.items);
 }
@@ -997,7 +960,7 @@ test "seq separator with equal width" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-w", "-s", ":", "8", "10" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("08:09:10\n", stdout_buf.items);
 }
@@ -1049,7 +1012,7 @@ test "audit: seq negative increment without double-dash" {
 
     // seq 5 -1 1 should count down without needing --
     const args = [_][]const u8{ "5", "-1", "1" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_buf.items);
 }
@@ -1063,7 +1026,7 @@ test "audit: seq invalid number exits 1 not 2" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"abc"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     // GNU uses exit code 1, not 2
     try testing.expectEqual(@as(u8, 1), result);
 }
@@ -1076,7 +1039,7 @@ test "audit: seq zero increment exits 1 not 2" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "1", "0", "5" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     // GNU uses exit code 1, not 2
     try testing.expectEqual(@as(u8, 1), result);
 }
@@ -1089,7 +1052,7 @@ test "audit: seq no args exits 1 not 2" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     // GNU uses exit code 1, not 2
     try testing.expectEqual(@as(u8, 1), result);
 }
@@ -1103,7 +1066,7 @@ test "audit: seq nan input produces error" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"nan"};
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     // Must exit non-zero (GNU uses 1)
     try testing.expect(result != 0);
     // Must emit error on stderr
@@ -1118,7 +1081,7 @@ test "audit: seq nan as increment produces error" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "1", "nan", "5" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expect(result != 0);
     try testing.expect(stderr_buf.items.len > 0);
 }
@@ -1133,7 +1096,7 @@ test "audit: seq -f format preserves prefix and suffix" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-f", "val=%g!", "3" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("val=1!\nval=2!\nval=3!\n", stdout_buf.items);
 }
@@ -1147,7 +1110,7 @@ test "audit: seq -f format respects width and precision" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-f", "%05.1f", "3" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("001.0\n002.0\n003.0\n", stdout_buf.items);
 }
@@ -1160,7 +1123,7 @@ test "audit: seq float sequence 0.1 0.1 0.5" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "0.1", "0.1", "0.5" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("0.1\n0.2\n0.3\n0.4\n0.5\n", stdout_buf.items);
 }
@@ -1175,7 +1138,7 @@ test "audit: seq countdown with double-dash" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "10", "--", "-2", "1" };
-    const result = try runSeq(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10\n8\n6\n4\n2\n", stdout_buf.items);
 }

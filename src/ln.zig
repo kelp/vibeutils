@@ -141,58 +141,14 @@ fn isTargetMissing(target: []const u8, link_name: []const u8) bool {
 
 /// Main entry point for ln command
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runLn(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Run ln with provided writers for output
-pub fn runLn(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "ln";
 
-    // Parse arguments
-    const parsed_args = common.argparse.ArgParser.parse(LnArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.TooManyValues => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option does not accept a value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(LnArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -430,7 +386,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 break :blk true; // Dangling symlink exists
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ link_name, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ link_name, common.posixErrorString(err) });
                 return err;
             },
         };
@@ -469,7 +425,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
                     error.FileNotFound => {}, // Already removed
                     else => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, common.posixErrorString(err) });
                         return err;
                     },
                 };
@@ -486,7 +442,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         const backup_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ link_name, suffix });
         defer allocator.free(backup_name);
         std.posix.rename(link_name, backup_name) catch |backup_err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create backup '{s}': {s}", .{ backup_name, @errorName(backup_err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create backup '{s}': {s}", .{ backup_name, common.posixErrorString(backup_err) });
             return backup_err;
         };
         // After backup rename, link no longer exists at original location
@@ -498,12 +454,12 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 error.FileNotFound => {}, // Already removed
                 error.IsDir => {
                     std.fs.cwd().deleteDir(link_name) catch |dir_err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove directory '{s}': {s}", .{ link_name, @errorName(dir_err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove directory '{s}': {s}", .{ link_name, common.posixErrorString(dir_err) });
                         return dir_err;
                     };
                 },
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, common.posixErrorString(err) });
                     return err;
                 },
             };
@@ -511,7 +467,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
             std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
                 error.FileNotFound => {}, // Already removed
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, common.posixErrorString(err) });
                     return err;
                 },
             };
@@ -541,7 +497,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                     break :blk target;
                 } else {
                     break :blk std.fs.realpath(target, &target_abs_buf) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot resolve target path '{s}': {s}", .{ target, @errorName(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot resolve target path '{s}': {s}", .{ target, common.posixErrorString(err) });
                         return err;
                     };
                 }
@@ -559,7 +515,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
             // Calculate relative path
             target_path = makeRelativePath(temp_allocator, link_dir_abs, target_abs) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot compute relative path: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot compute relative path: {s}", .{common.posixErrorString(err)});
                 return err;
             };
         }
@@ -567,7 +523,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         effective_target = target_path;
 
         std.fs.cwd().symLink(target_path, link_name, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, common.posixErrorString(err) });
             return err;
         };
 
@@ -583,7 +539,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 return error.FileNotFound;
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ target, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot access '{s}': {s}", .{ target, common.posixErrorString(err) });
                 return err;
             },
         };
@@ -612,7 +568,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 .XDEV => error.RenameAcrossMountPoints,
                 else => error.LinkFailed,
             };
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create link '{s}' to '{s}': {s}", .{ link_name, target, common.posixErrorString(err) });
             return error.LinkFailed;
         }
     }
@@ -979,7 +935,7 @@ test "ln: -L creates hard link to symlink target" {
     defer stderr_buffer.deinit(testing.allocator);
 
     // Run: ln -L symlink.txt hardlink.txt
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-L", symlink_abs, hardlink_abs },
         common.null_writer,
@@ -1024,7 +980,7 @@ test "ln: -P creates hard link to symlink itself" {
     defer stderr_buffer.deinit(testing.allocator);
 
     // Run: ln -P symlink.txt hardlink_p.txt
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-P", symlink_abs, hardlink_abs },
         common.null_writer,
@@ -1065,7 +1021,7 @@ test "ln: -b flag creates backup of destination" {
     defer stderr_buffer.deinit(testing.allocator);
 
     // Run: ln -bf target.txt link.txt (backup + force)
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-b", "-f", target_abs, link_abs },
         common.null_writer,
@@ -1141,7 +1097,7 @@ test "ln: -w flag enables dangling symlink warning" {
     defer stderr_buffer.deinit(testing.allocator);
 
     // Run: ln -sw nonexistent_target link_path
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-s", "-w", "nonexistent_target", link_path },
         common.null_writer,
@@ -1178,7 +1134,7 @@ test "ln: -sb without -f creates backup and replaces symlink" {
 
     // Run: ln -sb new_target.txt mylink (backup + symbolic, NO force)
     // GNU ln -b creates backup regardless of -f
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-s", "-b", new_target_abs, link_abs },
         common.null_writer,
@@ -1225,7 +1181,7 @@ test "ln: -sfn replaces symlink to directory instead of following it" {
     // Run: ln -sfn target.txt dir_link
     // GNU behavior: dir_link should be REPLACED with a symlink to target.txt
     // Bug: our code follows dir_link into real_dir and creates target.txt inside it
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-s", "-f", "-n", target_abs, dir_link_abs },
         common.null_writer,
@@ -1261,7 +1217,7 @@ test "ln: -sfh replaces symlink to directory (POSIX -h alias)" {
     defer stderr_buffer.deinit(testing.allocator);
 
     // Run: ln -sfh target.txt dir_link
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-s", "-f", "-h", target_abs, dir_link_abs },
         common.null_writer,
@@ -1294,7 +1250,7 @@ test "ln: -sfn with regular file destination works normally" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-s", "-f", "-n", target_abs, existing_abs },
         common.null_writer,
@@ -1330,7 +1286,7 @@ test "ln: -sfn with dangling symlink destination replaces it" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "-s", "-f", "-n", target_abs, dangling_abs },
         common.null_writer,
@@ -1368,7 +1324,7 @@ test "ln: --backup=simple does not panic with TooManyValues" {
     // because backup is a bool and can't take a value.
     // Expected: exit code 0 (success) with backup created, or at minimum
     // a clean error message (not a stack trace / panic).
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "--backup=simple", source_abs, dest_abs },
         common.null_writer,
@@ -1400,7 +1356,7 @@ test "ln: --backup=numbered does not panic" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const exit_code = try runLn(
+    const exit_code = try run(
         testing.allocator,
         &[_][]const u8{ "--backup=numbered", source_abs, dest_abs },
         common.null_writer,

@@ -99,7 +99,7 @@ fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []cons
         error.NotLink => return null,
         // For all other errors, use OS error message directly - no custom categories
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "ls", "symlink {s}: {s}", .{ name, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "ls", "symlink {s}: {s}", .{ name, common.posixErrorString(err) });
             return null; // Continue processing other entries rather than failing completely
         },
     };

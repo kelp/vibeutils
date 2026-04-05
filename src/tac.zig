@@ -36,50 +36,13 @@ const TacArgs = struct {
 
 /// Main entry point
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runTac(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runTac);
 }
 
 /// Public API that reads from stdin when no files given
 pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
-    const parsed = common.argparse.ArgParser.parse(TacArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tac", "unrecognized option\nTry 'tac --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tac", "option requires an argument\nTry 'tac --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tac", "invalid option value\nTry 'tac --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed = common.argparse.ArgParser.parseOrExit(TacArgs, allocator, args, "tac", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -124,7 +87,7 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
 /// Process a named file
 fn runTacOnFile(allocator: Allocator, file_path: []const u8, separator: []const u8, before: bool, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "tac", "{s}: {s}", .{ file_path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "tac", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer file.close();
@@ -510,7 +473,7 @@ test "tac with nonexistent file returns error" {
     const args = [_][]const u8{"/nonexistent/file.txt"};
     const result = try runTac(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "FileNotFound") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
 }
 
 test "tac reverseByByteSeparator basic" {

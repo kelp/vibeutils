@@ -67,27 +67,7 @@ const UniqArgs = struct {
 
 /// Main entry point
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runUniq(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runUniq);
 }
 
 /// Public entry point that reads from stdin
@@ -126,23 +106,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
         }
     }
 
-    var parsed_args = common.argparse.ArgParser.parse(UniqArgs, allocator, cleaned_args.items) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid option\nTry 'uniq --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "option requires an argument\nTry 'uniq --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument value\nTry 'uniq --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    var parsed_args = common.argparse.ArgParser.parseOrExit(UniqArgs, allocator, cleaned_args.items, "uniq", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Set the all_repeated_method from pre-processing.
@@ -180,7 +144,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     const input_file = if (input_path) |path|
         std.fs.cwd().openFile(path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.general_error);
         }
     else
@@ -196,7 +160,7 @@ pub fn runUniq(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     if (output_path) |path| {
         const output_file = std.fs.cwd().createFile(path, .{ .truncate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer output_file.close();
@@ -245,11 +209,11 @@ fn runUniqWithInput(
     while (true) {
         const line = readLine(allocator, input, delimiter) catch |err| switch (err) {
             error.OutOfMemory => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "read error: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "read error: {s}", .{common.posixErrorString(err)});
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "read error: {s}", .{@errorName(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "read error: {s}", .{common.posixErrorString(err)});
                 return @intFromEnum(common.ExitCode.general_error);
             },
         };

@@ -808,50 +808,14 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 
 /// Main entry point for mv utility
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Run mv with provided writers for output
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "mv";
 
-    // Parse arguments using new parser
-    const parsed_args = common.argparse.ArgParser.parse(MvArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(MvArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -1355,7 +1319,7 @@ test "mv: verbose move prints arrow to stdout" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-v", source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1389,7 +1353,7 @@ test "mv: verbose move does not print arrow to stderr" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-v", source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1419,7 +1383,7 @@ test "mv: moving directory into its own subdirectory returns error not panic" {
 
     // Run via runUtility so we get an exit code instead of a crash
     const args = [_][]const u8{ parent_path, child_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Should exit with error (1), not panic/crash
     try testing.expectEqual(@as(u8, 1), exit_code);
@@ -1456,7 +1420,7 @@ test "mv: -n -f flag combination should let force win (last flag)" {
 
     // Simulate -n -f: last flag is force, should overwrite
     const args = [_][]const u8{ "-n", "-f", source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1493,7 +1457,7 @@ test "mv: -f -n flag combination should let no-clobber win (last flag)" {
 
     // Simulate -f -n: last flag is no-clobber, should preserve destination
     const args = [_][]const u8{ "-f", "-n", source_path, dest_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 

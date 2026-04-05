@@ -37,47 +37,14 @@ const MkdirOptions = struct {
 
 /// Main entry point for mkdir command
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Run mkdir with provided writers for output
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "mkdir";
 
-    // Parse arguments using common argparse module
-    const parsed_args = common.argparse.ArgParser.parse(MkdirArgs, allocator, args) catch |err| {
-        switch (err) {
-            // Handle argument parsing errors with appropriate error messages
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(MkdirArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -311,26 +278,13 @@ fn applySymbolicClause(current: u32, clause: []const u8) !u32 {
 }
 
 /// Convert system error to user-friendly POSIX-style message
-fn errorToMessage(err: anyerror) []const u8 {
-    return switch (err) {
-        error.PathAlreadyExists => "File exists",
-        error.AccessDenied => "Permission denied",
-        error.FileNotFound => "No such file or directory",
-        error.NoSuchFileOrDirectory => "No such file or directory",
-        error.NotDir => "Not a directory",
-        error.ReadOnlyFileSystem => "Read-only file system",
-        error.NameTooLong => "File name too long",
-        else => @errorName(err),
-    };
-}
-
 /// Create directory with specified options
 fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
     if (options.parents) {
         try createPathComponents(path, options, prog_name, stdout_writer, stderr_writer, allocator);
     } else {
         std.fs.cwd().makeDir(path) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, errorToMessage(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, common.posixErrorString(err) });
             return err;
         };
 
@@ -392,7 +346,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         std.fs.cwd().makeDir(current_path) catch |err| switch (err) {
             error.PathAlreadyExists => continue, // -p: silently skip existing
             else => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path, errorToMessage(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path, common.posixErrorString(err) });
                 return err;
             },
         };
@@ -422,7 +376,7 @@ test "mkdir creates single directory" {
     defer std.fs.cwd().deleteDir("test_dir") catch {};
 
     const args = [_][]const u8{"test_dir"};
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -439,7 +393,7 @@ test "mkdir with parents flag creates directory tree" {
     defer std.fs.cwd().deleteTree("test_parent") catch {};
 
     const args = [_][]const u8{ "-p", "test_parent/test_child" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -461,7 +415,7 @@ test "mkdir with verbose flag prints creation messages" {
     defer std.fs.cwd().deleteDir("test_verbose") catch {};
 
     const args = [_][]const u8{ "-v", "test_verbose" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mkdir: created directory 'test_verbose'") != null);
@@ -477,7 +431,7 @@ test "mkdir with mode flag sets permissions" {
     defer std.fs.cwd().deleteDir("test_mode") catch {};
 
     const args = [_][]const u8{ "-m", "755", "test_mode" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -496,7 +450,7 @@ test "mkdir fails for existing directory without parents flag" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"test_existing"};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "File exists") != null);
@@ -511,7 +465,7 @@ test "mkdir with parents flag succeeds for existing directory" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-p", "test_existing_p" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 }
@@ -521,7 +475,7 @@ test "mkdir fails with missing operand" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
@@ -532,7 +486,7 @@ test "mkdir shows help with -h flag" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-h"};
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: mkdir") != null);
@@ -544,7 +498,7 @@ test "mkdir shows version with -V flag" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-V"};
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mkdir (vibeutils)") != null);
@@ -555,7 +509,7 @@ test "mkdir handles invalid mode" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-m", "999", "test_invalid" };
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid mode") != null);
@@ -567,7 +521,7 @@ test "mkdir combines parents and verbose flags" {
     defer std.fs.cwd().deleteTree("test_combo") catch {};
 
     const args = [_][]const u8{ "-pv", "test_combo/sub/deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
@@ -581,7 +535,7 @@ test "mkdir handles multiple directories" {
     defer std.fs.cwd().deleteDir("test_multi3") catch {};
 
     const args = [_][]const u8{ "test_multi1", "test_multi2", "test_multi3" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -635,7 +589,7 @@ test "mkdir handles paths with double slashes" {
     defer std.fs.cwd().deleteTree("test_slashes") catch {};
 
     const args = [_][]const u8{ "-p", "test_slashes//sub//deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -652,7 +606,7 @@ test "mkdir handles paths with dot components" {
     defer std.fs.cwd().deleteTree("test_dots") catch {};
 
     const args = [_][]const u8{ "-p", "test_dots/../test_dots/./sub" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -669,7 +623,7 @@ test "mkdir verbose with parents shows directory creation" {
     defer std.fs.cwd().deleteTree("test_verbose_parents") catch {};
 
     const args = [_][]const u8{ "-pv", "test_verbose_parents/new_child" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
@@ -686,7 +640,7 @@ test "mkdir with mode applies to all created directories with -p" {
     defer std.fs.cwd().deleteTree("test_mode_parents") catch {};
 
     const args = [_][]const u8{ "-pm", "755", "test_mode_parents/sub/deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -703,7 +657,7 @@ test "mkdir -pv prints each intermediate directory" {
     defer std.fs.cwd().deleteTree("test_pv_each") catch {};
 
     const args = [_][]const u8{ "-pv", "test_pv_each/a/b" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -722,7 +676,7 @@ test "mkdir -pm sets mode on leaf only (GNU behavior)" {
     defer std.fs.cwd().deleteTree("test_pm_mode") catch {};
 
     const args = [_][]const u8{ "-pm", "700", "test_pm_mode/sub/deep" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -745,7 +699,7 @@ test "mkdir -pm applies mode to leaf only, not parents (GNU behavior)" {
     defer std.fs.cwd().deleteTree("test_pm_all_levels") catch {};
 
     const args = [_][]const u8{ "-pm", "700", "test_pm_all_levels/mid/leaf" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -780,7 +734,7 @@ test "mkdir -p handles absolute-like paths" {
     defer testing.allocator.free(deep_path);
 
     const args = [_][]const u8{ "-p", deep_path };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -797,7 +751,7 @@ test "mkdir -p with trailing slashes" {
     defer std.fs.cwd().deleteTree("test_trailing") catch {};
 
     const args = [_][]const u8{ "-p", "test_trailing/sub/" };
-    const result = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
@@ -817,7 +771,7 @@ test "mkdir error for existing directory uses POSIX-style message" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"test_posix_err"};
-    const result = try runUtility(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     // Should fail with non-zero exit code
     try testing.expectEqual(@as(u8, 1), result);

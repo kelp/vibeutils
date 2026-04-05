@@ -571,7 +571,7 @@ fn printDirError(allocator: Allocator, stderr: anytype, path: []const u8, err: a
 }
 
 fn printIterError(allocator: Allocator, stderr: anytype, path: []const u8, err: anyerror) void {
-    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read directory '{s}': {s}", .{ path, @errorName(err) });
+    common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read directory '{s}': {s}", .{ path, common.posixErrorString(err) });
 }
 
 // ============================================================================
@@ -579,29 +579,10 @@ fn printIterError(allocator: Allocator, stderr: anytype, path: []const u8, err: 
 // ============================================================================
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = runDu(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    if (exit_code != 0) std.process.exit(exit_code);
+    common.utilityMain(runDu);
 }
 
-pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) u8 {
+pub fn runDu(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
     const opts = common.argparse.ArgParser.parse(DuOptions, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
@@ -889,7 +870,7 @@ test "du --help shows usage" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: du") != null);
@@ -901,7 +882,7 @@ test "du --version shows version" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--version"};
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "du") != null);
@@ -913,7 +894,7 @@ test "du invalid flag exits with code 2" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--invalid-flag"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -923,7 +904,7 @@ test "du nonexistent path exits with code 1" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"/nonexistent/path/xyz"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
@@ -934,7 +915,7 @@ test "du -s and -d conflict exits with code 2" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-s", "-d", "1" };
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -956,7 +937,7 @@ test "du on a file reports its size" {
 
     // Use -b for apparent size in bytes
     const args = &[_][]const u8{ "-b", test_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // The output should contain "14" (length of "Hello, world!\n")
@@ -979,7 +960,7 @@ test "du on a directory reports size" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have output lines for subdir and the top dir
@@ -1004,7 +985,7 @@ test "du -s shows only total for argument" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-s", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // With -s, should only have one line of output (the summary)
@@ -1030,7 +1011,7 @@ test "du -c shows grand total" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-c", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain "total" line
@@ -1055,7 +1036,7 @@ test "du -a shows all files" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-a", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // With -a, output should contain individual file names
@@ -1078,7 +1059,7 @@ test "du -h formats human-readable" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-h", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should exist and contain the path
@@ -1101,7 +1082,7 @@ test "du defaults to current directory" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-s", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(stdout_buffer.items.len > 0);
@@ -1125,10 +1106,10 @@ test "du -d 0 is like -s" {
     defer stdout_s.deinit(testing.allocator);
 
     const args_d0 = &[_][]const u8{ "-d", "0", "-b", dir_path };
-    _ = runDu(testing.allocator, args_d0, stdout_d0.writer(testing.allocator), common.null_writer);
+    _ = try runDu(testing.allocator, args_d0, stdout_d0.writer(testing.allocator), common.null_writer);
 
     const args_s = &[_][]const u8{ "-s", "-b", dir_path };
-    _ = runDu(testing.allocator, args_s, stdout_s.writer(testing.allocator), common.null_writer);
+    _ = try runDu(testing.allocator, args_s, stdout_s.writer(testing.allocator), common.null_writer);
 
     // Both should produce identical output
     try testing.expectEqualStrings(stdout_d0.items, stdout_s.items);
@@ -1218,7 +1199,7 @@ test "du --color=invalid exits with code 2" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--color=invalid"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
@@ -1368,7 +1349,7 @@ test "du --help shows icons option" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--icons") != null);
@@ -1383,7 +1364,7 @@ test "du -r flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-r"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
@@ -1429,7 +1410,7 @@ test "du -H flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-H"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
@@ -1461,7 +1442,7 @@ test "du -H follows symlinks given as command-line arguments" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-H", "-a", "-b", link_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // The output should include content.txt path (proves we traversed into the dir)
@@ -1534,7 +1515,7 @@ test "du -P flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-P"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
@@ -1564,7 +1545,7 @@ test "du -P does not follow symlinks" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-P", "-a", "-b", link_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -P should NOT follow the symlink, so file.txt should not appear
@@ -1657,7 +1638,7 @@ test "du -B flag sets block size" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-A", "-B", "1", test_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "14\t") != null);
 }
@@ -1678,7 +1659,7 @@ test "du -g flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-g"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expect(exit_code != 2);
 }
 
@@ -1698,7 +1679,7 @@ test "du -m flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-m"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expect(exit_code != 2);
 }
 
@@ -1718,7 +1699,7 @@ test "du -I flag is accepted with value" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-I", "*.o" };
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     // Should not return misuse (2) — flag should be accepted
     try testing.expect(exit_code != 2);
 }
@@ -1758,7 +1739,7 @@ test "du -l flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-l"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expect(exit_code != 2);
 }
 
@@ -1778,7 +1759,7 @@ test "du -n flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-n"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expect(exit_code != 2);
 }
 
@@ -1827,7 +1808,7 @@ test "du -t flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-t", "1K" };
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expect(exit_code != 2);
 }
 
@@ -1870,7 +1851,7 @@ test "du -t filters entries below threshold" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-t", "50", "-a", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // large.txt (100 bytes) should appear
@@ -1902,7 +1883,7 @@ test "du -t with negative threshold shows entries at or below size" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-t", "-50", "-a", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // tiny.txt (5 bytes) should appear
@@ -1940,7 +1921,7 @@ test "du --si flag is accepted by argparse" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--si"};
-    const exit_code = runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try runDu(testing.allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expect(exit_code != 2);
 }
 
@@ -1983,7 +1964,7 @@ test "du --si shows SI units in output" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "--si", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should contain the path and use SI units (kB suffix for small dirs)
@@ -2000,7 +1981,7 @@ test "du --help shows new flags" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--apparent-size") != null);
@@ -2074,7 +2055,7 @@ test "du -L does not double-count file reachable via symlink" {
 
     // -L dereferences all symlinks; -b = apparent-size + block-size=1; -s = summary
     const args = &[_][]const u8{ "-L", "-b", "-s", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2110,7 +2091,7 @@ test "du -b directory total equals sum of file apparent sizes (no dir metadata)"
 
     // -b = --apparent-size --block-size=1; -s = summary
     const args = &[_][]const u8{ "-b", "-s", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2155,7 +2136,7 @@ test "du -S shows sum of direct files, not directory inode size" {
     // -S = separate-dirs (don't include subdirectory sizes)
     // -b = apparent-size + block-size=1
     const args = &[_][]const u8{ "-S", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -2194,7 +2175,7 @@ test "du -S subdirectory shows sum of its own direct files" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-S", "-b", dir_path };
-    const exit_code = runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runDu(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 

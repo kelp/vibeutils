@@ -63,7 +63,7 @@ const ChmodArgs = struct {
 };
 
 /// Main entry point for chmod utility
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runChmod(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Pre-process: if an argument looks like a symbolic mode starting
     // with '-' (e.g. "-w", "-rwx"), insert "--" before it so the
     // argparser treats it and everything after as positionals.
@@ -89,15 +89,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
 
     const parse_args = effective_args orelse args;
 
-    const parsed_args = common.argparse.ArgParser.parse(ChmodArgs, allocator, parse_args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid argument\nTry 'chmod --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(ChmodArgs, allocator, parse_args, "chmod", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -160,7 +152,7 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
             },
             else => {
                 if (!options.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "operation failed: {s}", .{errorToMessage(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "operation failed: {s}", .{common.posixErrorString(err)});
                 }
             },
         }
@@ -170,32 +162,8 @@ pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout
     return @intFromEnum(common.ExitCode.success);
 }
 
-/// Main entry point for chmod
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runUtility(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runChmod);
 }
 
 /// Print usage information and examples
@@ -326,7 +294,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
     if (options.reference_file) |ref_file| {
         const ref_stat = std.fs.cwd().statFile(ref_file) catch |err| {
             if (!options.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, errorToMessage(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, common.posixErrorString(err) });
             }
             return err;
         };
@@ -386,7 +354,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             // Use lstat to check if the command-line arg is a symlink
             const lstat_result = common.file.FileInfo.lstat(file_path) catch |err| {
                 if (!options.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                 }
                 had_errors = true;
                 continue;
@@ -399,7 +367,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
                 // Follow the symlink to check the target type
                 const target_stat = std.fs.cwd().statFile(file_path) catch |err| {
                     if (!options.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                     }
                     had_errors = true;
                     continue;
@@ -442,11 +410,11 @@ fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_spe
                     if (mode_spec == .symbolic) {
                         common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_spec.symbolic});
                     } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                     }
                 },
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                 },
             }
         }
@@ -462,7 +430,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
     // This ensures we can access the directory contents even if the new permissions would block access
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         if (!options.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, errorToMessage(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
         }
         return err;
     };
@@ -835,15 +803,6 @@ fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
 }
 
 /// Convert error to user-friendly message
-fn errorToMessage(err: anytype) []const u8 {
-    return switch (err) {
-        error.FileNotFound => "No such file or directory",
-        error.AccessDenied => "Permission denied",
-        error.NotDir => "Not a directory",
-        else => @errorName(err),
-    };
-}
-
 /// Apply a mode specification to a single file
 /// Reports changes if verbose or changes_only flags are set
 /// When no_dereference is set, operates on symlinks themselves via fchmodat
@@ -1859,7 +1818,7 @@ test "chmod --preserve-root blocks recursive on /" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "--preserve-root", "-R", "755", "/" };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively on '/'") != null);
@@ -1873,7 +1832,7 @@ test "chmod --preserve-root allows non-recursive on /" {
 
     // Without -R, --preserve-root should not block
     const args = [_][]const u8{ "--preserve-root", "755", "/" };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     // Should fail with permission error, not preserve-root error
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively") == null);
@@ -1887,7 +1846,7 @@ test "chmod --dereference flag is accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "--dereference", "--help" };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1899,7 +1858,7 @@ test "chmod --no-preserve-root flag is accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "--no-preserve-root", "--help" };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -2052,9 +2011,7 @@ test "chmod stat AccessDenied produces correct Permission denied message" {
         // BUG: When statFile returns AccessDenied, the code substitutes a zeroed
         // Stat instead of propagating the error. This causes the error to flow
         // through the chmod() syscall path instead, which returns PermissionDenied.
-        // errorToMessage maps AccessDenied -> "Permission denied" (with space),
-        // but PermissionDenied falls through to @errorName -> "PermissionDenied"
-        // (camelCase, no space). The message should say "Permission denied".
+        // posixErrorString maps both AccessDenied and PermissionDenied -> "Permission denied".
         try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Permission denied") != null);
         return;
     };
@@ -2129,7 +2086,7 @@ test "parseMode with octal string returns correct mode" {
 // Behavioral tests: verify chmod ACTUALLY CHANGES FILE PERMISSIONS on disk
 // =============================================================================
 //
-// These tests create real temp files, apply chmod via chmodFiles or runUtility,
+// These tests create real temp files, apply chmod via chmodFiles or runChmod,
 // then stat the file to verify the mode changed. This covers the audit finding
 // (F69) that existing unit tests only check parsed struct fields.
 
@@ -2358,7 +2315,7 @@ test "behavioral: chmod 4755 sets setuid bit" {
     try testing.expectEqual(@as(u32, 0o4755), actual_mode);
 }
 
-test "behavioral: chmod -w via runUtility removes write permission" {
+test "behavioral: chmod -w via runChmod removes write permission" {
     // BUG: chmod -w file should remove write permission from all users,
     // but the argparser consumes -w as a flag (UnknownFlag error) instead
     // of treating it as a symbolic mode string.
@@ -2383,7 +2340,7 @@ test "behavioral: chmod -w via runUtility removes write permission" {
 
     // chmod -w file should succeed with exit code 0
     const args = [_][]const u8{ "-w", abs_path };
-    const exit_code = try runUtility(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     // Should succeed (exit code 0), not fail as "invalid argument"
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -2516,7 +2473,7 @@ test "applySymbolicMode +rw without who masks bits blocked by umask" {
 
 // ==================== I4: chmod -x flag collision tests ====================
 
-test "behavioral: chmod -x via runUtility removes execute permission" {
+test "behavioral: chmod -x via runChmod removes execute permission" {
     if (std.c.getuid() == 0) return;
 
     var tmp_dir = testing.tmpDir(.{});
@@ -2536,7 +2493,7 @@ test "behavioral: chmod -x via runUtility removes execute permission" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-x", abs_path };
-    const exit_code = try runUtility(
+    const exit_code = try runChmod(
         testing.allocator,
         &args,
         stdout_buf.writer(testing.allocator),

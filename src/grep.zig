@@ -1023,7 +1023,7 @@ fn searchDirectory(
 ) void {
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
         if (!opts.no_messages) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ dir_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ dir_path, common.posixErrorString(err) });
         }
         return;
     };
@@ -1044,7 +1044,7 @@ fn searchDirectory(
                 if (shouldIncludeFile(entry.name, opts)) {
                     const file = std.fs.cwd().openFile(full_path, .{}) catch |err| {
                         if (!opts.no_messages) {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ full_path, @errorName(err) });
+                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ full_path, common.posixErrorString(err) });
                         }
                         continue;
                     };
@@ -1145,27 +1145,12 @@ fn printVersion(writer: anytype) !void {
 // Main Entry Point
 // ============================================================================
 
+fn run(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
+    return runGrep(allocator, args, stdout, stderr);
+}
+
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = runGrep(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    if (exit_code != 0) std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Public entry point for the grep utility
@@ -1250,7 +1235,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 // Check if it's a directory
                 const stat = std.fs.cwd().statFile(file_path) catch |err| {
                     if (!opts.no_messages) {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, @errorName(err) });
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     }
                     had_error = true;
                     continue;
@@ -1264,7 +1249,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
             const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
                 if (!opts.no_messages) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                 }
                 had_error = true;
                 continue;

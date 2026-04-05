@@ -456,12 +456,12 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
             std.fs.File.stdin()
         else
             std.fs.cwd().openFile(f0f_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot open '{s}' for reading: {s}", .{ f0f_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot open '{s}' for reading: {s}", .{ f0f_path, common.posixErrorString(err) });
                 return @intFromEnum(common.ExitCode.misuse);
             };
         defer if (!is_stdin) f0f_file.close();
         const content = f0f_file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read '{s}': {s}", .{ f0f_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read '{s}': {s}", .{ f0f_path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
         var it = std.mem.splitScalar(u8, content, 0);
@@ -499,7 +499,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 try readLines(allocator, stdin_file, &file_lines, delimiter, &merge_buffers);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
@@ -521,7 +521,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
         // Write output
         if (opts.output_file) |out_path| {
             const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, @errorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
                 return @intFromEnum(common.ExitCode.misuse);
             };
             defer out_file.close();
@@ -557,7 +557,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 try readLines(allocator, stdin_file, &lines, delimiter, &buffers);
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close();
@@ -577,7 +577,7 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     // Determine output target
     if (opts.output_file) |out_path| {
         const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
         defer out_file.close();

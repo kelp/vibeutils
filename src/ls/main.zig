@@ -161,7 +161,7 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
         var stderr_buffer: [8192]u8 = undefined;
         var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
         const stderr = &stderr_writer.interface;
-        common.fatalWithWriter(stderr, "argument parsing failed: {s}", .{@errorName(err)});
+        common.fatalWithWriter(stderr, "argument parsing failed: {s}", .{common.posixErrorString(err)});
     };
     defer allocator.free(args.positionals);
 
@@ -189,14 +189,14 @@ fn mainWithAllocator(allocator: std.mem.Allocator) !void {
 pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments using new parser (same as mainWithAllocator)
     const parsed_args = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "argument parsing failed: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "argument parsing failed: {s}", .{common.posixErrorString(err)});
         return 1;
     };
     defer allocator.free(parsed_args.positionals);
 
     // Call the main ls implementation which returns an exit code
     return runLs(allocator, parsed_args, stdout_writer, stderr_writer) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "execution failed: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "execution failed: {s}", .{common.posixErrorString(err)});
         return 1;
     };
 }
@@ -540,30 +540,18 @@ fn printIconTest(writer: anytype) !void {
 }
 
 /// Convert a Zig error to a POSIX-style error string.
-fn posixErrorName(err: anyerror) []const u8 {
-    return switch (err) {
-        error.FileNotFound => "No such file or directory",
-        error.AccessDenied => "Permission denied",
-        error.NotDir => "Not a directory",
-        error.NameTooLong => "File name too long",
-        error.SymLinkLoop => "Too many levels of symbolic links",
-        error.InputOutput => "Input/output error",
-        else => @errorName(err),
-    };
-}
-
 /// List a directory or file, handling both files and directories appropriately
 /// Errors are printed but don't stop execution except for BrokenPipe
 fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {s}", .{posixErrorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {s}", .{common.posixErrorString(err)});
         return err;
     };
 
     // Get stat info to determine if it's a file or directory
     const stat = common.file.FileInfo.stat(path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, posixErrorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
         return err;
     };
 
@@ -608,7 +596,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     }
 
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, posixErrorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
         return err;
     };
     defer dir.close();

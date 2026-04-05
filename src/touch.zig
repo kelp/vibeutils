@@ -43,49 +43,14 @@ const TouchArgs = struct {
 
 /// Main entry point for the touch utility.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout_writer_interface = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr_writer_interface = &stderr_writer.interface;
-
-    const exit_code = try runTouch(allocator, args[1..], stdout_writer_interface, stderr_writer_interface);
-
-    // Flush buffers before exit
-    stdout_writer_interface.flush() catch {};
-    stderr_writer_interface.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Main implementation that accepts writers for output.
-pub fn runTouch(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "touch";
 
-    const parsed_args = common.argparse.ArgParser.parse(TouchArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry '{s} --help' for more information.", .{prog_name});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(TouchArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -585,7 +550,7 @@ fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []cons
         error.InvalidValue => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Invalid argument", .{path}),
         error.BadFileDescriptor => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': Bad file descriptor", .{path}),
         error.NoSuchProcess => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such process", .{path}),
-        else => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': {s}", .{ path, @errorName(err) }),
+        else => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': {s}", .{ path, common.posixErrorString(err) }),
     }
 }
 
@@ -913,7 +878,7 @@ test "touch: -A flag is accepted as silent no-op" {
 
     // -A is a macOS-only feature; on Linux it should be a silent no-op exiting 0
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -934,7 +899,7 @@ test "touch: -d flag is parsed by argparser" {
 
     // -d should be accepted without error
     const args = [_][]const u8{ "-d", "2024-01-15", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -952,7 +917,7 @@ test "touch: -d with ISO date sets timestamp" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-d", "2024-01-15", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-01-15 00:00:00 UTC
@@ -976,7 +941,7 @@ test "touch: -d with date and time sets timestamp" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-d", "2024-01-15T10:30:00", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-01-15 10:30:00 UTC
@@ -1000,7 +965,7 @@ test "touch: -d with invalid date gives error" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-d", "not-a-date", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     // Should return error exit code for invalid date
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
@@ -1020,7 +985,7 @@ test "touch: -d with space-separated datetime" {
 
     // Space-separated date and time (ISO 8601 allows space instead of T)
     const args = [_][]const u8{ "-d", "2024-06-15 14:30:00", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-06-15 14:30:00 UTC
@@ -1046,7 +1011,7 @@ test "touch: -A flag with non-zero value exits zero" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     // -A is a silent no-op on Linux; should succeed
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -1066,7 +1031,7 @@ test "touch: -A flag produces no stderr output" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-A", "01", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Silent no-op should produce no stderr
@@ -1118,7 +1083,7 @@ test "touch: -d with Z suffix sets correct UTC timestamp on file" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-d", "2024-01-15T00:00:00Z", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify mtime is 2024-01-15 00:00:00 UTC = 1705276800
@@ -1142,7 +1107,7 @@ test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
 
     // midnight at +05:00 = 2024-01-14T19:00:00 UTC = epoch 1705258800
     const args = [_][]const u8{ "-d", "2024-01-15T00:00:00+05:00", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     const stat = try common.file.FileInfo.stat(test_file);
@@ -1174,7 +1139,7 @@ test "touch: -A flag still touches file timestamps (adjustment ignored)" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try runTouch(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // -A adjustment is ignored but touch still updates timestamps to now

@@ -578,47 +578,21 @@ pub fn runTest(allocator: Allocator, args: []const []const u8, stdout_writer: an
     return evaluateTestArgs(allocator, test_args, stderr_writer, "test");
 }
 
-/// Entry point for command-line usage
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    var args_iter = try std.process.argsWithAllocator(allocator);
-    defer args_iter.deinit();
-
-    // Detect if we're called as '[' by checking program name
-    const program_name = args_iter.next() orelse return;
-    const is_bracket_form = std.mem.endsWith(u8, program_name, "[");
-
-    var args = ArrayList([]const u8){};
-    defer args.deinit(allocator);
-
-    while (args_iter.next()) |arg| {
-        // POSIX compliance: no special handling for any flags
-        // All arguments including --help and --version are treated as regular strings
-        try args.append(allocator, arg);
+/// Dispatch to runBracketTest or runTest depending on argv[0].
+/// Used as the run function for utilityMain.
+fn runTestDispatch(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) anyerror!u8 {
+    // Re-read argv[0] to detect invocation as '['
+    const all_args = try std.process.argsAlloc(allocator);
+    const is_bracket_form = all_args.len > 0 and std.mem.endsWith(u8, all_args[0], "[");
+    if (is_bracket_form) {
+        return runBracketTest(allocator, args, stdout_writer, stderr_writer);
+    } else {
+        return runTest(allocator, args, stdout_writer, stderr_writer);
     }
+}
 
-    const exit_code = if (is_bracket_form)
-        try runBracketTest(allocator, args.items, stdout, stderr)
-    else
-        try runTest(allocator, args.items, stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+pub fn main() !void {
+    common.utilityMain(runTestDispatch);
 }
 
 // ========== TESTS ==========

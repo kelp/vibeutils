@@ -64,62 +64,16 @@ const ParentIterator = struct {
 };
 
 /// Map OS errors to friendly messages.
-fn formatError(err: anyerror) []const u8 {
-    return switch (err) {
-        error.DirNotEmpty => "Directory not empty",
-        error.NotDir => "Not a directory",
-        error.AccessDenied => "Permission denied",
-        error.FileNotFound => "No such file or directory",
-        error.NameTooLong => "Path too long",
-        else => @errorName(err),
-    };
-}
-
 /// Main entry point for rmdir utility.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout_writer_interface = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr_writer_interface = &stderr_writer.interface;
-
-    const exit_code = try runRmdir(allocator, args[1..], stdout_writer_interface, stderr_writer_interface);
-
-    // Flush buffers before exit
-    stdout_writer_interface.flush() catch {};
-    stderr_writer_interface.flush() catch {};
-
-    std.process.exit(exit_code);
-}
-
-/// Unified interface for fuzzing and testing
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return runRmdir(allocator, args, stdout_writer, stderr_writer);
+    common.utilityMain(run);
 }
 
 /// Run rmdir with provided writers for output
-pub fn runRmdir(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     const prog_name = "rmdir";
 
-    const parsed_args = common.argparse.ArgParser.parse(RmdirArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(RmdirArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -250,8 +204,7 @@ fn handleError(allocator: std.mem.Allocator, err: anyerror, path: []const u8, st
         return;
     }
 
-    const msg = formatError(err);
-    common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "failed to remove '{s}': {s}", .{ path, msg });
+    common.printErrorWithProgram(allocator, stderr_writer, "rmdir", "failed to remove '{s}': {s}", .{ path, common.posixErrorString(err) });
 }
 
 // ===== TESTS =====
@@ -538,10 +491,10 @@ test "rmdir: parent iterator memory management" {
 }
 
 test "rmdir: error message consistency" {
-    try testing.expectEqualStrings("Directory not empty", formatError(error.DirNotEmpty));
-    try testing.expectEqualStrings("Not a directory", formatError(error.NotDir));
-    try testing.expectEqualStrings("Permission denied", formatError(error.AccessDenied));
-    try testing.expectEqualStrings("No such file or directory", formatError(error.FileNotFound));
+    try testing.expectEqualStrings("Directory not empty", common.posixErrorString(error.DirNotEmpty));
+    try testing.expectEqualStrings("Not a directory", common.posixErrorString(error.NotDir));
+    try testing.expectEqualStrings("Permission denied", common.posixErrorString(error.AccessDenied));
+    try testing.expectEqualStrings("No such file or directory", common.posixErrorString(error.FileNotFound));
 }
 
 test "rmdir: -p dotdot should fail with refusing message" {
@@ -552,7 +505,7 @@ test "rmdir: -p dotdot should fail with refusing message" {
     defer stderr_buffer.deinit(allocator);
 
     const args = [_][]const u8{ "-p", ".." };
-    const exit_code = try runRmdir(allocator, &args, stdout_buffer.writer(allocator), stderr_buffer.writer(allocator));
+    const exit_code = try run(allocator, &args, stdout_buffer.writer(allocator), stderr_buffer.writer(allocator));
 
     // Should fail with non-zero exit code
     try testing.expect(exit_code != 0);
@@ -570,7 +523,7 @@ test "rmdir: -p dot should fail with refusing message" {
     defer stderr_buffer.deinit(allocator);
 
     const args = [_][]const u8{ "-p", "." };
-    const exit_code = try runRmdir(allocator, &args, stdout_buffer.writer(allocator), stderr_buffer.writer(allocator));
+    const exit_code = try run(allocator, &args, stdout_buffer.writer(allocator), stderr_buffer.writer(allocator));
 
     // Should fail with non-zero exit code
     try testing.expect(exit_code != 0);

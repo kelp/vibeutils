@@ -83,17 +83,8 @@ fn printVersion(writer: anytype) !void {
     try writer.print("sleep ({s}) {s}\n", .{ common.name, common.version });
 }
 
-pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse arguments
-    const parsed_args = common.argparse.ArgParser.parse(SleepArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "sleep", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const parsed_args = common.argparse.ArgParser.parseOrExit(SleepArgs, allocator, args, "sleep", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -152,29 +143,7 @@ pub fn runSleep(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
 
 /// Standard main function
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runSleep(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 // ============================================================================
@@ -285,7 +254,7 @@ test "runSleep - help option" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"--help"}, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &.{"--help"}, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: sleep NUMBER[SUFFIX]") != null);
@@ -295,7 +264,7 @@ test "runSleep - version option" {
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"--version"}, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, &.{"--version"}, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "sleep (vibeutils)") != null);
@@ -305,7 +274,7 @@ test "runSleep - missing arguments" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
@@ -315,7 +284,7 @@ test "runSleep - invalid time format" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"invalid"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &.{"invalid"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
@@ -325,7 +294,7 @@ test "runSleep - negative time (with separator)" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{ "--", "-1" }, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &.{ "--", "-1" }, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
@@ -335,21 +304,21 @@ test "runSleep - negative flag treated as unknown argument" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"-1"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &.{"-1"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
+    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
 }
 
 test "runSleep - zero seconds (should succeed immediately)" {
-    const result = try runSleep(testing.allocator, &.{"0"}, common.null_writer, common.null_writer);
+    const result = try run(testing.allocator, &.{"0"}, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runSleep - very small sleep time" {
     // This should complete quickly - testing that small sleep times work
     const start_time = std.time.milliTimestamp();
-    const result = try runSleep(testing.allocator, &.{"0.001"}, common.null_writer, common.null_writer);
+    const result = try run(testing.allocator, &.{"0.001"}, common.null_writer, common.null_writer);
     const end_time = std.time.milliTimestamp();
 
     try testing.expectEqual(@as(u8, 0), result);
@@ -360,7 +329,7 @@ test "runSleep - very small sleep time" {
 test "runSleep - multiple time arguments" {
     // Test that multiple arguments are accepted and processed
     // We use very small times to keep tests fast
-    const result = try runSleep(testing.allocator, &.{ "0.001", "0.001s" }, common.null_writer, common.null_writer);
+    const result = try run(testing.allocator, &.{ "0.001", "0.001s" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -373,7 +342,7 @@ test "runSleep - zero sleep with captured output" {
     var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buf.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"0"}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, &.{"0"}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
@@ -412,7 +381,7 @@ test "runSleep error message includes the invalid token" {
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const result = try runSleep(testing.allocator, &.{"xyz"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, &.{"xyz"}, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), result);
     // The error message should include the invalid token 'xyz'

@@ -104,23 +104,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const expanded_args = try expandObsoleteArgs(allocator, args);
     defer allocator.free(expanded_args);
 
-    const parsed_args = common.argparse.ArgParser.parse(HeadArgs, allocator, expanded_args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(HeadArgs, allocator, expanded_args, "head", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -187,14 +171,14 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     had_error = true;
                     continue;
                 };
                 defer file.close();
 
                 const stat = file.stat() catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                     had_error = true;
                     continue;
                 };
@@ -220,32 +204,8 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 }
 
 /// Entry point for the head binary.
-/// Sets up allocator, parses system arguments, and calls runHead.
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runHead(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runHead);
 }
 
 /// Print help message to the specified writer
@@ -377,15 +337,6 @@ const DEFAULT_LINE_COUNT: u64 = 10;
 // ========== ERROR HANDLING ==========
 
 /// Convert error to user-friendly message
-fn errorToMessage(err: anyerror) []const u8 {
-    return switch (err) {
-        error.FileNotFound => "No such file or directory",
-        error.AccessDenied => "Permission denied",
-        error.IsDir => "Is a directory",
-        else => @errorName(err),
-    };
-}
-
 // ========== TEST CONSTANTS ==========
 
 const TEST_NEGATIVE_VALUE: []const u8 = "-5";

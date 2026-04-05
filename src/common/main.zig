@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const lib = @import("lib.zig");
 
 /// Composite wrapper for utility main functions.
 ///
@@ -41,7 +42,7 @@ pub fn utilityMain(comptime runFn: fn (std.mem.Allocator, []const []const u8, an
         var stderr_buf: [256]u8 = undefined;
         var stderr_w = std.fs.File.stderr().writerStreaming(&stderr_buf);
         const stderr = &stderr_w.interface;
-        stderr.print("error: failed to allocate arguments: {s}\n", .{@errorName(err)}) catch {};
+        stderr.print("error: failed to allocate arguments: {s}\n", .{lib.posixErrorString(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
@@ -59,7 +60,7 @@ pub fn utilityMain(comptime runFn: fn (std.mem.Allocator, []const []const u8, an
     // Call the run function (skip program name: args[1..])
     const exit_code = runFn(allocator, args[1..], stdout, stderr) catch |err| {
         // Uncaught error from run function - print and exit with error code
-        stderr.print("error: {s}\n", .{@errorName(err)}) catch {};
+        stderr.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
@@ -93,7 +94,7 @@ pub fn runWithBufferedIO(
 ) u8 {
     // Skip program name (mirrors utilityMain's args[1..] call)
     const exit_code = runFn(allocator, args[1..], stdout_writer, stderr_writer) catch |err| {
-        stderr_writer.print("error: {s}\n", .{@errorName(err)}) catch {};
+        stderr_writer.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
         return 1;
     };
     return exit_code;

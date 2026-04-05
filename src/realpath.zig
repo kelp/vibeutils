@@ -99,21 +99,6 @@ fn resolveLogical(allocator: Allocator, path: []const u8) ![]u8 {
     return result;
 }
 
-/// Convert a Zig error to a POSIX-style error string (matching GNU coreutils output).
-fn posixErrorName(err: anyerror) []const u8 {
-    return switch (err) {
-        error.AccessDenied => "Permission denied",
-        error.FileNotFound => "No such file or directory",
-        error.NotDir => "Not a directory",
-        error.NameTooLong => "File name too long",
-        error.SymLinkLoop => "Too many levels of symbolic links",
-        error.OutOfMemory => "Cannot allocate memory",
-        error.InvalidPath => "Invalid argument",
-        error.ReadOnlyFileSystem => "Read-only file system",
-        else => @errorName(err),
-    };
-}
-
 /// Process a single path and write the result
 fn processPath(
     allocator: Allocator,
@@ -125,14 +110,14 @@ fn processPath(
     const resolved = if (opts.no_symlinks) blk: {
         break :blk resolveLogical(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
             }
             return false;
         };
     } else if (opts.canonicalize_missing) blk: {
         break :blk path_utils.canonicalizeMissing(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
             }
             return false;
         };
@@ -140,7 +125,7 @@ fn processPath(
         // -e: all components must exist
         break :blk std.fs.cwd().realpathAlloc(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
             }
             return false;
         };
@@ -149,7 +134,7 @@ fn processPath(
         // Use the common function for parent-must-exist semantics.
         break :blk path_utils.canonicalizeMissing(allocator, path) catch |err| {
             if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
             }
             return false;
         };
@@ -164,21 +149,21 @@ fn processPath(
         const resolved_base = if (opts.no_symlinks)
             resolveLogical(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, posixErrorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
                 }
                 return false;
             }
         else if (opts.canonicalize_missing)
             path_utils.canonicalizeMissing(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, posixErrorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
                 }
                 return false;
             }
         else
             std.fs.cwd().realpathAlloc(allocator, base_dir) catch |err| {
                 if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, posixErrorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
                 }
                 return false;
             };
@@ -242,23 +227,7 @@ pub fn runRealpath(allocator: Allocator, args: []const []const u8, stdout_writer
         }
     }
 
-    const parsed_args = common.argparse.ArgParser.parse(RealpathArgs, allocator, processed_args.items) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "option missing required argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(RealpathArgs, allocator, processed_args.items, "realpath", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -316,27 +285,7 @@ fn printVersion(writer: anytype) !void {
 }
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runRealpath(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runRealpath);
 }
 
 // ============================================================================

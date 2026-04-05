@@ -1926,7 +1926,7 @@ fn printTotalDynamic(stdout: anytype, filesystems: []const FsInfo, opts: DfOptio
 // Main logic
 // ============================================================================
 
-pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) u8 {
+pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
     const parsed = parseArgs(allocator, args);
     const opts = parsed.opts;
 
@@ -2062,26 +2062,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 }
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = runDf(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    if (exit_code != 0) std.process.exit(exit_code);
+    common.utilityMain(runDf);
 }
 
 // ============================================================================
@@ -2523,7 +2504,7 @@ test "runDf - help flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: df") != null);
     try testing.expectEqualStrings("", stderr_buf.items);
@@ -2536,7 +2517,7 @@ test "runDf - version flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--version"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "df") != null);
 }
@@ -2548,7 +2529,7 @@ test "runDf - unknown flag returns misuse" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--invalid"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "df:") != null);
 }
@@ -2560,7 +2541,7 @@ test "runDf - nonexistent path returns error" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"/nonexistent/path/that/does/not/exist"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 1), result);
     try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "df:") != null);
 }
@@ -2572,7 +2553,7 @@ test "runDf - no args shows filesystems" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     // Should have a header line
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Filesystem") != null);
@@ -2586,7 +2567,7 @@ test "runDf - specific path" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"/"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Filesystem") != null);
     try testing.expect(stdout_buf.items.len > 50); // Has meaningful output
@@ -2599,7 +2580,7 @@ test "runDf - human readable flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-h", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Size") != null);
 }
@@ -2611,7 +2592,7 @@ test "runDf - print type flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-T", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Type") != null);
 }
@@ -2623,7 +2604,7 @@ test "runDf - inodes flag" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-i", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Inodes") != null);
 }
@@ -2992,7 +2973,7 @@ test "runDf - help mentions VIBEUTILS_STYLE" {
     defer stderr_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "VIBEUTILS_STYLE") != null);
 }
@@ -3041,7 +3022,7 @@ test "runDf - non-tty output should not contain ANSI escapes" {
     // buffer, not a terminal. No ANSI escapes should appear because
     // the output destination is not a tty.
     const args = [_][]const u8{"/"};
-    const result = runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
 
     // The isTty() gate on color_mode_int ensures ANSI codes do not
@@ -3224,7 +3205,7 @@ test "runDf - n flag accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-n"};
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -3391,7 +3372,7 @@ test "runDf - b flag accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-b", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "512B-blocks") != null);
 }
@@ -3403,7 +3384,7 @@ test "runDf - c flag shows total" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-c", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "total") != null);
 }
@@ -3415,7 +3396,7 @@ test "runDf - g flag accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-g", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1G-blocks") != null);
 }
@@ -3427,7 +3408,7 @@ test "runDf - m flag accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-m", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1M-blocks") != null);
 }
@@ -3439,7 +3420,7 @@ test "runDf - Y flag accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-Y"};
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -3450,7 +3431,7 @@ test "runDf - comma flag accepted" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-,", "-k", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -3461,7 +3442,7 @@ test "runDf - help mentions new flags" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"--help"};
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-b") != null);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-g") != null);
@@ -3503,7 +3484,7 @@ test "runDf - I flag without argument succeeds on macOS" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-I", "/", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     // With the bug: -I eats first "/", second "/" is used as path → exit 0
     // When fixed: -I is boolean, both "/" are paths → exit 0
     // Either way it won't hang. The real check: output should show
@@ -3555,7 +3536,7 @@ test "runDf - P flag output has POSIX-compliant headers" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-P", "/" };
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 0), result);
     // POSIX requires "1024-blocks", not "1K-blocks"
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1024-blocks") != null);
@@ -3589,6 +3570,6 @@ test "runDf - n flag returns misuse on Linux" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"-n"};
-    const result = runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
     try testing.expectEqual(@as(u8, 2), result);
 }

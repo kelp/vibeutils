@@ -52,50 +52,12 @@ const MktempArgs = struct {
 
 /// Main entry point
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runMktemp(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(run);
 }
 
 /// Run the mktemp utility with given arguments
-pub fn runMktemp(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse arguments
-    const parsed = common.argparse.ArgParser.parse(MktempArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option\nTry 'mktemp --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument\nTry 'mktemp --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument value\nTry 'mktemp --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+    const parsed = common.argparse.ArgParser.parseOrExit(MktempArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
     if (parsed.help) {
@@ -428,7 +390,7 @@ test "mktemp --help shows usage" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: mktemp") != null);
@@ -444,7 +406,7 @@ test "mktemp --version shows version" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--version"};
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mktemp") != null);
@@ -460,7 +422,7 @@ test "mktemp too few Xs in template" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"tmp.XX"};
-    const exit_code = try runMktemp(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "too few X's") != null);
@@ -475,7 +437,7 @@ test "mktemp too many templates" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "tmp.XXX", "tmp2.XXX" };
-    const exit_code = try runMktemp(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "too many templates") != null);
@@ -490,7 +452,7 @@ test "mktemp creates file with default template" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{};
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -512,7 +474,7 @@ test "mktemp creates directory with -d flag" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-d"};
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -535,7 +497,7 @@ test "mktemp dry-run does not create file" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"-u"};
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -555,7 +517,7 @@ test "mktemp with custom template" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"myapp.XXXXXX"};
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -578,7 +540,7 @@ test "mktemp with --suffix" {
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "--suffix=.txt", "tmpXXXXXX" };
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -604,7 +566,7 @@ test "mktemp suffix with slash is rejected" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "--suffix=/bad", "tmpXXXXXX" };
-    const exit_code = try runMktemp(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "contains directory separator") != null);
@@ -626,7 +588,7 @@ test "mktemp with -p flag" {
     const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
 
     const args = &[_][]const u8{ "-p", dir_path };
-    const exit_code = try runMktemp(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -648,7 +610,7 @@ test "mktemp quiet mode suppresses errors" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{ "-q", "tmp.XX" };
-    const exit_code = try runMktemp(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     // Quiet mode: no error messages on stderr
@@ -664,7 +626,7 @@ test "mktemp invalid option" {
     defer stderr_buffer.deinit(testing.allocator);
 
     const args = &[_][]const u8{"--invalid"};
-    const exit_code = try runMktemp(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }

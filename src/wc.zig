@@ -116,50 +116,13 @@ fn applyWcColumnColor(style_inst: anytype, column: WcColumn) !void {
 
 /// Main entry point
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runWc(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runWc);
 }
 
 /// Run the wc utility with given arguments
 pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
-    const options = common.argparse.ArgParser.parse(WcOptions, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid option\nTry 'wc --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "wc", "option requires an argument\nTry 'wc --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "wc", "invalid argument value\nTry 'wc --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const options = common.argparse.ArgParser.parseOrExit(WcOptions, allocator, args, "wc", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(options.positionals);
 
     if (options.help) {
@@ -227,7 +190,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             } else {
                 // Check if it's a directory first
                 const stat = std.fs.cwd().statFile(file_path) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue;
                 };
@@ -240,7 +203,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 
                 // Regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue;
                 };
@@ -249,7 +212,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 const stats = countReader(&file_reader.interface, opts) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue;
                 };

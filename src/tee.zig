@@ -29,23 +29,7 @@ const TeeArgs = struct {
 /// Main entry point for tee utility
 pub fn runTee(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
-    const parsed_args = common.argparse.ArgParser.parse(TeeArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "unrecognized option", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "option requires an argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "invalid option value", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(TeeArgs, allocator, args, "tee", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -91,7 +75,7 @@ fn runTeeWithInput(
     // to stdout instead of opening a file (GNU tee behavior).
     const MultiWriter = MultiWriterGeneric(@TypeOf(stdout_writer));
     var multi_writer = MultiWriter.init(allocator, stdout_writer, args.positionals, args.append) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "tee", "failed to open files: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "tee", "failed to open files: {s}", .{common.posixErrorString(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer multi_writer.deinit();
@@ -102,7 +86,7 @@ fn runTeeWithInput(
 
     while (true) {
         const bytes_read = input_file.read(&buffer) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error: {s}", .{common.posixErrorString(err)});
             has_error = true;
             break;
         };
@@ -125,7 +109,7 @@ fn runTeeWithInput(
                 // With -p, mark stdout broken and continue
                 // writing to files.
                 stdout_broken = true;
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{errorToMessage(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
                 has_error = true;
             };
         }
@@ -144,14 +128,14 @@ fn runTeeWithInput(
                             stdout_broken = true;
                         } else {
                             stdout_broken = true;
-                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{errorToMessage(err)});
+                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
                         }
                         has_error = true;
                     };
                 }
             } else {
                 file.writeAll(data) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, common.posixErrorString(err) });
                     has_error = true;
                 };
             }
@@ -167,7 +151,7 @@ fn runTeeWithInput(
     if (!stdout_broken) {
         if (comptime std.meta.hasMethod(@TypeOf(stdout_writer), "flush")) {
             stdout_writer.flush() catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{errorToMessage(err)});
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
                 has_error = true;
             };
         }
@@ -177,48 +161,9 @@ fn runTeeWithInput(
 }
 
 /// Convert Zig error to POSIX-style error message
-fn errorToMessage(err: anyerror) []const u8 {
-    return switch (err) {
-        error.AccessDenied => "Permission denied",
-        error.BrokenPipe => "Broken pipe",
-        error.ConnectionResetByPeer => "Connection reset by peer",
-        error.DiskQuota => "Disk quota exceeded",
-        error.FileNotFound => "No such file or directory",
-        error.FileTooBig => "File too large",
-        error.InputOutput => "Input/output error",
-        error.NoSpaceLeft => "No space left on device",
-        error.NotDir => "Not a directory",
-        error.OutOfMemory => "Cannot allocate memory",
-        error.PermissionDenied => "Permission denied",
-        error.ReadOnlyFileSystem => "Read-only file system",
-        else => @errorName(err),
-    };
-}
-
 /// Main entry point for the tee command
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runTee(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-    std.process.exit(exit_code);
+    common.utilityMain(runTee);
 }
 
 /// Print help message to the specified writer

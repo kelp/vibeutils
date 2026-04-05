@@ -55,9 +55,9 @@ pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.f
         // the operation since the file operation itself succeeded.
         if (builtin.os.tag == .macos) {
             if (context) |ctx| {
-                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, @errorName(err) });
+                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on {s} (macOS limitation): {s}", .{ ctx, lib.posixErrorString(err) });
             } else {
-                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on macOS: {s}", .{@errorName(err)});
+                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "Failed to set permissions on macOS: {s}", .{lib.posixErrorString(err)});
             }
             return @intFromEnum(lib.ExitCode.success);
         }

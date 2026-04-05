@@ -552,49 +552,13 @@ fn processLine(writer: anytype, line: []const u8, opts: NlOptions, state: *NlSta
 
 /// Main entry point for nl
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runNl(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runNl);
 }
 
 /// Run the nl utility with given arguments
 pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse arguments
-    const parsed_args = common.argparse.ArgParser.parse(NlArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr_writer, "nl", "unrecognized option\nTry 'nl --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "nl", "option requires an argument\nTry 'nl --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid argument value\nTry 'nl --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(NlArgs, allocator, args, "nl", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -638,7 +602,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         var stdin_buffer: [8192]u8 = undefined;
         var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
         numberLines(&stdin_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{common.posixErrorString(err)});
             has_error = true;
         };
     } else {
@@ -647,12 +611,12 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var stdin_buffer: [8192]u8 = undefined;
                 var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
                 numberLines(&stdin_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{common.posixErrorString(err)});
                     has_error = true;
                 };
             } else {
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue;
                 };
@@ -661,7 +625,7 @@ pub fn runNl(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 numberLines(&file_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                 };
             }

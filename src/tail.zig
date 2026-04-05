@@ -147,15 +147,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     const expanded_args = try expandObsoleteArgs(allocator, args);
     defer allocator.free(expanded_args);
 
-    const parsed_args = common.argparse.ArgParser.parse(TailArgs, allocator, expanded_args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(TailArgs, allocator, expanded_args, "tail", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle help
@@ -256,7 +248,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     if (parsed_args.follow_retry and err == error.FileNotFound) {
                         continue;
                     }
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ file_path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     had_error = true;
                     continue;
                 };
@@ -293,7 +285,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 // Flush initial output before entering the follow loop
                 flushWriter(stdout_writer);
                 followFile(allocator, path, stdout_writer, stderr_writer, options) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ path, errorToMessage(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.general_error);
                 };
             }
@@ -305,30 +297,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 
 /// Main entry point for the tail utility
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout_writer_interface = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr_writer_interface = &stderr_writer.interface;
-
-    const exit_code = try runTail(allocator, args[1..], stdout_writer_interface, stderr_writer_interface);
-
-    // Flush buffers before exit
-    stdout_writer_interface.flush() catch {};
-    stderr_writer_interface.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runTail);
 }
 
 /// Parse numeric argument with optional suffix (K, M, G, etc.)
@@ -402,18 +371,6 @@ fn parseSuffixedNumber(arg: []const u8) !u64 {
 }
 
 /// Convert system error to user-friendly error message
-fn errorToMessage(err: anyerror) []const u8 {
-    return switch (err) {
-        error.FileNotFound => "No such file or directory",
-        error.PermissionDenied => "Permission denied",
-        error.IsDir => "Is a directory",
-        error.NotDir => "Not a directory",
-        error.DeviceBusy => "Device or resource busy",
-        error.DiskQuota => "Disk quota exceeded",
-        else => @errorName(err),
-    };
-}
-
 /// Process stdin with given options
 fn processStdin(allocator: std.mem.Allocator, stdout_writer: anytype, options: TailOptions) !void {
     var stdin_buffer: [8192]u8 = undefined;

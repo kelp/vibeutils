@@ -75,6 +75,9 @@ pub const path = @import("path.zig");
 /// Glob pattern matching with bracket expressions
 pub const glob = @import("glob.zig");
 
+/// Standard main() boilerplate for all vibeutils utilities
+pub const utilityMain = @import("main.zig").utilityMain;
+
 /// Human-readable size formatting and block size parsing
 pub const format = @import("format.zig");
 

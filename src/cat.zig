@@ -113,7 +113,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
         processInput(stdin, stdout_writer, options, &line_state) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{@errorName(err)});
+            common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{common.posixErrorString(err)});
             has_error = true;
         };
     } else {
@@ -122,13 +122,13 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
             if (std.mem.eql(u8, file_path, "-")) {
                 // "-" means read from stdin
                 processInput(stdin, stdout_writer, options, &line_state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{@errorName(err)});
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "stdin: {s}", .{common.posixErrorString(err)});
                     has_error = true;
                 };
             } else {
                 // Open and process regular file
                 const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue; // Continue to next file
                 };
@@ -137,7 +137,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
                 var file_buffer: [8192]u8 = undefined;
                 var file_reader = file.reader(&file_buffer);
                 processInput(&file_reader.interface, stdout_writer, options, &line_state) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, @errorName(err) });
+                    common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                 };
             }

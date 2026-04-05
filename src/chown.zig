@@ -77,44 +77,13 @@ const ChownArgs = struct {
 
 /// Main entry point for chown utility
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runChown(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+    common.utilityMain(runChown);
 }
 
 /// Main implementation that accepts writers for output
 pub fn runChown(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
     // Parse command-line arguments using the common argument parser
-    const parsed_args = common.argparse.ArgParser.parse(ChownArgs, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag, error.MissingValue, error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid argument\nTry 'chown --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => return err,
-        }
-    };
+    const parsed_args = common.argparse.ArgParser.parseOrExit(ChownArgs, allocator, args, "chown", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     // Handle information requests (help/version) - these exit immediately
@@ -393,7 +362,7 @@ fn chownRecursive(
         common.file.FileInfo.lstat(path)
     else
         common.file.FileInfo.stat(path)) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, @errorName(err) });
+        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, common.posixErrorString(err) });
         return;
     };
 
@@ -416,7 +385,7 @@ fn chownRecursive(
     if (stat_info.kind == .directory) {
         // Open directory and iterate — process children first
         var dir = fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, @errorName(err) });
+            common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, common.posixErrorString(err) });
             return;
         };
         defer dir.close();
@@ -534,7 +503,7 @@ fn handleError(allocator: std.mem.Allocator, path: []const u8, err: anyerror, op
         error.InvalidFormat => common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid owner specification", .{}),
         error.SystemResources => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Cannot allocate memory", .{path}),
         error.Unexpected => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': Unexpected error", .{path}),
-        else => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, @errorName(err) }),
+        else => common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot access '{s}': {s}", .{ path, common.posixErrorString(err) }),
     }
 }
 

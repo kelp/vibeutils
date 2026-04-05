@@ -58,7 +58,7 @@ pub fn runPwd(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     }
 
     const cwd = getWorkingDirectory(allocator, parsed_args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{@errorName(err)});
+        common.printErrorWithProgram(allocator, stderr_writer, "pwd", "failed to get current directory: {s}", .{common.posixErrorString(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer allocator.free(cwd);
