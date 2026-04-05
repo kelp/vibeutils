@@ -309,6 +309,28 @@ run_command() {
     rm -f "$stdout_file" "$stderr_file"
 }
 
+# Run a command with stderr attached to a pseudo-terminal and capture
+# whatever the command writes to that PTY. Useful for testing behaviour
+# gated on isatty(stderr). Supports both Linux util-linux `script` and
+# BSD/macOS `script`. Outputs captured stderr-via-PTY to stdout.
+run_with_stderr_tty() {
+    local tmpfile="$TEMP_DIR/pty_out_$$"
+    local platform
+    platform=$(detect_platform)
+    if [[ "$platform" == "linux" ]]; then
+        # util-linux: script -qfc CMD FILE — runs CMD with stdout+stderr via PTY
+        script -qfc "$*" "$tmpfile" >/dev/null 2>&1 || true
+    else
+        # BSD/macOS: script -q FILE CMD ARGS…
+        script -q "$tmpfile" "$@" >/dev/null 2>&1 || true
+    fi
+    if [[ -f "$tmpfile" ]]; then
+        # Strip the "Script started…"/"Script done…" lines some versions add
+        grep -v -E '^(Script (started|done)|COMMAND_EXIT_CODE)' "$tmpfile" 2>/dev/null || cat "$tmpfile"
+        rm -f "$tmpfile"
+    fi
+}
+
 # Test a command with expected exit code
 test_command_exit_code() {
     local test_name="$1"

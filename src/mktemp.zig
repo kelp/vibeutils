@@ -101,6 +101,14 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
     // Total suffix = implicit suffix from template + explicit --suffix flag
     const total_suffix_len = xs.implicit_suffix_len + explicit_suffix.len;
 
+    // With -t, the template must not contain a directory separator.
+    if (parsed.t and std.mem.indexOfScalar(u8, raw_template, '/') != null) {
+        if (!parsed.quiet) {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid template, '{s}', contains directory separator", .{raw_template});
+        }
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+
     // Determine the directory to use
     const tmpdir = resolveTmpdir(allocator, parsed.tmpdir, parsed.t, raw_template) catch {
         if (!parsed.quiet) {
@@ -204,16 +212,21 @@ fn findTemplateXs(template: []const u8) TemplateXs {
     };
 }
 
-/// Resolve the temporary directory to use
+/// Resolve the temporary directory to use.
+///
+/// GNU mktemp semantics:
+/// - `-p DIR`: use DIR
+/// - `-t`: use $TMPDIR or /tmp (template must not contain '/')
+/// - Template with directory component: use that directory
+/// - Bare template (no '/'): use current working directory
 fn resolveTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8, t_flag: bool, template: []const u8) ![]const u8 {
     // If -p DIR was specified, use that
     if (tmpdir_arg) |dir| {
         return try allocator.dupe(u8, dir);
     }
 
-    // If -t flag is set, or if template has no directory component, use TMPDIR
-    if (t_flag or std.fs.path.dirname(template) == null) {
-        // Check TMPDIR environment variable
+    // If -t flag is set, use TMPDIR or /tmp
+    if (t_flag) {
         if (std.posix.getenv("TMPDIR")) |env_val| {
             return try allocator.dupe(u8, env_val);
         }
@@ -225,7 +238,8 @@ fn resolveTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8, t_flag: bool, te
         return try allocator.dupe(u8, dir);
     }
 
-    return try allocator.dupe(u8, "/tmp");
+    // Bare template: use current working directory (GNU behavior)
+    return try allocator.dupe(u8, ".");
 }
 
 /// Generate a temporary file or directory with a unique name

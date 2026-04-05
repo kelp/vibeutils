@@ -747,14 +747,16 @@ test_cp() {
 
     echo -e "${CYAN}Testing overwrite hint...${NC}"
 
-    # Hint should appear when overwriting without -i or -f
+    # The hint is only emitted when stderr is a TTY (so scripts and log
+    # files don't get noisy). Run via a pseudo-terminal to exercise the
+    # interactive code path.
     local hint_src=$(create_temp_file "Hint source")
     local hint_dst=$(create_temp_file "Hint existing")
-    local hint_stderr=$("$binary" "$hint_src" "$hint_dst" 2>&1 >/dev/null)
-    if [[ "$hint_stderr" == *"use -i"* ]]; then
+    local hint_out=$(run_with_stderr_tty "$binary" "$hint_src" "$hint_dst")
+    if [[ "$hint_out" == *"use -i"* ]]; then
         print_test_result "cp overwrite hint shown" "PASS"
     else
-        print_test_result "cp overwrite hint shown" "FAIL" "Expected hint in stderr, got: $hint_stderr"
+        print_test_result "cp overwrite hint shown" "FAIL" "Expected hint via PTY, got: $hint_out"
     fi
 
     # Hint should NOT appear with -i flag
@@ -777,19 +779,19 @@ test_cp() {
         print_test_result "cp no hint with -f" "FAIL" "Unexpected hint in stderr: $hint_f_stderr"
     fi
 
-    # Hint should appear only once when overwriting multiple files
+    # Hint should appear only once when overwriting multiple files (PTY required).
     local hint_multi_dir=$(create_temp_dir)
     local hint_multi_src1=$(create_temp_file "Multi hint 1")
     local hint_multi_src2=$(create_temp_file "Multi hint 2")
     # Pre-populate destination
     cp "$hint_multi_src1" "$hint_multi_dir/$(basename "$hint_multi_src1")"
     cp "$hint_multi_src2" "$hint_multi_dir/$(basename "$hint_multi_src2")"
-    local hint_multi_stderr=$("$binary" "$hint_multi_src1" "$hint_multi_src2" "$hint_multi_dir" 2>&1 >/dev/null)
-    local hint_count=$(echo "$hint_multi_stderr" | grep -c "hint:" || true)
+    local hint_multi_out=$(run_with_stderr_tty "$binary" "$hint_multi_src1" "$hint_multi_src2" "$hint_multi_dir")
+    local hint_count=$(echo "$hint_multi_out" | grep -c "hint:" || true)
     if [[ "$hint_count" -eq 1 ]]; then
         print_test_result "cp hint appears only once for multiple files" "PASS"
     else
-        print_test_result "cp hint appears only once for multiple files" "FAIL" "Expected 1 hint, got $hint_count"
+        print_test_result "cp hint appears only once for multiple files" "FAIL" "Expected 1 hint via PTY, got $hint_count"
     fi
 
     # No hint when destination does not exist
