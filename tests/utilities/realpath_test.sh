@@ -48,12 +48,13 @@ test_realpath() {
         print_test_result "output is absolute path" "FAIL" "Expected absolute path, got: $output"
     fi
 
-    # Nonexistent paths should fail
-    test_command_exit_code "nonexistent path fails" 1 "$binary" /nonexistent_vibeutils_path 2>/dev/null
+    # Nonexistent paths: default mode uses GNU -E semantics
+    # (all-but-last-exist), so /nonexistent resolves through /
+    test_command_exit_code "nonexistent last component succeeds (GNU default)" 0 "$binary" /nonexistent_vibeutils_path 2>/dev/null
 
-    # Error message for nonexistent path
+    # Error message for fully nonexistent intermediate path
     local err_output
-    err_output=$("$binary" /nonexistent_vibeutils_path 2>&1 >/dev/null)
+    err_output=$("$binary" /nonexistent_dir/nonexistent_file 2>&1 >/dev/null)
     if [[ "$err_output" =~ realpath ]]; then
         print_test_result "error message includes program name" "PASS"
     else
@@ -148,16 +149,16 @@ test_realpath() {
 
     test_command_output "multiple paths" $'/usr/bin\n/usr/lib' "$binary" -s /usr/bin /usr/lib
 
-    # Multiple paths with one failing
+    # Multiple paths — both resolve in default mode (GNU -E semantics)
     local multi_out multi_err
     multi_out=$("$binary" /tmp /nonexistent_vibeutils_path 2>/dev/null)
-    multi_err=$("$binary" /tmp /nonexistent_vibeutils_path 2>&1 >/dev/null)
     if [[ "$multi_out" == *"/tmp"* || "$multi_out" == *"/private/tmp"* ]]; then
         print_test_result "multiple paths: valid one succeeds" "PASS"
     else
         print_test_result "multiple paths: valid one succeeds" "FAIL" "Output: $multi_out"
     fi
-    test_command_exit_code "multiple paths with failure returns error" 1 "$binary" /tmp /nonexistent_vibeutils_path 2>/dev/null
+    # With -e (strict), nonexistent path causes failure
+    test_command_exit_code "multiple paths with -e failure returns error" 1 "$binary" -e /tmp /nonexistent_vibeutils_path 2>/dev/null
 
     echo -e "${CYAN}Testing error conditions...${NC}"
 
