@@ -240,10 +240,30 @@ test "OwnershipSpec.parse group only" {
     try testing.expectEqual(@as(gid_t, 100), spec.group.?);
 }
 
-test "OwnershipSpec.parse user with empty group" {
-    const spec = try OwnershipSpec.parse("1000:", testing.allocator);
-    try testing.expectEqual(@as(uid_t, 1000), spec.user.?);
-    try testing.expectEqual(@as(?gid_t, null), spec.group);
+test "OwnershipSpec.parse user: sets login group from passwd" {
+    // GNU chown: 'user:' (colon, no group) sets the group to the user's primary
+    // group from the password database (getpwuid/getpwnam pw_gid field).
+    const current_uid = getCurrentUserId();
+    const uid_str = try testing.allocator.alloc(u8, 64);
+    defer testing.allocator.free(uid_str);
+    const uid_colon = try std.fmt.bufPrint(uid_str, "{d}:", .{current_uid});
+
+    // Determine the expected primary group via an independent lookup.
+    const user_info = try getUserById(current_uid, testing.allocator);
+    defer testing.allocator.free(user_info.name);
+    const expected_gid = user_info.gid;
+
+    const spec = try OwnershipSpec.parse(uid_colon, testing.allocator);
+    try testing.expectEqual(current_uid, spec.user.?);
+    try testing.expectEqual(@as(?gid_t, expected_gid), spec.group);
+}
+
+test "OwnershipSpec.parse user: with nonexistent UID returns UserNotFound" {
+    // When the specified UID cannot be resolved to a passwd entry the
+    // primary group is unknowable, so parse returns UserNotFound -- matching
+    // GNU chown's 'invalid user: \'99999:\'' error for unknown numeric UIDs.
+    const result = OwnershipSpec.parse("99999:", testing.allocator);
+    try testing.expectError(Error.UserNotFound, result);
 }
 
 test "OwnershipSpec.parse empty string" {

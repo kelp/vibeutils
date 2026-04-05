@@ -634,20 +634,36 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, curren
 
     var i: usize = 0;
     var who: u8 = 0;
+    // Track whether a who-specifier was given explicitly.
+    // POSIX: when no who is given, the process umask limits which bits are set
+    // for '+' and '=' operations.
+    var who_explicit = false;
 
     while (i < clause.len) {
         switch (clause[i]) {
-            'u' => who |= 1,
-            'g' => who |= 2,
-            'o' => who |= 4,
-            'a' => who |= 7, // all = user + group + other
+            'u' => {
+                who |= 1;
+                who_explicit = true;
+            },
+            'g' => {
+                who |= 2;
+                who_explicit = true;
+            },
+            'o' => {
+                who |= 4;
+                who_explicit = true;
+            },
+            'a' => {
+                who |= 7;
+                who_explicit = true;
+            }, // all = user + group + other
             '+', '-', '=' => break,
             else => return ChmodError.InvalidMode,
         }
         i += 1;
     }
 
-    // If no who specified, default to 'a' (all)
+    // If no who specified, default to 'a' (all) — umask applied below
     if (who == 0) who = 7;
 
     if (i >= clause.len) return ChmodError.InvalidMode;
@@ -693,7 +709,31 @@ fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, curren
         i += 1;
     }
 
-    applyPermissionChange(mode, who, op, perms);
+    // POSIX §4.7: when no who-specifier was given and the op adds or sets
+    // permissions ('+' or '='), apply the complement of the process umask.
+    // For '-' (removal), the umask does not constrain which bits are cleared.
+    if (!who_explicit and op != '-') {
+        const process_umask: u32 = blk: {
+            const m = std.c.umask(0);
+            _ = std.c.umask(m);
+            break :blk @intCast(m);
+        };
+        // Split the umask into per-class masks (rwx bits only; 3 bits each).
+        const u_mask: u8 = @intCast((process_umask >> 6) & 7);
+        const g_mask: u8 = @intCast((process_umask >> 3) & 7);
+        const o_mask: u8 = @intCast(process_umask & 7);
+        // Umask only constrains the basic rwx bits; special bits (s/t) are
+        // applied without masking.
+        const basic: u8 = perms & 7;
+        const special: u8 = perms & ~@as(u8, 7);
+        // Apply per-class: each class gets only the unmasked rwx bits plus
+        // the full special bits.
+        applyPermissionChange(mode, who & 1, op, (basic & ~u_mask) | special);
+        applyPermissionChange(mode, who & 2, op, (basic & ~g_mask) | special);
+        applyPermissionChange(mode, who & 4, op, (basic & ~o_mask) | special);
+    } else {
+        applyPermissionChange(mode, who, op, perms);
+    }
 }
 
 /// Apply permission copying between user classes with operator support
@@ -2414,4 +2454,97 @@ test "chmod: -R -P should not follow symlinks during traversal" {
     // have been followed to chmod the target
     const target_mode = try getFileMode(target_abs);
     try testing.expectEqual(@as(u32, 0o644), target_mode);
+}
+
+// ==================== I3: umask bypass tests ====================
+
+/// Get and restore the process umask without changing it.
+fn getProcessUmask() std.c.mode_t {
+    const m = std.c.umask(0);
+    _ = std.c.umask(m);
+    return m;
+}
+
+test "applySymbolicMode +x without who respects process umask" {
+    // umask 0o033: masks write+execute for group and other
+    //   user mask:  (0o033 >> 6) & 7 = 0  -> user-execute NOT masked
+    //   group mask: (0o033 >> 3) & 7 = 3  -> group write+execute masked
+    //   other mask: 0o033 & 7         = 3  -> other write+execute masked
+    const saved = std.c.umask(0o033);
+    defer _ = std.c.umask(saved);
+
+    var mode = Mode.fromOctal(0o000);
+    try applySymbolicMode(&mode, "+x", false, null);
+    // Only user-execute should be set; group/other-execute masked by umask.
+    try testing.expectEqual(@as(u32, 0o100), mode.toOctal());
+}
+
+test "applySymbolicMode a+x with explicit 'a' ignores umask" {
+    // Explicit 'a' bypasses the umask entirely.
+    const saved = std.c.umask(0o033);
+    defer _ = std.c.umask(saved);
+
+    var mode = Mode.fromOctal(0o000);
+    try applySymbolicMode(&mode, "a+x", false, null);
+    // All execute bits must be set -- umask does not apply when who is explicit.
+    try testing.expectEqual(@as(u32, 0o111), mode.toOctal());
+}
+
+test "applySymbolicMode -x without who removes all execute regardless of umask" {
+    // Removal is never constrained by the umask.
+    const saved = std.c.umask(0o033);
+    defer _ = std.c.umask(saved);
+
+    var mode = Mode.fromOctal(0o111);
+    try applySymbolicMode(&mode, "-x", false, null);
+    try testing.expectEqual(@as(u32, 0o000), mode.toOctal());
+}
+
+test "applySymbolicMode +rw without who masks bits blocked by umask" {
+    // umask 0o022: masks group-write and other-write
+    //   user mask:  (0o022 >> 6) & 7 = 0  -> nothing masked for user
+    //   group mask: (0o022 >> 3) & 7 = 2  -> group-write masked
+    //   other mask: 0o022 & 7         = 2  -> other-write masked
+    const saved = std.c.umask(0o022);
+    defer _ = std.c.umask(saved);
+
+    var mode = Mode.fromOctal(0o000);
+    try applySymbolicMode(&mode, "+rw", false, null);
+    // Expected: user=rw(6), group=r(4), other=r(4) -> 0o644
+    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+}
+
+// ==================== I4: chmod -x flag collision tests ====================
+
+test "behavioral: chmod -x via runUtility removes execute permission" {
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const test_file = try tmp_dir.dir.createFile("test_minusx.txt", .{});
+    test_file.close();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abs_path = try tmp_dir.dir.realpath("test_minusx.txt", &path_buf);
+
+    try setFileModeOctal(abs_path, 0o755);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-x", abs_path };
+    const exit_code = try runUtility(
+        testing.allocator,
+        &args,
+        stdout_buf.writer(testing.allocator),
+        stderr_buf.writer(testing.allocator),
+    );
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // 0o755 - execute from all = 0o644
+    const actual_mode = try getFileMode(abs_path);
+    try testing.expectEqual(@as(u32, 0o644), actual_mode);
 }
