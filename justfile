@@ -53,15 +53,30 @@ test-util util:
 test-privileged:
     #!/usr/bin/env bash
     set -eu
-    if command -v fakeroot &>/dev/null; then
-        echo "Running privileged tests with fakeroot..."
-        fakeroot zig build test-privileged
-    else
+    if ! command -v fakeroot &>/dev/null; then
         echo "Error: fakeroot is required but not installed"
         echo "Install with: sudo apt-get install fakeroot (Debian/Ubuntu)"
         echo "           or: brew install fakeroot (macOS - may not work)"
         exit 1
     fi
+    # Linux kernel race between the Zig linker closing a freshly-built
+    # test binary and the test runner exec'ing it can produce ETXTBSY
+    # ("FileBusy"). Retry up to 3 times with a short delay to absorb
+    # the flake. Each attempt is idempotent since the build cache
+    # reuses already-compiled artifacts.
+    for attempt in 1 2 3; do
+        echo "Running privileged tests with fakeroot (attempt $attempt)..."
+        if fakeroot zig build test-privileged; then
+            exit 0
+        fi
+        rc=$?
+        if [ "$attempt" -lt 3 ]; then
+            echo "Attempt $attempt failed (rc=$rc); retrying in 2s…"
+            sleep 2
+        fi
+    done
+    echo "All 3 attempts failed"
+    exit 1
 
 # Run privileged tests with best available method
 test-privileged-local:
