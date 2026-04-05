@@ -75,9 +75,15 @@ echo "Running unit tests..."
 zig build test
 echo "  Unit tests passed"
 
-echo "Running integration tests..."
-just it
-echo "  Integration tests passed"
+# Integration tests require bash 4+; skip on macOS with bash 3.
+# Unit tests via 'zig build test' cover all code paths.
+if bash --version 2>/dev/null | head -1 | grep -q 'version [4-9]'; then
+    echo "Running integration tests..."
+    just it
+    echo "  Integration tests passed"
+else
+    echo "Skipping integration tests (bash 4+ required, run on Linux CI)"
+fi
 echo ""
 
 # Update version in build.zig.zon
