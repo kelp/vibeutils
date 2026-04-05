@@ -372,6 +372,38 @@ pub const ArgParser = struct {
             @compileError("Unsupported field type: " ++ @typeName(T));
         }
     }
+
+    /// Parse arguments, printing a user-facing error to `stderr_writer` on failure.
+    ///
+    /// On success, returns the parsed `T`.
+    /// On `UnknownFlag`, `MissingValue`, `InvalidValue`, or `TooManyValues`,
+    /// prints `"{prog_name}: <message>\n"` and returns `error.ParseFailed`.
+    /// `OutOfMemory` propagates unwrapped.
+    ///
+    /// Typical usage inside a `runX` function:
+    /// ```zig
+    /// const parsed = ArgParser.parseOrExit(Args, allocator, argv, "cat", stderr)
+    ///     catch return @intFromEnum(common.ExitCode.misuse);
+    /// ```
+    pub fn parseOrExit(
+        comptime T: type,
+        allocator: std.mem.Allocator,
+        args: []const []const u8,
+        prog_name: []const u8,
+        stderr_writer: anytype,
+    ) error{ ParseFailed, OutOfMemory }!T {
+        return ArgParser.parse(T, allocator, args) catch |err| {
+            const msg: []const u8 = switch (err) {
+                error.UnknownFlag => "unrecognized option",
+                error.MissingValue => "option requires an argument",
+                error.InvalidValue => "invalid option value",
+                error.TooManyValues => "option does not take an argument",
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            stderr_writer.print("{s}: {s}\n", .{ prog_name, msg }) catch {};
+            return error.ParseFailed;
+        };
+    }
 };
 
 // Tests
@@ -865,4 +897,103 @@ test "float parsing" {
         try testing.expect(result.rate != null);
         try testing.expectApproxEqAbs(@as(f32, 0.000123), result.rate.?, 0.000001);
     }
+}
+
+// ============================================================================
+// parseOrExit tests — verify error messages and error kinds
+// ============================================================================
+
+const BasicArgs = struct {
+    help: bool = false,
+    output: ?[]const u8 = null,
+    count: ?u32 = null,
+    mode: ?enum { fast, slow } = null,
+    positionals: []const []const u8 = &.{},
+};
+
+test "parseOrExit: success returns parsed struct" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    const args = [_][]const u8{ "--help", "file.txt" };
+    const result = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", w);
+    defer testing.allocator.free(result.positionals);
+    try testing.expect(result.help);
+    try testing.expectEqual(@as(usize, 1), result.positionals.len);
+    try testing.expectEqualStrings("file.txt", result.positionals[0]);
+    // No error output
+    try testing.expectEqual(@as(usize, 0), stream.getWritten().len);
+}
+
+test "parseOrExit: UnknownFlag prints prog-name and message" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    const args = [_][]const u8{"--bogus"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    try testing.expectError(error.ParseFailed, result);
+    const output = stream.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "myutil") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "unrecognized option") != null);
+    // Must end with newline
+    try testing.expect(output[output.len - 1] == '\n');
+}
+
+test "parseOrExit: MissingValue prints prog-name and message" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    // --output with no value
+    const args = [_][]const u8{"--output"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    try testing.expectError(error.ParseFailed, result);
+    const output = stream.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "myutil") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "option requires an argument") != null);
+    try testing.expect(output[output.len - 1] == '\n');
+}
+
+test "parseOrExit: InvalidValue prints prog-name and message" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    // --count with non-integer value
+    const args = [_][]const u8{"--count=notanumber"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    try testing.expectError(error.ParseFailed, result);
+    const output = stream.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "myutil") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "invalid option value") != null);
+    try testing.expect(output[output.len - 1] == '\n');
+}
+
+test "parseOrExit: invalid enum value also returns InvalidValue message" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    const args = [_][]const u8{"--mode=turbo"};
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    try testing.expectError(error.ParseFailed, result);
+    const output = stream.getWritten();
+    try testing.expect(std.mem.indexOf(u8, output, "invalid option value") != null);
+}
+
+test "parseOrExit: error message format is 'prog: message\\n'" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    const args = [_][]const u8{"--zzz"};
+    _ = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", w) catch {};
+    const output = stream.getWritten();
+    // Exact format check: "testprog: unrecognized option\n"
+    try testing.expectEqualStrings("testprog: unrecognized option\n", output);
+}
+
+test "parseOrExit: no output on success" {
+    var buf: [512]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&buf);
+    const w = stream.writer();
+    const args = [_][]const u8{};
+    _ = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", w);
+    try testing.expectEqual(@as(usize, 0), stream.getWritten().len);
 }
