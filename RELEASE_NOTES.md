@@ -1,5 +1,50 @@
 # Release Notes
 
+## 0.9.0 — 2026-04-05
+
+### Architecture
+- Extract `common/main.zig` with `utilityMain` wrapper—
+  41 utilities migrated, eliminating ~1,200 lines of
+  duplicated allocator/buffer/exit boilerplate
+- Extract `common/argparse.parseOrExit`—24 utilities
+  now use standardized argument parsing error handling
+- Extract `common/mode.zig`—shared symbolic mode parser
+  for chmod and mkdir (was ~400 lines duplicated)
+- Migrate 9 utilities from GeneralPurposeAllocator to
+  Arena (cp, ln, mkdir, touch, mv, rm, chmod, chown, ls)
+- Delete 9 local error-mapping functions, replace 109
+  `@errorName` call sites with `posixErrorString`
+- Net reduction: ~1,243 lines
+
+### Bug Fixes
+- mv: no longer panics moving directory into itself
+- uniq: --all-repeated=METHOD no longer crashes
+- ln: --backup=CONTROL no longer panics
+- head: reading a directory prints error instead of
+  crashing with stack trace
+- chmod: umask now applied when no who-specifier given
+  (e.g., `chmod +x` respects umask per POSIX)
+- chmod: `-x` no longer parsed as a flag
+- readlink -f: allows missing last path component
+- realpath: default mode matches GNU all-but-last-exist
+- path.zig: `..` past root properly clamped (security)
+- Exit code 2→1 for value errors in sleep, date, dd,
+  printf (reserved 2 for flag-syntax errors only)
+- cp, mv: respect SIMPLE_BACKUP_SUFFIX env var
+- promptYesNo: returns false when stdin is not a TTY
+
+### Common Library
+- `posixErrorString`: 32 POSIX error mappings (was 15)
+- `printTryHelp`: GNU-style "Try --help" hint
+- `canonicalizeMissing`: path resolution where last
+  component may not exist
+- `parseOrExit`: unified argparse error handling
+
+### Tests
+- 64 new behavioral tests for common modules
+- Path canonicalization security tests
+- Permission/ownership bug regression tests
+
 ## 0.8.4 — 2026-03-31
 
 IMPORTANT findings remediation. ~120 additional bugs
