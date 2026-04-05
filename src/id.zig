@@ -381,14 +381,31 @@ fn printSingleGroup(
 /// Get the full group list for a named user via getgrouplist(3).
 /// Returns the allocated group slice, or null if the lookup fails.
 /// Caller must free the returned slice with allocator.free().
+///
+/// Safety details:
+/// - `getpwuid(3)` returns a pointer to a static buffer. We copy `pw_name`
+///   into an owned buffer so subsequent libc calls inside `getgrouplist`
+///   (which may invoke getpw* internally on macOS) cannot invalidate it.
+/// - The retry loop is bounded: on macOS `getgrouplist` may return -1
+///   without growing `ngroups` under certain OpenDirectory conditions,
+///   which would hang an unbounded loop. We cap at 8 iterations and
+///   force `ngroups` to at least double on each retry.
 fn getGroupsForUser(uid: common.user_group.uid_t, gid: std.c.gid_t, allocator: Allocator) ?[]std.c.gid_t {
     const pw = getpwuid(@intCast(uid)) orelse return null;
+
+    // Copy the username out of the libc static buffer.
+    const name_slice = std.mem.sliceTo(pw.pw_name, 0);
+    const owned_name = allocator.dupeZ(u8, name_slice) catch return null;
+    defer allocator.free(owned_name);
+
     var ngroups: c_int = 16;
-    while (true) {
+    var attempt: u8 = 0;
+    while (attempt < 8) : (attempt += 1) {
         const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch return null;
-        const rc = getgrouplist(pw.pw_name, gid, buf.ptr, &ngroups);
+        var call_ngroups = ngroups;
+        const rc = getgrouplist(owned_name.ptr, gid, buf.ptr, &call_ngroups);
         if (rc >= 0) {
-            const count: usize = @intCast(ngroups);
+            const count: usize = @intCast(call_ngroups);
             // Shrink to exact size so callers can free the returned slice.
             if (allocator.resize(buf, count)) {
                 return buf[0..count];
@@ -402,9 +419,17 @@ fn getGroupsForUser(uid: common.user_group.uid_t, gid: std.c.gid_t, allocator: A
             allocator.free(buf);
             return result;
         }
-        // ngroups was updated with the required size; retry with larger buffer.
         allocator.free(buf);
+        // On failure, libc should have updated `call_ngroups` to the required
+        // size. Guard against implementations that leave it unchanged by
+        // forcing strict growth.
+        if (call_ngroups > ngroups) {
+            ngroups = call_ngroups;
+        } else {
+            ngroups *= 2;
+        }
     }
+    return null;
 }
 
 /// Print the default format: uid=N(name) gid=N(name) groups=N(name),...
