@@ -167,8 +167,8 @@ fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
         // It's a symlink. Resolve the target path.
         // If target is relative, make it relative to the symlink's directory.
         if (std.fs.path.isAbsolute(link_target)) {
-            // Absolute target: resolve it directly with missing-ok logic
-            return path_utils.canonicalizeMissing(allocator, link_target);
+            // Absolute target: resolve with parent-must-exist semantics
+            return path_utils.canonicalizeParentMustExist(allocator, link_target);
         } else {
             // Relative target: resolve relative to the symlink's parent dir
             const dir = std.fs.path.dirname(path) orelse ".";
@@ -176,17 +176,12 @@ fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
             defer allocator.free(resolved_dir);
             const full_target = try std.fs.path.join(allocator, &.{ resolved_dir, link_target });
             defer allocator.free(full_target);
-            // Try full realpath on the joined path first
-            if (std.fs.cwd().realpathAlloc(allocator, full_target)) |resolved| {
-                return resolved;
-            } else |_| {
-                return path_utils.canonicalizeMissing(allocator, full_target);
-            }
+            return path_utils.canonicalizeParentMustExist(allocator, full_target);
         }
     } else |_| {
         // Not a symlink (or doesn't exist at all).
-        // Try to resolve the parent directory and append the basename.
-        return path_utils.canonicalizeMissing(allocator, path);
+        // Require the parent directory to exist; last component may be missing.
+        return path_utils.canonicalizeParentMustExist(allocator, path);
     }
 }
 
@@ -798,16 +793,15 @@ test "readlink -f dangling symlink with absolute target exits 0 (GNU compat)" {
 }
 
 test "readlink -f intermediate missing should fail" {
-    // canonicalizeMissing resolves through any existing prefix (/tmp ->
-    // /private/tmp on macOS) and appends nonexistent components, so -f
-    // exits 0 even when intermediate directories are missing.
+    // GNU -f requires the parent directory to exist. /tmp exists but
+    // /tmp/no_such_dir_vibeutils does not, so -f must fail.
     var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-f", "/tmp/no_such_dir_vibeutils/no_such_file" };
     const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
-    try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "no_such_dir_vibeutils/no_such_file") != null);
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expectEqualStrings("", stdout_buf.items);
 }
 
 test "readlink -e nonexistent last component should fail" {

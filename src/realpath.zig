@@ -131,8 +131,7 @@ fn processPath(
         };
     } else blk: {
         // Default (-E semantics): all but last component must exist.
-        // Use the common function for parent-must-exist semantics.
-        break :blk path_utils.canonicalizeMissing(allocator, path) catch |err| {
+        break :blk path_utils.canonicalizeParentMustExist(allocator, path) catch |err| {
             if (!opts.quiet) {
                 common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
             }
@@ -352,17 +351,28 @@ test "realpath: existing path" {
     try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
 }
 
-test "realpath: nonexistent path fails by default" {
-    // canonicalizeMissing resolves through the existing root (/) and appends
-    // nonexistent components, so default mode now exits 0 for paths like this.
+test "realpath: nonexistent path fails by default when parent missing" {
+    // Default mode uses GNU -E semantics: parent must exist, last component
+    // may be missing. /nonexistent/path/... has missing intermediate, so fail.
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"/nonexistent/path/that/does/not/exist"};
     const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
+    try testing.expectEqual(@as(u8, 1), result);
+}
+
+test "realpath: nonexistent last component succeeds by default" {
+    // GNU -E default: parent exists (/), last component may be missing.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/nonexistent_vibeutils_last_component"};
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "nonexistent") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "nonexistent_vibeutils_last_component") != null);
 }
 
 test "realpath: canonicalize-missing accepts nonexistent paths" {
@@ -662,17 +672,18 @@ test "realpath: default mode allows missing last component (GNU -E semantics)" {
 }
 
 test "realpath: default mode fails when intermediate component missing" {
-    // canonicalizeMissing resolves through the existing root (/) and appends
-    // nonexistent components, so default mode exits 0 even when all
-    // intermediate directories are missing.
+    // Default uses GNU -E (canonicalizeParentMustExist): parent must resolve.
+    // /nonexistent_vibeutils_dir is missing, so this must fail.
     var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buffer.deinit(testing.allocator);
+    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stderr_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"/nonexistent_vibeutils_dir/somefile"};
-    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
 
-    try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "nonexistent_vibeutils_dir") != null);
+    try testing.expectEqual(@as(u8, 1), result);
+    try testing.expect(stderr_buffer.items.len > 0);
 }
 
 test "realpath: -e flag fails when last component missing (stricter than default)" {

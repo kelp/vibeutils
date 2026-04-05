@@ -119,9 +119,10 @@ test_realpath() {
 
     echo -e "${CYAN}Testing -q (quiet)...${NC}"
 
-    # -q should suppress error messages
+    # -q should suppress error messages (use path with missing intermediate
+    # so default -E mode actually fails).
     local quiet_stderr
-    quiet_stderr=$("$binary" -q /nonexistent_vibeutils_path 2>&1 >/dev/null)
+    quiet_stderr=$("$binary" -q /nonexistent_vibeutils_dir/nested 2>&1 >/dev/null)
     if [[ -z "$quiet_stderr" ]]; then
         print_test_result "-q suppresses error messages" "PASS"
     else
@@ -129,7 +130,7 @@ test_realpath() {
     fi
 
     # But exit code should still be non-zero
-    test_command_exit_code "-q still returns error code" 1 "$binary" -q /nonexistent_vibeutils_path 2>/dev/null
+    test_command_exit_code "-q still returns error code" 1 "$binary" -q /nonexistent_vibeutils_dir/nested 2>/dev/null
 
     echo -e "${CYAN}Testing --relative-to...${NC}"
 
