@@ -361,7 +361,7 @@ test_tee() {
     # Test 1: Without -p, tee should stop writing to file after
     # stdout pipe breaks (GNU exits on SIGPIPE by default).
     # Our tee incorrectly continues writing all data.
-    seq 1 100000 | timeout 10 bash -c "'$binary' '$f59_outfile' | head -1 >/dev/null" 2>/dev/null || true
+    seq 1 100000 | run_with_limit 10 bash -c "'$binary' '$f59_outfile' | head -1 >/dev/null" 2>/dev/null || true
     local f59_no_p_lines
     f59_no_p_lines=$(wc -l < "$f59_outfile" 2>/dev/null | tr -d ' ')
 
@@ -374,7 +374,7 @@ test_tee() {
 
     # Test 2: With -p, tee should continue writing to file after
     # stdout pipe breaks. The file should get all 100000 lines.
-    seq 1 100000 | timeout 10 bash -c "'$binary' -p '$f59_outfile' | head -1 >/dev/null" 2>/dev/null || true
+    seq 1 100000 | run_with_limit 10 bash -c "'$binary' -p '$f59_outfile' | head -1 >/dev/null" 2>/dev/null || true
     local f59_p_lines
     f59_p_lines=$(wc -l < "$f59_outfile" 2>/dev/null | tr -d ' ')
 

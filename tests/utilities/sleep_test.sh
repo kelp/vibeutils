@@ -45,12 +45,13 @@ test_sleep() {
 
     echo -e "${CYAN}Testing audit findings (wave 5)...${NC}"
 
-    # Audit: sleep inf should be accepted (GNU sleeps forever)
-    # Use timeout wrapper to prevent actual infinite sleep
-    timeout 2 "$binary" inf &
+    # Audit: sleep inf should be accepted (GNU sleeps forever).
+    # We start the binary in the background, verify it's still running
+    # after a short delay, then kill it. No external watchdog needed
+    # because we always send SIGTERM ourselves.
+    "$binary" inf &
     local inf_pid=$!
     sleep 0.5
-    # If the process is still running after 0.5s, it accepted "inf"
     if kill -0 "$inf_pid" 2>/dev/null; then
         kill "$inf_pid" 2>/dev/null
         wait "$inf_pid" 2>/dev/null
@@ -63,7 +64,7 @@ test_sleep() {
     fi
 
     # Audit: sleep infinity should be accepted (GNU sleeps forever)
-    timeout 2 "$binary" infinity &
+    "$binary" infinity &
     local infinity_pid=$!
     sleep 0.5
     if kill -0 "$infinity_pid" 2>/dev/null; then

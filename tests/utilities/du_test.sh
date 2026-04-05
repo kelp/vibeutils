@@ -200,16 +200,17 @@ test_du() {
     echo -n "AAAAAAAAAA" > "$f22_dir/realfile.txt"   # exactly 10 bytes
     ln -s realfile.txt "$f22_dir/linkfile.txt"
 
-    # GNU du -L -b -s counts the file once through both paths
-    local gnu_size vibe_size
-    gnu_size=$(du -L -b -s "$f22_dir" 2>/dev/null | awk '{print $1}')
+    # GNU du -L -b -s counts the file once through both paths.
+    # Expected: 10 bytes (file content length, no directory overhead).
+    # Hardcoded because BSD du on macOS does not support -b (apparent size).
+    local vibe_size
     vibe_size=$("$binary" -L -b -s "$f22_dir" 2>/dev/null | awk '{print $1}')
 
-    if [[ "$vibe_size" -eq "$gnu_size" ]]; then
+    if [[ "$vibe_size" -eq 10 ]]; then
         print_test_result "du -L does not double-count symlink targets" "PASS"
     else
         print_test_result "du -L does not double-count symlink targets" "FAIL" \
-            "Expected $gnu_size (GNU), got $vibe_size (vibeutils)"
+            "Expected 10 (GNU), got $vibe_size (vibeutils)"
     fi
     rm -rf "$f22_dir"
 
@@ -222,14 +223,15 @@ test_du() {
     f23_dir=$(mktemp -d)
     echo -n "AAAAAAAAAA" > "$f23_dir/file.txt"   # exactly 10 bytes
 
-    gnu_size=$(du -b -s "$f23_dir" 2>/dev/null | awk '{print $1}')
+    # Expected: 10 bytes (file content length, no directory inode metadata).
+    # Hardcoded because BSD du on macOS does not support -b.
     vibe_size=$("$binary" -b -s "$f23_dir" 2>/dev/null | awk '{print $1}')
 
-    if [[ "$vibe_size" -eq "$gnu_size" ]]; then
+    if [[ "$vibe_size" -eq 10 ]]; then
         print_test_result "du -b directory total matches GNU (no dir metadata)" "PASS"
     else
         print_test_result "du -b directory total matches GNU (no dir metadata)" "FAIL" \
-            "Expected $gnu_size (GNU), got $vibe_size (vibeutils)"
+            "Expected 10 (GNU), got $vibe_size (vibeutils)"
     fi
     rm -rf "$f23_dir"
 
@@ -244,28 +246,26 @@ test_du() {
     echo -n "AAAAAAAAAA" > "$f24_dir/topfile.txt"       # 10 bytes
     echo -n "BBBBBBBBBB" > "$f24_dir/sub/subfile.txt"    # 10 bytes
 
-    # Compare -S output for top-level directory
-    local gnu_top vibe_top
-    gnu_top=$(du -S -b "$f24_dir" 2>/dev/null | grep "$f24_dir$" | awk '{print $1}')
+    # -S shows only direct file contents per directory (no recursion into
+    # subdirs). Each directory has exactly one 10-byte file, so both
+    # top and sub should report 10 under -S -b.
+    # Hardcoded because BSD du on macOS does not support -b.
+    local vibe_top vibe_sub
     vibe_top=$("$binary" -S -b "$f24_dir" 2>/dev/null | grep "$f24_dir$" | awk '{print $1}')
+    vibe_sub=$("$binary" -S -b "$f24_dir" 2>/dev/null | grep "sub$" | awk '{print $1}')
 
-    if [[ "$vibe_top" -eq "$gnu_top" ]]; then
+    if [[ "$vibe_top" -eq 10 ]]; then
         print_test_result "du -S top dir shows direct file sum (matches GNU)" "PASS"
     else
         print_test_result "du -S top dir shows direct file sum (matches GNU)" "FAIL" \
-            "Expected $gnu_top (GNU), got $vibe_top (vibeutils)"
+            "Expected 10 (GNU), got $vibe_top (vibeutils)"
     fi
 
-    # Compare -S output for subdirectory
-    local gnu_sub vibe_sub
-    gnu_sub=$(du -S -b "$f24_dir/sub" 2>/dev/null | grep "sub$" | awk '{print $1}')
-    vibe_sub=$("$binary" -S -b "$f24_dir" 2>/dev/null | grep "sub$" | awk '{print $1}')
-
-    if [[ "$vibe_sub" -eq "$gnu_sub" ]]; then
+    if [[ "$vibe_sub" -eq 10 ]]; then
         print_test_result "du -S subdir shows direct file sum (matches GNU)" "PASS"
     else
         print_test_result "du -S subdir shows direct file sum (matches GNU)" "FAIL" \
-            "Expected $gnu_sub (GNU), got $vibe_sub (vibeutils)"
+            "Expected 10 (GNU), got $vibe_sub (vibeutils)"
     fi
     rm -rf "$f24_dir"
 

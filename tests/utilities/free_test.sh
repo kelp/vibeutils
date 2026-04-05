@@ -150,8 +150,9 @@ test_free() {
     fi
 
     # AUDIT: -s should set seconds interval, not SI mode
-    # free -s 1 -c 1 should succeed (continuous mode, 1 iteration)
-    timeout 5 "$binary" -s 1 -c 1 >/dev/null 2>&1
+    # free -s 1 -c 1 should succeed (continuous mode, 1 iteration).
+    # Wrap in run_with_limit because macOS CI has no GNU timeout(1).
+    run_with_limit 5 "$binary" -s 1 -c 1 >/dev/null 2>&1
     exit_code=$?
     if [[ $exit_code -eq 0 ]]; then
         print_test_result "free -s 1 -c 1 sets seconds interval" "PASS"

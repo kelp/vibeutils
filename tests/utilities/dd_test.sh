@@ -228,45 +228,40 @@ test_dd() {
     fi
 
     # --- conv=swab odd-length preserves last byte ---
-    # GNU dd: odd last byte passes through unchanged.
-    # Bug: our dd zeroes it to 0x00.
+    # GNU dd: 'ABC' (0x41 0x42 0x43) conv=swab → 0x42 0x41 0x43.
+    # Reference verified on GNU coreutils 9.5 Linux; hardcoded because
+    # BSD dd on macOS does not implement conv=swab the same way.
     local swab_odd_input="$TEMP_DIR/dd_swab_odd.bin"
     local swab_odd_output="$TEMP_DIR/dd_swab_odd_out.bin"
     printf 'ABC' > "$swab_odd_input"
     "$binary" if="$swab_odd_input" of="$swab_odd_output" conv=swab bs=3 count=1 status=none 2>/dev/null
-    # Compare against GNU dd output
-    local gnu_swab_output="$TEMP_DIR/dd_swab_odd_gnu.bin"
-    printf 'ABC' | /usr/bin/dd conv=swab bs=3 count=1 2>/dev/null > "$gnu_swab_output"
-    if cmp -s "$swab_odd_output" "$gnu_swab_output"; then
+    local ours_swab_hex
+    ours_swab_hex=$(od -A n -t x1 < "$swab_odd_output" | tr -d ' \n')
+    if [[ "$ours_swab_hex" == "424143" ]]; then
         print_test_result "dd conv=swab odd-length preserves last byte" "PASS"
     else
-        local ours_hex
-        ours_hex=$(od -A n -t x1 < "$swab_odd_output" | tr -d ' \n')
-        local gnu_hex
-        gnu_hex=$(od -A n -t x1 < "$gnu_swab_output" | tr -d ' \n')
         print_test_result "dd conv=swab odd-length preserves last byte" "FAIL" \
-            "ours='$ours_hex', GNU='$gnu_hex'"
+            "expected 424143, got '$ours_swab_hex'"
     fi
 
     # --- conv=sync+block pads with spaces, not NUL ---
     # GNU dd: when block/unblock is active, sync pads with spaces (0x20).
     # Bug: our dd always pads with NUL (0x00).
+    # 'AB\n' conv=sync,block cbs=10 → "AB" + 18 space bytes (record padded
+    # to 10 with spaces because block is active, then sync pads the output
+    # to a full obs=10 block with another 10 spaces). Verified on Linux.
     local sync_block_input="$TEMP_DIR/dd_sync_block.txt"
     local sync_block_output="$TEMP_DIR/dd_sync_block_out.bin"
     printf 'AB\n' > "$sync_block_input"
     "$binary" if="$sync_block_input" of="$sync_block_output" \
         conv=sync,block cbs=10 ibs=10 obs=10 status=none 2>/dev/null
-    local gnu_sync_block="$TEMP_DIR/dd_sync_block_gnu.bin"
-    printf 'AB\n' | /usr/bin/dd conv=sync,block cbs=10 ibs=10 obs=10 2>/dev/null > "$gnu_sync_block"
-    if cmp -s "$sync_block_output" "$gnu_sync_block"; then
+    local ours_sync_hex
+    ours_sync_hex=$(od -A n -t x1 < "$sync_block_output" | tr -d ' \n')
+    if [[ "$ours_sync_hex" == "4142202020202020202020202020202020202020" ]]; then
         print_test_result "dd conv=sync+block pads with spaces" "PASS"
     else
-        local ours_hex
-        ours_hex=$(od -A n -t x1 < "$sync_block_output" | tr -d '\n')
-        local gnu_hex
-        gnu_hex=$(od -A n -t x1 < "$gnu_sync_block" | tr -d '\n')
         print_test_result "dd conv=sync+block pads with spaces" "FAIL" \
-            "ours='$ours_hex', GNU='$gnu_hex'"
+            "expected 4142 + 18x20, got '$ours_sync_hex'"
     fi
 
     # --- conv=notrunc preserves existing file data ---
@@ -306,70 +301,56 @@ test_dd() {
     fi
 
     # --- conv=ibm differs from conv=ebcdic ---
-    # '^' (0x5E) maps differently: ebcdic->0x9A, ibm->0x5F in GNU dd.
+    # '^' (0x5E) maps to 0x9A under ebcdic, 0x5F under ibm in GNU dd.
+    # Reference verified on GNU coreutils 9.5 Linux.
     local ibm_input="$TEMP_DIR/dd_ibm_in.bin"
     local ibm_output="$TEMP_DIR/dd_ibm_out.bin"
     local ebc_output="$TEMP_DIR/dd_ebc_out.bin"
     printf '^' > "$ibm_input"
     "$binary" if="$ibm_input" of="$ebc_output" conv=ebcdic status=none 2>/dev/null
     "$binary" if="$ibm_input" of="$ibm_output" conv=ibm status=none 2>/dev/null
-    local gnu_ebc_out="$TEMP_DIR/dd_gnu_ebc.bin"
-    local gnu_ibm_out="$TEMP_DIR/dd_gnu_ibm.bin"
-    printf '^' | /usr/bin/dd conv=ebcdic 2>/dev/null > "$gnu_ebc_out"
-    printf '^' | /usr/bin/dd conv=ibm 2>/dev/null > "$gnu_ibm_out"
-    local ebc_match=false
-    local ibm_match=false
-    cmp -s "$ebc_output" "$gnu_ebc_out" && ebc_match=true
-    cmp -s "$ibm_output" "$gnu_ibm_out" && ibm_match=true
-    if $ebc_match && $ibm_match; then
+    local ours_ebc_hex ours_ibm_hex
+    ours_ebc_hex=$(od -A n -t x1 < "$ebc_output" | tr -d ' \n')
+    ours_ibm_hex=$(od -A n -t x1 < "$ibm_output" | tr -d ' \n')
+    if [[ "$ours_ebc_hex" == "9a" && "$ours_ibm_hex" == "5f" ]]; then
         print_test_result "dd conv=ibm differs from conv=ebcdic" "PASS"
     else
-        local ours_ebc_hex
-        ours_ebc_hex=$(od -A n -t x1 < "$ebc_output" | tr -d ' \n')
-        local gnu_ebc_hex
-        gnu_ebc_hex=$(od -A n -t x1 < "$gnu_ebc_out" | tr -d ' \n')
-        local ours_ibm_hex
-        ours_ibm_hex=$(od -A n -t x1 < "$ibm_output" | tr -d ' \n')
-        local gnu_ibm_hex
-        gnu_ibm_hex=$(od -A n -t x1 < "$gnu_ibm_out" | tr -d ' \n')
         print_test_result "dd conv=ibm differs from conv=ebcdic" "FAIL" \
-            "ebcdic: ours=$ours_ebc_hex gnu=$gnu_ebc_hex; ibm: ours=$ours_ibm_hex gnu=$gnu_ibm_hex"
+            "expected ebcdic=9a ibm=5f, got ebcdic=$ours_ebc_hex ibm=$ours_ibm_hex"
     fi
 
     # --- conv=block+cbs= pads records (behavioral) ---
+    # 'ab\ncd\n' cbs=5 conv=block → two 5-byte records padded with spaces:
+    # "ab   cd   " = 61 62 20 20 20 63 64 20 20 20.
+    # Reference verified on GNU coreutils 9.5 Linux.
     local block_input="$TEMP_DIR/dd_block_in.txt"
     local block_output="$TEMP_DIR/dd_block_out.bin"
     printf 'ab\ncd\n' > "$block_input"
     "$binary" if="$block_input" of="$block_output" cbs=5 conv=block status=none 2>/dev/null
-    local gnu_block_out="$TEMP_DIR/dd_block_gnu.bin"
-    printf 'ab\ncd\n' | /usr/bin/dd cbs=5 conv=block 2>/dev/null > "$gnu_block_out"
-    if cmp -s "$block_output" "$gnu_block_out"; then
+    local ours_block_hex
+    ours_block_hex=$(od -A n -t x1 < "$block_output" | tr -d ' \n')
+    if [[ "$ours_block_hex" == "61622020206364202020" ]]; then
         print_test_result "dd conv=block+cbs= pads records" "PASS"
     else
-        local ours_hex
-        ours_hex=$(od -A n -t x1 < "$block_output" | tr -d '\n')
-        local gnu_hex
-        gnu_hex=$(od -A n -t x1 < "$gnu_block_out" | tr -d '\n')
         print_test_result "dd conv=block+cbs= pads records" "FAIL" \
-            "ours='$ours_hex', GNU='$gnu_hex'"
+            "expected 61622020206364202020, got '$ours_block_hex'"
     fi
 
     # --- conv=unblock+cbs= converts records (behavioral) ---
+    # 'ab   cd   ' cbs=5 conv=unblock → strip trailing spaces per record,
+    # append \n → "ab\ncd\n" = 61 62 0a 63 64 0a.
+    # Reference verified on GNU coreutils 9.5 Linux.
     local unblock_input="$TEMP_DIR/dd_unblock_in.bin"
     local unblock_output="$TEMP_DIR/dd_unblock_out.txt"
     printf 'ab   cd   ' > "$unblock_input"  # two 5-byte records
     "$binary" if="$unblock_input" of="$unblock_output" cbs=5 conv=unblock status=none 2>/dev/null
-    local gnu_unblock_out="$TEMP_DIR/dd_unblock_gnu.txt"
-    printf 'ab   cd   ' | /usr/bin/dd cbs=5 conv=unblock 2>/dev/null > "$gnu_unblock_out"
-    if cmp -s "$unblock_output" "$gnu_unblock_out"; then
+    local ours_unblock_hex
+    ours_unblock_hex=$(od -A n -t x1 < "$unblock_output" | tr -d ' \n')
+    if [[ "$ours_unblock_hex" == "61620a63640a" ]]; then
         print_test_result "dd conv=unblock+cbs= converts records" "PASS"
     else
-        local ours_content
-        ours_content=$(cat "$unblock_output" | od -A n -t x1 | tr -d '\n')
-        local gnu_content
-        gnu_content=$(cat "$gnu_unblock_out" | od -A n -t x1 | tr -d '\n')
         print_test_result "dd conv=unblock+cbs= converts records" "FAIL" \
-            "ours='$ours_content', GNU='$gnu_content'"
+            "expected 61620a63640a, got '$ours_unblock_hex'"
     fi
 
     # --- ibs=/obs= separate path ---

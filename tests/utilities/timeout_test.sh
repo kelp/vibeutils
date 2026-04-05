@@ -92,7 +92,7 @@ test_timeout() {
     local kill_failures=0
     local kill_detail=""
     for i in $(seq 1 20); do
-        timeout 5 "$binary" -s KILL 0.01 sleep 60 >/dev/null 2>&1
+        run_with_limit 5 "$binary" -s KILL 0.01 sleep 60 >/dev/null 2>&1
         exit_code=$?
         if [[ $exit_code -ne 137 ]]; then
             kill_failures=$((kill_failures + 1))
@@ -112,7 +112,7 @@ test_timeout() {
     local ps_failures=0
     local ps_detail=""
     for i in $(seq 1 20); do
-        timeout 5 "$binary" --preserve-status 0.01 sleep 60 >/dev/null 2>&1
+        run_with_limit 5 "$binary" --preserve-status 0.01 sleep 60 >/dev/null 2>&1
         exit_code=$?
         if [[ $exit_code -ne 143 ]]; then
             ps_failures=$((ps_failures + 1))

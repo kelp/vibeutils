@@ -309,6 +309,57 @@ run_command() {
     rm -f "$stdout_file" "$stderr_file"
 }
 
+# Run a command with a hard time limit. Returns the command's exit
+# code, or 124 if the limit was exceeded. Uses python3 because macOS
+# GitHub Actions runners don't have GNU `timeout(1)` installed.
+#
+# Uses os.fork + os.execvp so the child inherits the parent's stdin
+# (and other fds) directly. Passing the script via `python3 -c` rather
+# than a heredoc preserves the caller's stdin (heredocs would
+# redirect stdin and break pipeline semantics).
+#
+# Usage: run_with_limit SECONDS CMD [ARGS...]
+run_with_limit() {
+    python3 -c '
+import os, sys, time
+limit = float(sys.argv[1])
+cmd = sys.argv[2:]
+if not cmd:
+    sys.exit(0)
+try:
+    pid = os.fork()
+except OSError:
+    sys.exit(127)
+if pid == 0:
+    try:
+        os.execvp(cmd[0], cmd)
+    except FileNotFoundError:
+        os._exit(127)
+    except OSError:
+        os._exit(126)
+deadline = time.monotonic() + limit
+while True:
+    try:
+        done, status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        sys.exit(1)
+    if done != 0:
+        if os.WIFEXITED(status):
+            sys.exit(os.WEXITSTATUS(status))
+        if os.WIFSIGNALED(status):
+            sys.exit(128 + os.WTERMSIG(status))
+        sys.exit(1)
+    if time.monotonic() >= deadline:
+        try:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+        except (ProcessLookupError, ChildProcessError):
+            pass
+        sys.exit(124)
+    time.sleep(0.05)
+' "$@"
+}
+
 # Run a command with stderr attached to a pseudo-terminal and capture
 # what the command writes to that PTY. Useful for testing behaviour
 # gated on `isatty(stderr)`. Uses Python 3's `pty` module — present on

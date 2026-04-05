@@ -122,32 +122,46 @@ test_id() {
 
     echo -e "${CYAN}Testing -G with named user (F47)...${NC}"
 
-    # F47: id -G <username> should produce the same groups as id -G
+    # F47: `id -G <user>` uses getgrouplist(3) and returns all groups the
+    # user belongs to. `id -G` with no argument uses getgroups(2) which
+    # returns only the groups currently in the process credential set.
+    # On macOS these can differ because the kernel caps getgroups() at
+    # NGROUPS_MAX (16 by default), while getgrouplist() is uncapped.
+    # On Linux NGROUPS_MAX is typically large enough that the two match.
+    # The invariant we can assert cross-platform: every group returned
+    # by `id -G` must also appear in `id -G <user>` (the named form is
+    # a superset of the credential-set form).
     local groups_no_user groups_named
     groups_no_user=$("$binary" -G 2>/dev/null)
     groups_named=$("$binary" -G "$(whoami)" 2>/dev/null)
-    local no_user_count named_count
-    no_user_count=$(echo "$groups_no_user" | tr ' ' '\n' | wc -l)
-    named_count=$(echo "$groups_named" | tr ' ' '\n' | wc -l)
-    if [[ "$no_user_count" -eq "$named_count" ]]; then
-        print_test_result "id -G <user> group count matches id -G" "PASS"
+    local missing_gids=""
+    for g in $groups_no_user; do
+        if ! echo " $groups_named " | grep -qF " $g "; then
+            missing_gids="$missing_gids $g"
+        fi
+    done
+    if [[ -n "$groups_no_user" && -n "$groups_named" && -z "$missing_gids" ]]; then
+        print_test_result "id -G <user> is superset of id -G" "PASS"
     else
-        print_test_result "id -G <user> group count matches id -G" "FAIL" \
-            "id -G has $no_user_count groups, id -G \$(whoami) has $named_count groups"
+        print_test_result "id -G <user> is superset of id -G" "FAIL" \
+            "missing gids:$missing_gids; id -G='$groups_no_user'; id -G \$(whoami)='$groups_named'"
     fi
 
-    # F47: id -Gn <username> should produce the same group names as id -Gn
+    # F47: same superset property for group names.
     local gn_no_user gn_named
     gn_no_user=$("$binary" -Gn 2>/dev/null)
     gn_named=$("$binary" -Gn "$(whoami)" 2>/dev/null)
-    local gn_no_user_count gn_named_count
-    gn_no_user_count=$(echo "$gn_no_user" | tr ' ' '\n' | wc -l)
-    gn_named_count=$(echo "$gn_named" | tr ' ' '\n' | wc -l)
-    if [[ "$gn_no_user_count" -eq "$gn_named_count" ]]; then
-        print_test_result "id -Gn <user> group count matches id -Gn" "PASS"
+    local missing_names=""
+    for g in $gn_no_user; do
+        if ! echo " $gn_named " | grep -qF " $g "; then
+            missing_names="$missing_names $g"
+        fi
+    done
+    if [[ -n "$gn_no_user" && -n "$gn_named" && -z "$missing_names" ]]; then
+        print_test_result "id -Gn <user> is superset of id -Gn" "PASS"
     else
-        print_test_result "id -Gn <user> group count matches id -Gn" "FAIL" \
-            "id -Gn has $gn_no_user_count groups, id -Gn \$(whoami) has $gn_named_count groups"
+        print_test_result "id -Gn <user> is superset of id -Gn" "FAIL" \
+            "missing names:$missing_names; id -Gn='$gn_no_user'; id -Gn \$(whoami)='$gn_named'"
     fi
 
     echo -e "${CYAN}Testing regression fixes...${NC}"

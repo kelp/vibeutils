@@ -74,8 +74,8 @@ fn runTeeWithInput(
     // "-" operands are handled inside MultiWriter: they write
     // to stdout instead of opening a file (GNU tee behavior).
     const MultiWriter = MultiWriterGeneric(@TypeOf(stdout_writer));
-    var multi_writer = MultiWriter.init(allocator, stdout_writer, args.positionals, args.append) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "tee", "failed to open files: {s}", .{common.posixErrorString(err)});
+    var multi_writer = MultiWriter.init(allocator, stdout_writer, stderr_writer, args.positionals, args.append) catch {
+        // Detailed per-file diagnostic already emitted inside init().
         return @intFromEnum(common.ExitCode.general_error);
     };
     defer multi_writer.deinit();
@@ -220,8 +220,16 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
         is_stdout: []bool,
 
         /// Open all output files. "-" entries are flagged as
-        /// stdout aliases (no file is opened for them).
-        pub fn init(allocator: std.mem.Allocator, _: StdoutWriter, file_names: []const []const u8, append_mode: bool) !Self {
+        /// stdout aliases (no file is opened for them). On failure,
+        /// emits a GNU-style `tee: <filename>: <error>` diagnostic
+        /// identifying which file failed before returning the error.
+        pub fn init(
+            allocator: std.mem.Allocator,
+            _: StdoutWriter,
+            stderr_writer: anytype,
+            file_names: []const []const u8,
+            append_mode: bool,
+        ) !Self {
             var files = try allocator.alloc(std.fs.File, file_names.len);
             errdefer allocator.free(files);
 
@@ -245,12 +253,19 @@ fn MultiWriterGeneric(comptime StdoutWriter: type) type {
                 is_stdout[i] = false;
                 if (append_mode) {
                     files[i] = std.fs.cwd().openFile(file_name, .{ .mode = .write_only }) catch |open_err| switch (open_err) {
-                        error.FileNotFound => try std.fs.cwd().createFile(file_name, .{ .read = false }),
-                        else => return open_err,
+                        error.FileNotFound => std.fs.cwd().createFile(file_name, .{ .read = false }) catch |create_err| {
+                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(create_err) });
+                            return create_err;
+                        },
+                        else => {
+                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(open_err) });
+                            return open_err;
+                        },
                     };
                     files[i].seekFromEnd(0) catch {};
                 } else {
                     files[i] = std.fs.cwd().createFile(file_name, .{ .read = false, .truncate = true }) catch |err| {
+                        common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(err) });
                         return err;
                     };
                 }
