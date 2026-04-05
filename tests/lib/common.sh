@@ -310,25 +310,76 @@ run_command() {
 }
 
 # Run a command with stderr attached to a pseudo-terminal and capture
-# whatever the command writes to that PTY. Useful for testing behaviour
-# gated on isatty(stderr). Supports both Linux util-linux `script` and
-# BSD/macOS `script`. Outputs captured stderr-via-PTY to stdout.
+# what the command writes to that PTY. Useful for testing behaviour
+# gated on `isatty(stderr)`. Uses Python 3's `pty` module — present on
+# every standard CI image (Ubuntu, macOS), with no BSD/Linux divergence.
+#
+# Writes the PTY output (stderr only) to stdout. ANSI escapes are stripped
+# so callers can do simple substring matches.
 run_with_stderr_tty() {
-    local tmpfile="$TEMP_DIR/pty_out_$$"
-    local platform
-    platform=$(detect_platform)
-    if [[ "$platform" == "linux" ]]; then
-        # util-linux: script -qfc CMD FILE — runs CMD with stdout+stderr via PTY
-        script -qfc "$*" "$tmpfile" >/dev/null 2>&1 || true
-    else
-        # BSD/macOS: script -q FILE CMD ARGS…
-        script -q "$tmpfile" "$@" >/dev/null 2>&1 || true
-    fi
-    if [[ -f "$tmpfile" ]]; then
-        # Strip the "Script started…"/"Script done…" lines some versions add
-        grep -v -E '^(Script (started|done)|COMMAND_EXIT_CODE)' "$tmpfile" 2>/dev/null || cat "$tmpfile"
-        rm -f "$tmpfile"
-    fi
+    python3 - "$@" <<'PYEOF'
+import os, pty, re, select, sys
+
+argv = sys.argv[1:]
+if not argv:
+    sys.exit(0)
+
+# Fork with stderr attached to a pty; stdout goes to a pipe we discard.
+stdout_r, stdout_w = os.pipe()
+err_pid, err_fd = pty.fork()
+if err_pid == 0:
+    # Child: stdout → pipe, stderr → pty (inherited from pty.fork).
+    os.dup2(stdout_w, 1)
+    os.close(stdout_r)
+    os.close(stdout_w)
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as e:
+        sys.stderr.write(f"exec failed: {e}\n")
+        os._exit(127)
+os.close(stdout_w)
+
+buf = bytearray()
+while True:
+    try:
+        r, _, _ = select.select([err_fd, stdout_r], [], [], 5.0)
+    except OSError:
+        break
+    if not r:
+        break
+    done = True
+    for fd in r:
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            continue
+        if chunk:
+            done = False
+            if fd == err_fd:
+                buf.extend(chunk)
+    if done:
+        break
+
+# Safety net: if we bailed via the select timeout, the child may still
+# be alive. SIGTERM it before waiting to avoid a hang.
+try:
+    pid, _ = os.waitpid(err_pid, os.WNOHANG)
+    if pid == 0:
+        try: os.kill(err_pid, 15)
+        except ProcessLookupError: pass
+        os.waitpid(err_pid, 0)
+except ChildProcessError:
+    pass
+try:
+    os.close(err_fd)
+    os.close(stdout_r)
+except OSError:
+    pass
+
+text = buf.decode("utf-8", errors="replace")
+text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)  # strip ANSI
+sys.stdout.write(text)
+PYEOF
 }
 
 # Test a command with expected exit code

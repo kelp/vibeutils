@@ -76,7 +76,9 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Get template
+    // Get template. When no TEMPLATE arg is given, GNU uses the default
+    // template AND implies --tmpdir (routes to $TMPDIR/tmp).
+    const is_default_template = parsed.positionals.len == 0;
     const raw_template = if (parsed.positionals.len == 1) parsed.positionals[0] else default_template;
 
     // Validate explicit --suffix does not contain path separator
@@ -109,34 +111,55 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
         return @intFromEnum(common.ExitCode.general_error);
     }
 
-    // Determine the directory to use
-    const tmpdir = resolveTmpdir(allocator, parsed.tmpdir, parsed.t, raw_template) catch {
-        if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to resolve temporary directory", .{});
-        }
-        return @intFromEnum(common.ExitCode.general_error);
-    };
+    // GNU mktemp semantics:
+    //   - No TEMPLATE arg (default): prepend $TMPDIR or /tmp.
+    //   - -p DIR: prepend DIR.
+    //   - -t:     prepend $TMPDIR or /tmp.
+    //   - User-supplied template (bare or with path): use VERBATIM.
+    //     Leading "./", "foo/bar", and "/abs/x" are all preserved.
+    const force_tmpdir = parsed.tmpdir != null or parsed.t or is_default_template;
 
-    // Extract just the filename part of the raw template
-    const template_basename = std.fs.path.basename(raw_template);
+    const full_template = blk: {
+        if (force_tmpdir) {
+            const tmpdir = resolveForcedTmpdir(allocator, parsed.tmpdir) catch {
+                if (!parsed.quiet) {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to resolve temporary directory", .{});
+                }
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+            defer allocator.free(tmpdir);
 
-    // Build the filename: template_basename + explicit suffix
-    const filename = if (explicit_suffix.len > 0)
-        std.fmt.allocPrint(allocator, "{s}{s}", .{ template_basename, explicit_suffix }) catch {
-            if (!parsed.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
+            // When routing through tmpdir, use only the basename of the template.
+            const template_basename = std.fs.path.basename(raw_template);
+            const filename = if (explicit_suffix.len > 0)
+                std.fmt.allocPrint(allocator, "{s}{s}", .{ template_basename, explicit_suffix }) catch {
+                    if (!parsed.quiet) {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
+                    }
+                    return @intFromEnum(common.ExitCode.general_error);
+                }
+            else
+                try allocator.dupe(u8, template_basename);
+            defer allocator.free(filename);
+
+            break :blk std.fs.path.join(allocator, &.{ tmpdir, filename }) catch {
+                if (!parsed.quiet) {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
+                }
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        } else {
+            // Verbatim path: preserve user's template exactly (leading "./", relative, absolute).
+            if (explicit_suffix.len > 0) {
+                break :blk std.fmt.allocPrint(allocator, "{s}{s}", .{ raw_template, explicit_suffix }) catch {
+                    if (!parsed.quiet) {
+                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
+                    }
+                    return @intFromEnum(common.ExitCode.general_error);
+                };
             }
-            return @intFromEnum(common.ExitCode.general_error);
+            break :blk try allocator.dupe(u8, raw_template);
         }
-    else
-        template_basename;
-
-    // Build the full path: tmpdir/filename
-    const full_template = std.fs.path.join(allocator, &.{ tmpdir, filename }) catch {
-        if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
-        }
-        return @intFromEnum(common.ExitCode.general_error);
     };
 
     // Generate the temporary file or directory
@@ -212,34 +235,17 @@ fn findTemplateXs(template: []const u8) TemplateXs {
     };
 }
 
-/// Resolve the temporary directory to use.
-///
-/// GNU mktemp semantics:
-/// - `-p DIR`: use DIR
-/// - `-t`: use $TMPDIR or /tmp (template must not contain '/')
-/// - Template with directory component: use that directory
-/// - Bare template (no '/'): use current working directory
-fn resolveTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8, t_flag: bool, template: []const u8) ![]const u8 {
-    // If -p DIR was specified, use that
+/// Resolve the temporary directory for cases that must route through a tmpdir:
+/// no-TEMPLATE default, `-p DIR`, or `-t`. User-supplied templates are used
+/// verbatim by the caller and do not go through this function.
+fn resolveForcedTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8) ![]const u8 {
     if (tmpdir_arg) |dir| {
         return try allocator.dupe(u8, dir);
     }
-
-    // If -t flag is set, use TMPDIR or /tmp
-    if (t_flag) {
-        if (std.posix.getenv("TMPDIR")) |env_val| {
-            return try allocator.dupe(u8, env_val);
-        }
-        return try allocator.dupe(u8, "/tmp");
+    if (std.posix.getenv("TMPDIR")) |env_val| {
+        return try allocator.dupe(u8, env_val);
     }
-
-    // Template has a directory component; extract it
-    if (std.fs.path.dirname(template)) |dir| {
-        return try allocator.dupe(u8, dir);
-    }
-
-    // Bare template: use current working directory (GNU behavior)
-    return try allocator.dupe(u8, ".");
+    return try allocator.dupe(u8, "/tmp");
 }
 
 /// Generate a temporary file or directory with a unique name

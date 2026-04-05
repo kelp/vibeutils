@@ -210,46 +210,29 @@ test_mktemp() {
     local testcwd="$TEMP_DIR/mktemp_cwd_test"
     mkdir -p "$testcwd"
 
+    # GNU/BSD mktemp print a relative path (e.g. "myapp.abc") for a bare
+    # template and create the file in cwd. Resolving $(dirname "$output")
+    # after the subshell exits is wrong ("." would be the test runner's
+    # cwd, not $testcwd). Instead, check directly for the file under
+    # "$testcwd/$(basename "$output")".
     output=$(cd "$testcwd" && "$binary" myapp.XXXXXX)
     local f14_exit=$?
-    if [[ $f14_exit -eq 0 ]]; then
-        local result_dir
-        result_dir=$(dirname "$output")
-        # Resolve symlinks so /tmp vs $TMPDIR doesn't cause false matches
-        local resolved_dir resolved_cwd
-        resolved_dir=$(cd "$result_dir" 2>/dev/null && pwd -P)
-        resolved_cwd=$(cd "$testcwd" 2>/dev/null && pwd -P)
-        if [[ "$resolved_dir" == "$resolved_cwd" ]]; then
-            print_test_result "bare template creates in cwd" "PASS"
-        else
-            print_test_result "bare template creates in cwd" "FAIL" \
-                "Expected dir '$resolved_cwd', got '$resolved_dir' (full path: $output)"
-        fi
-        rm -f "$output"
+    if [[ $f14_exit -eq 0 && -n "$output" && -e "$testcwd/$(basename "$output")" ]]; then
+        print_test_result "bare template creates in cwd" "PASS"
+        rm -f "$testcwd/$(basename "$output")"
     else
         print_test_result "bare template creates in cwd" "FAIL" \
-            "Command failed with exit code $f14_exit"
+            "exit=$f14_exit, output=$output, testcwd=$testcwd"
     fi
 
-    # Also test bare template with -d (directory mode) creates in cwd
     output=$(cd "$testcwd" && "$binary" -d mydir.XXXXXX)
     f14_exit=$?
-    if [[ $f14_exit -eq 0 ]]; then
-        local result_dir
-        result_dir=$(dirname "$output")
-        local resolved_dir resolved_cwd
-        resolved_dir=$(cd "$result_dir" 2>/dev/null && pwd -P)
-        resolved_cwd=$(cd "$testcwd" 2>/dev/null && pwd -P)
-        if [[ "$resolved_dir" == "$resolved_cwd" ]]; then
-            print_test_result "bare template -d creates dir in cwd" "PASS"
-        else
-            print_test_result "bare template -d creates dir in cwd" "FAIL" \
-                "Expected dir '$resolved_cwd', got '$resolved_dir' (full path: $output)"
-        fi
-        rm -rf "$output"
+    if [[ $f14_exit -eq 0 && -n "$output" && -d "$testcwd/$(basename "$output")" ]]; then
+        print_test_result "bare template -d creates dir in cwd" "PASS"
+        rmdir "$testcwd/$(basename "$output")"
     else
         print_test_result "bare template -d creates dir in cwd" "FAIL" \
-            "Command failed with exit code $f14_exit"
+            "exit=$f14_exit, output=$output, testcwd=$testcwd"
     fi
 
     rmdir "$testcwd" 2>/dev/null || true
