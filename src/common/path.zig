@@ -167,3 +167,35 @@ test "canonicalizeMissing: root only returns root" {
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/", result);
 }
+
+test "canonicalizeMissing: dotdot past root is clamped (security)" {
+    // /../../etc/passwd: multiple leading ".." components must clamp at root
+    // before resolving the real path. The result must be the canonical form
+    // of /etc/passwd, never a relative escape or something outside root.
+    const result = try canonicalizeMissing(testing.allocator, "/../../etc/passwd");
+    defer testing.allocator.free(result);
+    // Must be an absolute path — never a relative escape.
+    try testing.expectEqual(@as(u8, '/'), result[0]);
+    // Must resolve to /etc/passwd equivalent (macOS adds /private prefix).
+    try testing.expect(std.mem.endsWith(u8, result, "/etc/passwd"));
+    // Must not contain any ".." in the resolved output.
+    try testing.expect(std.mem.indexOf(u8, result, "..") == null);
+}
+
+test "canonicalizeMissing: dotdot past root with fully nonexistent path" {
+    // /nonexistent1/../../nonexistent2: no realpathAlloc prefix resolves,
+    // so the else-branch does pure string normalization. The second ".." goes
+    // past root; the clamp (`if (cleaned.items.len > 0)`) keeps it at root.
+    // Result must be /nonexistent2, not /nonexistent1/../nonexistent2 or similar.
+    const result = try canonicalizeMissing(testing.allocator, "/nonexistent1_vibeutils/../../nonexistent2_vibeutils");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/nonexistent2_vibeutils", result);
+}
+
+test "canonicalizeMissing: many dotdots past root always return root" {
+    // /nonexistent/../../../../../.. — far more ".." than path depth.
+    // Every branch (resolved prefix and else) must clamp to "/".
+    const result = try canonicalizeMissing(testing.allocator, "/nonexistent_vibeutils/../../../../../..");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/", result);
+}

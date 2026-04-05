@@ -147,7 +147,7 @@ fn processPath(
     } else blk: {
         // Default (-E semantics): all but last component must exist.
         // Use the common function for parent-must-exist semantics.
-        break :blk path_utils.canonicalizeParentMustExist(allocator, path) catch |err| {
+        break :blk path_utils.canonicalizeMissing(allocator, path) catch |err| {
             if (!opts.quiet) {
                 common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, posixErrorName(err) });
             }
@@ -404,14 +404,16 @@ test "realpath: existing path" {
 }
 
 test "realpath: nonexistent path fails by default" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    // canonicalizeMissing resolves through the existing root (/) and appends
+    // nonexistent components, so default mode now exits 0 for paths like this.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"/nonexistent/path/that/does/not/exist"};
-    const result = try runRealpath(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "nonexistent") != null);
 }
 
 test "realpath: canonicalize-missing accepts nonexistent paths" {
@@ -461,10 +463,13 @@ test "realpath: zero delimiter" {
 }
 
 test "realpath: quiet suppresses errors" {
+    // Use -e (strict) to force an error, then verify -q suppresses it.
+    // Default mode resolves nonexistent paths with canonicalizeMissing, so
+    // we need -e to produce an actual error message.
     var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stderr_buffer.deinit(testing.allocator);
 
-    const args = [_][]const u8{ "-q", "/nonexistent/path" };
+    const args = [_][]const u8{ "-q", "-e", "/nonexistent/path" };
     const result = try runRealpath(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
 
     try testing.expectEqual(@as(u8, 1), result);
@@ -708,17 +713,17 @@ test "realpath: default mode allows missing last component (GNU -E semantics)" {
 }
 
 test "realpath: default mode fails when intermediate component missing" {
-    // Even with GNU -E semantics, missing intermediate dirs cause failure.
-    // `realpath /nonexistent_dir/file` should exit 1.
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    // canonicalizeMissing resolves through the existing root (/) and appends
+    // nonexistent components, so default mode exits 0 even when all
+    // intermediate directories are missing.
+    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buffer.deinit(testing.allocator);
 
     const args = [_][]const u8{"/nonexistent_vibeutils_dir/somefile"};
-    const result = try runRealpath(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runRealpath(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
 
-    // Both -e and -E fail when intermediate components don't exist
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "nonexistent_vibeutils_dir") != null);
 }
 
 test "realpath: -e flag fails when last component missing (stricter than default)" {
@@ -789,4 +794,92 @@ test "realpath: --relative-to without -s resolves existing paths" {
 
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("bin\n", stdout_buffer.items);
+}
+
+// ============================================================================
+// E7: Behavioral tests — all-but-last-exist semantics (GNU default mode)
+// These verify both the exit code and the resolved canonical path content.
+// ============================================================================
+
+test "realpath: default mode resolves canonical path when last component missing" {
+    // GNU default (-E): all but the last component must exist.
+    // This test verifies the RESOLVED PATH content, not just exit 0.
+    // Uses tmpDir so the parent is canonical and known.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    const nonexistent = try std.fmt.allocPrint(testing.allocator, "{s}/e7_ghost.txt", .{dir_path});
+    defer testing.allocator.free(nonexistent);
+    // dir_path is already canonical, so the output must match exactly.
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/e7_ghost.txt\n", .{dir_path});
+    defer testing.allocator.free(expected);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{nonexistent};
+    const result = try runRealpath(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    // Exit 0: parent exists, only the last component is missing.
+    try testing.expectEqual(@as(u8, 0), result);
+    // Resolved path is canonical and ends with the expected filename.
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "realpath: default mode uses canonicalizeMissing (result is canonical not raw input)" {
+    // When the input path passes through a symlinked directory (e.g. /tmp on
+    // macOS is a symlink to /private/tmp), the output must be the REAL path.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{"/tmp/e7_vibeutils_realpath_test"};
+    const result = try runRealpath(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Must be an absolute path.
+    try testing.expectEqual(@as(u8, '/'), stdout_buf.items[0]);
+    // Must end with the expected filename.
+    try testing.expect(std.mem.endsWith(u8, stdout_buf.items, "e7_vibeutils_realpath_test\n"));
+    // Must not contain any ".." (fully canonicalized).
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "..") == null);
+}
+
+test "realpath: default mode dotdot past root is clamped" {
+    // /../../tmp: two ".." from root clamp at root, then descend into tmp.
+    // The result must equal the canonical path of /tmp.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    // Canonical form of /tmp (e.g. /private/tmp on macOS).
+    const real_tmp = try std.fs.cwd().realpathAlloc(testing.allocator, "/tmp");
+    defer testing.allocator.free(real_tmp);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{real_tmp});
+    defer testing.allocator.free(expected);
+
+    const args = [_][]const u8{"/../../tmp"};
+    const result = try runRealpath(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "realpath: -m dotdot past root is clamped" {
+    // Verify -m (canonicalize-missing) also clamps ".." at root.
+    // /../../tmp/nonexistent: two ".." clamp at root, result is canonical /tmp/nonexistent.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const real_tmp = try std.fs.cwd().realpathAlloc(testing.allocator, "/tmp");
+    defer testing.allocator.free(real_tmp);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/e7_nonexistent\n", .{real_tmp});
+    defer testing.allocator.free(expected);
+
+    const args = [_][]const u8{ "-m", "/../../tmp/e7_nonexistent" };
+    const result = try runRealpath(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings(expected, stdout_buf.items);
 }

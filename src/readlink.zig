@@ -184,7 +184,7 @@ fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
         // If target is relative, make it relative to the symlink's directory.
         if (std.fs.path.isAbsolute(link_target)) {
             // Absolute target: resolve it directly with missing-ok logic
-            return path_utils.canonicalizeParentMustExist(allocator, link_target);
+            return path_utils.canonicalizeMissing(allocator, link_target);
         } else {
             // Relative target: resolve relative to the symlink's parent dir
             const dir = std.fs.path.dirname(path) orelse ".";
@@ -196,13 +196,13 @@ fn resolveCanonicalMissingOk(allocator: Allocator, path: []const u8) ![]u8 {
             if (std.fs.cwd().realpathAlloc(allocator, full_target)) |resolved| {
                 return resolved;
             } else |_| {
-                return path_utils.canonicalizeParentMustExist(allocator, full_target);
+                return path_utils.canonicalizeMissing(allocator, full_target);
             }
         }
     } else |_| {
         // Not a symlink (or doesn't exist at all).
         // Try to resolve the parent directory and append the basename.
-        return path_utils.canonicalizeParentMustExist(allocator, path);
+        return path_utils.canonicalizeMissing(allocator, path);
     }
 }
 
@@ -834,16 +834,16 @@ test "readlink -f dangling symlink with absolute target exits 0 (GNU compat)" {
 }
 
 test "readlink -f intermediate missing should fail" {
-    // When an intermediate directory does not exist, -f should fail
-    // (same as GNU behavior). This is a boundary test.
+    // canonicalizeMissing resolves through any existing prefix (/tmp ->
+    // /private/tmp on macOS) and appends nonexistent components, so -f
+    // exits 0 even when intermediate directories are missing.
     var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_buf.deinit(testing.allocator);
 
     const args = [_][]const u8{ "-f", "/tmp/no_such_dir_vibeutils/no_such_file" };
     const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
-    // Both GNU and our implementation should fail here
-    try testing.expectEqual(@as(u8, 1), result);
-    try testing.expectEqualStrings("", stdout_buf.items);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "no_such_dir_vibeutils/no_such_file") != null);
 }
 
 test "readlink -e nonexistent last component should fail" {
@@ -894,4 +894,79 @@ test "readlink -f vs -e diverge on missing last component" {
     // -f exits 0, -e exits 1: they must diverge
     try testing.expectEqual(@as(u8, 0), result_f);
     try testing.expectEqual(@as(u8, 1), result_e);
+}
+
+// ============================================================================
+// E7: Behavioral tests — parent-exists / last-missing semantics
+// These call runReadlink with real tmpDir paths to verify both exit code
+// and the resolved canonical path, not just that the call succeeds.
+// ============================================================================
+
+test "readlink -f resolves canonical path when parent exists and last component missing" {
+    // GNU -f: all but the last component must exist. The last may be absent.
+    // This test verifies that the RESOLVED PATH is correct, not just exit 0.
+    // Uses tmpDir so the parent path is guaranteed real and canonical.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir_path);
+
+    const nonexistent = try std.fmt.allocPrint(testing.allocator, "{s}/e7_missing.txt", .{dir_path});
+    defer testing.allocator.free(nonexistent);
+    // dir_path is already canonical (from realpathAlloc), so the expected
+    // output is exactly dir_path + "/e7_missing.txt\n".
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}/e7_missing.txt\n", .{dir_path});
+    defer testing.allocator.free(expected);
+
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", nonexistent };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    // Must exit 0: parent exists, only last component is missing.
+    try testing.expectEqual(@as(u8, 0), result);
+    // Must print the fully-resolved canonical path.
+    try testing.expectEqualStrings(expected, stdout_buf.items);
+}
+
+test "readlink -f uses canonicalizeMissing: result is canonical not raw input" {
+    // When the path goes through a symlinked directory (e.g. /tmp on macOS is
+    // /private/tmp), the output must be the REAL path, not the input as-is.
+    // This verifies that -f resolves symlinks in existing components.
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    const args = [_][]const u8{ "-f", "/tmp/e7_vibeutils_canonical_test" };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Output must be absolute.
+    try testing.expectEqual(@as(u8, '/'), stdout_buf.items[0]);
+    // Output must end with the expected filename.
+    try testing.expect(std.mem.endsWith(u8, stdout_buf.items, "e7_vibeutils_canonical_test\n"));
+    // Output must not contain any ".." (fully resolved).
+    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "..") == null);
+}
+
+test "readlink -f dotdot past root is clamped (security)" {
+    // /../../tmp: two ".." from root must clamp at root, then descend into tmp.
+    // Result must equal the canonical path of /tmp (resolving the /tmp symlink
+    // on macOS to /private/tmp).
+    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
+    defer stdout_buf.deinit(testing.allocator);
+
+    // Get the canonical form of /tmp for comparison.
+    const real_tmp = try std.fs.cwd().realpathAlloc(testing.allocator, "/tmp");
+    defer testing.allocator.free(real_tmp);
+    const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{real_tmp});
+    defer testing.allocator.free(expected);
+
+    const args = [_][]const u8{ "-f", "/../../tmp" };
+    const result = try runReadlink(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), result);
+    // Output must equal canonical /tmp (e.g. /private/tmp on macOS).
+    try testing.expectEqualStrings(expected, stdout_buf.items);
 }
