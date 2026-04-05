@@ -464,19 +464,59 @@ test_mkdir() {
         fi
         rm -rf "$sym_mode_dir"
 
-        # Symbolic mode: a+rx
+        # Symbolic mode: a+rx. GNU: base 0o777 + a+rx = 0o777 (rx already set).
         local sym_mode_dir2="$TEMP_DIR/sym_mode_test2"
         rm -rf "$sym_mode_dir2" 2>/dev/null || true
         test_command_succeeds "mkdir -m symbolic mode a+rx" \
             "$binary" -m "a+rx" "$sym_mode_dir2"
+        if [[ -d "$sym_mode_dir2" ]]; then
+            local a_rx_perms
+            a_rx_perms=$(get_file_permissions "$sym_mode_dir2")
+            if [[ "$a_rx_perms" == "777" ]]; then
+                print_test_result "mkdir -m a+rx permissions" "PASS"
+            else
+                print_test_result "mkdir -m a+rx permissions" "FAIL" \
+                    "Expected 777 (GNU), got $a_rx_perms"
+            fi
+        fi
         rm -rf "$sym_mode_dir2"
 
-        # Symbolic mode: go-w
+        # Symbolic mode: go-w. Regression guard: GNU produces 0o755 (base
+        # 0o777 with w removed from g/o). A previous bug started symbolic
+        # parsing at 0 and produced 0o000, making the directory unremovable.
         local sym_mode_dir3="$TEMP_DIR/sym_mode_test3"
         rm -rf "$sym_mode_dir3" 2>/dev/null || true
         test_command_succeeds "mkdir -m symbolic mode go-w" \
             "$binary" -m "go-w" "$sym_mode_dir3"
+        if [[ -d "$sym_mode_dir3" ]]; then
+            local go_w_perms
+            go_w_perms=$(get_file_permissions "$sym_mode_dir3")
+            if [[ "$go_w_perms" == "755" ]]; then
+                print_test_result "mkdir -m go-w permissions" "PASS"
+            else
+                print_test_result "mkdir -m go-w permissions" "FAIL" \
+                    "Expected 755 (GNU), got $go_w_perms"
+            fi
+        fi
         rm -rf "$sym_mode_dir3"
+
+        # Symbolic mode: u=rx. GNU: base 0o777 with user set to rx = 0o577.
+        local sym_mode_dir4="$TEMP_DIR/sym_mode_test4"
+        rm -rf "$sym_mode_dir4" 2>/dev/null || true
+        test_command_succeeds "mkdir -m symbolic mode u=rx" \
+            "$binary" -m "u=rx" "$sym_mode_dir4"
+        if [[ -d "$sym_mode_dir4" ]]; then
+            local u_rx_perms
+            u_rx_perms=$(get_file_permissions "$sym_mode_dir4")
+            if [[ "$u_rx_perms" == "577" ]]; then
+                print_test_result "mkdir -m u=rx permissions" "PASS"
+            else
+                print_test_result "mkdir -m u=rx permissions" "FAIL" \
+                    "Expected 577 (GNU), got $u_rx_perms"
+            fi
+            chmod 755 "$sym_mode_dir4" 2>/dev/null
+        fi
+        rm -rf "$sym_mode_dir4"
     fi
 
     # AUDIT: mkdir -p -m applies mode to leaf only (GNU behavior)

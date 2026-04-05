@@ -72,6 +72,9 @@ pub const time = @import("time.zig");
 /// Path canonicalization for missing components
 pub const path = @import("path.zig");
 
+/// Shared octal and symbolic file mode parser used by chmod and mkdir.
+pub const mode = @import("mode.zig");
+
 /// Glob pattern matching with bracket expressions
 pub const glob = @import("glob.zig");
 

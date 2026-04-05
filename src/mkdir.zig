@@ -140,34 +140,34 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
     }
 }
 
-/// Parse octal or symbolic mode string (e.g. "755" or "u=rwx,go=rx") into file mode
+/// Parse octal or symbolic mode string (e.g. "755" or "u=rwx,go=rx") into
+/// a file mode value suitable for chmod(2).
+///
+/// Symbolic modes start from 0o777 (S_IRWXUGO), matching GNU mkdir. See
+/// GNU coreutils `src/mkdir.c`, which passes `S_IRWXUGO` to `mode_adjust`
+/// rather than the umask-adjusted default. GNU's `usage()` explicitly
+/// notes: "set file mode (as in chmod), not a=rwx - umask".
+///
+/// Explicit-who clauses (u=rwx, go-w, etc.) ignore umask entirely. Umask
+/// only affects clauses with no explicit who-specifier (=rw, +x, -w), a
+/// subtlety `common.mode.parseSymbolic` does not yet model — tracked as
+/// a follow-up. For the 0.9.1 regression fix, a 0o777 base is correct
+/// for every explicit-who clause and recovers `go-w → 0o755` (which was
+/// the broken 0o000 case from the old local parser starting at 0).
+///
+/// `is_directory = true` enables `X` (conditional execute) to always
+/// expand to `x` for directory targets.
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     if (mode_str.len == 0) {
         return error.InvalidMode;
     }
 
-    // Try octal first: 1-4 octal digits
-    if (mode_str.len >= 1 and mode_str.len <= 4) {
-        var is_octal = true;
-        for (mode_str) |c| {
-            if (c < '0' or c > '7') {
-                is_octal = false;
-                break;
-            }
-        }
-        if (is_octal) {
-            var octal: u32 = 0;
-            for (mode_str) |c| {
-                octal = octal * 8 + (c - '0');
-            }
-            if (octal > 0o7777) {
-                return error.InvalidMode;
-            }
-            return @intCast(octal);
-        }
-    }
+    // Try octal first: 1-4 octal digits.
+    if (common.mode.parseOctal(mode_str)) |octal| {
+        return @intCast(octal);
+    } else |_| {}
 
-    // Reject purely numeric strings that aren't valid octal
+    // Reject purely numeric strings that aren't valid octal.
     var all_numeric = true;
     for (mode_str) |c| {
         if (!std.ascii.isDigit(c)) {
@@ -179,102 +179,10 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
         return error.InvalidMode;
     }
 
-    // Try symbolic mode parsing (e.g. "u=rwx,go=rx", "a+rx", "go-w")
-    return parseSymbolicMode(mode_str);
-}
-
-/// Parse a symbolic mode string into a file mode value.
-/// Starts from mode 0 and applies each comma-separated clause.
-fn parseSymbolicMode(mode_str: []const u8) !std.fs.File.Mode {
-    // Accumulate permission bits: user(6..8), group(3..5), other(0..2)
-    var result: u32 = 0;
-
-    var iter = std.mem.splitScalar(u8, mode_str, ',');
-    while (iter.next()) |clause| {
-        result = try applySymbolicClause(result, clause);
-    }
-
-    return @intCast(result);
-}
-
-/// Apply a single symbolic mode clause (e.g. "u=rwx", "go-w", "a+rx")
-fn applySymbolicClause(current: u32, clause: []const u8) !u32 {
-    if (clause.len < 2) return error.InvalidMode;
-
-    var i: usize = 0;
-    var who: u8 = 0; // bitmask: 1=user, 2=group, 4=other
-
-    // Parse who characters
-    while (i < clause.len) {
-        switch (clause[i]) {
-            'u' => who |= 1,
-            'g' => who |= 2,
-            'o' => who |= 4,
-            'a' => who |= 7,
-            '+', '-', '=' => break,
-            else => return error.InvalidMode,
-        }
-        i += 1;
-    }
-
-    // Default to 'a' (all) when no who specified
-    if (who == 0) who = 7;
-
-    if (i >= clause.len) return error.InvalidMode;
-
-    const op = clause[i];
-    i += 1;
-
-    // Parse permission characters
-    var perms: u3 = 0;
-    while (i < clause.len) {
-        switch (clause[i]) {
-            'r' => perms |= 4,
-            'w' => perms |= 2,
-            'x' => perms |= 1,
-            else => return error.InvalidMode,
-        }
-        i += 1;
-    }
-
-    var result = current;
-
-    // Apply to each target
-    if (who & 1 != 0) { // user
-        switch (op) {
-            '+' => result |= @as(u32, perms) << 6,
-            '-' => result &= ~(@as(u32, perms) << 6),
-            '=' => {
-                result &= ~@as(u32, 0o700);
-                result |= @as(u32, perms) << 6;
-            },
-            else => return error.InvalidMode,
-        }
-    }
-    if (who & 2 != 0) { // group
-        switch (op) {
-            '+' => result |= @as(u32, perms) << 3,
-            '-' => result &= ~(@as(u32, perms) << 3),
-            '=' => {
-                result &= ~@as(u32, 0o070);
-                result |= @as(u32, perms) << 3;
-            },
-            else => return error.InvalidMode,
-        }
-    }
-    if (who & 4 != 0) { // other
-        switch (op) {
-            '+' => result |= @as(u32, perms),
-            '-' => result &= ~@as(u32, perms),
-            '=' => {
-                result &= ~@as(u32, 0o007);
-                result |= @as(u32, perms);
-            },
-            else => return error.InvalidMode,
-        }
-    }
-
-    return result;
+    const parsed = common.mode.parseSymbolic(mode_str, 0o777, .{ .is_directory = true }) catch {
+        return error.InvalidMode;
+    };
+    return @intCast(parsed.toOctal());
 }
 
 /// Convert system error to user-friendly POSIX-style message
@@ -571,16 +479,19 @@ test "parseMode rejects invalid modes" {
 }
 
 test "parseMode handles symbolic modes" {
-    // u=rwx,go=rx -> 755
+    // GNU mkdir symbolic base is 0o777, umask-independent for explicit
+    // who-specifiers. All expected values verified against GNU coreutils
+    // 9.5 on Linux.
     try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("u=rwx,go=rx"));
-    // a+rx -> 555 (from base 0)
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o555), try parseMode("a+rx"));
-    // u=rwx -> 700
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o700), try parseMode("u=rwx"));
-    // go-w from base 0 -> 0 (no change)
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o000), try parseMode("go-w"));
-    // a=rwx -> 777
     try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a=rwx"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a+rx"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("u=rwx"));
+    // The regression case: was 0o000 under the broken "start from 0" parser.
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("go-w"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o577), try parseMode("u=rx"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o757), try parseMode("g=rx"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o754), try parseMode("u=rwx,g=rx,o=r"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a+X"));
 }
 
 test "mkdir handles paths with double slashes" {
