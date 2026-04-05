@@ -53,7 +53,7 @@ if [ ! -f "$NOTES_FILE" ]; then
 fi
 
 # Extract the section between "## $VERSION" and the next "## "
-RELEASE_NOTES=$(sed -n "/^## ${VERSION} /,/^## [0-9]/{/^## [0-9]/!p;}" "$NOTES_FILE" | sed '/^$/d; 1{/^$/d}')
+RELEASE_NOTES=$(sed -n "/^## ${VERSION} /,/^## [0-9]/{/^## [0-9]/!p;}" "$NOTES_FILE" | sed '/^$/d')
 if [ -z "$RELEASE_NOTES" ]; then
     echo "Error: No release notes found for $VERSION in $NOTES_FILE"
     echo "Add a '## $VERSION — YYYY-MM-DD' section before releasing."
