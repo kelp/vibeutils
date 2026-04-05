@@ -1215,123 +1215,114 @@ test "printSingleGroup outputs numeric GID with delimiter" {
     try testing.expectEqualStrings(expected, stdout_buffer.items);
 }
 
-test "id -G with named user matches id -G without username" {
-    // Get current username
+/// Return true if every space-separated token in `subset` also appears in
+/// `superset`. Used to verify `id -G <user>` returns a superset of `id -G`
+/// without requiring strict equality — on macOS, getgroups(2) is capped at
+/// NGROUPS_MAX=16 while getgrouplist(3) is uncapped, so counts legitimately
+/// diverge for users with >16 supplementary groups.
+fn isGroupSuperset(superset: []const u8, subset: []const u8) bool {
+    var it = std.mem.tokenizeScalar(u8, subset, ' ');
+    outer: while (it.next()) |needle| {
+        var sup_it = std.mem.tokenizeScalar(u8, superset, ' ');
+        while (sup_it.next()) |hay| {
+            if (std.mem.eql(u8, needle, hay)) continue :outer;
+        }
+        return false;
+    }
+    return true;
+}
+
+test "id -G with named user is superset of id -G without username" {
+    // On macOS getgroups(2) caps the process credential set at NGROUPS_MAX=16
+    // but getgrouplist(3) is uncapped, so the named form can legitimately
+    // have more groups than the no-user form. The cross-platform invariant
+    // is that every group in `id -G` must appear in `id -G <user>`.
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    // Run id -G (no username) - gets groups from current process
     var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_no_user.deinit(testing.allocator);
     const args_no_user = [_][]const u8{"-G"};
     const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
-    // Run id -G <username> - should also list ALL groups
     var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_named.deinit(testing.allocator);
     const args_named = [_][]const u8{ "-G", user_info.name };
     const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_named);
 
-    // Both should produce the same set of groups
-    // (order may differ, so compare as sorted sets)
     const no_user_trimmed = std.mem.trimRight(u8, stdout_no_user.items, "\n");
     const named_trimmed = std.mem.trimRight(u8, stdout_named.items, "\n");
 
-    // At minimum, the named user should have the same number of groups
-    var no_user_count: usize = 1;
-    for (no_user_trimmed) |c| {
-        if (c == ' ') no_user_count += 1;
-    }
-    var named_count: usize = 1;
-    for (named_trimmed) |c| {
-        if (c == ' ') named_count += 1;
-    }
-
-    // F47: named user shows only primary GID, missing supplementary groups
-    try testing.expectEqual(no_user_count, named_count);
+    try testing.expect(no_user_trimmed.len > 0);
+    try testing.expect(named_trimmed.len > 0);
+    try testing.expect(isGroupSuperset(named_trimmed, no_user_trimmed));
 }
 
-test "id -Gn with named user matches id -Gn without username" {
-    // Get current username
+test "id -Gn with named user is superset of id -Gn without username" {
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    // Run id -Gn (no username)
     var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_no_user.deinit(testing.allocator);
     const args_no_user = [_][]const u8{ "-G", "-n" };
     const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
-    // Run id -Gn <username>
     var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_named.deinit(testing.allocator);
     const args_named = [_][]const u8{ "-G", "-n", user_info.name };
     const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_named);
 
-    // Both should produce the same set of group names
     const no_user_trimmed = std.mem.trimRight(u8, stdout_no_user.items, "\n");
     const named_trimmed = std.mem.trimRight(u8, stdout_named.items, "\n");
 
-    var no_user_count: usize = 1;
-    for (no_user_trimmed) |c| {
-        if (c == ' ') no_user_count += 1;
-    }
-    var named_count: usize = 1;
-    for (named_trimmed) |c| {
-        if (c == ' ') named_count += 1;
-    }
-
-    // F47: named user should list all supplementary group names too
-    try testing.expectEqual(no_user_count, named_count);
+    try testing.expect(no_user_trimmed.len > 0);
+    try testing.expect(named_trimmed.len > 0);
+    try testing.expect(isGroupSuperset(named_trimmed, no_user_trimmed));
 }
 
-test "id default format with named user includes all groups" {
-    // Get current username
+test "id default format with named user includes all groups (superset)" {
+    // Same cross-platform invariant as the -G test: the named-user form
+    // must return every group that the no-user form returns, but may
+    // have more on macOS due to NGROUPS_MAX capping getgroups(2).
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    // Run id (default format, no username)
     var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_no_user.deinit(testing.allocator);
     const args_no_user = [_][]const u8{};
     const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
-    // Run id <username> (default format, with username)
     var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
     defer stdout_named.deinit(testing.allocator);
     const args_named = [_][]const u8{user_info.name};
     const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_named);
 
-    // Extract groups= portion from both outputs
+    // Extract the groups= portion, strip trailing newline, extract the
+    // inner comma-separated list (format is "groups=gid1(name),gid2(name)").
     const no_user_groups_start = std.mem.indexOf(u8, stdout_no_user.items, "groups=") orelse
         return error.TestUnexpectedResult;
     const named_groups_start = std.mem.indexOf(u8, stdout_named.items, "groups=") orelse
         return error.TestUnexpectedResult;
 
-    const no_user_groups = stdout_no_user.items[no_user_groups_start..];
-    const named_groups = stdout_named.items[named_groups_start..];
+    const no_user_groups = std.mem.trimRight(u8, stdout_no_user.items[no_user_groups_start + "groups=".len ..], " \n");
+    const named_groups = std.mem.trimRight(u8, stdout_named.items[named_groups_start + "groups=".len ..], " \n");
 
-    // Count commas to determine number of group entries
-    var no_user_comma_count: usize = 0;
-    for (no_user_groups) |c| {
-        if (c == ',') no_user_comma_count += 1;
+    // Every comma-separated entry in no_user_groups must appear in named_groups.
+    var it = std.mem.tokenizeScalar(u8, no_user_groups, ',');
+    while (it.next()) |entry| {
+        const trimmed = std.mem.trim(u8, entry, " ");
+        if (trimmed.len == 0) continue;
+        try testing.expect(std.mem.indexOf(u8, named_groups, trimmed) != null);
     }
-    var named_comma_count: usize = 0;
-    for (named_groups) |c| {
-        if (c == ',') named_comma_count += 1;
-    }
-
-    // F47: default format with named user should list same number of groups
-    try testing.expectEqual(no_user_comma_count, named_comma_count);
 }
 
 // ============================================================================
