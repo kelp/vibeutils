@@ -1,5 +1,79 @@
 # Release Notes
 
+## 0.9.1 — 2026-04-05
+
+Patch release. Fixes correctness bugs and test infrastructure
+problems exposed by tightening CI coverage after 0.9.0.
+
+### Bug Fixes
+- **realpath / readlink**: default mode now matches GNU `-E`
+  semantics (parent directory must be resolvable, last component
+  may be missing). 0.9.0 accidentally routed default mode through
+  `canonicalizeMissing`, allowing paths like `/nonexistent/dir/file`
+  to succeed even when the parent was missing. New
+  `canonicalizeParentMustExist` verifies the parent exists and
+  is an actual directory (rejecting `file/foo` with `NotDir`).
+- **mkdir -m symbolic mode**: fixed parser start base. `mkdir -m
+  go-w foo` previously produced mode `0o000` (making the directory
+  inaccessible even to its owner) because the local parser started
+  from `0`. GNU mkdir starts from `0o777`. Now delegates to the
+  shared `common.mode.parseSymbolic` with the correct base.
+- **mktemp**: four GNU-compat fixes.
+  - No-argument default template now lands in `$TMPDIR`/`/tmp`
+    (was: cwd).
+  - User-supplied bare templates (`mktemp myapp.XXX`) print
+    `myapp.XXX` verbatim, matching GNU (was: `./myapp.XXX`).
+  - `-t` with a template containing a slash now fails with
+    `invalid template, '...', contains directory separator`.
+  - `./myapp.XXX`, `foo/bar.XXX`, and `/abs/x.XXX` are all
+    preserved verbatim in output.
+- **id -G \<user\>**: no longer hangs on macOS CI. The
+  `getgrouplist(3)` retry loop was unbounded and held a pointer
+  into libc's static `getpwuid` buffer across calls. Now copies
+  the username into an owned buffer, caps retries at 8, and
+  forces strict `ngroups` growth on each retry.
+- **tee**: error messages now include the failing filename,
+  matching GNU's `tee: <file>: <error>` format (was:
+  `tee: failed to open files: <error>` with no file identification).
+
+### Test Infrastructure
+- Add `run_with_limit SECONDS CMD...` helper in `tests/lib/common.sh`
+  using Python 3 `os.fork`/`os.execvp`. Replaces GNU `timeout(1)`,
+  which macOS GitHub Actions runners lack. Used by free, sleep, tee,
+  and timeout test suites.
+- Add `run_with_stderr_tty CMD...` helper using Python 3 `pty.fork`
+  to exercise code paths gated on `isatty(stderr)` (cp's overwrite
+  hint). Portable across Linux and macOS.
+- dd conv=swab/block/unblock/ibm/ebcdic tests now assert against
+  hardcoded GNU reference bytes instead of invoking `/usr/bin/dd`,
+  which on macOS (BSD dd) does not implement these conv modes.
+- du -L/-b/-S tests assert against hardcoded byte counts instead
+  of `/usr/bin/du -b`, which BSD du does not support.
+- mkdir integration tests now numerically verify the resulting
+  mode for `go-w`, `a+rx`, and `u=rx` — catches future regressions
+  in symbolic mode parsing that the old exit-code-only assertions
+  missed.
+- `test-privileged` recipe now retries up to 3 times to absorb
+  ETXTBSY flakes (Linux kernel race between linker close and
+  test exec under fakeroot).
+
+### Platform Divergences Handled
+- `id -G <user>` vs `id -G` count: macOS caps `getgroups(2)` at
+  `NGROUPS_MAX=16` but `getgrouplist(3)` is uncapped, so the named
+  form can legitimately have more groups than the no-user form on
+  macOS runners. Unit and integration tests relaxed to assert
+  that the named form is a superset of the no-user form rather
+  than strict equality.
+
+### Verified
+- Full integration suite passes on both Linux (orb VM) and
+  macOS CI: 48/48 utilities.
+- All unit tests pass on both platforms.
+- All symbolic mkdir modes (`go-w`, `u=rwx`, `a+rx`, `u=rx`,
+  `g=rx`, `u=rwx,g=rx,o=r`, `a+X`) produce the same byte output
+  as GNU coreutils 9.5 on Linux.
+- All 6 dd conv modes produce GNU-matching output.
+
 ## 0.9.0 — 2026-04-05
 
 ### Architecture
