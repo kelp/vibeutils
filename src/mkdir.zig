@@ -149,14 +149,18 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
 /// notes: "set file mode (as in chmod), not a=rwx - umask".
 ///
 /// Explicit-who clauses (u=rwx, go-w, etc.) ignore umask entirely. Umask
-/// only affects clauses with no explicit who-specifier (=rw, +x, -w), a
-/// subtlety `common.mode.parseSymbolic` does not yet model — tracked as
-/// a follow-up. For the 0.9.1 regression fix, a 0o777 base is correct
-/// for every explicit-who clause and recovers `go-w → 0o755` (which was
-/// the broken 0o000 case from the old local parser starting at 0).
+/// only affects clauses with no explicit who-specifier (=rw, +x, -w),
+/// per POSIX §4.7. The shared parser handles this via ModeContext.umask.
 ///
 /// `is_directory = true` enables `X` (conditional execute) to always
 /// expand to `x` for directory targets.
+/// Read and restore the process umask (POSIX has no non-destructive getter).
+fn getUmask() u32 {
+    const m = std.c.umask(0);
+    _ = std.c.umask(m);
+    return @intCast(m);
+}
+
 fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     if (mode_str.len == 0) {
         return error.InvalidMode;
@@ -179,7 +183,10 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
         return error.InvalidMode;
     }
 
-    const parsed = common.mode.parseSymbolic(mode_str, 0o777, .{ .is_directory = true }) catch {
+    const parsed = common.mode.parseSymbolic(mode_str, 0o777, .{
+        .is_directory = true,
+        .umask = getUmask(),
+    }) catch {
         return error.InvalidMode;
     };
     return @intCast(parsed.toOctal());
@@ -479,9 +486,12 @@ test "parseMode rejects invalid modes" {
 }
 
 test "parseMode handles symbolic modes" {
-    // GNU mkdir symbolic base is 0o777, umask-independent for explicit
-    // who-specifiers. All expected values verified against GNU coreutils
-    // 9.5 on Linux.
+    // Pin umask to 0o022 for reproducible results on implicit-who tests.
+    const saved = std.c.umask(0o022);
+    defer _ = std.c.umask(saved);
+
+    // Explicit who-specifiers: umask-independent. Verified against GNU
+    // coreutils 9.5 on Linux.
     try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("u=rwx,go=rx"));
     try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a=rwx"));
     try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a+rx"));
@@ -492,6 +502,10 @@ test "parseMode handles symbolic modes" {
     try testing.expectEqual(@as(std.fs.File.Mode, 0o757), try parseMode("g=rx"));
     try testing.expectEqual(@as(std.fs.File.Mode, 0o754), try parseMode("u=rwx,g=rx,o=r"));
     try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a+X"));
+
+    // Implicit who: umask 022 masks g-write and o-write.
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o644), try parseMode("=rw"));
+    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("=rwx"));
 }
 
 test "mkdir handles paths with double slashes" {

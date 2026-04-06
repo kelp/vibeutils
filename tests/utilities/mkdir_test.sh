@@ -517,6 +517,28 @@ test_mkdir() {
             chmod 755 "$sym_mode_dir4" 2>/dev/null
         fi
         rm -rf "$sym_mode_dir4"
+
+        # Implicit who: =rw with umask 022 should yield 644.
+        # Must set umask explicitly since test runners may have umask 0.
+        local sym_mode_dir5="$TEMP_DIR/sym_mode_test5"
+        rm -rf "$sym_mode_dir5" 2>/dev/null || true
+        local saved_umask
+        saved_umask=$(umask)
+        umask 022
+        test_command_succeeds "mkdir -m implicit who =rw" \
+            "$binary" -m "=rw" "$sym_mode_dir5"
+        umask "$saved_umask"
+        if [[ -d "$sym_mode_dir5" ]]; then
+            local eq_rw_perms
+            eq_rw_perms=$(get_file_permissions "$sym_mode_dir5")
+            if [[ "$eq_rw_perms" == "644" ]]; then
+                print_test_result "mkdir -m =rw permissions" "PASS"
+            else
+                print_test_result "mkdir -m =rw permissions" "FAIL" \
+                    "Expected 644 (umask 022), got $eq_rw_perms"
+            fi
+        fi
+        rm -rf "$sym_mode_dir5"
     fi
 
     # AUDIT: mkdir -p -m applies mode to leaf only (GNU behavior)
