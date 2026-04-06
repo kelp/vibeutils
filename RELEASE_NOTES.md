@@ -1,5 +1,45 @@
 # Release Notes
 
+## 0.9.2 — 2026-04-06
+
+Patch release. Fixes a memory safety bug in mktemp, consolidates
+the symbolic mode parser, and adds POSIX umask support for
+implicit-who symbolic mode clauses.
+
+### Bug Fixes
+- **mktemp: undefined memory beyond 256 X's.** `fillRandom` used
+  a fixed 256-byte getrandom buffer and silently left template
+  positions past 256 as uninitialized stack memory. Templates like
+  `myapp.XXXX...` (300+ X's) produced garbage bytes in the output
+  filename. Now uses chunked getrandom calls to fill any length.
+- **mkdir: umask for implicit-who symbolic modes.** `mkdir -m =rw`
+  with umask 022 produced 666 (umask ignored). GNU applies umask
+  to clauses without an explicit who-specifier (`=rw`, `+x`) per
+  POSIX §4.7. Now produces 644, matching GNU.
+
+### Improvements
+- **chmod: deduplicate symbolic mode parser (-368 lines).** chmod
+  had its own 200-line symbolic mode parser duplicating the shared
+  parser in `common/mode.zig`. Deleted the local copy; chmod now
+  delegates to `common.mode.parseSymbolic`. Net removal: 609 lines
+  deleted, 241 added.
+- **common/mode.zig: POSIX umask support.** Activated the
+  `ModeContext.umask` field (was reserved/unused). When no explicit
+  who-specifier is given and the operator is `+` or `=`, the
+  complement of the umask is applied per-class. `-` operations
+  are never constrained. Both chmod and mkdir benefit.
+- **mktemp: document intentional GNU divergences.** `--tmpdir`
+  optional-value semantics (a getopt quirk no scripts rely on)
+  and the now-fixed `fillRandom` limit are documented in the
+  module doc comment.
+
+### Verified
+- All unit tests pass on macOS and Linux.
+- Full integration suite: 48/48 utilities on Linux.
+- mkdir 112/112, chmod all passing on both platforms.
+- Umask semantics match GNU: `chmod +rw` with umask 022 = 0644,
+  `mkdir -m =rw` with umask 022 = 644, `mkdir -m =rwx` = 755.
+
 ## 0.9.1 — 2026-04-05
 
 Patch release. Fixes correctness bugs and test infrastructure
