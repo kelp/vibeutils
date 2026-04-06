@@ -24,7 +24,10 @@ pub const ModeError = error{
 pub const ModeContext = struct {
     /// True when the target is a directory; enables the `X` permission behaviour.
     is_directory: bool = false,
-    /// umask value (reserved; currently unused — future `=` without who-specifier).
+    /// Process umask. Applied to '+' and '=' operations when no explicit
+    /// who-specifier is given (e.g. `+x`, `=rw`). Per POSIX §4.7, the umask
+    /// limits which bits are set; '-' operations are never constrained.
+    /// Callers should read the process umask via `umask(0)` + restore.
     umask: u32 = 0,
 };
 
@@ -117,14 +120,27 @@ fn applyClause(
 
     var i: usize = 0;
     var who: u8 = 0; // bitmask: bit0=user, bit1=group, bit2=other
+    var who_explicit = false;
 
     // --- who-specifier ---
     while (i < clause.len) : (i += 1) {
         switch (clause[i]) {
-            'u' => who |= 1,
-            'g' => who |= 2,
-            'o' => who |= 4,
-            'a' => who |= 7,
+            'u' => {
+                who |= 1;
+                who_explicit = true;
+            },
+            'g' => {
+                who |= 2;
+                who_explicit = true;
+            },
+            'o' => {
+                who |= 4;
+                who_explicit = true;
+            },
+            'a' => {
+                who |= 7;
+                who_explicit = true;
+            },
             '+', '-', '=' => break,
             else => return ModeError.InvalidMode,
         }
@@ -173,7 +189,24 @@ fn applyClause(
         }
     }
 
-    applyPerms(mode, who, op, perms);
+    // POSIX §4.7: when no who-specifier was given and the operator adds or
+    // sets permissions ('+' or '='), apply the complement of the process
+    // umask per-class. For '-' (removal), the umask does not constrain
+    // which bits are cleared.
+    if (!who_explicit and op != '-' and context.umask != 0) {
+        const u_mask: u3 = @truncate((context.umask >> 6) & 7);
+        const g_mask: u3 = @truncate((context.umask >> 3) & 7);
+        const o_mask: u3 = @truncate(context.umask & 7);
+        // Umask constrains only rwx bits; special bits (s/t) pass through.
+        const basic: u3 = @truncate(perms & 7);
+        const special: u8 = perms & ~@as(u8, 7);
+        // Apply per-class with masked basic bits, then special bits globally.
+        applyPerms(mode, 1, op, (basic & ~u_mask) | special);
+        applyPerms(mode, 2, op, (basic & ~g_mask) | special);
+        applyPerms(mode, 4, op, (basic & ~o_mask) | special);
+    } else {
+        applyPerms(mode, who, op, perms);
+    }
 }
 
 /// Apply permission copying between who classes.
@@ -542,13 +575,53 @@ test "parseSymbolic: u+t also sets sticky (who-bits for sticky ignored)" {
 
 // --- umask field is currently a no-op ---
 
-test "parseSymbolic: umask value has no effect on = operator (reserved field)" {
-    // ModeContext.umask is documented as 'reserved; currently unused'.
-    // Verify it does NOT alter results compared to umask=0.
-    const base: u32 = 0o000;
-    const no_umask = try parseSymbolic("a+rwx", base, .{ .umask = 0 });
-    const with_umask = try parseSymbolic("a+rwx", base, .{ .umask = 0o022 });
+// --- parseSymbolic: umask support ---
+
+test "parseSymbolic: explicit 'a' who ignores umask" {
+    // Explicit a+rwx: umask has no effect
+    const no_umask = try parseSymbolic("a+rwx", 0o000, .{ .umask = 0 });
+    const with_umask = try parseSymbolic("a+rwx", 0o000, .{ .umask = 0o022 });
     try testing.expectEqual(no_umask.toOctal(), with_umask.toOctal());
+    try testing.expectEqual(@as(u32, 0o777), with_umask.toOctal());
+}
+
+test "parseSymbolic: implicit who '+x' respects umask" {
+    // umask 0o022: group write (0o020) and other write (0o002) blocked
+    // +x sets execute for all, but umask 0o022 only blocks w bits, not x
+    const m = try parseSymbolic("+x", 0o644, .{ .umask = 0o022 });
+    // umask 022 = ----w--w-; complement masks x through for all classes
+    try testing.expectEqual(@as(u32, 0o755), m.toOctal());
+}
+
+test "parseSymbolic: implicit who '+w' respects umask 022" {
+    // +w with umask 022: user gets w, group and other blocked
+    const m = try parseSymbolic("+w", 0o000, .{ .umask = 0o022 });
+    // umask 022 blocks g+w and o+w; only u+w passes
+    try testing.expectEqual(@as(u32, 0o200), m.toOctal());
+}
+
+test "parseSymbolic: implicit who '=rw' respects umask 077" {
+    // =rw with umask 077: user gets rw, group and other get nothing
+    const m = try parseSymbolic("=rw", 0o755, .{ .umask = 0o077 });
+    try testing.expectEqual(@as(u32, 0o600), m.toOctal());
+}
+
+test "parseSymbolic: implicit who '-x' ignores umask" {
+    // Removal is never constrained by umask
+    const m = try parseSymbolic("-x", 0o777, .{ .umask = 0o077 });
+    try testing.expectEqual(@as(u32, 0o666), m.toOctal());
+}
+
+test "parseSymbolic: explicit u+w ignores umask" {
+    const m = try parseSymbolic("u+w", 0o000, .{ .umask = 0o222 });
+    // Explicit who: umask has no effect
+    try testing.expectEqual(@as(u32, 0o200), m.toOctal());
+}
+
+test "parseSymbolic: implicit who '+rw' respects umask 022" {
+    // +rw with umask 022: u gets rw, g gets r (w blocked), o gets r (w blocked)
+    const m = try parseSymbolic("+rw", 0o000, .{ .umask = 0o022 });
+    try testing.expectEqual(@as(u32, 0o644), m.toOctal());
 }
 
 // --- three-clause 755 construction ---

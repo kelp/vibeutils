@@ -234,35 +234,8 @@ const ChmodOptions = struct {
 };
 
 /// Unix file permissions with special bits
-const Mode = struct {
-    user: u3,
-    group: u3,
-    other: u3,
-    setuid: bool = false,
-    setgid: bool = false,
-    sticky: bool = false,
-
-    /// Convert to octal representation (e.g., 0o755)
-    fn toOctal(self: Mode) u32 {
-        var result = (@as(u32, self.user) << 6) | (@as(u32, self.group) << 3) | @as(u32, self.other);
-        if (self.setuid) result |= 0o4000;
-        if (self.setgid) result |= 0o2000;
-        if (self.sticky) result |= 0o1000;
-        return result;
-    }
-
-    /// Create from octal permission value
-    fn fromOctal(octal: u32) Mode {
-        return Mode{
-            .user = @truncate((octal >> 6) & 0x7),
-            .group = @truncate((octal >> 3) & 0x7),
-            .other = @truncate(octal & 0x7),
-            .setuid = (octal & 0o4000) != 0,
-            .setgid = (octal & 0o2000) != 0,
-            .sticky = (octal & 0o1000) != 0,
-        };
-    }
-};
+/// Shared Mode type from common.mode — identical struct with fromOctal/toOctal.
+const Mode = common.mode.Mode;
 
 /// Errors specific to chmod operations
 const ChmodError = error{
@@ -406,7 +379,7 @@ fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_spe
     applyModeSpecToFile(file_path, mode_spec, writer, options) catch |err| {
         if (!options.quiet) {
             switch (err) {
-                ChmodError.InvalidMode => {
+                error.InvalidMode => {
                     if (mode_spec == .symbolic) {
                         common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_spec.symbolic});
                     } else {
@@ -531,34 +504,22 @@ fn hasNonOctalDigits(mode_str: []const u8) bool {
 
 /// Parse a mode string (octal or symbolic) into a Mode struct
 /// First attempts octal parsing, then falls back to symbolic mode parsing
+/// Read and restore the process umask (POSIX has no non-destructive getter).
+fn getUmask() u32 {
+    const m = std.c.umask(0);
+    _ = std.c.umask(m);
+    return @intCast(m);
+}
+
 fn parseMode(mode_str: []const u8) !Mode {
-    // Try octal mode first (Phase 1) - accept 1-4 octal digits
-    if (mode_str.len >= 1 and mode_str.len <= 4) {
-        var is_octal = true;
+    if (mode_str.len == 0) return ChmodError.InvalidMode;
 
-        // Check if all characters are octal digits
-        for (mode_str) |c| {
-            if (c < '0' or c > '7') {
-                is_octal = false;
-                break;
-            }
-        }
+    // Try octal first.
+    if (common.mode.parseOctal(mode_str)) |octal| {
+        return Mode.fromOctal(octal);
+    } else |_| {}
 
-        if (is_octal) {
-            var octal: u32 = 0;
-            for (mode_str) |c| {
-                octal = octal * 8 + (c - '0');
-            }
-
-            if (octal > 0o7777) {
-                return ChmodError.InvalidOctalMode;
-            }
-
-            return Mode.fromOctal(octal);
-        }
-    }
-
-    // Check for purely numeric strings that are not valid octal
+    // Reject purely numeric strings that aren't valid octal.
     var all_numeric = true;
     for (mode_str) |c| {
         if (!std.ascii.isDigit(c)) {
@@ -566,241 +527,20 @@ fn parseMode(mode_str: []const u8) !Mode {
             break;
         }
     }
+    if (all_numeric) return ChmodError.InvalidOctalMode;
 
-    if (all_numeric) {
-        // Numeric but not valid octal
-        return ChmodError.InvalidOctalMode;
-    }
-
-    // Try symbolic mode parsing (Phase 2)
-    return parseSymbolicModeString(mode_str);
-}
-
-// Symbolic mode parsing functions
-
-/// Parse a complete symbolic mode string
-/// Returns a base mode - actual application uses current file mode
-fn parseSymbolicModeString(mode_str: []const u8) !Mode {
-    // Start with base mode of 0
-    var base_mode = Mode.fromOctal(0o000);
-
-    // Split by commas for multiple operations
-    var iter = std.mem.splitScalar(u8, mode_str, ',');
-    while (iter.next()) |clause| {
-        try applySymbolicMode(&base_mode, std.mem.trim(u8, clause, " "), false, null);
-    }
-
-    return base_mode;
-}
-
-/// Apply a single symbolic mode clause
-/// Modifies the mode in-place
-/// is_directory: whether the target is a directory (affects X permission)
-/// current_mode: the file's current mode bits (affects X permission); null if unknown
-fn applySymbolicMode(mode: *Mode, clause: []const u8, is_directory: bool, current_mode: ?u32) !void {
-    if (clause.len < 2) return ChmodError.InvalidMode;
-
-    var i: usize = 0;
-    var who: u8 = 0;
-    // Track whether a who-specifier was given explicitly.
-    // POSIX: when no who is given, the process umask limits which bits are set
-    // for '+' and '=' operations.
-    var who_explicit = false;
-
-    while (i < clause.len) {
-        switch (clause[i]) {
-            'u' => {
-                who |= 1;
-                who_explicit = true;
-            },
-            'g' => {
-                who |= 2;
-                who_explicit = true;
-            },
-            'o' => {
-                who |= 4;
-                who_explicit = true;
-            },
-            'a' => {
-                who |= 7;
-                who_explicit = true;
-            }, // all = user + group + other
-            '+', '-', '=' => break,
-            else => return ChmodError.InvalidMode,
-        }
-        i += 1;
-    }
-
-    // If no who specified, default to 'a' (all) — umask applied below
-    if (who == 0) who = 7;
-
-    if (i >= clause.len) return ChmodError.InvalidMode;
-
-    const op = clause[i];
-    i += 1;
-
-    // Check if this is permission copying (g=u, o=g, u=o, o+u, g-u, etc.)
-    if (i < clause.len and clause.len == i + 1) {
-        const copy_from = clause[i];
-        if (copy_from == 'u' or copy_from == 'g' or copy_from == 'o') {
-            applyCopyingMode(mode, who, copy_from, op);
-            return;
-        }
-    }
-
-    var perms: u8 = 0;
-    while (i < clause.len) {
-        switch (clause[i]) {
-            'r' => perms |= 4,
-            'w' => perms |= 2,
-            'x' => perms |= 1,
-            's' => perms |= 8, // Special bit (setuid/setgid)
-            't' => perms |= 16, // Sticky bit
-            'X' => {
-                // POSIX: X sets execute only if target is a directory
-                // or already has at least one execute bit set
-                if (is_directory or (current_mode != null and (current_mode.? & 0o111) != 0)) {
-                    perms |= 1;
-                }
-            },
-            // Support permission copying cases
-            'u', 'g', 'o' => {
-                if (clause.len == i + 1) {
-                    applyCopyingMode(mode, who, clause[i], op);
-                    return;
-                } else {
-                    return ChmodError.InvalidMode;
-                }
-            },
-            else => return ChmodError.InvalidMode,
-        }
-        i += 1;
-    }
-
-    // POSIX §4.7: when no who-specifier was given and the op adds or sets
-    // permissions ('+' or '='), apply the complement of the process umask.
-    // For '-' (removal), the umask does not constrain which bits are cleared.
-    if (!who_explicit and op != '-') {
-        const process_umask: u32 = blk: {
-            const m = std.c.umask(0);
-            _ = std.c.umask(m);
-            break :blk @intCast(m);
-        };
-        // Split the umask into per-class masks (rwx bits only; 3 bits each).
-        const u_mask: u8 = @intCast((process_umask >> 6) & 7);
-        const g_mask: u8 = @intCast((process_umask >> 3) & 7);
-        const o_mask: u8 = @intCast(process_umask & 7);
-        // Umask only constrains the basic rwx bits; special bits (s/t) are
-        // applied without masking.
-        const basic: u8 = perms & 7;
-        const special: u8 = perms & ~@as(u8, 7);
-        // Apply per-class: each class gets only the unmasked rwx bits plus
-        // the full special bits.
-        applyPermissionChange(mode, who & 1, op, (basic & ~u_mask) | special);
-        applyPermissionChange(mode, who & 2, op, (basic & ~g_mask) | special);
-        applyPermissionChange(mode, who & 4, op, (basic & ~o_mask) | special);
-    } else {
-        applyPermissionChange(mode, who, op, perms);
-    }
-}
-
-/// Apply permission copying between user classes with operator support
-fn applyCopyingMode(mode: *Mode, who: u8, copy_from: u8, op: u8) void {
-    const source_perms = switch (copy_from) {
-        'u' => mode.user,
-        'g' => mode.group,
-        'o' => mode.other,
-        else => return,
+    // Symbolic mode: validate by parsing from base 0 (actual application
+    // happens per-file in applyModeSpecToFile with the file's current mode).
+    _ = common.mode.parseSymbolic(mode_str, 0, .{}) catch {
+        return ChmodError.InvalidMode;
     };
-
-    if (who & 1 != 0) { // user
-        switch (op) {
-            '+' => mode.user |= source_perms,
-            '-' => mode.user &= ~source_perms,
-            '=' => mode.user = source_perms,
-            else => {},
-        }
-    }
-    if (who & 2 != 0) { // group
-        switch (op) {
-            '+' => mode.group |= source_perms,
-            '-' => mode.group &= ~source_perms,
-            '=' => mode.group = source_perms,
-            else => {},
-        }
-    }
-    if (who & 4 != 0) { // other
-        switch (op) {
-            '+' => mode.other |= source_perms,
-            '-' => mode.other &= ~source_perms,
-            '=' => mode.other = source_perms,
-            else => {},
-        }
-    }
+    return Mode.fromOctal(0); // placeholder; symbolic modes are re-parsed per-file
 }
 
-/// Apply permission changes based on parsed symbolic mode components
-fn applyPermissionChange(mode: *Mode, who: u8, op: u8, perms: u8) void {
-    // Handle basic permissions (rwx)
-    const basic_perms = perms & 7; // Only the lower 3 bits
-
-    if (who & 1 != 0) {
-        switch (op) {
-            '+' => mode.user |= @as(u3, @truncate(basic_perms)),
-            '-' => mode.user &= ~@as(u3, @truncate(basic_perms)),
-            '=' => mode.user = @as(u3, @truncate(basic_perms)),
-            else => {},
-        }
-    }
-
-    if (who & 2 != 0) {
-        switch (op) {
-            '+' => mode.group |= @as(u3, @truncate(basic_perms)),
-            '-' => mode.group &= ~@as(u3, @truncate(basic_perms)),
-            '=' => mode.group = @as(u3, @truncate(basic_perms)),
-            else => {},
-        }
-    }
-
-    if (who & 4 != 0) {
-        switch (op) {
-            '+' => mode.other |= @as(u3, @truncate(basic_perms)),
-            '-' => mode.other &= ~@as(u3, @truncate(basic_perms)),
-            '=' => mode.other = @as(u3, @truncate(basic_perms)),
-            else => {},
-        }
-    }
-
-    // Handle special permission bits
-    if (perms & 8 != 0) { // 's' bit
-        if (who & 1 != 0) { // setuid for user
-            switch (op) {
-                '+' => mode.setuid = true,
-                '-' => mode.setuid = false,
-                '=' => mode.setuid = true,
-                else => {},
-            }
-        }
-        if (who & 2 != 0) { // setgid for group
-            switch (op) {
-                '+' => mode.setgid = true,
-                '-' => mode.setgid = false,
-                '=' => mode.setgid = true,
-                else => {},
-            }
-        }
-    }
-
-    if (perms & 16 != 0) { // 't' bit (sticky)
-        // POSIX: sticky bit ignores who-bits — always applied
-        switch (op) {
-            '+' => mode.sticky = true,
-            '-' => mode.sticky = false,
-            '=' => mode.sticky = true,
-            else => {},
-        }
-    }
-}
+// Local symbolic mode parsing functions removed. All symbolic mode logic now
+// delegates to common.mode.parseSymbolic, which handles who-specifiers,
+// operators (+/-/=), permission bits (rwx/X/s/t), permission copying (g=u),
+// and POSIX umask masking for implicit-who clauses.
 
 /// Convert error to user-friendly message
 /// Apply a mode specification to a single file
@@ -839,12 +579,12 @@ fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anyty
         .octal => |m| m.toOctal(),
         .reference => |m| m.toOctal(),
         .symbolic => |mode_str| blk: {
-            var new_mode_struct = Mode.fromOctal(old_mode);
             const is_directory = stat.kind == .directory;
-            var iter = std.mem.splitScalar(u8, mode_str, ',');
-            while (iter.next()) |clause| {
-                try applySymbolicMode(&new_mode_struct, std.mem.trim(u8, clause, " "), is_directory, old_mode);
-            }
+            const new_mode_struct = common.mode.parseSymbolic(
+                mode_str,
+                old_mode,
+                .{ .is_directory = is_directory, .umask = getUmask() },
+            ) catch return error.InvalidMode;
             break :blk new_mode_struct.toOctal();
         },
     };
@@ -972,7 +712,7 @@ test "parseMode rejects modes over 777" {
 }
 
 test "parseMode rejects empty mode" {
-    try testing.expectError(ChmodError.InvalidOctalMode, parseMode(""));
+    try testing.expectError(ChmodError.InvalidMode, parseMode(""));
 }
 
 test "parseMode accepts 1-4 digit octal modes" {
@@ -1234,273 +974,135 @@ test "modeToString includes special permission bits" {
 
 // Tests: Symbolic mode parsing
 
-test "parseSymbolicMode basic additions" {
-    // u+r: add read for user
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "u+r", false, null);
-    try testing.expectEqual(@as(u32, 0o400), mode.toOctal());
+// ==================== Symbolic mode tests (via common.mode.parseSymbolic) ====================
+// These tests validate the same semantics as the deleted local parser, using the
+// shared parser that chmod now delegates to.
 
-    // g+w: add write for group
-    mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "g+w", false, null);
-    try testing.expectEqual(@as(u32, 0o020), mode.toOctal());
-
-    // o+x: add execute for other
-    mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "o+x", false, null);
-    try testing.expectEqual(@as(u32, 0o001), mode.toOctal());
+fn sym(mode_str: []const u8, base: u32, opts: common.mode.ModeContext) !Mode {
+    return common.mode.parseSymbolic(mode_str, base, opts) catch return ChmodError.InvalidMode;
 }
 
-test "parseSymbolicMode basic subtractions" {
-    // u-r: remove read for user
-    var mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "u-r", false, null);
-    try testing.expectEqual(@as(u32, 0o377), mode.toOctal());
-
-    // g-w: remove write for group
-    mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "g-w", false, null);
-    try testing.expectEqual(@as(u32, 0o757), mode.toOctal());
-
-    // o-x: remove execute for other
-    mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "o-x", false, null);
-    try testing.expectEqual(@as(u32, 0o776), mode.toOctal());
+test "symbolic: basic additions" {
+    try testing.expectEqual(@as(u32, 0o400), (try sym("u+r", 0o000, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o020), (try sym("g+w", 0o000, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o001), (try sym("o+x", 0o000, .{})).toOctal());
 }
 
-test "parseSymbolicMode basic assignments" {
-    // u=r: set user to read only
-    var mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "u=r", false, null);
-    try testing.expectEqual(@as(u32, 0o477), mode.toOctal());
-
-    // g=wx: set group to write+execute
-    mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "g=wx", false, null);
-    try testing.expectEqual(@as(u32, 0o737), mode.toOctal());
-
-    // o=: remove all permissions for other
-    mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "o=", false, null);
-    try testing.expectEqual(@as(u32, 0o770), mode.toOctal());
+test "symbolic: basic subtractions" {
+    try testing.expectEqual(@as(u32, 0o377), (try sym("u-r", 0o777, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o757), (try sym("g-w", 0o777, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o776), (try sym("o-x", 0o777, .{})).toOctal());
 }
 
-test "parseSymbolicMode multiple targets" {
-    // ug+r: add read for user and group
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "ug+r", false, null);
-    try testing.expectEqual(@as(u32, 0o440), mode.toOctal());
-
-    // go-w: remove write for group and other
-    mode = Mode.fromOctal(0o777);
-    try applySymbolicMode(&mode, "go-w", false, null);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
-
-    // a+x: add execute for all
-    mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "a+x", false, null);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+test "symbolic: basic assignments" {
+    try testing.expectEqual(@as(u32, 0o477), (try sym("u=r", 0o777, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o737), (try sym("g=wx", 0o777, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o770), (try sym("o=", 0o777, .{})).toOctal());
 }
 
-test "parseSymbolicMode complex combinations" {
-    // Multiple permissions in one operation
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "u+rwx", false, null);
-    try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
-
-    // Mixed operations
-    mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "u-x", false, null);
-    try testing.expectEqual(@as(u32, 0o655), mode.toOctal());
-
-    mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "g+w", false, null);
-    try testing.expectEqual(@as(u32, 0o775), mode.toOctal());
+test "symbolic: multiple targets" {
+    try testing.expectEqual(@as(u32, 0o440), (try sym("ug+r", 0o000, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o755), (try sym("go-w", 0o777, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o755), (try sym("a+x", 0o644, .{})).toOctal());
 }
 
-test "parseSymbolicMode special permission bits" {
-    // Test setuid with u+s
-    var mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "u+s", false, null);
-    try testing.expectEqual(@as(u32, 0o4755), mode.toOctal());
-    try testing.expect(mode.setuid);
-
-    // Test setgid with g+s
-    mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "g+s", false, null);
-    try testing.expectEqual(@as(u32, 0o2755), mode.toOctal());
-    try testing.expect(mode.setgid);
-
-    // Test sticky bit with o+t
-    mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "o+t", false, null);
-    try testing.expectEqual(@as(u32, 0o1755), mode.toOctal());
-    try testing.expect(mode.sticky);
-
-    // Test removing setuid with u-s
-    mode = Mode.fromOctal(0o4755);
-    try applySymbolicMode(&mode, "u-s", false, null);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
-    try testing.expect(!mode.setuid);
-
-    // Test removing setgid with g-s
-    mode = Mode.fromOctal(0o2755);
-    try applySymbolicMode(&mode, "g-s", false, null);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
-    try testing.expect(!mode.setgid);
-
-    // Test removing sticky bit with o-t
-    mode = Mode.fromOctal(0o1755);
-    try applySymbolicMode(&mode, "o-t", false, null);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
-    try testing.expect(!mode.sticky);
-
-    // Test combined special bits
-    mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "u+s", false, null);
-    try applySymbolicMode(&mode, "g+s", false, null);
-    try testing.expectEqual(@as(u32, 0o6755), mode.toOctal());
-    try testing.expect(mode.setuid);
-    try testing.expect(mode.setgid);
+test "symbolic: complex combinations" {
+    try testing.expectEqual(@as(u32, 0o700), (try sym("u+rwx", 0o000, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o655), (try sym("u-x", 0o755, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o775), (try sym("g+w", 0o755, .{})).toOctal());
 }
 
-test "parseSymbolicModeString with special bits" {
-    // Test comma-separated special bits
-    const mode = try parseSymbolicModeString("u+s,g+s");
-    try testing.expectEqual(@as(u32, 0o6000), mode.toOctal());
-    try testing.expect(mode.setuid);
-    try testing.expect(mode.setgid);
+test "symbolic: special permission bits" {
+    const m1 = try sym("u+s", 0o755, .{});
+    try testing.expectEqual(@as(u32, 0o4755), m1.toOctal());
+    try testing.expect(m1.setuid);
 
-    // Test mixed regular and special permissions
-    const mode2 = try parseSymbolicModeString("u=rwx,g=rx,o=r,u+s");
-    try testing.expectEqual(@as(u32, 0o4754), mode2.toOctal());
-    try testing.expect(mode2.setuid);
+    const m2 = try sym("g+s", 0o755, .{});
+    try testing.expectEqual(@as(u32, 0o2755), m2.toOctal());
+    try testing.expect(m2.setgid);
+
+    const m3 = try sym("o+t", 0o755, .{});
+    try testing.expectEqual(@as(u32, 0o1755), m3.toOctal());
+    try testing.expect(m3.sticky);
+
+    try testing.expectEqual(@as(u32, 0o755), (try sym("u-s", 0o4755, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o755), (try sym("g-s", 0o2755, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o755), (try sym("o-t", 0o1755, .{})).toOctal());
+
+    const m4 = try sym("u+s,g+s", 0o755, .{});
+    try testing.expectEqual(@as(u32, 0o6755), m4.toOctal());
+    try testing.expect(m4.setuid);
+    try testing.expect(m4.setgid);
 }
 
-test "parseSymbolicMode permission copying" {
-    // Start with a known mode: rwx r-x r--  (754)
-    var mode = Mode.fromOctal(0o754);
+test "symbolic: comma-separated special bits from base 0" {
+    const m = try sym("u+s,g+s", 0o000, .{});
+    try testing.expectEqual(@as(u32, 0o6000), m.toOctal());
 
-    // Test g=u: copy user permissions to group (should make it rwx rwx r--)
-    try applySymbolicMode(&mode, "g=u", false, null);
-    try testing.expectEqual(@as(u32, 0o774), mode.toOctal());
-    try testing.expectEqual(@as(u3, 7), mode.user);
-    try testing.expectEqual(@as(u3, 7), mode.group); // copied from user
-    try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
-
-    // Test o=g: copy group permissions to other (should make it rwx rwx rwx)
-    try applySymbolicMode(&mode, "o=g", false, null);
-    try testing.expectEqual(@as(u32, 0o777), mode.toOctal());
-    try testing.expectEqual(@as(u3, 7), mode.user);
-    try testing.expectEqual(@as(u3, 7), mode.group);
-    try testing.expectEqual(@as(u3, 7), mode.other); // copied from group
-
-    // Reset to different state: rw- --- ---  (600)
-    mode = Mode.fromOctal(0o600);
-
-    // Test u=o: copy other permissions to user (should make it --- --- ---)
-    try applySymbolicMode(&mode, "u=o", false, null);
-    try testing.expectEqual(@as(u32, 0o000), mode.toOctal());
-    try testing.expectEqual(@as(u3, 0), mode.user); // copied from other
-    try testing.expectEqual(@as(u3, 0), mode.group);
-    try testing.expectEqual(@as(u3, 0), mode.other);
-
-    // Test multiple targets: ug=o
-    mode = Mode.fromOctal(0o754); // rwx r-x r--
-    try applySymbolicMode(&mode, "ug=o", false, null);
-    try testing.expectEqual(@as(u32, 0o444), mode.toOctal());
-    try testing.expectEqual(@as(u3, 4), mode.user); // copied from other
-    try testing.expectEqual(@as(u3, 4), mode.group); // copied from other
-    try testing.expectEqual(@as(u3, 4), mode.other); // unchanged
+    const m2 = try sym("u=rwx,g=rx,o=r,u+s", 0o000, .{});
+    try testing.expectEqual(@as(u32, 0o4754), m2.toOctal());
 }
 
-test "parseSymbolicMode permission copying with + operator" {
-    // o+u: add user permissions to other
-    var mode = Mode.fromOctal(0o750);
-    try applySymbolicMode(&mode, "o+u", false, null);
-    try testing.expectEqual(@as(u32, 0o757), mode.toOctal());
-
-    // g+o: add other permissions to group
-    mode = Mode.fromOctal(0o705);
-    try applySymbolicMode(&mode, "g+o", false, null);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+test "symbolic: permission copying" {
+    try testing.expectEqual(@as(u32, 0o774), (try sym("g=u", 0o754, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o055), (try sym("o=g", 0o050, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o000), (try sym("u=o", 0o600, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o444), (try sym("ug=o", 0o754, .{})).toOctal());
 }
 
-test "parseSymbolicMode permission copying with - operator" {
-    // g-u: remove user permissions from group
-    var mode = Mode.fromOctal(0o770);
-    try applySymbolicMode(&mode, "g-u", false, null);
-    try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
-
-    // o-g: remove group permissions from other
-    mode = Mode.fromOctal(0o755);
-    try applySymbolicMode(&mode, "o-g", false, null);
-    try testing.expectEqual(@as(u32, 0o750), mode.toOctal());
+test "symbolic: permission copying with + and - operators" {
+    try testing.expectEqual(@as(u32, 0o757), (try sym("o+u", 0o750, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o755), (try sym("g+o", 0o705, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o700), (try sym("g-u", 0o770, .{})).toOctal());
+    try testing.expectEqual(@as(u32, 0o750), (try sym("o-g", 0o755, .{})).toOctal());
 }
 
 // Tests: X (conditional execute) permission
 
 test "X permission skipped on regular file without existing execute" {
-    // Regular file (not directory), no existing execute bits => X should NOT add execute
-    var mode = Mode.fromOctal(0o644); // rw-r--r-- (no execute bits)
-    try applySymbolicMode(&mode, "a+X", false, 0o644);
-    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+    const m = try sym("a+X", 0o644, .{ .is_directory = false });
+    try testing.expectEqual(@as(u32, 0o644), m.toOctal());
 }
 
 test "X permission applied on directory" {
-    // Directory => X should always add execute
-    var mode = Mode.fromOctal(0o644); // rw-r--r--
-    try applySymbolicMode(&mode, "a+X", true, 0o644);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+    const m = try sym("a+X", 0o644, .{ .is_directory = true });
+    try testing.expectEqual(@as(u32, 0o755), m.toOctal());
 }
 
 test "X permission applied when file already has user execute" {
-    // Regular file with user execute set => X should add execute
-    var mode = Mode.fromOctal(0o744); // rwxr--r--
-    try applySymbolicMode(&mode, "a+X", false, 0o744);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+    const m = try sym("a+X", 0o744, .{ .is_directory = false });
+    try testing.expectEqual(@as(u32, 0o755), m.toOctal());
 }
 
 test "X permission applied when file already has group execute" {
-    // Regular file with group execute set => X should add execute
-    var mode = Mode.fromOctal(0o654); // rw-r-xr--
-    try applySymbolicMode(&mode, "a+X", false, 0o654);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+    const m = try sym("a+X", 0o654, .{ .is_directory = false });
+    try testing.expectEqual(@as(u32, 0o755), m.toOctal());
 }
 
 test "X permission applied when file already has other execute" {
-    // Regular file with other execute set => X should add execute
-    var mode = Mode.fromOctal(0o645); // rw-r--r-x
-    try applySymbolicMode(&mode, "a+X", false, 0o645);
-    try testing.expectEqual(@as(u32, 0o755), mode.toOctal());
+    const m = try sym("a+X", 0o645, .{ .is_directory = false });
+    try testing.expectEqual(@as(u32, 0o755), m.toOctal());
 }
 
-test "X permission skipped with null current_mode (no file context)" {
-    // When current_mode is null (e.g., parsing without file context), X should not add execute
-    var mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "a+X", false, null);
-    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+test "X permission skipped without execute context (base 0o644, not dir)" {
+    // base_mode has no execute bits and is_directory=false → X is a no-op.
+    const m = try sym("a+X", 0o644, .{});
+    try testing.expectEqual(@as(u32, 0o644), m.toOctal());
 }
 
 test "X permission for specific user class on directory" {
-    // u+X on a directory should add user execute
-    var mode = Mode.fromOctal(0o600); // rw-------
-    try applySymbolicMode(&mode, "u+X", true, 0o600);
-    try testing.expectEqual(@as(u32, 0o700), mode.toOctal());
+    const m = try sym("u+X", 0o600, .{ .is_directory = true });
+    try testing.expectEqual(@as(u32, 0o700), m.toOctal());
 }
 
 test "X permission combined with other perms on file without execute" {
-    // a+rX on a regular file without execute => should add read but not execute
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "a+rX", false, 0o000);
-    try testing.expectEqual(@as(u32, 0o444), mode.toOctal());
+    const m = try sym("a+rX", 0o000, .{ .is_directory = false });
+    try testing.expectEqual(@as(u32, 0o444), m.toOctal());
 }
 
 test "X permission combined with other perms on directory" {
-    // a+rX on a directory => should add both read and execute
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "a+rX", true, 0o000);
-    try testing.expectEqual(@as(u32, 0o555), mode.toOctal());
+    const m = try sym("a+rX", 0o000, .{ .is_directory = true });
+    try testing.expectEqual(@as(u32, 0o555), m.toOctal());
 }
 
 // Tests: Recursive operations
@@ -1925,46 +1527,39 @@ test "chmod ChmodOptions preserve_root defaults to false" {
 // Tests: Sticky bit should apply regardless of who-bits (POSIX bug)
 
 test "a+t sets sticky bit on file with mode 0644" {
-    var mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "a+t", false, null);
-    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
-    try testing.expect(mode.sticky);
+    const m = try sym("a+t", 0o644, .{});
+    try testing.expectEqual(@as(u32, 0o1644), m.toOctal());
+    try testing.expect(m.sticky);
 }
 
 test "u+t sets sticky bit on file with mode 0644" {
-    var mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "u+t", false, null);
-    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
-    try testing.expect(mode.sticky);
+    const m = try sym("u+t", 0o644, .{});
+    try testing.expectEqual(@as(u32, 0o1644), m.toOctal());
+    try testing.expect(m.sticky);
 }
 
 test "g+t sets sticky bit on file with mode 0644" {
-    var mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "g+t", false, null);
-    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
-    try testing.expect(mode.sticky);
+    const m = try sym("g+t", 0o644, .{});
+    try testing.expectEqual(@as(u32, 0o1644), m.toOctal());
+    try testing.expect(m.sticky);
 }
 
 test "o+t sets sticky bit on file with mode 0644" {
-    // This case already works because the code checks who & 4 (other)
-    var mode = Mode.fromOctal(0o644);
-    try applySymbolicMode(&mode, "o+t", false, null);
-    try testing.expectEqual(@as(u32, 0o1644), mode.toOctal());
-    try testing.expect(mode.sticky);
+    const m = try sym("o+t", 0o644, .{});
+    try testing.expectEqual(@as(u32, 0o1644), m.toOctal());
+    try testing.expect(m.sticky);
 }
 
 test "a-t removes sticky bit from file with mode 01644" {
-    var mode = Mode.fromOctal(0o1644);
-    try applySymbolicMode(&mode, "a-t", false, null);
-    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
-    try testing.expect(!mode.sticky);
+    const m = try sym("a-t", 0o1644, .{});
+    try testing.expectEqual(@as(u32, 0o644), m.toOctal());
+    try testing.expect(!m.sticky);
 }
 
 test "u-t removes sticky bit from file with mode 01644" {
-    var mode = Mode.fromOctal(0o1644);
-    try applySymbolicMode(&mode, "u-t", false, null);
-    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
-    try testing.expect(!mode.sticky);
+    const m = try sym("u-t", 0o1644, .{});
+    try testing.expectEqual(@as(u32, 0o644), m.toOctal());
+    try testing.expect(!m.sticky);
 }
 
 // Tests: AccessDenied from statFile should propagate, not substitute zeroed Stat
@@ -2066,14 +1661,12 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
 // Tests: parseMode returns correct ModeSpec variant for symbolic vs octal input
 // Safety-net tests to ensure the working code path is preserved during dead-code cleanup
 
-test "parseMode with symbolic string routes through symbolic fallback" {
-    // parseMode("u+x") falls through octal parsing and reaches parseSymbolicModeString.
-    // It returns a Mode (not an error), proving the symbolic fallback path works.
+test "parseMode with symbolic string validates without error" {
+    // parseMode("u+x") validates the symbolic string via common.mode.parseSymbolic.
+    // Returns a placeholder Mode (base 0) since actual application is per-file.
     const mode = try parseMode("u+x");
-    // parseSymbolicModeString starts from mode 0 and applies u+x → user execute only
-    try testing.expectEqual(@as(u3, 1), mode.user);
-    try testing.expectEqual(@as(u3, 0), mode.group);
-    try testing.expectEqual(@as(u3, 0), mode.other);
+    // Placeholder: symbolic modes return fromOctal(0) during pre-validation.
+    _ = mode;
 }
 
 test "parseMode with octal string returns correct mode" {
@@ -2414,61 +2007,27 @@ test "chmod: -R -P should not follow symlinks during traversal" {
 }
 
 // ==================== I3: umask bypass tests ====================
-
-/// Get and restore the process umask without changing it.
-fn getProcessUmask() std.c.mode_t {
-    const m = std.c.umask(0);
-    _ = std.c.umask(m);
-    return m;
+// Umask tests: now pass umask via ModeContext instead of mutating process state.
+test "symbolic: +x without who respects umask" {
+    // umask 0o033: user-x unmasked, group/other-x masked
+    const m = try sym("+x", 0o000, .{ .umask = 0o033 });
+    try testing.expectEqual(@as(u32, 0o100), m.toOctal());
 }
 
-test "applySymbolicMode +x without who respects process umask" {
-    // umask 0o033: masks write+execute for group and other
-    //   user mask:  (0o033 >> 6) & 7 = 0  -> user-execute NOT masked
-    //   group mask: (0o033 >> 3) & 7 = 3  -> group write+execute masked
-    //   other mask: 0o033 & 7         = 3  -> other write+execute masked
-    const saved = std.c.umask(0o033);
-    defer _ = std.c.umask(saved);
-
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "+x", false, null);
-    // Only user-execute should be set; group/other-execute masked by umask.
-    try testing.expectEqual(@as(u32, 0o100), mode.toOctal());
+test "symbolic: a+x with explicit 'a' ignores umask" {
+    const m = try sym("a+x", 0o000, .{ .umask = 0o033 });
+    try testing.expectEqual(@as(u32, 0o111), m.toOctal());
 }
 
-test "applySymbolicMode a+x with explicit 'a' ignores umask" {
-    // Explicit 'a' bypasses the umask entirely.
-    const saved = std.c.umask(0o033);
-    defer _ = std.c.umask(saved);
-
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "a+x", false, null);
-    // All execute bits must be set -- umask does not apply when who is explicit.
-    try testing.expectEqual(@as(u32, 0o111), mode.toOctal());
+test "symbolic: -x without who removes all execute regardless of umask" {
+    const m = try sym("-x", 0o111, .{ .umask = 0o033 });
+    try testing.expectEqual(@as(u32, 0o000), m.toOctal());
 }
 
-test "applySymbolicMode -x without who removes all execute regardless of umask" {
-    // Removal is never constrained by the umask.
-    const saved = std.c.umask(0o033);
-    defer _ = std.c.umask(saved);
-
-    var mode = Mode.fromOctal(0o111);
-    try applySymbolicMode(&mode, "-x", false, null);
-    try testing.expectEqual(@as(u32, 0o000), mode.toOctal());
-}
-
-test "applySymbolicMode +rw without who masks bits blocked by umask" {
-    // umask 0o022: masks group-write and other-write
-    //   user mask:  (0o022 >> 6) & 7 = 0  -> nothing masked for user
-    //   group mask: (0o022 >> 3) & 7 = 2  -> group-write masked
-    //   other mask: 0o022 & 7         = 2  -> other-write masked
-    const saved = std.c.umask(0o022);
-    defer _ = std.c.umask(saved);
-
-    var mode = Mode.fromOctal(0o000);
-    try applySymbolicMode(&mode, "+rw", false, null);
-    // Expected: user=rw(6), group=r(4), other=r(4) -> 0o644
-    try testing.expectEqual(@as(u32, 0o644), mode.toOctal());
+test "symbolic: +rw without who masks bits blocked by umask 022" {
+    // umask 0o022: g-write and o-write masked
+    const m = try sym("+rw", 0o000, .{ .umask = 0o022 });
+    try testing.expectEqual(@as(u32, 0o644), m.toOctal());
 }
 
 // ==================== I4: chmod -x flag collision tests ====================
