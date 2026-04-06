@@ -19,10 +19,10 @@
 //! DIR as the directory). This is arguably more correct since it
 //! matches user intent and avoids a silent footgun.
 //!
-//! **`fillRandom` with >256 trailing X's.** GNU has no practical limit
-//! on template length. Our `fillRandom` works correctly for any length
-//! but has not been fuzz-tested beyond typical sizes. Templates with
-//! hundreds of X's are vanishingly rare in practice.
+//! **`fillRandom` with >256 trailing X's.** Fixed in post-0.9.1.
+//! The original implementation used a fixed 256-byte getrandom buffer
+//! and silently left positions beyond 256 as undefined memory. Now
+//! uses chunked getrandom calls to fill any length correctly.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -333,22 +333,26 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
 
 /// Fill a buffer with random alphanumeric characters
 fn fillRandom(buf: []u8) void {
-    // Use OS random source for cryptographic quality
-    var random_bytes: [256]u8 = undefined;
-    const needed = @min(buf.len, random_bytes.len);
-    std.posix.getrandom(random_bytes[0..needed]) catch {
-        // Fallback: use timestamp-based PRNG if getrandom fails
-        var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(@max(0, std.time.timestamp()))));
-        const rng = prng.random();
-        for (buf) |*b| {
-            b.* = alphanumeric[rng.intRangeAtMost(u8, 0, alphanumeric.len - 1)];
+    var offset: usize = 0;
+    while (offset < buf.len) {
+        var chunk: [256]u8 = undefined;
+        const n = @min(buf.len - offset, chunk.len);
+        std.posix.getrandom(chunk[0..n]) catch {
+            // Fallback: use timestamp-based PRNG if getrandom fails.
+            // Fill the entire remaining buffer, not just this chunk.
+            var prng = std.Random.DefaultPrng.init(
+                @as(u64, @intCast(@max(0, std.time.timestamp()))),
+            );
+            const rng = prng.random();
+            for (buf[offset..]) |*b| {
+                b.* = alphanumeric[rng.intRangeAtMost(u8, 0, alphanumeric.len - 1)];
+            }
+            return;
+        };
+        for (chunk[0..n], buf[offset..][0..n]) |byte, *b| {
+            b.* = alphanumeric[byte % alphanumeric.len];
         }
-        return;
-    };
-    for (buf, 0..) |*b, i| {
-        if (i < needed) {
-            b.* = alphanumeric[random_bytes[i] % alphanumeric.len];
-        }
+        offset += n;
     }
 }
 
@@ -682,4 +686,25 @@ test "mktemp generateTemp creates unique names" {
     // Very unlikely to be the same
     try testing.expectEqual(@as(usize, 16), path1.len);
     try testing.expectEqual(@as(usize, 16), path2.len);
+}
+
+test "fillRandom fills all positions including >256" {
+    // Regression: the old fillRandom used a fixed 256-byte buffer and
+    // silently left positions beyond 256 unwritten (undefined memory).
+    var buf: [512]u8 = undefined;
+    @memset(&buf, 'X');
+    fillRandom(&buf);
+    for (buf, 0..) |b, i| {
+        var found = false;
+        for (alphanumeric) |c| {
+            if (b == c) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.debug.print("fillRandom: non-alphanumeric byte 0x{x:0>2} at position {}\n", .{ b, i });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
