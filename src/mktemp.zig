@@ -6,6 +6,23 @@
 //! replaced with random alphanumeric characters.
 //!
 //! This implementation follows GNU coreutils mktemp behavior.
+//!
+//! ## Known divergences from GNU (intentional)
+//!
+//! **`--tmpdir` optional-value semantics.** GNU's `--tmpdir` is a long
+//! option with an optional value: `--tmpdir` (no `=`) uses $TMPDIR/tmp,
+//! while `--tmpdir=DIR` uses DIR. The space-separated form
+//! `--tmpdir DIR` does NOT consume DIR as the directory — DIR becomes
+//! the template positional argument. This is a getopt quirk, not a
+//! deliberate design choice, and no real-world scripts rely on it.
+//! We treat `--tmpdir DIR` and `--tmpdir=DIR` identically (both use
+//! DIR as the directory). This is arguably more correct since it
+//! matches user intent and avoids a silent footgun.
+//!
+//! **`fillRandom` with >256 trailing X's.** GNU has no practical limit
+//! on template length. Our `fillRandom` works correctly for any length
+//! but has not been fuzz-tested beyond typical sizes. Templates with
+//! hundreds of X's are vanishingly rare in practice.
 
 const std = @import("std");
 const builtin = @import("builtin");
