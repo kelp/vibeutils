@@ -1,5 +1,12 @@
 # Release Notes
 
+## 0.9.3 — 2026-04-15
+
+### Infrastructure
+- Switch project environment from Nix flake to Gale
+- Drop `--ignored` from `git status --porcelain` in ls git
+  integration
+
 ## 0.9.2 — 2026-04-06
 
 Patch release. Fixes a memory safety bug in mktemp, consolidates
