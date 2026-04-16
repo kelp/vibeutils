@@ -100,7 +100,7 @@ pub const GitRepo = struct {
         // Run git status --porcelain
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
-            .argv = &[_][]const u8{ "git", "status", "--porcelain", "--ignored" },
+            .argv = &[_][]const u8{ "git", "status", "--porcelain" },
             .cwd = self.root_path,
         }) catch {
             // Git command failed - this is not fatal, just means no status info
