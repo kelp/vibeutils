@@ -1,0 +1,5 @@
+[packages]
+zig = "0.15.2"
+
+[pinned]
+zig = true
