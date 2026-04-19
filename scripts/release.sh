@@ -45,21 +45,32 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Extract release notes for this version
-NOTES_FILE="RELEASE_NOTES.md"
+# Verify CHANGELOG has an Unreleased section with content to promote
+NOTES_FILE="CHANGELOG.md"
 if [ ! -f "$NOTES_FILE" ]; then
     echo "Error: $NOTES_FILE not found"
     exit 1
 fi
 
-# Extract the section between "## $VERSION" and the next "## "
-RELEASE_NOTES=$(sed -n "/^## ${VERSION} /,/^## [0-9]/{/^## [0-9]/!p;}" "$NOTES_FILE" | sed '/^$/d')
-if [ -z "$RELEASE_NOTES" ]; then
-    echo "Error: No release notes found for $VERSION in $NOTES_FILE"
-    echo "Add a '## $VERSION — YYYY-MM-DD' section before releasing."
+if ! grep -q '^## Unreleased$' "$NOTES_FILE"; then
+    echo "Error: No '## Unreleased' section in $NOTES_FILE"
+    echo "Add notes under '## Unreleased' before releasing."
     exit 1
 fi
-echo "Found release notes for $VERSION"
+
+# Body between "## Unreleased" and the next "## v" heading (exclusive)
+UNRELEASED_BODY=$(awk '
+    /^## Unreleased$/ {found=1; next}
+    found && /^## v/ {exit}
+    found {print}
+' "$NOTES_FILE")
+
+if [ -z "$(echo "$UNRELEASED_BODY" | tr -d '[:space:]')" ]; then
+    echo "Error: '## Unreleased' section is empty in $NOTES_FILE"
+    echo "Add notes under '## Unreleased' before releasing."
+    exit 1
+fi
+echo "Found Unreleased notes to promote to v$VERSION"
 
 # Pull latest to avoid conflicts
 echo "Pulling latest from origin..."
@@ -94,24 +105,42 @@ echo "Updated build.zig.zon"
 sed -i.bak "s/version = \"${CURRENT}\"/version = \"${VERSION}\"/" flake.nix && rm -f flake.nix.bak
 echo "Updated flake.nix"
 
+# Promote "## Unreleased" to "## v${VERSION} — <date>" in CHANGELOG.md
+TODAY=$(date +%Y-%m-%d)
+sed -i.bak "s/^## Unreleased$/## v${VERSION} — ${TODAY}/" "$NOTES_FILE" && rm -f "$NOTES_FILE.bak"
+echo "Updated $NOTES_FILE"
+
 # Verify the updates took effect
 NEW_ZON=$(grep '\.version = ' build.zig.zon | sed 's/.*"\(.*\)".*/\1/')
 NEW_NIX=$(grep 'version = "' flake.nix | sed 's/.*"\(.*\)".*/\1/')
 
 if [ "$NEW_ZON" != "$VERSION" ]; then
     echo "Error: build.zig.zon update failed (got '$NEW_ZON')"
-    git checkout build.zig.zon flake.nix
+    git checkout build.zig.zon flake.nix "$NOTES_FILE"
     exit 1
 fi
 
 if [ "$NEW_NIX" != "$VERSION" ]; then
     echo "Error: flake.nix update failed (got '$NEW_NIX')"
-    git checkout build.zig.zon flake.nix
+    git checkout build.zig.zon flake.nix "$NOTES_FILE"
     exit 1
 fi
 
+if ! grep -q "^## v${VERSION} — ${TODAY}$" "$NOTES_FILE"; then
+    echo "Error: $NOTES_FILE update failed (no 'v${VERSION}' heading)"
+    git checkout build.zig.zon flake.nix "$NOTES_FILE"
+    exit 1
+fi
+
+# Re-extract the notes under the now-renamed heading for the GitHub release
+RELEASE_NOTES=$(awk "
+    /^## v${VERSION} —/ {found=1; next}
+    found && /^## v/ {exit}
+    found {print}
+" "$NOTES_FILE")
+
 # Commit, tag, push
-git add build.zig.zon flake.nix
+git add build.zig.zon flake.nix "$NOTES_FILE"
 git commit -m "Release v${VERSION}"
 echo "Committed version bump"
 

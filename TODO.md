@@ -7,7 +7,7 @@
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
 - **Infrastructure**: justfile build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**, **7 shared common modules** (time, path, glob, prompt, format, file_ops, lib color detection)
 - **Packaging**: Homebrew tap, Nix flake with Cachix binary cache (4 platforms), GitHub release binaries
-- **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy, RELEASE_NOTES.md
+- **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy, CHANGELOG.md
 
 ## Project Goals
 - **Balance**: 80% of GNU's usefulness with 20% of the complexity
@@ -1101,7 +1101,7 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] **Coverage system**: Removed non-functional coverage system (Zig 0.15.1 lacks native coverage)
 - [x] **CI/CD pipeline**: GitHub Actions workflows for cross-platform testing
 - [x] **Multi-platform releases**: GitHub Actions matrix build (linux arm64/amd64, darwin arm64/amd64)
-- [x] **Release automation**: release.sh extracts notes from RELEASE_NOTES.md and updates GitHub release
+- [x] **Release automation**: release.sh extracts notes from CHANGELOG.md and updates GitHub release
 - [x] **Cachix binary cache**: Explicit push via `nix build --print-out-paths | cachix push`
 - [x] **Weekly flake update**: CI updates flake.lock and pushes fresh builds to Cachix
 - [ ] Add install targets for man pages
@@ -1368,7 +1368,7 @@ Comprehensive performance tracking system to monitor improvements and regression
 
 ### Supporting Infrastructure
 - [x] **Cachix Binary Cache**: Prebuilt binaries for darwin-arm64, darwin-amd64, linux-arm64, linux-amd64
-- [x] **Release Script**: Extracts notes from RELEASE_NOTES.md, updates GitHub release after CI
+- [x] **Release Script**: Extracts notes from CHANGELOG.md, updates GitHub release after CI
 - [x] **Privileged Testing**: Smart detection and fallback for privilege simulation
 - [x] **CI Environment Detection**: Helper functions for CI-specific behavior
 
