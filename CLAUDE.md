@@ -122,15 +122,44 @@ verified signatures on all branches. Never bypass this:
 **Always use `just release x.y.z`** to cut a release.
 Never manually edit `build.zig.zon` and tag.
 
+### Changelog workflow
+
+`CHANGELOG.md` is the source of truth for release notes.
+The GitHub release body is extracted from it at release
+time. Workflow:
+
+1. As you land user-visible changes, add bullets under the
+   `## Unreleased` heading at the top of `CHANGELOG.md`.
+   Use `### Added`, `### Changed`, `### Fixed`,
+   `### Infrastructure`, etc. as subsections.
+2. When cutting a release, `just release x.y.z` rewrites
+   that heading to `## vX.Y.Z — YYYY-MM-DD` and commits
+   the change alongside the version bumps.
+3. After release, add a fresh empty `## Unreleased`
+   section at the top for the next cycle.
+
+Never write a `## vX.Y.Z` heading by hand — the release
+script handles the promotion. Versions in the changelog
+are always `v`-prefixed; the `v` is stripped when passing
+the version to the script (`just release 0.9.3`, not
+`just release v0.9.3`).
+
+### Release script gates
+
 The release script (`scripts/release.sh`) gates on:
 1. Must be on `main` with clean working tree
-2. Runs `zig build test` (unit tests must pass)
-3. Runs `just it` (integration tests must pass)
-4. Updates version in `build.zig.zon` and `flake.nix`
-5. Commits, tags, and pushes
+2. `## Unreleased` section exists and is non-empty
+3. Runs `zig build test` (unit tests must pass)
+4. Runs `just it` (integration tests must pass)
+5. Updates version in `build.zig.zon` and `flake.nix`
+6. Promotes `## Unreleased` to `## vX.Y.Z — <date>` in
+   `CHANGELOG.md`
+7. Commits, tags, and pushes
 
 CI then builds binaries, creates the GitHub release,
-updates the Homebrew tap, and pushes to Cachix.
+updates the Homebrew tap, and pushes to Cachix. The
+script polls for the GitHub release and attaches the
+extracted changelog section as its body.
 
 
 ## Architecture Overview
