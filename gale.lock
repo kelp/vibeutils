@@ -1,0 +1,4 @@
+[packages]
+  [packages.zig]
+    version = "0.15.2"
+    sha256 = "74b12922e54d76e50990f2d3b9eff46a47fd5d76e775ecac54fbb2fbaaca803a"

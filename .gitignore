@@ -67,3 +67,10 @@ local_*
 
 # Worktrees
 .worktrees/
+
+# Gale local state (gale.lock is tracked, .gale/ store is not)
+.gale/
+gale.lock.lock
+
+# Project-local AI tool state
+.pi/
