@@ -1519,6 +1519,37 @@ that would have caught it — and similar bugs — earlier.
 - [ ] Integration tests that exercise the compiled binary's
       actual I/O initialization
 
+## Bugs
+
+- [ ] **`ls` does not switch to single-column output when
+  stdout is a pipe** (POSIX violation, found 2026-04-25).
+  GNU/BSD `ls` auto-detect a non-tty stdout and emit one
+  entry per line. vibeutils `ls` keeps multi-column layout
+  with column-aligned padding even under a pipe, so
+  pipelines like `ls dir | grep | sort | tail` see lines
+  with embedded trailing whitespace from the alignment.
+  This silently broke the gale upgrade script
+  (`gale-project/scripts/bootstrap.sh`): the padded line
+  `0.11.3.lock                   ` slipped past
+  `grep -v '\.lock$'` because the suffix is no longer at
+  end-of-line, then `sort -V | tail -1` picked it as the
+  "highest" version, and the script wrote that garbage
+  into `~/.gale/gale.toml`. gale-project worked around it
+  by replacing the `ls` pipeline with a bash glob, but the
+  underlying behavior is non-POSIX and surprises any tool
+  that pipes `ls`.
+  Repro:
+  ```
+  ls /Users/tcole/.gale/pkg/gale | grep -v '\.lock$' \
+    | sort -V | tail -1 | cat -A
+  # 0.11.3.lock                   $
+  ```
+  Expected (matching GNU/BSD): single-column output, no
+  padding, the highest non-`.lock` entry on its own line.
+  Spec: POSIX `ls` says "If the standard output is not a
+  terminal, the default format shall be the same as
+  the -1 option." (`pubs.opengroup.org/onlinepubs/9699919799/utilities/ls.html`).
+
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
 - [ ] Performance within 10% of GNU implementation
