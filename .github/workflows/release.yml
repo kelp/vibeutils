@@ -156,12 +156,31 @@ jobs:
       - name: Delete existing draft release
         run: gh release delete ${{ steps.version.outputs.tag }} --yes || true
 
-      - name: Create GitHub release
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Notes between "## vX.Y.Z — DATE" and the next "## v" heading
+          awk -v ver="$VERSION" '
+              $0 ~ "^## v" ver " " {found=1; next}
+              found && /^## v/ {exit}
+              found {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Error: no notes found for v${VERSION} in CHANGELOG.md"
+            exit 1
+          fi
+
+      - name: Create GitHub release (draft)
         run: >
           gh release create ${{ steps.version.outputs.tag }}
           artifacts/vibeutils-*.tar.gz
+          --draft
           --title "vibeutils ${{ steps.version.outputs.version }}"
-          --generate-notes
+          --notes-file release-notes.md
+
+      - name: Publish release
+        run: gh release edit ${{ steps.version.outputs.tag }} --draft=false
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v6
