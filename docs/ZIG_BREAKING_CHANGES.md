@@ -1,593 +1,1269 @@
-# Zig 0.15.x Breaking Changes - Training Override Sheet
+# Zig 0.16.0 Breaking Changes — Training Override Sheet
 
-This document corrects Claude's outdated training data (pre-0.11.0) with current Zig 0.15.x reality.
+This document corrects outdated training data with current Zig
+0.16.0 reality. **Released 2026-04-14, 0.16.0 is a Writergate-scale
+churn release** — the headline is "I/O as an Interface", and it
+ripples through `std.fs`, `std.process`, `std.Thread`, `std.crypto`,
+`std.time`, and the language itself.
 
-## ⚡ Quick Reference Table - "If You Think X, It's Actually Y"
+If you learned Zig from 0.13/0.14 (the "managed ArrayList"
+generation), or from 0.15 (the "Writergate" generation),
+**most of what you know about touching the outside world is now
+wrong**. I/O, filesystem, processes, threads, randomness, time,
+and even `main` itself have new shapes.
 
-| What Claude Thinks | Reality in 0.15.x | Quick Fix |
-|-------------------|-------------------|-----------|
-| `std.io.getStdOut().writer()` | REMOVED - Writergate happened | Use `.writerStreaming(&buf)` pattern (see below) |
-| `std.io.getStdErr().writer()` | REMOVED - Writergate happened | Use `.writerStreaming(&buf)` pattern (see below) |
-| `usingnamespace` keyword exists | REMOVED completely from language | Use zero-bit fields + `@fieldParentPtr` for mixins |
-| `async`/`await` keywords exist | REMOVED from language | Will be library features in future |
-| `std.ArrayList(T).init(allocator)` | Now unmanaged by default | Use `std.ArrayListUnmanaged(T){}`, pass allocator to methods |
-| `std.ArrayList(T)` | Still works but unmanaged preferred | Use `std.ArrayListUnmanaged(T){}`, pass allocator to methods |
-| `std.BoundedArray` exists | REMOVED completely | Use `ArrayListUnmanaged.initBuffer(&buffer)` |
-| `/` works on runtime signed ints | Must be comptime-known and positive | Use `@divTrunc`, `@divFloor`, or `@divExact` |
-| `%` works on runtime signed floats | Must be comptime-known and positive | Use `@rem` or `@mod` |
-| `{}` in format strings calls format | Now ambiguous - compile error | Use `{f}` to call format methods |
-| Generic writers with `anytype` | Concrete `std.Io.Writer` type | Non-generic with buffer in interface (AnyWriter→Io.Writer) |
-| `std.fifo.LinearFifo` exists | REMOVED | Use `std.Io.Reader`/`Writer` |
-| `std.RingBuffer` exists | REMOVED | Use `std.Io.Reader`/`Writer` |
-| Arithmetic on `undefined` allowed | Causes illegal behavior | Never operate on undefined values |
-| Format methods have format strings | No format strings or options | Just `writer: *std.Io.Writer` parameter |
-| `std.io.BufferedWriter` exists | REMOVED | Writers have built-in buffering |
-| `std.io.CountingWriter` exists | REMOVED | Use alternatives (see Writergate) |
-| Destructuring doesn't exist | ADDED in 0.15.x | `x, y, z = tuple` works now |
-| `@ptrCast` can't make slices | Can cast pointer to slice | `const bytes: []const u8 = @ptrCast(&val)` |
-| Assembly clobbers use strings | Use typed struct | `.{ .rcx = true, .r11 = true }` |
-| `std.DoublyLinkedList(T)` generic | De-genericified | Use intrusive nodes with `@fieldParentPtr` |
-| LLVM is default backend | x86 backend default for Debug | 5x faster compilation |
-| `std.mem.tokenize(u8, str, delim)` | `std.mem.tokenizeAny(u8, str, delim)` | Also `tokenizeScalar`, `tokenizeSequence` |
-| `std.testing.expectEqualStrings` | Still exists and works | `expectEqualSlices(u8, ...)` also available |
-| `std.testing.expectEqualSlices` old signature | Swapped parameters | Expected first, actual second |
-| `std.process.args()` returns iterator | `std.process.argsAlloc(allocator)` | Returns owned slice, must free |
-| `std.json.Parser` | Complete redesign | Use `std.json.parseFromSlice` |
-| `@typeInfo` returns old structure | Structure completely changed | Check docs for new fields |
-| `@hasDecl` with usingnamespace | Won't find mixed-in decls | Decls must be direct members |
-| `for` with multiple items | New syntax | `for (a, b, 0..) |x, y, i| {}` |
-| `while` with multiple conditions | Use labeled blocks | `blk: { break :blk value; }` |
-| `std.fs.Dir.openDir` | Added options parameter | `.{ .iterate = true }` for iteration |
-| `std.mem.eql` generic | Requires type parameter | `std.mem.eql(u8, a, b)` |
-| `std.fmt.allocPrint` | Returns `![]u8` not `![]const u8` | Caller owns memory |
-| `std.hash_map.HashMap` | `std.hash_map.AutoHashMap` | Or use `std.hash.Map` |
-| `std.heap.page_allocator` thread-safe | Not thread-safe on some platforms | Use `std.heap.GeneralPurposeAllocator` |
-| Error set type syntax | Can use `||` to merge | `Error1 || Error2` |
-| `@Frame` for async | REMOVED | No async support |
-| `suspend`/`resume` keywords | Still exist but limited | Not for async/await |
+Reference material on disk (always grep these before writing):
 
-## 🚨 Error Messages That Mean Your Training Is Wrong
+- `docs/zig-0.16.0-release-notes.md` — official 0.16.0 release notes
+- `docs/zig-0.16.0-docs.md` — official 0.16.0 language reference
+- `docs/zig-0.15.2-docs.md` — 0.15 language reference (for diffing)
 
-```
-"no member named 'getStdOut'" 
-→ Writergate happened - see I/O pattern below
+vibeutils currently builds against 0.15.1. Source migration to
+0.16 is a separate effort — see the "Migration Strategy for
+vibeutils" section at the end. Use this doc as ground truth when
+writing new code or reviewing 0.16-targeted patches.
 
-"no member named 'getStdErr'"
-→ Writergate happened - see I/O pattern below
+## Quick Reference Table
 
-"no field named 'root_source_file'"
-→ Build system changed - use .root_module = b.createModule(.{ .root_source_file = ... })
+The 30 highest-traffic items. Old column covers ≤0.15.x. Find
+the section below for the verified rationale.
 
-"ambiguous format string; specify {f} to call format method"
-→ Must use {f} not {} for format methods
+| Old (≤0.15.x)                                  | New (0.16)                                                          |
+|------------------------------------------------|---------------------------------------------------------------------|
+| `pub fn main() !void`                          | `pub fn main(init: std.process.Init) !void` ("Juicy Main")          |
+| `std.fs.File.stdout().writerStreaming(&buf)`   | `std.Io.File.stdout().writerStreaming(io, &buf)` (buffered, O_APPEND-safe) |
+| `std.io` namespace                             | `std.Io` (capitalized; old name deprecated)                         |
+| `std.fs.Dir`                                   | `std.Io.Dir`                                                        |
+| `std.fs.File`                                  | `std.Io.File`                                                       |
+| `std.fs.cwd()`                                 | `std.Io.Dir.cwd()`                                                  |
+| `file.close()`                                 | `file.close(io)`                                                    |
+| `file.write(bytes)`                            | `file.writeStreaming(io, ...)` / `writeStreamingAll(io, ...)`       |
+| `file.read(buf)`                               | `file.readStreaming(io, ...)`                                       |
+| `dir.makeDir(name)`                            | `dir.createDir(io, name)`                                           |
+| `dir.makePath(p)`                              | `dir.createDirPath(io, p)`                                          |
+| `file.chmod(mode)`                             | `file.setPermissions(io, ...)`                                      |
+| `file.getEndPos()` / `setEndPos()`             | `file.length(io)` / `setLength(io, ...)`                            |
+| `std.mem.indexOf(u8, haystack, needle)`        | `std.mem.find(u8, haystack, needle)`                                |
+| `std.mem.indexOfScalar(u8, s, c)`              | `std.mem.findScalar(u8, s, c)`                                      |
+| `std.mem.lastIndexOf(...)`                     | `std.mem.findLast(...)`                                             |
+| `std.os.environ`                               | gone — use `init.environ_map` from `std.process.Init`               |
+| `std.process.argsAlloc(allocator)`             | `init.minimal.args.toSlice(allocator)`                              |
+| `std.process.getCwd(buf)` / `getCwdAlloc(a)`   | `std.process.currentPath(io, buf)` / `currentPathAlloc(io, a)`      |
+| `std.process.Child.init(...).spawn()`          | `std.process.spawn(io, .{ .argv, .stdin, ... })`                    |
+| `std.process.execv(arena, argv)`               | `std.process.replace(io, .{ .argv })`                               |
+| `std.posix.PROT.READ \| std.posix.PROT.WRITE`  | `.{ .READ = true, .WRITE = true }`                                  |
+| `std.posix.mlock(slice)`                       | `std.process.lockMemory(slice, .{})`                                |
+| `std.Thread.Mutex` / `Condition` / `Semaphore` | `std.Io.Mutex` / `Io.Condition` / `Io.Semaphore`                    |
+| `std.Thread.Pool` + `spawnWg`                  | `std.Io.async` / `std.Io.Group.async` (Pool removed)                |
+| `std.crypto.random.bytes(&buf)`                | `io.random(&buf)`                                                   |
+| `std.time.Instant` / `Timer` / `timestamp`     | `std.Io.Timestamp` (one type) / `std.Io.Timestamp.now`              |
+| `@Type(.{ .int = .{ ... } })`                  | `@Int(.unsigned, 10)` (and 7 sibling builtins)                      |
+| `@cImport({ @cInclude(...) })`                 | `b.addTranslateC(...)` in build.zig                                 |
+| `error.RenameAcrossMountPoints` / `NotSameFileSystem` | `error.CrossDevice`                                          |
 
-"use of undefined value here causes illegal behavior"
-→ Can't do arithmetic on undefined anymore
+## The Headline: I/O as an Interface
 
-"expected 2 arguments, found 1"
-→ ArrayList methods need allocator parameter now
+**The single biggest change in 0.16.** Anything that potentially
+**blocks control flow** or **introduces nondeterminism** now
+takes an `Io` parameter — file I/O, networking, timers, random,
+sleep, sync primitives, child processes, even fetching the cwd.
 
-"no member named 'init'"
-→ ArrayList is unmanaged - use {} or initCapacity(allocator, 0)
+### Implementations of `Io`
 
-"usingnamespace is deprecated"
-→ It's not deprecated, it's GONE - refactor completely
+The interface ships with several backends:
 
-"async function called without await"
-→ async/await don't exist - this is old error message
+- `Io.Threaded` — based on threads. With this, file system
+  operations directly call read, write, open, close, etc.
+  When updating from 0.15.x, this gives equivalent behavior.
+  **Feature-complete and well-tested**, including cancelation.
+  Default chosen by "Juicy Main".
+  - `-fno-single-threaded` — supports task-level concurrency.
+  - `-fsingle-threaded` — does not.
+- `Io.Evented` — work-in-progress, experimental. Userspace
+  stack switching with work stealing (M:N green threads).
+- `Io.Uring` — proof-of-concept on Linux io_uring.
+- `Io.Kqueue` — proof-of-concept on macOS/BSD kqueue.
+- `Io.Dispatch` — based on Grand Central Dispatch (macOS).
+- `Io.failing` — simulates a system supporting no operations.
 
-"no field named 'writer'"
-→ Likely std.fs.File - use .deprecatedWriter() or new pattern
+### "Juicy Main"
 
-"error: expected type expression, found 'a document comment'"
-→ Doc comment in wrong place - check placement rules
+The first parameter of `pub fn main` may now be one of three
+things:
 
-"error: unable to evaluate comptime expression"
-→ Rules for comptime changed - check what's allowed
+1. **Missing** — `pub fn main() void` is still legal, but you
+   can't access CLI arguments or environment variables.
+2. **`process.Init.Minimal`** — only argv and environ in raw form.
+3. **`process.Init`** — full set of pre-initialized goodies:
+   `gpa`, `io`, `arena`, `environ_map`, `preopens`, plus the
+   nested `minimal` containing `args` and `environ`.
 
-"error: dependency loop detected"
-→ Circular imports - refactor module structure
-
-"error: ambiguous reference"
-→ Name collision - be more explicit with namespacing
-
-"expected ';' after top-level decl"
-→ Missing semicolon - every top-level needs one
-
-"error: expected ',' after field"
-→ Struct initialization syntax - need commas
-
-"error: type 'T' cannot be used in runtime code"
-→ Trying to use comptime type at runtime
-
-"error: expected function or variable, found 'module'"
-→ Trying to call import - need to access member
-
-"error: integer overflow"
-→ Use wrapping (+%) or saturating (+|) operators
-
-"error: division by zero"
-→ Runtime division needs safety checks
-
-"error: expected error union type, found 'T'"
-→ Missing ! in return type or try without error
-
-"error: no member named 'allocator'"
-→ ArrayList is unmanaged - pass allocator to methods
-
-"error: expected 3 arguments, found 2"
-→ std.testing functions changed signatures
-```
-
-## 📝 Critical Code Patterns
-
-### I/O Pattern - MEMORIZE THIS
+**Old (≤0.15.x):**
 ```zig
-// ❌ YOUR TRAINING (WRONG)
-const stdout = std.io.getStdOut().writer();
-try stdout.print("Hello, {}\n", .{world});
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
-// ✅ ZIG 0.15.x (RIGHT)
-var stdout_buffer: [8192]u8 = undefined;
-var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-const stdout = &stdout_writer.interface;
-defer stdout.flush() catch {};  // DON'T FORGET TO FLUSH!
-try stdout.print("Hello, {s}\n", .{world});
-```
+    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
-### ArrayList Pattern
-```zig
-// ❌ YOUR TRAINING (WRONG)
-var list = std.ArrayList(u32).init(allocator);
-defer list.deinit();
-try list.append(42);
-
-// ✅ ZIG 0.15.x (RIGHT)
-var list = std.ArrayListUnmanaged(u32){};
-defer list.deinit(allocator);  // allocator needed for deinit
-try list.append(allocator, 42);  // allocator needed for append
-```
-
-### Division Pattern
-```zig
-// ❌ YOUR TRAINING (WRONG)
-const result = a / b;  // runtime signed integers
-
-// ✅ ZIG 0.15.x (RIGHT)
-const result = @divTrunc(a, b);  // or @divFloor, @divExact
-```
-
-### Format Method Pattern
-```zig
-// ❌ YOUR TRAINING (WRONG)
-pub fn format(value: T, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-    try writer.print("{}", .{value.field});
-}
-
-// ✅ ZIG 0.15.x (RIGHT)
-pub fn format(value: T, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    try writer.print("{d}", .{value.field});  // explicit format specifier
+    try stdout.print("Hello\n", .{});
 }
 ```
 
-### Mixin Pattern (replacing usingnamespace)
+**New (0.16):**
 ```zig
-// ❌ YOUR TRAINING (WRONG)
-const Foo = struct {
-    data: u32,
-    pub usingnamespace Mixin(Foo);
-};
+const std = @import("std");
 
-// ✅ ZIG 0.15.x (RIGHT)
-const Foo = struct {
-    data: u32,
-    mixin: Mixin(Foo) = .{},  // zero-bit field
-};
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
+    _ = gpa;
 
-pub fn Mixin(comptime T: type) type {
-    return struct {
-        pub fn method(m: *@This()) void {
-            const self: *T = @alignCast(@fieldParentPtr("mixin", m));
-            self.data += 1;
-        }
-    };
+    try std.Io.File.stdout().writeStreamingAll(io, "Hello\n");
+
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    for (args) |arg| std.log.info("arg: {s}", .{arg});
 }
-// Usage: foo.mixin.method() instead of foo.method()
 ```
 
-### BoundedArray Replacement
-```zig
-// ❌ YOUR TRAINING (WRONG)  
-var stack = try std.BoundedArray(i32, 8).fromSlice(initial_stack);
+Migration: rewrite. `main`'s contract changed; you now receive
+`gpa`, `io`, an `arena`, an `environ_map`, and `preopens` for
+free.
 
-// ✅ ZIG 0.15.x (RIGHT)
-var buffer: [8]i32 = undefined;
-var stack = std.ArrayListUnmanaged(i32).initBuffer(&buffer);
-try stack.appendSliceBounded(initial_stack);
+### When You Don't Have an `Io`
+
+If a function deep in a call stack needs an `Io` and there's
+none in scope, the release notes give a workaround:
+
+```zig
+var threaded: Io.Threaded = .init_single_threaded;
+const io = threaded.io();
 ```
 
-### Build System Pattern
+This is described as "non-ideal, like reaching for
+`std.heap.page_allocator` when you need an `Allocator` and don't
+have one." The recommended fix is to **plumb `Io` through as a
+parameter**, ideally from `main`.
+
+### Tests Get a Free `Io`
+
+Like `std.testing.allocator`, there is now `std.testing.io`:
+
 ```zig
-// ❌ YOUR TRAINING (WRONG)
-const exe = b.addExecutable(.{
-    .name = "app",
-    .root_source_file = b.path("src/main.zig"),
+test "demo" {
+    const io = std.testing.io;
+    const file = try std.Io.Dir.cwd().openFile(io, "hello.txt", .{});
+    defer file.close(io);
+}
+```
+
+## Stdout / stderr / stdin
+
+The lang ref's "Hello World" uses the **unbuffered** path:
+
+```zig
+pub fn main(init: std.process.Init) !void {
+    try std.Io.File.stdout().writeStreamingAll(init.io, "Hello, World!\n");
+}
+```
+
+That's the only stdout pattern the language reference
+demonstrates. `std.debug.print` to stderr also works (no `Io`
+needed) for diagnostic output.
+
+### Buffered Writer (verified against installed 0.16.0)
+
+Use `writerStreaming` for stdout/stderr — same lesson as 0.15,
+because shell `>>` redirects rely on O_APPEND and the
+positional `writer()` form ignores it (the source comment in
+`std/Io/File/Writer.zig` confirms this is the only difference
+between the two constructors). `writerStreaming` initializes
+the writer in `.streaming` mode; `writer` initializes in
+`.positional` mode.
+
+```zig
+pub fn main(init: std.process.Init) !void {
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer =
+        std.Io.File.stdout().writerStreaming(init.io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
+
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer =
+        std.Io.File.stderr().writerStreaming(init.io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    defer stderr.flush() catch {};
+
+    try stdout.print("hello: {s}\n", .{name});
+}
+```
+
+Public types: `std.Io.File.Writer` (the buffer-holding struct
+returned by `writer`/`writerStreaming`) and `std.Io.Writer`
+(the interface, accessed via `.interface`).
+
+Reader signature is **symmetric** with writer:
+```zig
+pub fn reader(file: File, io: Io, buffer: []u8) Reader
+pub fn readerStreaming(file: File, io: Io, buffer: []u8) Reader
+pub fn writer(file: File, io: Io, buffer: []u8) Writer
+pub fn writerStreaming(file: File, io: Io, buffer: []u8) Writer
+```
+
+(Earlier release-notes examples that show `file.reader(&.{})`
+without `io` predate the final API. Both reader and writer
+take `(file, io, buffer)`.)
+
+### Removed I/O Types
+
+Removed entirely from `std.io` / `std.Io`:
+
+- `std.io.GenericReader`, `AnyReader` — collapsed into `std.Io.Reader`
+- `std.Io.GenericWriter`, `AnyWriter`, `null_writer`, `CountingReader`
+- `FixedBufferStream` — replaced by `Reader.fixed` / `Writer.fixed`
+
+**Old:**
+```zig
+var fbs = std.io.fixedBufferStream(data);
+const reader = fbs.reader();
+```
+
+**New:**
+```zig
+var reader: std.Io.Reader = .fixed(data);
+```
+
+Same shape on the writing side:
+
+```zig
+var writer: std.Io.Writer = .fixed(buffer);
+```
+
+LEB128 helpers moved:
+
+- `std.leb.readUleb128` → `std.Io.Reader.takeLeb128`
+- `std.leb.readIleb128` → `std.Io.Reader.takeLeb128`
+
+## Filesystem Migration: `std.fs` → `std.Io`
+
+All `fs` APIs have moved to `Io`. The release notes describe
+this as "a lot of breaking changes, but unlike Writergate, this
+changeset does not require much critical thinking." Typical
+upgrade looks like:
+
+**Old:**
+```zig
+file.close();
+```
+
+**New:**
+```zig
+file.close(io);
+```
+
+### Namespace Moves
+
+| Old                              | New                              |
+|----------------------------------|----------------------------------|
+| `std.fs.Dir`                     | `std.Io.Dir`                     |
+| `std.fs.File`                    | `std.Io.File`                    |
+| `std.fs.cwd`                     | `std.Io.Dir.cwd`                 |
+| `std.fs.path`                    | `std.Io.Dir.path` (deprecated alias) |
+| `std.fs.max_path_bytes`          | `std.Io.Dir.max_path_bytes`      |
+| `std.fs.max_name_bytes`          | `std.Io.Dir.max_name_bytes`      |
+| `std.fs.has_executable_bit`      | `std.Io.File.Permissions.has_executable_bit` |
+
+### Absolute-path Helpers
+
+| Old                              | New                                 |
+|----------------------------------|-------------------------------------|
+| `fs.copyFileAbsolute`            | `std.Io.Dir.copyFileAbsolute`       |
+| `fs.makeDirAbsolute`             | `std.Io.Dir.createDirAbsolute`      |
+| `fs.deleteDirAbsolute`           | `std.Io.Dir.deleteDirAbsolute`      |
+| `fs.openDirAbsolute`             | `std.Io.Dir.openDirAbsolute`        |
+| `fs.openFileAbsolute`            | `std.Io.Dir.openFileAbsolute`      |
+| `fs.accessAbsolute`              | `std.Io.Dir.accessAbsolute`         |
+| `fs.createFileAbsolute`          | `std.Io.Dir.createFileAbsolute`     |
+| `fs.deleteFileAbsolute`          | `std.Io.Dir.deleteFileAbsolute`     |
+| `fs.renameAbsolute`              | `std.Io.Dir.renameAbsolute`         |
+| `fs.readLinkAbsolute`            | `std.Io.Dir.readLinkAbsolute`       |
+| `fs.symLinkAbsolute`             | `std.Io.Dir.symLinkAbsolute`        |
+| `fs.realpath`                    | `std.Io.Dir.realPathFileAbsolute`   |
+| `fs.realpathAlloc`               | `std.Io.Dir.realPathFileAbsoluteAlloc` |
+
+### Self-Executable Helpers
+
+| Old                            | New                                |
+|--------------------------------|------------------------------------|
+| `fs.openSelfExe`               | `std.process.openExecutable`       |
+| `fs.selfExePath`               | `std.process.executablePath`       |
+| `fs.selfExePathAlloc`          | `std.process.executablePathAlloc`  |
+| `fs.selfExeDirPath`            | `std.process.executableDirPath`    |
+| `fs.selfExeDirPathAlloc`       | `std.process.executableDirPathAlloc` |
+| `fs.Dir.setAsCwd`              | `std.process.setCurrentDir`        |
+
+### Dir Method Renames
+
+| Old                              | New                                  |
+|----------------------------------|--------------------------------------|
+| `Dir.makeDir`                    | `Dir.createDir`                      |
+| `Dir.makePath`                   | `Dir.createDirPath`                  |
+| `Dir.makeOpenDir`                | `Dir.createDirPathOpen`              |
+| `Dir.atomicSymLink`              | `Dir.symLinkAtomic`                  |
+| `Dir.chmod`                      | `Dir.setPermissions`                 |
+| `Dir.chown`                      | `Dir.setOwner`                       |
+| `Dir.realpath`                   | `Dir.realPathFile`                   |
+| `Dir.realpathAlloc`              | `Dir.realPathFileAlloc`              |
+
+`Dir.rename` now requires two `Dir` parameters plus `Io`.
+
+### File Method Renames
+
+| Old                              | New                                  |
+|----------------------------------|--------------------------------------|
+| `File.Mode`                      | `File.Permissions`                   |
+| `File.PermissionsWindows`        | `File.Permissions`                   |
+| `File.PermissionsUnix`           | `File.Permissions`                   |
+| `File.default_mode`              | `File.Permissions.default_file`      |
+| `File.getOrEnableAnsiEscapeSupport` | `File.enableAnsiEscapeCodes`     |
+| `File.setEndPos`                 | `File.setLength`                     |
+| `File.getEndPos`                 | `File.length`                        |
+| `File.seekTo`/`seekBy`/`seekFromEnd` | on `File.Reader`/`File.Writer`   |
+| `File.getPos`                    | `File.Reader.logicalPos`, `Io.Writer.logicalPos` |
+| `File.mode`                      | `File.stat().permissions.toMode`     |
+| `File.chmod`                     | `File.setPermissions`                |
+| `File.chown`                     | `File.setOwner`                      |
+| `File.updateTimes`               | `File.setTimestamps` / `setTimestampsNow` |
+| `File.read` / `readv`            | `File.readStreaming`                 |
+| `File.pread` / `preadv`          | `File.readPositional`                |
+| `File.preadAll`                  | `File.readPositionalAll`             |
+| `File.write` / `writev`          | `File.writeStreaming`                |
+| `File.writeAll`                  | `File.writeStreamingAll`             |
+| `File.pwrite` / `pwritev`        | `File.writePositional`               |
+| `File.pwriteAll`                 | `File.writePositionalAll`            |
+| `File.copyRange` / `copyRangeAll`| `File.writer`                        |
+
+### Removed With No Replacement
+
+- All trailing-Z/W variants: `realpathZ`, `realpathW`, `renameZ`,
+  `symLinkZ`, `readLinkZ`, `deleteFileZ`, `deleteDirZ`,
+  `makeDirAbsoluteZ`, `deleteDirAbsoluteZ`, `openDirAbsoluteZ`,
+  `renameAbsoluteZ`, `symLinkAbsoluteW`, `readLinkW`, `symLinkW`,
+  `symLinkWasi`, `readLinkWasi`, `realpathW2`
+- `fs.deleteTreeAbsolute`
+- `fs.File.isCygwinPty`
+- `fs.Dir.adaptToNewApi` / `adaptFromNewApi`
+- `fs.File.adaptToNewApi` / `adaptFromNewApi`
+- `fs.getAppDataDir` (use third-party
+  [known-folders](https://github.com/ziglibs/known-folders))
+
+### Signature Reshapes — Not Mechanical
+
+Some methods didn't just gain `io`, the whole signature changed:
+
+**`readFileAlloc`:**
+```zig
+// Old
+const contents = try std.fs.cwd().readFileAlloc(allocator, name, 1234);
+
+// New
+const contents = try std.Io.Dir.cwd().readFileAlloc(io, name, allocator, .limited(1234));
+```
+
+Note: the limit semantics changed — if it's *reached* it returns
+the error too. Error renamed `FileTooBig` → `StreamTooLong`.
+
+**`readToEndAlloc`:**
+```zig
+// Old
+const contents = try file.readToEndAlloc(allocator, 1234);
+
+// New
+var read_buffer: [4096]u8 = undefined;
+var file_reader = file.reader(io, &read_buffer);
+const contents = try file_reader.interface.allocRemaining(allocator, .limited(1234));
+```
+
+Migration: rewrite call site; `.limited(N)` is the new limit
+constructor.
+
+### Atomic File API Rewrite
+
+```zig
+// Old
+var buffer: [1024]u8 = undefined;
+var atomic_file = try dest_dir.atomicFile(io, dest_path, .{
+    .permissions = actual_permissions,
+    .write_buffer = &buffer,
+});
+defer atomic_file.deinit();
+// ... use atomic_file.file_writer
+try atomic_file.flush();
+try atomic_file.renameIntoPlace();
+
+// New
+var atomic_file = try dest_dir.createFileAtomic(io, dest_path, .{
+    .permissions = actual_permissions,
+    .make_path = true,
+    .replace = true,
+});
+defer atomic_file.deinit(io);
+
+var buffer: [1024]u8 = undefined;
+var file_writer = atomic_file.file.writer(io, &buffer);
+// ... use file_writer
+try file_writer.flush();
+try atomic_file.replace(io); // or set .replace = false and link()
+```
+
+Migration: rewrite. Buffer ownership moved from the atomic-file
+struct to the writer.
+
+### `setTimestamps` Shape Change
+
+`File.Stat.atime` is now optional (some filesystems refuse to
+report access time). The setter takes a struct:
+
+```zig
+// Old
+try file.setTimestamps(io, src_stat.atime, src_stat.mtime);
+
+// New
+try file.setTimestamps(io, .{
+    .access_timestamp = .init(src_stat.atime),
+    .modify_timestamp = .init(src_stat.mtime),
+});
+
+// Reading atime is now nullable:
+const atime = stat.atime orelse return error.FileAccessTimeUnavailable;
+```
+
+Migration: rewrite; `.init(...)` constructs the per-field
+timestamp option; `null` reads must be handled.
+
+### `walkSelectively`
+
+`Dir.walk` recurses unconditionally; new `walkSelectively`
+opts in per directory entry, skipping the open/close syscalls
+for directories you don't want:
+
+```zig
+var walker = try dir.walkSelectively(gpa);
+defer walker.deinit();
+
+while (try walker.next(io)) |entry| {
+    if (failsFilter(entry)) continue;
+    if (entry.kind == .directory) try walker.enter(io, entry);
+    // ...
+}
+```
+
+`Walker.Entry.depth()` and `Walker.leave()` / `SelectiveWalker.leave()`
+are also new.
+
+### `fs.path.relative` Became Pure
+
+```zig
+// Old
+const rel = try std.fs.path.relative(gpa, from, to);
+
+// New
+const cwd_path = try std.process.currentPathAlloc(io, gpa);
+defer gpa.free(cwd_path);
+const rel = try std.fs.path.relative(gpa, cwd_path, environ_map, from, to);
+```
+
+The CWD and environment map are now explicit parameters; the
+function no longer queries the OS internally.
+
+## `std.mem.indexOf*` → `find*`
+
+The release notes describe the rule: in `std.mem`, "find"
+returns the index of a substring; "pos" is a starting-index
+parameter; "last" searches from the end; "linear" is a simple
+loop; "scalar" means the substring is one element.
+
+The release notes do **not** print a literal one-to-one rename
+table. The full rename map below is derived from that rule and
+is widely repeated in migration notes. Verify against
+`lib/std/mem.zig` in your installed Zig if a specific name
+fails to compile.
+
+| Old                          | New (per the rule)        |
+|------------------------------|---------------------------|
+| `indexOf`                    | `find`                    |
+| `indexOfScalar`              | `findScalar`              |
+| `indexOfPos`                 | `findPos`                 |
+| `indexOfAny`                 | `findAny`                 |
+| `lastIndexOf`                | `findLast`                |
+| `lastIndexOfScalar`          | `findScalarLast`          |
+| `lastIndexOfAny`             | `findLastAny`             |
+
+(Note: 0.16 puts the `Last` qualifier *after* `Scalar`, not
+before — `findScalarLast`, not `findLastScalar`. There is no
+`findLastPos`; for last-position-bounded scans use
+`findScalarPos` from a computed start, or `findLast` and check
+the bound. New: `findNone` / `findLastNone` / `findNonePos`
+return the first/last index whose value is *not* in a set.)
+
+### New `cut*` Family
+
+Added in 0.16: `cut`, `cutPrefix`, `cutSuffix`, `cutScalar`,
+`cutLast`, `cutScalarLast`. These split a string at the first
+(or last) occurrence of a delimiter, returning the prefix/
+suffix pair — the equivalent of Go's `strings.Cut`.
+
+## Process State (Args & Env) Is No Longer Global
+
+`std.os.environ` was a footgun: it was declared global, but it
+could not be populated from a library that doesn't link libc.
+Setting environment variables from a thread is also unsound in
+C. **As of 0.16, environment variables are available only
+through `main`'s parameter.**
+
+### Reading Args
+
+**Old:**
+```zig
+const args = try std.process.argsAlloc(allocator);
+defer std.process.argsFree(allocator, args);
+for (args[1..]) |arg| {}
+```
+
+**New (Init.Minimal, iterator):**
+```zig
+pub fn main(init: std.process.Init.Minimal) void {
+    var args = init.args.iterate();
+    while (args.next()) |arg| {
+        std.log.info("arg: {s}", .{arg});
+    }
+}
+```
+
+**New (full Init, slice):**
+```zig
+pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    for (args) |arg| std.log.info("arg: {s}", .{arg});
+}
+```
+
+Migration: rewrite. Args plumbed through `main`'s parameter; no
+more allocator-owned slice.
+
+### Reading Environment
+
+**Old:**
+```zig
+const home = std.os.getenv("HOME"); // global
+```
+
+**New (full Init):**
+```zig
+pub fn main(init: std.process.Init) !void {
+    for (init.environ_map.keys(), init.environ_map.values()) |k, v| {
+        std.log.info("env: {s}={s}", .{ k, v });
+    }
+}
+```
+
+**New (Init.Minimal, lazy):**
+```zig
+pub fn main(init: std.process.Init.Minimal) !void {
+    var arena_allocator: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const home = init.environ.getPosix("HOME"); // ?[]const u8
+    const editor = try init.environ.getAlloc(arena, "EDITOR");
+    _ = home; _ = editor;
+}
+```
+
+Migration: functions that need env vars accept either the
+specific values or a `*const process.Environ.Map` parameter —
+same plumbing pattern as `Allocator` and `Io`.
+
+## `std.process` / `std.posix` Rewrites
+
+### Current Working Directory Renamed
+
+In Zig stdlib, `Dir` means an open dir handle, `path` is a
+filesystem identifier string. "get" and "working" are
+superfluous.
+
+```zig
+// Old
+const cwd = try std.process.getCwd(buffer);
+const cwd_alloc = try std.process.getCwdAlloc(allocator);
+
+// New
+const cwd = try std.process.currentPath(io, buffer);
+const cwd_alloc = try std.process.currentPathAlloc(io, allocator);
+```
+
+### Spawning a Child Process
+
+```zig
+// Old
+var child = std.process.Child.init(argv, gpa);
+child.stdin_behavior = .Pipe;
+child.stdout_behavior = .Pipe;
+child.stderr_behavior = .Pipe;
+try child.spawn(io);
+
+// New
+var child = try std.process.spawn(io, .{
+    .argv = argv,
+    .stdin = .pipe,
+    .stdout = .pipe,
+    .stderr = .pipe,
+});
+```
+
+`std.process.Child.run` → `std.process.run(allocator, io, .{...})`.
+
+### Replacing the Current Process Image
+
+```zig
+// Old
+const err = std.process.execv(arena, argv);
+
+// New
+const err = std.process.replace(io, .{ .argv = argv });
+```
+
+### Memory Locking and Protection
+
+mmap/mprotect flags are now type-safe:
+
+```zig
+// Old
+std.posix.PROT.READ | std.posix.PROT.WRITE
+
+// New
+.{ .READ = true, .WRITE = true }
+```
+
+mlock family moved to `process`:
+
+```zig
+// Old
+try std.posix.mlock();
+try std.posix.mlock2(slice, std.posix.MLOCK_ONFAULT);
+try std.posix.mlockall(slice, std.posix.MCL_CURRENT | std.posix.MCL_FUTURE);
+
+// New
+try std.process.lockMemory(slice, .{});
+try std.process.lockMemory(slice, .{ .on_fault = true });
+try std.process.lockMemoryAll(.{ .current = true, .future = true });
+```
+
+### `std.posix` and `std.os.windows` Removals
+
+The release notes are explicit: "Most `std.posix` and
+`std.os.windows` functions existed at an awkward **medium-level
+abstraction** and have thus been removed. If you were using any
+functions removed from those namespaces, you must now choose a
+direction: **go higher (use `std.Io`) or go lower (use
+`std.posix.system` directly).**"
+
+`ucontext_t` and friends are also removed — the first use case
+(non-local control flow with `ucontext.h`) was never supported
+upstream and is deprecated in POSIX; the second (signal-handler
+machine state) was poorly served by the stdlib types.
+
+## Containers
+
+### Managed Hash Maps Removed
+
+```zig
+// Old
+var map: std.AutoArrayHashMap(K, V) = .init(allocator);
+defer map.deinit();
+
+// New
+var map: std.array_hash_map.Auto(K, V) = .empty;
+defer map.deinit(allocator);
+```
+
+| Old                              | New                          |
+|----------------------------------|------------------------------|
+| `ArrayHashMap` (managed)         | gone — use `array_hash_map.Custom` |
+| `AutoArrayHashMap` (managed)     | gone — use `array_hash_map.Auto`   |
+| `StringArrayHashMap` (managed)   | gone — use `array_hash_map.String` |
+| `AutoArrayHashMapUnmanaged`      | `array_hash_map.Auto`        |
+| `StringArrayHashMapUnmanaged`    | `array_hash_map.String`      |
+| `ArrayHashMapUnmanaged`          | `array_hash_map.Custom`      |
+
+Migration: drop the "Managed" variants entirely; the
+unmanaged variants got the short names. Pass `allocator` to
+each method.
+
+### `SegmentedList` Removed
+
+No replacement. If you were using it, fall back to
+`ArrayListUnmanaged` or copy the old implementation out of
+0.15.x stdlib.
+
+### `PriorityQueue` / `PriorityDequeue` Reworked
+
+Both lose their `Allocator` field. Initialize with the `.empty`
+decl literal instead of `.init()`. Method renames:
+
+| Old                  | New           |
+|----------------------|---------------|
+| `init` (PriorityQueue) | `initContext` (or `.empty` for default) |
+| `init` (PriorityDequeue) | `.empty`  |
+| `add` / `addUnchecked` / `addSlice` | `push` / `pushUnchecked` / `pushSlice` |
+| `remove` / `removeOrNull`           | `pop`         |
+| `removeMin` / `removeMinOrNull`     | `popMin`      |
+| `removeMax` / `removeMaxOrNull`     | `popMax`      |
+| `removeIndex`                       | `popIndex`    |
+
+```zig
+// Old
+var queue = std.PriorityQueue(u32, void, lessThan).init(allocator, {});
+defer queue.deinit();
+try queue.add(42);
+
+// New
+var queue: std.PriorityQueue(u32, void, lessThan) = .empty;
+defer queue.deinit(allocator);
+try queue.push(allocator, 42);
+```
+
+### BitSet / EnumSet Decl Literals
+
+`initEmpty` / `initFull` replaced by decl literals (e.g.
+`.empty`, `.full`). Verify the exact decl name in your installed
+stdlib — release notes only state the change conceptually.
+
+## Sync Primitives: `Thread.*` → `Io.*`
+
+Sync APIs migrated to `std.Io` so the synchronized code can
+integrate with the application's chosen I/O implementation —
+e.g. on `Io.Threaded` a contended mutex blocks the thread, on
+`Io.Evented` it switches stacks. These also integrate with
+cancelation.
+
+| Old                       | New                |
+|---------------------------|--------------------|
+| `std.Thread.ResetEvent`   | `std.Io.Event`     |
+| `std.Thread.WaitGroup`    | `std.Io.Group`     |
+| `std.Thread.Futex`        | `std.Io.Futex`     |
+| `std.Thread.Mutex`        | `std.Io.Mutex`     |
+| `std.Thread.Condition`    | `std.Io.Condition` |
+| `std.Thread.Semaphore`    | `std.Io.Semaphore` |
+| `std.Thread.RwLock`       | `std.Io.RwLock`    |
+| `std.once`                | removed; avoid global init or hand-roll |
+| `std.Thread.Mutex.Recursive` | removed         |
+
+### `std.Thread.Pool` Removed
+
+```zig
+// Old
+fn doAllTheWork(pool: *std.Thread.Pool) void {
+    var wg: std.Thread.WaitGroup = .{};
+    pool.spawnWg(wg, doSomeWork, .{ pool, &wg, item });
+    wg.wait();
+}
+
+// New
+fn doAllTheWork(io: std.Io) !void {
+    var g: std.Io.Group = .init;
+    errdefer g.cancel(io);
+    g.async(io, doSomeWork, .{ io, &g, item });
+    try g.await(io);
+}
+```
+
+When migrating, **all sync primitives in adjacent code must
+also move from `Thread.*` to `Io.*`** — mixing the two on the
+same data structure is incorrect.
+
+For task patterns that aren't expressible as `async`, consult
+`std.Io.async` and `std.Io.concurrent` documentation.
+
+Notably, lock-free sync primitives (atomics, etc.) do **not**
+require `Io` integration.
+
+## Allocators
+
+### `ArenaAllocator` Is Now Lock-Free Thread-Safe
+
+No API change. Drop any `ThreadSafeAllocator` wrapping you had
+around it. Performance is comparable to single-threaded use,
+slightly faster than the previous Arena-wrapped-in-mutex up to
+roughly 7 concurrent threads.
+
+### `heap.ThreadSafeAllocator` Removed
+
+The release notes call it "an anti-pattern": the only reasonable
+implementation is mutex-based, which now requires an `Io`
+instance and is generally slow. Make the underlying allocator
+lock-free instead.
+
+### New Unmanaged Memory Pool Variants
+
+Added `heap.MemoryPoolUnmanaged`, `heap.MemoryPoolAlignedUnmanaged`,
+`heap.MemoryPoolExtraUnmanaged`. The release notes don't show
+worked examples — verify usage against the stdlib source.
+
+### `Io.Writer.Allocating` Has an Alignment Field
+
+```zig
+alignment: std.mem.Alignment,
+```
+
+Runtime-known alignment value, supported via the Allocator
+"raw" function variants.
+
+## Random / Time / Format
+
+### Entropy
+
+```zig
+// Old (cheap)
+var buf: [123]u8 = undefined;
+std.crypto.random.bytes(&buf);
+
+// New
+var buf: [123]u8 = undefined;
+io.random(&buf);
+```
+
+```zig
+// Old (Random interface)
+const rng = std.crypto.random;
+
+// New
+const rng_impl: std.Random.IoSource = .{ .io = io };
+const rng = rng_impl.interface();
+```
+
+```zig
+// Old
+posix.getrandom(&buffer);
+
+// New
+io.random(&buffer);
+```
+
+For cryptographically-secure entropy that bypasses any in-process
+RNG state, use `io.randomSecure(&buf)` (returns
+`error.EntropyUnavailable` if unavailable; no fallback).
+
+`std.Options.crypto_always_getrandom` and
+`std.Options.crypto_fork_safety` are gone — use `Io.random` vs
+`Io.randomSecure` to choose explicitly.
+
+### Time
+
+| Old                       | New                                |
+|---------------------------|------------------------------------|
+| `std.time.Instant`        | `std.Io.Timestamp`                 |
+| `std.time.Timer`          | `std.Io.Timestamp`                 |
+| `std.time.timestamp()`    | `std.Io.Timestamp.now`             |
+
+The `Io` interface now exposes `Clock`, `Duration`, `Timestamp`,
+`Timeout` types — type-safe units of measurement. Reading a
+clock can now fail with `error.ClockUnsupported`, but that error
+disappears from timeout/clock-reading sets if you call
+`Clock.resolution` first.
+
+### Format
+
+| Old                       | New                                |
+|---------------------------|------------------------------------|
+| `std.fmt.Formatter`       | `std.fmt.Alt`                      |
+| `std.fmt.format`          | `std.Io.Writer.print`              |
+| `std.fmt.FormatOptions`   | `std.fmt.Options`                  |
+| `std.fmt.bufPrintZ`       | `std.fmt.bufPrintSentinel`         |
+
+The 0.15-era custom `format` method signature
+(`pub fn format(self: T, writer: *std.Io.Writer) !void`) is
+unchanged — the wrapping format machinery moved.
+
+## Error Renames
+
+| Old                                  | New                              |
+|--------------------------------------|----------------------------------|
+| `error.RenameAcrossMountPoints`      | `error.CrossDevice`              |
+| `error.NotSameFileSystem`            | `error.CrossDevice`              |
+| `error.SharingViolation`             | `error.FileBusy`                 |
+| `error.EnvironmentVariableNotFound`  | `error.EnvironmentVariableMissing` |
+| `error.FileTooBig` (`readFileAlloc`) | `error.StreamTooLong`            |
+| `Dir.rename` returns `PathAlreadyExists` for non-empty dest | now returns `DirNotEmpty` |
+
+## Language-Level Changes
+
+### `@Type` Split Into Eight Builtins
+
+`@Type` is gone. Replacements:
+
+```zig
+@EnumLiteral() type
+@Int(comptime signedness: std.builtin.Signedness, comptime bits: u16) type
+@Tuple(comptime field_types: []const type) type
+@Pointer(size, attrs, Element, sentinel) type
+@Fn(param_types, param_attrs, ReturnType, attrs) type
+@Struct(layout, BackingInt, field_names, field_types, field_attrs) type
+@Union(layout, ArgType, field_names, field_types, field_attrs) type
+@Enum(TagInt, mode, field_names, field_values) type
+```
+
+Sample migrations:
+
+```zig
+// Old
+@Type(.{ .int = .{ .signedness = .unsigned, .bits = 10 } })
+// New
+@Int(.unsigned, 10)
+```
+
+```zig
+// Old
+@Type(.enum_literal)
+// New
+@EnumLiteral()
+```
+
+```zig
+// Old
+@Type(.{ .@"struct" = .{ .layout = .auto, .fields = ..., .is_tuple = true, ... } })
+// New
+@Tuple(&.{ u32, [2]f64 })
+```
+
+`std.meta.Int` and `std.meta.Tuple` are deprecated in favor of
+`@Int` and `@Tuple`.
+
+There is **no** `@Float`, `@Array`, `@Opaque`, `@Optional`, or
+`@ErrorUnion` builtin — write the literal type instead (`f32`,
+`[N]T`, `opaque {}`, `?T`, `E!T`). There is no `@ErrorSet`
+either; reifying error sets is no longer possible — declare
+them with `error{ ... }` syntax.
+
+**Tuple types with `comptime` fields can no longer be reified.**
+
+### `@cImport` Deprecated
+
+`@cImport` still exists, but is deprecated in favor of
+`b.addTranslateC(...)` in `build.zig`:
+
+```zig
+// build.zig
+const translate_c = b.addTranslateC(.{
+    .root_source_file = b.path("src/c.h"),
     .target = target,
     .optimize = optimize,
 });
+translate_c.linkSystemLibrary("glfw", .{});
 
-// ✅ ZIG 0.15.x (RIGHT)  
 const exe = b.addExecutable(.{
-    .name = "app",
+    .name = "tetris",
     .root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
-        .optimize = optimize,
+        .imports = &.{ .{
+            .name = "c",
+            .module = translate_c.createModule(),
+        } },
     }),
 });
 ```
 
-### Testing Pattern
+`src/c.h` then is just a normal C header. In the Zig source,
+`const c = @import("c");` replaces the old
+`const c = @import("c.zig").c;`.
+
+### Runtime Vector Indexing Forbidden
+
 ```zig
-// Both of these work in 0.15.x:
-try std.testing.expectEqualStrings("hello", actual);  // still exists
-try std.testing.expectEqualSlices(u8, "hello", actual);  // also available
-try std.testing.expectEqual(expected, actual);  // expected first
+// Old
+for (0..vector_len) |i| { _ = vector[i]; }
+
+// New: coerce to array first
+const vector_type = @typeInfo(@TypeOf(vector)).vector;
+const array: [vector_type.len]vector_type.child = vector;
+for (&array) |elem| { _ = elem; }
 ```
 
-### JSON Pattern
+Migration: rewrite. Indexing a vector now requires comptime-known
+indices.
+
+### Vectors and Arrays No Longer Support In-Memory Coercion
+
+If you used `@ptrCast` to convert between an array's memory and
+a vector's memory, use coercion (assignment) instead. If you
+were coercing `anyerror![4]i32` to `anyerror!@Vector(4, i32)`,
+unwrap the error first.
+
+### Trivial Local-Address Returns Forbidden
+
 ```zig
-// ❌ YOUR TRAINING (WRONG)
-var parser = std.json.Parser.init(allocator, false);
-defer parser.deinit();
-var tree = try parser.parse(json_text);
-defer tree.deinit();
-
-// ✅ ZIG 0.15.x (RIGHT)
-const parsed = try std.json.parseFromSlice(T, allocator, json_text, .{});
-defer parsed.deinit();
-const value = parsed.value;
-```
-
-### Tokenization Pattern  
-```zig
-// ❌ YOUR TRAINING (WRONG)
-var it = std.mem.tokenize(u8, text, " ");
-while (it.next()) |token| {}
-
-// ✅ ZIG 0.15.x (RIGHT)
-var it = std.mem.tokenizeAny(u8, text, " ");  // or tokenizeScalar
-while (it.next()) |token| {}
-```
-
-### Process Args Pattern
-```zig
-// ❌ YOUR TRAINING (WRONG)
-var args = std.process.args();
-while (args.next()) |arg| {}
-
-// ✅ ZIG 0.15.x (RIGHT)
-const args = try std.process.argsAlloc(allocator);
-defer std.process.argsFree(allocator, args);
-for (args[1..]) |arg| {}  // skip program name
-```
-
-### For Loop Pattern
-```zig
-// ❌ YOUR TRAINING (WRONG)
-for (items) |item, i| {}  // index as second capture
-
-// ✅ ZIG 0.15.x (RIGHT)
-for (items, 0..) |item, i| {}  // explicit index range
-for (a, b, c) |x, y, z| {}  // multiple arrays
-```
-
-### Destructuring (NEW FEATURE)
-```zig
-// ❌ YOUR TRAINING (Didn't exist)
-const tuple = .{ 1, 2, 3 };
-const x = tuple[0];
-const y = tuple[1];
-const z = tuple[2];
-
-// ✅ ZIG 0.15.x (NEW!)
-const tuple = .{ 1, 2, 3 };
-const x, const y, const z = tuple;  // or
-var x: u32, var y: u32, var z: u32 = undefined;
-x, y, z = tuple;
-```
-
-### Multi-Object For Loops (NEW FEATURE)
-```zig
-// ❌ YOUR TRAINING (Didn't exist)
-for (names) |name, i| {
-    const age = ages[i];
-    const id = ids[i];
-}
-
-// ✅ ZIG 0.15.x (NEW!)
-for (names, ages, ids) |name, age, id| {
-    // All three arrays iterated in parallel
-}
-// With index:
-for (names, ages, ids, 0..) |name, age, id, i| {}
-```
-
-### Switch on Error Unions (NEW FEATURE)
-```zig
-// ❌ YOUR TRAINING (Required if/else or catch)
-if (result) |value| {
-    // use value
-} else |err| {
-    switch (err) {
-        error.NotFound => {},
-        else => {},
-    }
-}
-
-// ✅ ZIG 0.15.x (NEW!)
-switch (result) {
-    error.NotFound => return null,
-    error.PermissionDenied => return error.AccessDenied,
-    else => |value| return value * 2,  // unwrapped value
+fn foo() *i32 {
+    var x: i32 = 1234;
+    return &x; // error: returning address of expired local variable 'x'
 }
 ```
 
-### Null-Terminated Strings & C Interop
+Migration: spell it as `return undefined;` if you genuinely want
+to return an invalid pointer (the language no longer accepts the
+syntactic shortcut).
+
+### Small Int → Float Auto-Coercion
+
+If all values of an int type fit in a float without rounding
+(comparing precision bits to significand bits), the int coerces
+implicitly:
+
 ```zig
-// ❌ YOUR TRAINING (Old patterns)
-extern fn puts(s: [*]const u8) c_int;
-const c_str = try allocator.dupeZ(u8, zig_string);
-
-// ✅ ZIG 0.15.x (Current patterns)
-extern fn puts(s: [*:0]const u8) c_int;  // :0 sentinel for null termination
-const c_str = try allocator.dupeZ(u8, zig_string);  // Still works
-
-// Convert C string to Zig slice
-const c_string: [*:0]const u8 = c_func();
-const zig_slice = std.mem.span(c_string);  // Converts to []const u8
-
-// Sentinel arrays in structs (common in C interop)
-const passwd = extern struct {
-    pw_name: [*:0]u8,   // null-terminated
-    pw_uid: c.uid_t,
-};
+var foo_int: u24 = 123;
+var foo_float: f32 = foo_int; // OK in 0.16
 ```
 
-### Allocator Best Practices
+`u25` still requires `@floatFromInt`.
+
+### `@floor`/`@ceil`/`@round`/`@trunc` Convert to Integers
+
 ```zig
-// Debug builds - use GPA for leak detection
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-defer _ = gpa.deinit(); // Reports leaks
-const allocator = gpa.allocator();
-
-// CLI tools - use Arena for simplicity
-var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-defer arena.deinit();  // Free everything at once
-const allocator = arena.allocator();
-
-// Tests - use testing.allocator
-test "example" {
-    const allocator = testing.allocator;  // Detects leaks automatically
-}
-
-// AVOID page_allocator directly (no safety, can't free individual items)
-```
-
-### New Casting Builtins (NEW FEATURES)
-```zig
-// Remove const qualifier
-const ptr: *const u8 = &value;
-var mut_ptr = @constCast(ptr);  // *u8
-
-// Remove volatile qualifier  
-const vol_ptr: *volatile u8 = &hardware_register;
-var normal_ptr = @volatileCast(vol_ptr);  // *u8
-
-// Convert between error sets
-const err: BigErrorSet!u32 = error.NotFound;
-const smaller: SmallErrorSet!u32 = @errorCast(err);
-
-// Check if running at comptime
-if (@inComptime()) {
-    // This code only runs at compile time
-}
-
-// Optimization hints
-if (unlikely_condition) {
-    @branchHint(.unlikely);
-    // Rarely executed code
-}
-
-// Variadic min/max
-const smallest = @min(a, b, c, d, e);  // Any number of args
-const largest = @max(x, y, z);
-```
-
-### Comptime Evaluation Changes
-```zig
-// ❌ YOUR TRAINING (May not work)
-comptime {
-    var x = 0;
-    while (x < 1000000) : (x += 1) {}  // May hit branch quota
-}
-
-// ✅ ZIG 0.15.x (Increase quota if needed)
-comptime {
-    @setEvalBranchQuota(10000);  // Increase for complex comptime
-    var x = 0;
-    while (x < 1000) : (x += 1) {}
-}
-
-// inline else - new feature for exhaustive switching
-const value = switch (compile_time_known) {
-    .a => 1,
-    .b => 2,
-    inline else => |tag| @compileError("Unhandled: " ++ @tagName(tag)),
-};
-
-// Comptime var restrictions are stricter
-test "comptime var" {
-    comptime var x: i32 = 1;
-    x += 1;  // OK at comptime
-    
-    // Can't modify comptime var in runtime context
-    if (runtime_condition) {
-        // x += 1;  // ERROR: can't modify comptime var here
-    }
+fn round_to_int(value: f32) u8 {
+    return @round(value); // returns u8 directly
 }
 ```
 
-## 🔄 Migration Strategies
+`@intFromFloat` is now redundant with `@trunc` and is
+deprecated.
 
-### Writergate Migration
-1. Add `[8192]u8` buffer array before writer creation
-2. Create writer with `.writerStreaming(&buffer)` for
-   stdout/stderr (NOT `.writer()` — see issue #5)
-3. Use `&writer.interface` to get `*std.Io.Writer`
-4. Always `defer flush()` or data may be lost
+### Unary Float Builtins Forward Result Type
 
-### ArrayList Migration
-1. Replace `ArrayList(T)` with `ArrayListUnmanaged(T)`
-2. Initialize with `{}` not `.init(allocator)`
-3. Add allocator parameter to ALL method calls
-4. If you really need managed: `std.array_list.Managed(T)`
+```zig
+const x: f64 = @sqrt(@floatFromInt(N)); // now valid; previously not
+```
 
-### usingnamespace Migration
-1. For conditional inclusion: use compile-time conditionals on the declaration
-2. For mixins: use zero-bit fields with `@fieldParentPtr`
-3. For implementation switching: use conditional assignment to public decls
+Applies to `@sqrt`, `@sin`, `@cos`, `@tan`, `@exp`, `@exp2`,
+`@log`, `@log2`, `@log10`, `@floor`, `@ceil`, `@trunc`, `@round`.
 
-### Format String Migration
-1. Replace `{}` with explicit format specifiers
-2. Use `{f}` to explicitly call format methods
-3. Use `{s}` for strings, `{d}` for decimals
-4. Use `{any}` to skip format methods
+### Packed-Type Restrictions
 
-## ⚠️ Features That Are GONE
-These aren't deprecated, they're DELETED:
-- `usingnamespace` keyword
-- `async`/`await` keywords  
-- `@frameSize` builtin
-- `std.io.getStdOut/In/Err`
-- `std.BoundedArray`
-- `std.fifo.LinearFifo`
-- `std.io.BufferedWriter/Reader`
-- `std.io.CountingWriter`
-- Generic `std.DoublyLinkedList(T)`
+- **No pointers in packed structs or unions.** Use `usize` plus
+  `@ptrFromInt` / `@intFromPtr` if you need to pack a pointer.
+- **All packed-union fields must have equal `@bitSizeOf`** — no
+  unused bits permitted.
+- **Explicit backing integer on packed unions** is now allowed:
+  `packed union(u16) { ... }`.
+- **`extern` types must specify backing/tag types explicitly.**
+  `enum { a, b, c }` and `packed struct { a: u4, b: u4 }` no
+  longer count as valid extern types — write `enum(u8) { ... }`
+  and `packed struct(u8) { ... }`.
 
-## 🆕 Features That Are NEW
-Things that didn't exist in your training:
-- Destructuring assignments
-- `@ptrCast` to slices
-- Saturating operators: `+|`, `-|`, `*|`, `<<|`
-- `{f}` format specifier requirement
-- `{t}` for `@tagName()` and `@errorName()`
-- `{b64}` for base64 output
-- Non-exhaustive enum `_` with explicit tags
-- Module-level UBSan configuration
-- x86 backend as default for Debug
-- `@inComptime` builtin - check if code is running at comptime
-- `@branchHint` for optimization hints (.likely, .unlikely, .cold)
-- `@min`/`@max` variadic builtins - any number of arguments
-- `@errorCast` - convert between error sets
-- `@constCast` - remove const qualifier
-- `@volatileCast` - remove volatile qualifier
-- `@addrSpaceCast` - convert between address spaces
-- Multi-object for loops - iterate multiple arrays simultaneously
-- Switch on error unions directly
-- `inline for` - compile-time loop unrolling
-- `inline switch` prongs - force inline specific cases
-- Built-in package manager with `build.zig.zon`
-- Result Location Semantics (RLS) improvements
-- Lossy int-to-float coercion errors
+### Aligned vs Naturally-Aligned Pointers Are Distinct Types
 
-## 📦 Standard Library Migrations
+`*u8` and `*align(1) u8` are no longer the literally same type.
+They still coerce to each other (in-memory coercion is allowed),
+so most code is unaffected — think `u32` vs `c_uint`.
 
-### Where Did It Go?
-| Old Location | New Location | Notes |
-|--------------|--------------|-------|
-| `std.io.getStdOut()` | `std.fs.File.stdout()` | Returns File, not writer |
-| `std.mem.tokenize` | `std.mem.tokenizeAny` | Multiple variants now |
-| `std.ArrayList(T)` | Still works; `std.ArrayListUnmanaged(T)` preferred | Unmanaged passes allocator to each method |
-| `std.BoundedArray` | Use `ArrayListUnmanaged.initBuffer` | Completely removed |
-| `std.json.Parser` | `std.json.parseFromSlice` | Complete API change |
-| `std.fifo.LinearFifo` | Use `std.Io.Reader/Writer` | Removed |
-| `std.testing.expectEqualStrings` | Still exists; `expectEqualSlices(u8, ...)` also works | Both are valid |
-| `std.hash_map.HashMap` | `std.hash_map.AutoHashMap` | Or `std.hash.Map` |
-| `std.fmt.format` | `std.Io.Writer.print` | Different API |
-| `std.io.BufferedWriter` | Built into writers | No separate type |
-| `std.process.args()` | `std.process.argsAlloc()` | Returns owned slice, must free |
-| `std.compress.deflate` | REMOVED | Copy old code if needed |
-| `std.http.Client/Server` | Complete rewrite | New stream-based API |
-| Package management | Built-in with `build.zig.zon` | No more git submodules/manual deps |
+### Pointers to Comptime-Only Types Can Exist at Runtime
 
-## 🔧 Critical System Calls (std.posix)
+`*comptime_int` is now a runtime type even though
+`comptime_int` is comptime-only. You can pass a
+`[]const std.builtin.Type.StructField` to a runtime function
+and read each field's `name` (a runtime type) without
+constructing a separate `[]const []const u8`. Dereferencing
+still requires comptime.
 
-**VERIFIED**: These system calls are available in `std.posix` namespace:
+### Lazy Field Analysis
 
-### File Operations
-- `chmod()` - Change file permissions
-- `chown()` - Change file ownership  
-- `link()` - Create hard link
-- `symlink()` - Create symbolic link
-- `unlink()` - Delete file
-- `rename()` - Rename/move file
+Using a type as a namespace no longer triggers analysis of its
+fields. `struct`, `union`, `enum`, and `opaque` types resolve
+only when their size or one of their field types is needed.
 
-### Directory Operations  
-- `mkdir()` - Create directory
-- `rmdir()` - Remove directory
-- `getcwd()` - Get current directory
-- `chdir()` - Change directory
+### Zero-Bit Tuple Fields No Longer Implicitly `comptime`
 
-### File Information
-- `stat()` - Get file info
-- `fstat()` - Get file info from handle
-- `lstat()` - Get symlink info
-- `access()` - Check file accessibility
+Reverts a 0.14-era rule. `struct { void }` is no longer
+considered a comptime field by `@typeInfo`. The field value is
+still always comptime-known. The only breaking case is code
+that reads `is_comptime` from `@typeInfo` or relies on type
+equivalence between tuples with and without explicit `comptime`.
 
-### Process Operations
-- `kill()` - Send signal
-- `signal()` - Set signal handler
+## Build System
 
-## ⚠️ Subtle Gotchas
+### Override Packages Locally with `--fork`
 
-### Things That Look Similar But Aren't
+```sh
+zig build --fork=/home/andy/dev/dvui
+```
 
-1. **Division is restricted**: Runtime signed division must use `@divTrunc`
-2. **Format strings are strict**: `{}` won't work, need `{any}` or `{f}` or specific type
-3. **ArrayList methods need allocator**: EVERY method, even `toOwnedSlice`
-4. **Writers must be flushed**: Data loss if buffer goes out of scope unflushed
-5. **Testing parameter order**: Expected first, actual second (swapped in some functions)
-6. **Error sets merge with `||`**: Not `error{A} | error{B}` but `Error1 || Error2`
-7. **For loops need explicit index**: `for (items, 0..)` not `for (items) |item, i|`
-8. **Build system uses modules**: Not just file paths anymore
-9. **Arithmetic on undefined**: Any operation causes illegal behavior now
-10. **Float coercion errors**: Can't coerce large ints to float if precision lost
-11. **@intCast vs @truncate**: `@intCast` checks for overflow, `@truncate` silently cuts bits
-12. **Sentinel arrays everywhere**: `[*:0]const u8` for C strings, use `std.mem.span` to convert
-13. **inline else**: New option for exhaustive switching with comptime-known values
-14. **Allocator choices matter**: GPA for debug (leak detection), Arena for CLI tools, page_allocator sparingly
+The fork path must contain a `build.zig.zon` with matching
+`name` and `fingerprint`. Useful when iterating on a local
+checkout of a dependency without modifying the lockfile.
 
-## 🔍 Quick Diagnostics
+### Packages Fetched into `zig-pkg/`
 
-### "Why doesn't this compile?"
-1. Check if it uses removed features (usingnamespace, async, BoundedArray)
-2. Check if it's missing allocator parameters (ArrayList methods)
-3. Check if it's using old I/O patterns (getStdOut)
-4. Check if format strings need specifiers ({} → {s}, {d}, {f})
+Dependencies now land in `zig-pkg/` next to `build.zig` instead
+of the global `$GLOBAL_ZIG_CACHE/p/$HASH` path. After fetching,
+the package is recompressed into
+`$GLOBAL_ZIG_CACHE/p/$HASH.tar.gz` for cross-machine sharing.
+You can edit the local copies; you can swap one for a git clone.
+Don't commit `zig-pkg/` (in general).
 
-### "Why does this crash?"
-1. Unflushed writer buffers
-2. Division by zero or signed division without @divTrunc
-3. Arithmetic on undefined values
-4. Memory not freed (if using argsAlloc, etc.)
+### `build.zig.zon` Required Fields
 
-## 📚 When You're Stuck
+`zig build` now **fails** when:
 
-1. **First**: Check error message against the table above
-2. **Second**: Grep working code in `src/` for similar patterns
-3. **Third**: Check `docs/zig-0.15.1-docs.md` for current syntax (covers 0.15.x)
-4. **Fourth**: Look at `docs/zig-0.15.1-release-notes.md` for migration guides (covers 0.15.x)
+- A dependency has no `fingerprint` field, or
+- A dependency's `name` is a string rather than an enum literal.
 
-Remember: The language changed FUNDAMENTALLY. Your instincts are wrong. Always verify.
+Same `fingerprint` + same `version` + different hash anywhere
+in the dependency tree is also an error — somebody forgot to
+bump a version.
+
+Legacy hash format support is removed.
+
+### `--test-timeout`
+
+```sh
+zig build test --test-timeout 500ms
+```
+
+Per-`test`-block timeout. Real time, not CPU time, so heavily
+loaded systems can produce false positives. Useful for
+detecting hangs and runaway tests.
+
+### `--error-style`
+
+Replaces the removed `--prominent-compile-errors` flag. Values:
+`verbose` (default), `minimal`, `verbose_clear`, `minimal_clear`.
+The `_clear` variants clear the terminal on `--watch` rebuild.
+
+`--prominent-compile-errors` ⇒ `--error-style minimal`.
+
+Honors `ZIG_BUILD_ERROR_STYLE` env var.
+
+### `--multiline-errors`
+
+Values: `indent` (default), `newline`, `none`. Controls
+formatting of multi-line error messages. Honors
+`ZIG_BUILD_MULTILINE_ERRORS` env var.
+
+### Temporary Files Reorganization
+
+- `RemoveDir` step **removed** — had no valid purpose.
+- `Build.makeTempPath` **removed** — wrong phase to allocate.
+- `WriteFile` step gained "tmp mode" and "mutate mode".
+- `Build.addTempFiles` — initialize a `WriteFile` in tmp mode.
+- `Build.addMutateFiles` — initialize a `WriteFile` for in-place
+  mutation of an existing temp dir.
+- `Build.tmpPath` — shortcut for `addTempFiles` + `getDirectory`.
+
+If you were doing `b.makeTempPath()` followed by
+`addRemoveDirTree`, replace with `b.addTempFiles` and use the
+`std.Build.Step.WriteFile` API. The build runner will clean up
+tmp files automatically.
+
+### `std.builtin.subsystem` Removed
+
+Subsystem detection was flaky and not actually needed. The real
+subsystem isn't known until link time. If you really need it at
+runtime, see ziglang issue #25127 for techniques.
+
+`std.Target.SubSystem` → `std.zig.Subsystem` (deprecated alias
+remains so `exe.subsystem = .Windows` keeps working in build
+scripts).
+
+### `ZIG_BTRFS_WORKAROUND` Env Var Ignored
+
+The upstream Linux btrfs bug it worked around has been fixed.
+The variable is no longer observed.
+
+## Subtle Gotchas
+
+### `File.Stat.atime` Is Now Optional
+
+Some filesystems (including ZFS) refuse to report access time.
+`stat.atime` is `?Timestamp`. Always handle null:
+
+```zig
+const atime = stat.atime orelse return error.FileAccessTimeUnavailable;
+```
+
+### `Io.Dir.rename` Returns `DirNotEmpty`
+
+Renaming over a non-empty destination directory used to fail with
+`error.PathAlreadyExists`; now it's `error.DirNotEmpty`. Update
+your error switches.
+
+### `tar.extract` Sanitizes Path Traversal
+
+Previous versions could extract `../etc/passwd`-style entries.
+0.16 sanitizes by default. If you depended on the old behavior
+for trusted archives, you'll need to do extraction manually.
+
+### `math.sign`
+
+Now returns the smallest integer type that fits possible values
+(rather than the input type). Cast explicitly if you need a
+specific width.
+
+### `meta.declList` Removed
+
+No replacement. Iterate with `@typeInfo(T).@"struct".decls`
+manually.
+
+### `DynLib` Lost Windows Support
+
+Use `LoadLibraryExW` and `GetProcAddress` directly via `extern`
+declarations. The release notes claim this is "probably what
+you were doing already anyway."
+
+### `std.Io.Dir.renamePreserve`
+
+New API: rename without replacing the destination. Useful when
+you want hardlink-style "fail if dest exists" semantics.
+
+### `Io.net.Socket.createPair`
+
+New API for creating a connected socketpair (replaces ad-hoc
+`socketpair(2)` extern declarations).
+
+## Migration Strategy for vibeutils
+
+vibeutils currently builds against **Zig 0.15.1**. Source
+migration to 0.16 is a separate effort that hasn't started.
+Don't bump `build.zig.zon`'s `minimum_zig_version` until the
+migration is complete and tested.
+
+**For new code today:**
+- Stay on the 0.15 patterns documented in `docs/ZIG_PATTERNS.md`
+- This file describes the *destination* of an eventual migration
+- When 0.16 docs and existing 0.15 code disagree, **0.15 wins
+  for now** — current vibeutils source is the source of truth
+  until the migration lands
+
+**When the migration starts:**
+- Plumb `Io` from `main` through every utility's runtime entry
+  point — same shape as the existing `Allocator` plumbing
+- Migrate `std.fs.File` / `std.fs.Dir` call sites mechanically
+  (mostly add `io` parameter)
+- Rewrite `setTimestamps` and atomic-file usages (signature
+  reshapes, not mechanical)
+- Convert `std.os.environ` reads (`getenv` etc.) to plumbed
+  `*const Environ.Map` parameters
+- Update `std.process.argsAlloc` callers to take `init.minimal.args`
+- Search-and-replace `indexOf*` → `find*` in `src/`
+- Rebuild `runUtil` test harness signatures: tests use
+  `std.testing.io` the way they currently use `testing.allocator`
+
+**Reference order when stuck:**
+1. Grep this file for the symbol or error message
+2. Grep `docs/zig-0.16.0-release-notes.md` for the same
+3. Grep `docs/zig-0.16.0-docs.md` (the language reference)
+4. As a last resort, read the actual `lib/std/Io/...` source in
+   your installed Zig — the lang ref is incomplete, the source
+   is not

@@ -352,48 +352,82 @@ must cover behavioral verification for every flag.
 
 ## ⚠️ CRITICAL: Your Zig Training is Wrong
 
-**Your Zig knowledge is possibly outdated. This project uses Zig 0.15.x with FUNDAMENTAL breaking changes.**
+**Your Zig knowledge is outdated. This project targets Zig 0.16.x.
+0.16 introduced Writergate-scale breaking changes on top of the
+0.15.x changes you may have absorbed.**
 
-When targeting Zig projects, always check the installed Zig version
-first (`zig version`) and use API patterns compatible with that
-version. Do NOT assume older Zig APIs — 0.15.x has breaking changes
-to ArrayList, args iterators, and takeDelimiterExclusive.
+`build.zig.zon` currently still pins 0.15.1; new code should
+follow 0.16 patterns. Source migration to 0.16 is tracked
+separately. Always check `zig version` and prefer the patterns in
+`docs/ZIG_BREAKING_CHANGES.md` over anything you remember from
+training.
 
 ### MANDATORY: Check Breaking Changes First
 
 **Before writing ANY Zig code:**
-1. Open `docs/ZIG_BREAKING_CHANGES.md` - quick reference table of what changed
+1. Open `docs/ZIG_BREAKING_CHANGES.md` — full 0.15.x → 0.16
+   migration catalog with old/new code blocks per item.
 2. When you get an error, grep that doc for the error message
-3. The patterns you know are WRONG - always verify
+   or symbol name.
+3. The patterns you know are likely WRONG — always verify.
 
-**Most common mistakes you WILL make:**
-- ❌ `std.io.getStdOut()` - doesn't exist (Writergate)
-- ❌ `usingnamespace` - removed from language  
-- ❌ `async`/`await` - removed from language
-- ❌ Generic writers - everything is concrete now
-- ❌ `/` on runtime signed ints - use `@divTrunc`
+**Most common 0.16 mistakes you WILL make:**
+- ❌ Forgetting the `io: Io` parameter on blocking APIs
+  (`file.close()` → `file.close(io)`)
+- ❌ `std.fs.File.stdout()` — namespace moved to
+  `std.Io.File.stdout()`
+- ❌ `std.os.environ` / global args — gone; route
+  `std.process.Init` through your call chain
+- ❌ `std.mem.indexOf*` — renamed to `find*`
+- ❌ `std.fs.cwd()` / `std.fs.path` / `std.fs.Dir` /
+  `std.fs.File` — moved to `std.Io.*`
+- ❌ `File.Stat.atime` as non-optional — must
+  `orelse error.FileAccessTimeUnavailable`
+- ❌ `usingnamespace`, `async`/`await` — removed in 0.15
+  and still gone
+- ❌ `@Type(.{ .int = ... })` — replaced by `@Int(.unsigned, 10)`
+  and 7 other concrete builtins
+- ❌ Runtime indexing of vectors — coerce to array first
+- ❌ Returning `&local_var` for trivial cases — now an error
+- ❌ `std.process.Child.init/spawn` — use
+  `std.process.spawn(io, .{...})`
+- ❌ `std.Thread.{Mutex,Condition,ResetEvent,WaitGroup,...}`
+  — moved to `std.Io.{Mutex,Condition,Event,Group,...}`
 
 **Quick lookup:** `grep "error message" docs/ZIG_BREAKING_CHANGES.md`
 
 ## Common Pitfalls You WILL Hit
 
-- **stdout/stderr must use `.writerStreaming()`**: NOT
-  `.writer()`. File.writer() uses pwritev at offset 0
-  which ignores O_APPEND on macOS, breaking `>>` shell
-  redirects. See issue #5. A lint check in
-  `src/common/lib.zig` enforces this.
-- **No `std.posix.setenv`/`unsetenv`**: Use C extern
-  functions: `extern fn setenv(name: [*:0]const u8,
-  value: [*:0]const u8, overwrite: c_int) c_int;` and
-  `extern fn unsetenv(name: [*:0]const u8) c_int;`
-  Read with `std.posix.getenv()`. See `src/df.zig` tests.
-- **`c_int` is a Zig primitive**: Don't alias it with
-  `const c_int = ...;` — use `c_int` directly.
-- **ArrayList forgot allocator**: Every method needs it now (append, deinit, writer, etc.)
-- **I/O buffer scoping**: Must flush before buffer goes out of scope or data is lost
-- **Privileged test hang**: Using `testing.allocator` instead of `privilege_test.TestArena`
-- **Import errors**: Many std lib items moved - grep the docs
-- **Generic types**: Writers/Readers aren't generic anymore - use `anytype` or concrete types
+- **Stdout/stderr buffered writer in 0.16:** verified by
+  running against installed 0.16.0. Use
+  `std.Io.File.stdout().writerStreaming(init.io, &buf)` —
+  `writerStreaming` initializes in `.streaming` mode (O_APPEND
+  respected, shell `>>` works); `writer` initializes in
+  `.positional` mode and silently breaks `>>`. Same lesson as
+  0.15. The lang ref's "Hello World" example uses the
+  unbuffered `writeStreamingAll(io, "...")` shortcut — fine
+  for one-off prints, not for utilities that print streams.
+- **The 0.15 `writerStreaming(&buf)` lint check in
+  `src/common/lib.zig`** still applies in spirit — the new
+  pattern uses `writerStreaming(io, &buf)`, also
+  `writer(io, &buf)` is wrong for the same reason it was in
+  0.15. Update the lint to allow either signature shape.
+- **`std.posix.setenv`/`unsetenv` C-extern workarounds in
+  current source are obsolete in 0.16.** Env vars are no
+  longer global — route them through `init.environ_map`
+  from `std.process.Init`.
+- **ArrayList allocator parameter** survived 0.15;
+  every method (append, deinit, writer) takes it.
+  `.empty` is the new init form.
+- **I/O buffer scoping**: must flush before the buffer goes
+  out of scope or data is lost.
+- **Privileged test hang**: use `privilege_test.TestArena`,
+  never `testing.allocator` (fakeroot incompatibility).
+- **Tests use `std.testing.io`** in addition to
+  `std.testing.allocator`.
+- **`fixedBufferStream` is gone**: use
+  `var w: std.Io.Writer = .fixed(buffer);` /
+  `var r: std.Io.Reader = .fixed(data);`.
 
 ## Security Philosophy: Trust the OS
 
@@ -404,10 +438,10 @@ System utilities implement functionality; the OS kernel enforces security.
 
 ```zig
 // ❌ WRONG: Security theater
-if (std.mem.indexOf(u8, path, "../") != null) return error.PathTraversal;
+if (std.mem.find(u8, path, "../") != null) return error.PathTraversal;
 
 // ✅ RIGHT: Trust the OS
-try std.fs.cwd().deleteFile(path);
+try std.Io.Dir.cwd().deleteFile(io, path);
 ```
 
 Only validate for **correctness**:
@@ -418,39 +452,67 @@ Only validate for **correctness**:
 ## Documentation References
 
 **📖 Core Documentation:**
-- **`docs/ZIG_BREAKING_CHANGES.md`** - ⚠️ READ FIRST - fixes your outdated training
-- `docs/ZIG_PATTERNS.md` - Zig idioms and patterns
+- **`docs/ZIG_BREAKING_CHANGES.md`** - ⚠️ READ FIRST - 0.15.x → 0.16 migration catalog
+- `docs/ZIG_PATTERNS.md` - Zig 0.16.x idioms and patterns
 - `docs/TESTING_STRATEGY.md` - Testing patterns and practices
 - `docs/INTEGRATION_TESTING.md` - Integration testing guide
 - `docs/DESIGN_PHILOSOPHY.md` - Project design decisions
-- `docs/zig-0.15.2-docs.md` - Zig 0.15.2 standard library documentation
+- `docs/zig-0.16.0-docs.md` - Zig 0.16.0 language reference (current target)
+- `docs/zig-0.16.0-release-notes.md` - Zig 0.16.0 release notes
+- `docs/zig-0.15.2-docs.md` - Zig 0.15.2 reference (historical, for migration diffs)
 
 **⚠️ IMPORTANT: Use Grep tool to find examples in these docs**
 
 
 ## Code Style and Conventions
 
-### I/O Patterns with Zig 0.15.x
+### I/O Patterns with Zig 0.16.x
 
-Due to "Writergate", all I/O uses explicit buffers. Utilities follow this pattern:
+In 0.16 every blocking API takes an `Io` parameter. The
+recommended entry shape is "Juicy Main" with
+`std.process.Init`, which bundles allocator, io, arena,
+environ_map, and args. **Verified by compiling against
+installed 0.16.0:**
 
 ```zig
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
+    var stdout_writer =
+        std.Io.File.stdout().writerStreaming(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     defer stdout.flush() catch {};
 
-    // Similar for stderr
+    var stderr_buffer: [8192]u8 = undefined;
+    var stderr_writer =
+        std.Io.File.stderr().writerStreaming(init.io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
+    defer stderr.flush() catch {};
+
+    try stdout.print("hello: {s}\n", .{name});
 }
 
-pub fn runUtil(allocator: Allocator, args: []const []const u8,
-               stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Use passed writers for output
+pub fn runUtil(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     common.printErrorWithProgram(allocator, stderr_writer, "util", "error: {s}", .{msg});
     return @intFromEnum(common.ExitCode.general_error);
 }
 ```
+
+Use `writerStreaming` (not `writer`) for stdout/stderr:
+`writer` runs in `.positional` mode and silently ignores
+O_APPEND, breaking shell `>>` redirects on macOS. Same
+lesson as 0.15. The lang ref's `writeStreamingAll(io, "...")`
+shortcut is fine for one-off prints (e.g. "Hello, World!")
+but not for utilities that stream output.
+
+For utilities that don't need allocator/io, use
+`pub fn main(init: std.process.Init.Minimal) !void` — it
+exposes only `args` and `environ`.
 
 
 ### Memory Management
