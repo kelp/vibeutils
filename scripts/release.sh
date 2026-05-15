@@ -132,13 +132,6 @@ if ! grep -q "^## v${VERSION} — ${TODAY}$" "$NOTES_FILE"; then
     exit 1
 fi
 
-# Re-extract the notes under the now-renamed heading for the GitHub release
-RELEASE_NOTES=$(awk "
-    /^## v${VERSION} —/ {found=1; next}
-    found && /^## v/ {exit}
-    found {print}
-" "$NOTES_FILE")
-
 # Commit, tag, push
 git add build.zig.zon flake.nix "$NOTES_FILE"
 git commit -m "Release v${VERSION}"
@@ -154,27 +147,9 @@ echo "Pushed to origin"
 echo ""
 echo "Release $VERSION started. GitHub Actions will:"
 echo "  - Build release binaries"
-echo "  - Create GitHub release"
+echo "  - Create draft release with notes from CHANGELOG.md"
+echo "  - Publish release (locks tag + assets via immutable releases)"
 echo "  - Update Homebrew tap"
 echo "  - Push to Cachix"
-echo ""
-
-# Wait for GitHub release to be created by CI, then update notes
-echo "Waiting for GitHub release to appear..."
-for i in $(seq 1 30); do
-    if gh release view "$TAG" >/dev/null 2>&1; then
-        echo "Updating release notes..."
-        gh release edit "$TAG" --notes "$RELEASE_NOTES"
-        echo "Release notes updated for $TAG"
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "Warning: GitHub release not found after 5 minutes."
-        echo "Update notes manually: gh release edit $TAG --notes-file <(echo \"\$RELEASE_NOTES\")"
-        break
-    fi
-    sleep 10
-done
-
 echo ""
 echo "Monitor: https://github.com/kelp/vibeutils/actions"
