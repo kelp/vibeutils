@@ -156,10 +156,18 @@ The release script (`scripts/release.sh`) gates on:
    `CHANGELOG.md`
 7. Commits, tags, and pushes
 
-CI then builds binaries, creates the GitHub release,
-updates the Homebrew tap, and pushes to Cachix. The
-script polls for the GitHub release and attaches the
-extracted changelog section as its body.
+CI then builds binaries, creates a **draft** release
+with assets and notes extracted from the `## vX.Y.Z`
+section of `CHANGELOG.md`, publishes the release,
+updates the Homebrew tap, and pushes to Cachix.
+
+The repo has [immutable releases][imm] enabled, which
+locks the git tag and assets the moment a release is
+published — so CI must attach every asset to the draft
+before flipping it to published. Only the title and
+release notes remain editable after publish.
+
+[imm]: https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases
 
 
 ## Architecture Overview
