@@ -460,7 +460,8 @@ fn preprocessArgs(allocator: Allocator, args: []const []const u8) ![]const []con
 }
 
 /// Main entry point for the seq utility
-fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    _ = io;
     // Pre-process args to handle negative numbers before argparse
     const processed_args = try preprocessArgs(allocator, args);
     defer {
@@ -622,7 +623,7 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
 }
 
 /// Print a single number with the appropriate formatting
-fn printNumber(writer: anytype, value: f64, all_integers: bool, precision: usize, pad_width: usize, format_str: ?[]const u8) !void {
+fn printNumber(writer: *std.Io.Writer, value: f64, all_integers: bool, precision: usize, pad_width: usize, format_str: ?[]const u8) !void {
     var buf: [128]u8 = undefined;
 
     const formatted = if (format_str) |fmt|
@@ -650,12 +651,12 @@ fn printNumber(writer: anytype, value: f64, all_integers: bool, precision: usize
     }
 }
 
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, run);
 }
 
 /// Print help message
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: seq [OPTION]... LAST
         \\   or: seq [OPTION]... FIRST LAST
@@ -688,7 +689,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("seq ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -697,272 +698,294 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "seq basic: seq 5" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"5"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1\n2\n3\n4\n5\n", stdout_buf.items);
+    try testing.expectEqualStrings("1\n2\n3\n4\n5\n", stdout_aw.writer.buffered());
 }
 
 test "seq basic: seq 3 5" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "3", "5" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("3\n4\n5\n", stdout_buf.items);
+    try testing.expectEqualStrings("3\n4\n5\n", stdout_aw.writer.buffered());
 }
 
 test "seq basic: seq 1 2 10" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "1", "2", "10" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1\n3\n5\n7\n9\n", stdout_buf.items);
+    try testing.expectEqualStrings("1\n3\n5\n7\n9\n", stdout_aw.writer.buffered());
 }
 
 test "seq countdown: seq 5 -1 1" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "5", "--", "-1", "1" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_buf.items);
+    try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_aw.writer.buffered());
 }
 
 test "seq separator: seq -s ', ' 3" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-s", ", ", "3" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1, 2, 3\n", stdout_buf.items);
+    try testing.expectEqualStrings("1, 2, 3\n", stdout_aw.writer.buffered());
 }
 
 test "seq equal width: seq -w 1 10" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-w", "1", "10" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n", stdout_buf.items);
+    try testing.expectEqualStrings("01\n02\n03\n04\n05\n06\n07\n08\n09\n10\n", stdout_aw.writer.buffered());
 }
 
 test "seq empty output when direction wrong" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // seq 5 1 with default increment 1 should print nothing
     const args = [_][]const u8{ "5", "1" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", stdout_buf.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "seq single number" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"1"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1\n", stdout_buf.items);
+    try testing.expectEqualStrings("1\n", stdout_aw.writer.buffered());
 }
 
 test "seq float: seq 0.5 0.5 2.0" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "0.5", "0.5", "2.0" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0.5\n1.0\n1.5\n2.0\n", stdout_buf.items);
+    try testing.expectEqualStrings("0.5\n1.0\n1.5\n2.0\n", stdout_aw.writer.buffered());
 }
 
 test "seq error: no args" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "missing operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
 test "seq error: too many args" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "1", "2", "3", "4" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "extra operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
 test "seq error: invalid number" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"abc"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "invalid floating point argument") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid floating point argument") != null);
 }
 
 test "seq error: zero increment" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "1", "0", "5" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "Zero increment") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Zero increment") != null);
 }
 
 test "seq negative numbers" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--", "-3", "-1" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("-3\n-2\n-1\n", stdout_buf.items);
+    try testing.expectEqualStrings("-3\n-2\n-1\n", stdout_aw.writer.buffered());
 }
 
 test "seq negative to positive" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--", "-2", "2" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("-2\n-1\n0\n1\n2\n", stdout_buf.items);
+    try testing.expectEqualStrings("-2\n-1\n0\n1\n2\n", stdout_aw.writer.buffered());
 }
 
 test "seq equal width with negative" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-w", "1", "100" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
     // First few should be zero-padded
-    try testing.expect(std.mem.startsWith(u8, stdout_buf.items, "001\n002\n003\n"));
+    try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), "001\n002\n003\n"));
     // Last should not be padded
-    try testing.expect(std.mem.endsWith(u8, stdout_buf.items, "099\n100\n"));
+    try testing.expect(std.mem.endsWith(u8, stdout_aw.writer.buffered(), "099\n100\n"));
 }
 
 test "seq format %f" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", "%f", "3" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1.000000\n2.000000\n3.000000\n", stdout_buf.items);
+    try testing.expectEqualStrings("1.000000\n2.000000\n3.000000\n", stdout_aw.writer.buffered());
 }
 
 test "seq help" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: seq") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: seq") != null);
 }
 
 test "seq version" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "seq") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, common.name) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "seq") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
 }
 
 test "seq large step" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "0", "5", "20" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0\n5\n10\n15\n20\n", stdout_buf.items);
+    try testing.expectEqualStrings("0\n5\n10\n15\n20\n", stdout_aw.writer.buffered());
 }
 
 test "seq decimal precision preserved" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "1.0", "0.1", "1.3" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1.0\n1.1\n1.2\n1.3\n", stdout_buf.items);
+    try testing.expectEqualStrings("1.0\n1.1\n1.2\n1.3\n", stdout_aw.writer.buffered());
 }
 
 test "seq separator with equal width" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-s", ":", "8", "10" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("08:09:10\n", stdout_buf.items);
+    try testing.expectEqualStrings("08:09:10\n", stdout_aw.writer.buffered());
 }
 
 // ============================================================================
@@ -1005,54 +1028,58 @@ test "formatDecimal" {
 // GNU seq 5 -1 1 outputs "5\n4\n3\n2\n1\n" (countdown).
 // Our argparse sees -1 as an unknown short flag and exits with error.
 test "audit: seq negative increment without double-dash" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // seq 5 -1 1 should count down without needing --
     const args = [_][]const u8{ "5", "-1", "1" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_buf.items);
+    try testing.expectEqualStrings("5\n4\n3\n2\n1\n", stdout_aw.writer.buffered());
 }
 
 // IMPORTANT: Error exit code is 2 (misuse) where GNU uses 1
 // GNU seq with invalid input exits 1, not 2.
 test "audit: seq invalid number exits 1 not 2" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"abc"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // GNU uses exit code 1, not 2
     try testing.expectEqual(@as(u8, 1), result);
 }
 
 // IMPORTANT: seq with zero increment should exit 1 not 2
 test "audit: seq zero increment exits 1 not 2" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "1", "0", "5" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // GNU uses exit code 1, not 2
     try testing.expectEqual(@as(u8, 1), result);
 }
 
 // IMPORTANT: seq with no args should exit 1 not 2
 test "audit: seq no args exits 1 not 2" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // GNU uses exit code 1, not 2
     try testing.expectEqual(@as(u8, 1), result);
 }
@@ -1060,85 +1087,91 @@ test "audit: seq no args exits 1 not 2" {
 // IMPORTANT: nan input silently produces empty output instead of error
 // GNU seq nan outputs error and exits 1.
 test "audit: seq nan input produces error" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"nan"};
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // Must exit non-zero (GNU uses 1)
     try testing.expect(result != 0);
     // Must emit error on stderr
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 // nan as increment should also be rejected
 test "audit: seq nan as increment produces error" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "1", "nan", "5" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expect(result != 0);
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 // IMPORTANT: -f format prefix/suffix text dropped
 // GNU seq -f 'val=%g!' 3 outputs "val=1!\nval=2!\nval=3!\n"
 // Our implementation drops prefix "val=" and suffix "!"
 test "audit: seq -f format preserves prefix and suffix" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", "val=%g!", "3" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("val=1!\nval=2!\nval=3!\n", stdout_buf.items);
+    try testing.expectEqualStrings("val=1!\nval=2!\nval=3!\n", stdout_aw.writer.buffered());
 }
 
 // IMPORTANT: -f format width and precision ignored
 // GNU seq -f '%05.1f' 3 outputs "001.0\n002.0\n003.0\n"
 test "audit: seq -f format respects width and precision" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", "%05.1f", "3" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("001.0\n002.0\n003.0\n", stdout_buf.items);
+    try testing.expectEqualStrings("001.0\n002.0\n003.0\n", stdout_aw.writer.buffered());
 }
 
 // Test gap: float sequences
 test "audit: seq float sequence 0.1 0.1 0.5" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "0.1", "0.1", "0.5" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0.1\n0.2\n0.3\n0.4\n0.5\n", stdout_buf.items);
+    try testing.expectEqualStrings("0.1\n0.2\n0.3\n0.4\n0.5\n", stdout_aw.writer.buffered());
 }
 
 // Test gap: countdown (without -- workaround, using -- for now to
 // verify the basic countdown logic works, independent of the
 // argparse issue tested above)
 test "audit: seq countdown with double-dash" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "10", "--", "-2", "1" };
-    const result = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("10\n8\n6\n4\n2\n", stdout_buf.items);
+    try testing.expectEqualStrings("10\n8\n6\n4\n2\n", stdout_aw.writer.buffered());
 }
