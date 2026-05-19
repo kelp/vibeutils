@@ -45,10 +45,10 @@ pub const MemInfo = struct {
 };
 
 /// Query memory information from the operating system
-pub fn getMemInfo() !MemInfo {
+pub fn getMemInfo(io: std.Io) !MemInfo {
     return switch (@import("builtin").os.tag) {
         .macos => getMemInfoMacOS(),
-        .linux => getMemInfoLinux(),
+        .linux => getMemInfoLinux(io),
         else => error.UnsupportedPlatform,
     };
 }
@@ -113,13 +113,15 @@ fn getMemInfoMacOS() !MemInfo {
     };
 }
 
-fn getMemInfoLinux() !MemInfo {
-    const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch
+fn getMemInfoLinux(io: std.Io) !MemInfo {
+    const file = std.Io.Dir.openFileAbsolute(io, "/proc/meminfo", .{}) catch
         return error.ProcMeminfoNotFound;
-    defer file.close();
+    defer file.close(io);
 
     var buf: [8192]u8 = undefined;
-    const bytes_read = file.readAll(&buf) catch return error.ReadFailed;
+    var reader_buf: [4096]u8 = undefined;
+    var file_reader = file.reader(io, &reader_buf);
+    const bytes_read = file_reader.interface.readSliceShort(&buf) catch return error.ReadFailed;
     const content = buf[0..bytes_read];
 
     var total: u64 = 0;
@@ -174,7 +176,7 @@ fn getMemInfoLinux() !MemInfo {
 
 fn parseMemInfoLine(line: []const u8, prefix: []const u8) ?u64 {
     if (!std.mem.startsWith(u8, line, prefix)) return null;
-    const rest = std.mem.trimLeft(u8, line[prefix.len..], " ");
+    const rest = std.mem.trimStart(u8, line[prefix.len..], " ");
     // Parse the number (value is in kB)
     var end: usize = 0;
     while (end < rest.len and std.ascii.isDigit(rest[end])) : (end += 1) {}
@@ -272,7 +274,7 @@ pub fn formatHumanReadable(buf: []u8, bytes: u64, use_si: bool) []const u8 {
 const col_width = 12;
 
 /// Print the header line
-fn printHeader(writer: anytype, wide: bool) !void {
+fn printHeader(writer: *std.Io.Writer, wide: bool) !void {
     if (wide) {
         try writer.print("{s:>15}{s:>12}{s:>12}{s:>12}{s:>12}{s:>12}{s:>12}\n", .{
             "total", "used", "free", "shared", "buffers", "cache", "available",
@@ -285,7 +287,7 @@ fn printHeader(writer: anytype, wide: bool) !void {
 }
 
 /// Format and print a single value, handling human-readable
-fn printValue(writer: anytype, bytes: u64, unit: Unit, use_si: bool) !void {
+fn printValue(writer: *std.Io.Writer, bytes: u64, unit: Unit, use_si: bool) !void {
     if (unit == .human) {
         var buf: [32]u8 = undefined;
         const formatted = formatHumanReadable(&buf, bytes, use_si);
@@ -296,7 +298,7 @@ fn printValue(writer: anytype, bytes: u64, unit: Unit, use_si: bool) !void {
 }
 
 /// Print a memory row (Mem: or Swap: or Total:)
-fn printMemRow(writer: anytype, label: []const u8, info: MemInfo, unit: Unit, use_si: bool, wide: bool, is_swap: bool) !void {
+fn printMemRow(writer: *std.Io.Writer, label: []const u8, info: MemInfo, unit: Unit, use_si: bool, wide: bool, is_swap: bool) !void {
     try writer.print("{s:<6}", .{label});
 
     if (is_swap) {
@@ -327,7 +329,7 @@ fn printMemRow(writer: anytype, label: []const u8, info: MemInfo, unit: Unit, us
 }
 
 /// Print the total row
-fn printTotalRow(writer: anytype, info: MemInfo, unit: Unit, use_si: bool, wide: bool) !void {
+fn printTotalRow(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool, wide: bool) !void {
     const total_total = info.total + info.swap_total;
     const total_used = info.used + info.swap_used;
     const total_free = info.free + info.swap_free;
@@ -355,7 +357,7 @@ fn printTotalRow(writer: anytype, info: MemInfo, unit: Unit, use_si: bool, wide:
 }
 
 /// Print a complete memory report for the given MemInfo
-pub fn printReport(writer: anytype, info: MemInfo, unit: Unit, use_si: bool, show_total: bool, wide: bool) !void {
+pub fn printReport(writer: *std.Io.Writer, info: MemInfo, unit: Unit, use_si: bool, show_total: bool, wide: bool) !void {
     try printHeader(writer, wide);
     try printMemRow(writer, "Mem:", info, unit, use_si, wide, false);
     try printMemRow(writer, "Swap:", info, unit, use_si, wide, true);
@@ -368,7 +370,7 @@ pub fn printReport(writer: anytype, info: MemInfo, unit: Unit, use_si: bool, sho
 // Main entry point
 // ============================================================================
 
-pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) u8 {
+pub fn runFree(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const parsed = common.argparse.ArgParser.parse(FreeArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
@@ -422,22 +424,20 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // No continuous mode requested, display once
     if (interval == 0) {
-        return displayOnce(stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
+        return displayOnce(io, stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
     }
 
     // Continuous mode
     var iterations: u32 = 0;
     while (repeat_count == 0 or iterations < repeat_count) {
-        const result = displayOnce(stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
+        const result = displayOnce(io, stdout_writer, stderr_writer, allocator, unit, use_si, show_total, wide);
         if (result != 0) return result;
-        if (comptime std.meta.hasMethod(@TypeOf(stdout_writer), "flush")) {
-            stdout_writer.flush() catch {};
-        }
+        stdout_writer.flush() catch {};
 
         iterations += 1;
         if (repeat_count > 0 and iterations >= repeat_count) break;
 
-        std.Thread.sleep(@as(u64, interval) * std.time.ns_per_s);
+        io.sleep(.fromSeconds(interval), .awake) catch {};
 
         // Print blank line between iterations
         stdout_writer.writeAll("\n") catch {};
@@ -446,8 +446,8 @@ pub fn runFree(allocator: Allocator, args: []const []const u8, stdout_writer: an
     return @intFromEnum(common.ExitCode.success);
 }
 
-fn displayOnce(stdout_writer: anytype, stderr_writer: anytype, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
-    const info = getMemInfo() catch {
+fn displayOnce(io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: Allocator, unit: Unit, use_si: bool, show_total: bool, wide: bool) u8 {
+    const info = getMemInfo(io) catch {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to read memory information", .{});
         return @intFromEnum(common.ExitCode.general_error);
     };
@@ -459,30 +459,11 @@ fn displayOnce(stdout_writer: anytype, stderr_writer: anytype, allocator: Alloca
     return @intFromEnum(common.ExitCode.success);
 }
 
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = runFree(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    if (exit_code != 0) std.process.exit(exit_code);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runFree);
 }
 
-fn printHelp(allocator: Allocator, writer: anytype) void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) void {
     common.help.printColorized(allocator, writer,
         \\Usage: free [OPTION]...
         \\Display the amount of free and used memory in the system.
@@ -503,7 +484,7 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
     ) catch {};
 }
 
-fn printVersion(writer: anytype) void {
+fn printVersion(writer: *std.Io.Writer) void {
     writer.print("free ({s}) {s}\n", .{ common.name, common.version }) catch {};
 }
 
@@ -611,8 +592,8 @@ test "resolveUnit human takes priority" {
 }
 
 test "printReport with mock data" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const info = MemInfo{
         .total = 16 * 1024 * 1024 * 1024,
@@ -626,18 +607,18 @@ test "printReport with mock data" {
         .swap_free = 2 * 1024 * 1024 * 1024 - 128 * 1024 * 1024,
     };
 
-    try printReport(stdout_buf.writer(testing.allocator), info, .kibi, false, false, false);
+    try printReport(&stdout_aw.writer, info, .kibi, false, false, false);
 
-    const output = stdout_buf.items;
+    const output = stdout_aw.writer.buffered();
     // Should contain header and two data lines
-    try testing.expect(std.mem.indexOf(u8, output, "total") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "Mem:") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "Swap:") != null);
+    try testing.expect(std.mem.find(u8, output, "total") != null);
+    try testing.expect(std.mem.find(u8, output, "Mem:") != null);
+    try testing.expect(std.mem.find(u8, output, "Swap:") != null);
 }
 
 test "printReport with total line" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const info = MemInfo{
         .total = 8 * 1024 * 1024 * 1024,
@@ -651,15 +632,15 @@ test "printReport with total line" {
         .swap_free = 1024 * 1024 * 1024,
     };
 
-    try printReport(stdout_buf.writer(testing.allocator), info, .kibi, false, true, false);
+    try printReport(&stdout_aw.writer, info, .kibi, false, true, false);
 
-    const output = stdout_buf.items;
-    try testing.expect(std.mem.indexOf(u8, output, "Total:") != null);
+    const output = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, "Total:") != null);
 }
 
 test "printReport wide mode" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const info = MemInfo{
         .total = 16 * 1024 * 1024 * 1024,
@@ -673,16 +654,16 @@ test "printReport wide mode" {
         .swap_free = 0,
     };
 
-    try printReport(stdout_buf.writer(testing.allocator), info, .kibi, false, false, true);
+    try printReport(&stdout_aw.writer, info, .kibi, false, false, true);
 
-    const output = stdout_buf.items;
-    try testing.expect(std.mem.indexOf(u8, output, "buffers") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "cache") != null);
+    const output = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, "buffers") != null);
+    try testing.expect(std.mem.find(u8, output, "cache") != null);
 }
 
 test "printReport human readable" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const info = MemInfo{
         .total = 16 * 1024 * 1024 * 1024,
@@ -696,165 +677,184 @@ test "printReport human readable" {
         .swap_free = 2 * 1024 * 1024 * 1024 - 128 * 1024 * 1024,
     };
 
-    try printReport(stdout_buf.writer(testing.allocator), info, .human, false, false, false);
+    try printReport(&stdout_aw.writer, info, .human, false, false, false);
 
-    const output = stdout_buf.items;
-    try testing.expect(std.mem.indexOf(u8, output, "Gi") != null);
+    const output = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, "Gi") != null);
 }
 
 test "runFree help flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: free") != null);
-    try testing.expectEqualStrings("", stderr_buf.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: free") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "runFree version flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "free") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, common.name) != null);
-    try testing.expectEqualStrings("", stderr_buf.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "free") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "runFree unknown flag returns misuse" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_buf.items);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "free:") != null);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "free:") != null);
 }
 
 test "runFree extra arguments returns misuse" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"extra"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "extra operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
 test "runFree default output" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buf.items.len > 0);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Mem:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Swap:") != null);
-    try testing.expectEqualStrings("", stderr_buf.items);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Mem:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Swap:") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "runFree bytes flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-b"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
 
 test "runFree mebi flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-m"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
 
 test "runFree gibi flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-g"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
 
 test "runFree human flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
 
 test "runFree total flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-t"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Total:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Total:") != null);
 }
 
 test "runFree wide flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-w"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "buffers") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "cache") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "buffers") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "cache") != null);
 }
 
 test "runFree short version flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), common.null_writer);
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "free") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "free") != null);
 }
 
 test "parseMemInfoLine valid" {
@@ -873,7 +873,7 @@ test "parseMemInfoLine empty value" {
 }
 
 test "getMemInfo returns valid data" {
-    const info = getMemInfo() catch return;
+    const info = getMemInfo(testing.io) catch return;
     // Total memory should be positive
     try testing.expect(info.total > 0);
     // Used + free should not exceed total (approximately)
@@ -890,8 +890,8 @@ test "getMemInfo returns valid data" {
 // Currently: printReport wide mode shows 0 for buffers even when
 // buff_cache is nonzero. Expected: nonzero buffers value.
 test "audit: free -w wide mode should show nonzero buffers" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     // Mock data with nonzero buff_cache — buffers should be part of it
     const info = MemInfo{
@@ -906,15 +906,15 @@ test "audit: free -w wide mode should show nonzero buffers" {
         .swap_free = 0,
     };
 
-    try printReport(stdout_buf.writer(testing.allocator), info, .kibi, false, false, true);
+    try printReport(&stdout_aw.writer, info, .kibi, false, false, true);
 
-    const output = stdout_buf.items;
+    const output = stdout_aw.writer.buffered();
     // In wide mode, the Mem: row has 7 numeric columns:
     // total, used, free, shared, buffers, cache, available
     // Find the Mem: line
-    const mem_line_start = std.mem.indexOf(u8, output, "Mem:") orelse
+    const mem_line_start = std.mem.find(u8, output, "Mem:") orelse
         return error.TestExpectedEqual;
-    const mem_line_end = std.mem.indexOfScalarPos(u8, output, mem_line_start, '\n') orelse output.len;
+    const mem_line_end = std.mem.findScalarPos(u8, output, mem_line_start, '\n') orelse output.len;
     const mem_line = output[mem_line_start..mem_line_end];
 
     // Parse numeric values from the Mem: line
@@ -944,18 +944,20 @@ test "audit: free -w wide mode should show nonzero buffers" {
 // Currently: -c without -s silently displays once.
 // Expected: error exit code 2 with message about -s requirement.
 test "audit: free -c without -s should error" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "3" };
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // GNU exits 2 (misuse) when -c is given without -s
     try testing.expectEqual(@as(u8, 2), result);
     // stderr should mention -s requirement
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "-s") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-s") != null);
 }
 
 // IMPORTANT: -s short flag is hijacked by the si bool field
@@ -964,20 +966,22 @@ test "audit: free -c without -s should error" {
 // `free -s 1` sets SI mode and treats "1" as a positional (error).
 // Expected: -s 1 should set seconds=1 for continuous display.
 test "audit: free -s should set seconds not si" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // free -s 1 -c 1 should run continuous mode (1 second, 1 count)
     // and succeed. With the bug, -s sets si=true, "1" becomes a
     // positional, and we get "extra operand '1'" (exit 2).
     const args = [_][]const u8{ "-s", "1", "-c", "1" };
-    const result = runFree(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runFree(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should succeed (exit 0) — continuous mode with 1-second interval, 1 count
     try testing.expectEqual(@as(u8, 0), result);
     // Should produce output (at least one display)
-    try testing.expect(stdout_buf.items.len > 0);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Mem:") != null);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Mem:") != null);
 }

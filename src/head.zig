@@ -100,7 +100,7 @@ fn isObsoleteNumArg(arg: []const u8) bool {
 
 /// Core head functionality accepting parsed arguments and writers.
 /// Processes files or stdin according to the provided options.
-pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const expanded_args = try expandObsoleteArgs(allocator, args);
     defer allocator.free(expanded_args);
 
@@ -148,7 +148,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     };
 
     var stdin_buffer: [8192]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
     const stdin = &stdin_reader.interface;
 
     if (parsed_args.positionals.len == 0) {
@@ -170,14 +170,14 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                 try processInput(stdin, stdout_writer, options, allocator);
             } else {
                 // Open and process regular file
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     had_error = true;
                     continue;
                 };
-                defer file.close();
+                defer file.close(io);
 
-                const stat = file.stat() catch |err| {
+                const stat = file.stat(io) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                     had_error = true;
                     continue;
@@ -192,7 +192,7 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     try stdout_writer.print("==> {s} <==\n", .{file_path});
                 }
                 var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.reader(&file_buffer);
+                var file_reader = file.reader(io, &file_buffer);
                 try processInput(&file_reader.interface, stdout_writer, options, allocator);
             }
         }
@@ -204,12 +204,12 @@ pub fn runHead(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 }
 
 /// Entry point for the head binary.
-pub fn main() !void {
-    common.utilityMain(runHead);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runHead);
 }
 
 /// Print help message to the specified writer
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: head [OPTION]... [FILE]...
         \\Print the first 10 lines of each FILE to standard output.
@@ -228,7 +228,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Print version information to the specified writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("head ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -249,13 +249,13 @@ const HeadOptions = struct {
 /// Process input from a reader and output first lines/bytes to writer.
 /// Streams data without reading the entire input into memory (except for
 /// negative line counts which require buffering the entire input).
-pub fn processInput(reader: anytype, writer: anytype, options: HeadOptions, allocator: ?std.mem.Allocator) !void {
+pub fn processInput(reader: *std.Io.Reader, writer: *std.Io.Writer, options: HeadOptions, allocator: ?std.mem.Allocator) !void {
     if (options.negative_count > 0) {
         // Negative count: output all but the last N lines.
         // Must buffer the entire input to know where the last N lines start.
         const alloc = allocator orelse return;
         const delimiter = options.line_delimiter;
-        var all_lines = std.ArrayListUnmanaged([]const u8){};
+        var all_lines: std.ArrayListUnmanaged([]const u8) = .empty;
         defer {
             for (all_lines.items) |line| alloc.free(line);
             all_lines.deinit(alloc);
@@ -344,6 +344,7 @@ const TEST_NEGATIVE_VALUE: []const u8 = "-5";
 // ========== TESTS ==========
 
 test "head outputs first 10 lines by default" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -351,492 +352,519 @@ test "head outputs first 10 lines by default" {
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
         "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n" ++
         "Line 11\nLine 12\nLine 13\nLine 14\nLine 15\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     const expected = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n" ++
         "Line 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "head with -n 5 outputs first 5 lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "5", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n", stdout_aw.writer.buffered());
 }
 
 test "head with -c 10 outputs first 10 bytes" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, World! This is a test.\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Hello, World! This is a test.\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "10", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Hello, Wor", stdout_buffer.items);
+    try testing.expectEqualStrings("Hello, Wor", stdout_aw.writer.buffered());
 }
 
 test "head handles fewer lines than requested" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // Request 10 lines (default) but file only has 2
     const args = [_][]const u8{file_path};
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_aw.writer.buffered());
 }
 
 test "head handles fewer bytes than requested" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Short");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Short");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // Request 1000 bytes but file only has 5
     const args = [_][]const u8{ "-c", "1000", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Short", stdout_buffer.items);
+    try testing.expectEqualStrings("Short", stdout_aw.writer.buffered());
 }
 
 test "head handles empty input" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("", stdout_buffer.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "head with -n 0 outputs nothing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "0", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("", stdout_buffer.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "head with -c 0 outputs nothing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, World!\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Hello, World!\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "0", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("", stdout_buffer.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "head processes lines efficiently" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with many lines, request only the first 3
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", "3", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_aw.writer.buffered());
 }
 
 test "head processes bytes efficiently" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "ABCDEFGHIJKLMNOP");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "ABCDEFGHIJKLMNOP");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-c", "5", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("ABCDE", stdout_buffer.items);
+    try testing.expectEqualStrings("ABCDE", stdout_aw.writer.buffered());
 }
 
 test "head handles invalid line count" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -n -5 is now valid (means "all but last 5 lines"), so use
     // a truly invalid value instead
     const args = [_][]const u8{ "-n", "abc" };
-    const result = try runHead(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runHead(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
 }
 
 test "head help flag works" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runHead(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: head") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: head") != null);
 }
 
 test "head version flag works" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runHead(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "head") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "head") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
 test "head with line count larger than available lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Only one line\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Only one line\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // Request 100 lines but file only has 1
     const args = [_][]const u8{ "-n", "100", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Only one line\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Only one line\n", stdout_aw.writer.buffered());
 }
 
 test "head byte count takes precedence over line count" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // Use -c (bytes) which should override default line count
     const args = [_][]const u8{ "-c", "10", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLin", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\nLin", stdout_aw.writer.buffered());
 }
 
 test "head continues after file error and outputs remaining files" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "Line 1\nLine 2\nLine 3\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "valid.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "valid.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const valid_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "valid.txt");
+    const valid_path = try tmp_dir.dir.realPathFileAlloc(io, "valid.txt", testing.allocator);
     defer testing.allocator.free(valid_path);
 
     // First file is nonexistent, second is valid
     const args = [_][]const u8{ "/nonexistent/file.txt", valid_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should return error exit code
     try testing.expectEqual(@as(u8, 1), exit_code);
 
     // But valid file output should still appear
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Line 1") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Line 2") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Line 3") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Line 1") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Line 2") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Line 3") != null);
 
     // And stderr should report the error
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
 }
 
 test "head with multiple files shows headers" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "file1.txt", "Content A\n");
-    try common.test_utils.createTestFile(tmp_dir.dir, "file2.txt", "Content B\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "file1.txt", "Content A\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "file2.txt", "Content B\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const path1 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file1.txt");
+    const path1 = try tmp_dir.dir.realPathFileAlloc(io, "file1.txt", testing.allocator);
     defer testing.allocator.free(path1);
-    const path2 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file2.txt");
+    const path2 = try tmp_dir.dir.realPathFileAlloc(io, "file2.txt", testing.allocator);
     defer testing.allocator.free(path2);
 
     const args = [_][]const u8{ path1, path2 };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should contain file headers
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "==>") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "<==") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "==>") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "<==") != null);
 
     // Should contain both files' content
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content A") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Content B") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Content A") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Content B") != null);
 }
 
 test "head with -z uses NUL as line delimiter" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with NUL-separated "lines"
     const content = "Line 1\x00Line 2\x00Line 3\x00Line 4\x00Line 5\x00";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", "-n", "3", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\x00Line 2\x00Line 3\x00", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\x00Line 2\x00Line 3\x00", stdout_aw.writer.buffered());
 }
 
 test "head with -z and default line count" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with 15 NUL-separated "lines"
     const content = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00L9\x00L10\x00L11\x00L12\x00L13\x00L14\x00L15\x00";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Default is 10 lines
     const expected = "L1\x00L2\x00L3\x00L4\x00L5\x00L6\x00L7\x00L8\x00L9\x00L10\x00";
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "head with -z and fewer items than requested" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with 2 NUL-separated "lines"
     const content = "Line A\x00Line B\x00";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-z", "-n", "10", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line A\x00Line B\x00", stdout_buffer.items);
+    try testing.expectEqualStrings("Line A\x00Line B\x00", stdout_aw.writer.buffered());
 }
 
 test "head directory in line mode returns exit code 1 not crash" {
+    const io = testing.io;
     // GNU head: head /tmp prints "head: error reading '/tmp': Is a directory" to stderr, exits 1
-    // Our implementation crashes with a Zig stack trace instead of a clean error
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp"};
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Must exit 1 (general error), not crash/panic
     try testing.expectEqual(@as(u8, 1), exit_code);
     // Stderr must contain a diagnostic about the directory, not a stack trace
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Is a directory") != null);
 }
 
 test "head directory in byte mode returns exit code 1 not crash" {
+    const io = testing.io;
     // GNU head: head -c 10 /tmp prints "head: error reading '/tmp': Is a directory" to stderr, exits 1
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "10", "/tmp" };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Is a directory") != null);
 }
 
 test "head directory does not produce stack trace on stderr" {
+    const io = testing.io;
     // Verify stderr does not contain stack trace markers
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/tmp"};
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     // Must not contain Zig panic/stack trace indicators
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "panicked") == null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "error.") == null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, ".zig") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "panicked") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "error.") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), ".zig") == null);
 }
 
 test "head directory continues processing remaining files" {
+    const io = testing.io;
     // GNU head processes remaining files after a directory error
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "valid.txt", "hello\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "valid.txt", "hello\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const valid_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "valid.txt");
+    const valid_path = try tmp_dir.dir.realPathFileAlloc(io, "valid.txt", testing.allocator);
     defer testing.allocator.free(valid_path);
 
     const args = [_][]const u8{ "/tmp", valid_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should return error exit code but still output valid file
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "hello") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Is a directory") != null);
 }
 
 test "head with obsolete -NUM syntax" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-3", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\nLine 2\nLine 3\n", stdout_aw.writer.buffered());
 }
 
 test "head --silent is alias for --quiet" {
+    const io = testing.io;
     // BUG: --silent is not recognized (exits 2). GNU coreutils accepts
     // --silent as a synonym for --quiet/-q to suppress file headers.
     var tmp_dir = testing.tmpDir(.{});
@@ -844,47 +872,48 @@ test "head --silent is alias for --quiet" {
 
     const content1 = "File A line 1\nFile A line 2\n";
     const content2 = "File B line 1\nFile B line 2\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "a.txt", content1);
-    try common.test_utils.createTestFile(tmp_dir.dir, "b.txt", content2);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "a.txt", content1);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "b.txt", content2);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const path_a = try tmp_dir.dir.realpathAlloc(testing.allocator, "a.txt");
+    const path_a = try tmp_dir.dir.realPathFileAlloc(io, "a.txt", testing.allocator);
     defer testing.allocator.free(path_a);
-    const path_b = try tmp_dir.dir.realpathAlloc(testing.allocator, "b.txt");
+    const path_b = try tmp_dir.dir.realPathFileAlloc(io, "b.txt", testing.allocator);
     defer testing.allocator.free(path_b);
 
     const args = [_][]const u8{ "--silent", path_a, path_b };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     // Should succeed (exit 0) and suppress headers, just like --quiet
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should be raw content without "==> ... <==" headers
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "==>") == null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "File A line 1") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "File B line 1") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "==>") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File A line 1") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File B line 1") != null);
 }
 
 test "head -n -3 outputs all but last 3 lines" {
+    const io = testing.io;
     // BUG: -n -3 (negative count) is not implemented. GNU head treats
     // -n -NUM as "output all but the last NUM lines". Currently exits 2.
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // -n -3 means "all but the last 3 lines" = first 2 lines
     const args = [_][]const u8{ "-n", "-3", file_path };
-    const exit_code = try runHead(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\nLine 2\n", stdout_aw.writer.buffered());
 }
