@@ -89,7 +89,8 @@ const IdArgs = struct {
 };
 
 /// Main entry point for the id utility
-pub fn runId(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    _ = io;
     // Parse command-line arguments
     const parsed = common.argparse.ArgParser.parseOrExit(IdArgs, allocator, args, "id", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
@@ -361,8 +362,8 @@ fn printSingleGroup(
     target_gid: common.user_group.gid_t,
     print_name: bool,
     delimiter: u8,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
     if (print_name) {
         const info = common.user_group.getGroupById(target_gid, allocator) catch {
@@ -439,8 +440,8 @@ fn printDefaultFormat(
     gid: common.user_group.gid_t,
     is_specified_user: bool,
     delimiter: u8,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
     // Print uid=N(name)
     const user_info = common.user_group.getUserById(uid, allocator) catch {
@@ -461,8 +462,8 @@ fn printDefaultGidAndGroups(
     gid: common.user_group.gid_t,
     is_specified_user: bool,
     delimiter: u8,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
     // Print gid=N(name)
     const group_info = common.user_group.getGroupById(gid, allocator) catch {
@@ -536,8 +537,8 @@ fn printPrettyFormat(
     uid: common.user_group.uid_t,
     gid: common.user_group.gid_t,
     is_specified_user: bool,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
     // Print uid line
     const user_info = common.user_group.getUserById(uid, allocator) catch {
@@ -555,8 +556,8 @@ fn printPrettyGroups(
     allocator: Allocator,
     gid: common.user_group.gid_t,
     is_specified_user: bool,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
     _ = stderr_writer;
 
@@ -614,12 +615,12 @@ fn printPrettyGroups(
     return @intFromEnum(common.ExitCode.success);
 }
 
-pub fn main() !void {
-    common.utilityMain(runId);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runId);
 }
 
 /// Print help message to the specified writer
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: id [OPTION]... [USER]
         \\Print user and group information for the specified USER,
@@ -645,7 +646,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information to the specified writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("id ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -654,94 +655,96 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "id default output contains uid and gid" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid=") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "gid=") != null);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "uid=") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "gid=") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id -u prints effective user ID" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-u"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Output should be a number followed by newline
-    try testing.expect(stdout_buffer.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+    try testing.expect(stdout_aw.writer.buffered().len > 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
     // Should be a valid number
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     _ = try std.fmt.parseInt(u32, trimmed, 10);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id -g prints effective group ID" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-g"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(stdout_buffer.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    try testing.expect(stdout_aw.writer.buffered().len > 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     _ = try std.fmt.parseInt(u32, trimmed, 10);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id -G prints all group IDs" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-G"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should have at least one group ID
-    try testing.expect(stdout_buffer.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(stdout_aw.writer.buffered().len > 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id -G <username> uses getgrouplist to include supplementary groups" {
     // I5: When a named user is passed, id -G must call getgrouplist(3) to
     // enumerate all supplementary groups, not just the primary group.
+    const io = testing.io;
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_named.deinit(testing.allocator);
-    var stdout_current = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_current.deinit(testing.allocator);
+    var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_named_aw.deinit();
+    var stdout_current_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_current_aw.deinit();
 
     // id -G <username>  (named user path → getgrouplist)
     const args_named = [_][]const u8{ "-G", user_info.name };
     const result_named = try runId(
         testing.allocator,
+        io,
         &args_named,
-        stdout_named.writer(testing.allocator),
+        &stdout_named_aw.writer,
         common.null_writer,
     );
     try testing.expectEqual(@as(u8, 0), result_named);
@@ -750,20 +753,21 @@ test "id -G <username> uses getgrouplist to include supplementary groups" {
     const args_current = [_][]const u8{"-G"};
     const result_current = try runId(
         testing.allocator,
+        io,
         &args_current,
-        stdout_current.writer(testing.allocator),
+        &stdout_current_aw.writer,
         common.null_writer,
     );
     try testing.expectEqual(@as(u8, 0), result_current);
 
     // Both code paths must produce non-empty output ending with newline.
-    try testing.expect(stdout_named.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_named.items[stdout_named.items.len - 1]);
+    try testing.expect(stdout_named_aw.writer.buffered().len > 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_named_aw.writer.buffered()[stdout_named_aw.writer.buffered().len - 1]);
 
     // The named-user output should contain the primary GID at minimum.
     const gid_str = try std.fmt.allocPrint(testing.allocator, "{d}", .{user_info.gid});
     defer testing.allocator.free(gid_str);
-    try testing.expect(std.mem.indexOf(u8, stdout_named.items, gid_str) != null);
+    try testing.expect(std.mem.find(u8, stdout_named_aw.writer.buffered(), gid_str) != null);
 
     // When the named user is the current process user, both outputs must
     // contain identical group sets (modulo ordering: both are space-separated
@@ -771,18 +775,18 @@ test "id -G <username> uses getgrouplist to include supplementary groups" {
     // underlying getgrouplist path, but the named path may differ in order
     // from getgroups(2) — we only assert membership, not ordering).
     // Verify the primary GID appears in the named output.
-    try testing.expect(std.mem.indexOf(u8, stdout_named.items, gid_str) != null);
+    try testing.expect(std.mem.find(u8, stdout_named_aw.writer.buffered(), gid_str) != null);
 }
 
 test "id -un prints effective user name" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-u", "-n" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should match whoami output
@@ -792,242 +796,246 @@ test "id -un prints effective user name" {
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{user_info.name});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "id -gn prints effective group name" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-g", "-n" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should be a non-empty name
-    try testing.expect(stdout_buffer.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(stdout_aw.writer.buffered().len > 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id -ru prints real user ID" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-u" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     const real_uid = try std.fmt.parseInt(u32, trimmed, 10);
     try testing.expectEqual(common.user_group.getCurrentUserId(), @as(common.user_group.uid_t, real_uid));
 }
 
 test "id -rg prints real group ID" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-r", "-g" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     const real_gid = try std.fmt.parseInt(u32, trimmed, 10);
     try testing.expectEqual(common.user_group.getCurrentGroupId(), @as(common.user_group.gid_t, real_gid));
 }
 
 test "id -z uses NUL delimiter" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-u", "-z" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should end with NUL instead of newline
-    try testing.expect(stdout_buffer.items.len > 0);
-    try testing.expectEqual(@as(u8, 0), stdout_buffer.items[stdout_buffer.items.len - 1]);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
+    try testing.expectEqual(@as(u8, 0), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
 }
 
 test "id help flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: id") != null);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: id") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id short help flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: id") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: id") != null);
 }
 
 test "id version flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "id") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.name) != null);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "id") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "id short version flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "id") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "id") != null);
 }
 
 test "id unknown flag returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "id:") != null);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "id:") != null);
 }
 
 test "id -n without -u/-g/-G returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-n"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot print only names") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only names") != null);
 }
 
 test "id -r without -u/-g/-G returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-r"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot print only real IDs") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print only real IDs") != null);
 }
 
 test "id mutually exclusive -u and -g" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-u", "-g" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot print") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot print") != null);
 }
 
 test "id extra operand returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "user1", "user2" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
 test "id nonexistent user returns error" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"nonexistent_user_12345"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "no such user") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "no such user") != null);
 }
 
 test "id default output has groups field" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "groups=") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "groups=") != null);
 }
 
 test "id -Gn prints group names" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-G", "-n" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Output should have at least one group name (non-numeric)
-    try testing.expect(stdout_buffer.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+    try testing.expect(stdout_aw.writer.buffered().len > 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
 }
 
 test "id with numeric user ID" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Look up current user's UID and pass it as string
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
@@ -1035,134 +1043,143 @@ test "id with numeric user ID" {
     defer testing.allocator.free(uid_str);
 
     const args = [_][]const u8{uid_str};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid=") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "uid=") != null);
 }
 
 test "id -p outputs human-readable format with uid line" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-p"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should contain "uid" label at start of a line
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid\t") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "uid\t") != null);
 }
 
 test "id -p outputs groups line" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-p"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should contain "groups" label
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "groups\t") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "groups\t") != null);
 }
 
 test "id -p is mutually exclusive with -u -g -G" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-p", "-u" };
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
 }
 
 test "id -p does not contain uid= format" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-p"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should NOT contain the default format "uid=..."
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "uid=") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "uid=") == null);
 }
 
 test "id -a is a no-op (GNU behavior), produces default format" {
-    var stdout_a = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_a.deinit(testing.allocator);
-    var stdout_default = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_default.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_a_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_a_aw.deinit();
+    var stdout_default_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_default_aw.deinit();
 
     const args_a = [_][]const u8{"-a"};
-    const result_a = try runId(testing.allocator, &args_a, stdout_a.writer(testing.allocator), common.null_writer);
+    const result_a = try runId(testing.allocator, io, &args_a, &stdout_a_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_a);
 
     const args_default = [_][]const u8{};
-    const result_default = try runId(testing.allocator, &args_default, stdout_default.writer(testing.allocator), common.null_writer);
+    const result_default = try runId(testing.allocator, io, &args_default, &stdout_default_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_default);
 
     // GNU: -a is a no-op, so output should match plain id
-    try testing.expectEqualStrings(stdout_default.items, stdout_a.items);
+    try testing.expectEqualStrings(stdout_default_aw.writer.buffered(), stdout_a_aw.writer.buffered());
 }
 
 test "id -a with -n is rejected (GNU: -a is no-op, -n alone is invalid)" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-a", "-n" };
-    const result = try runId(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     // -a is no-op, -n without -u/-g/-G is an error
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "id -A prints audit stub and exits 1" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-A"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-A (audit) not supported") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-A (audit) not supported") != null);
 }
 
 test "id -F displays full name" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-F"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Output should end with a newline
-    try testing.expect(stdout_buffer.items.len >= 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+    try testing.expect(stdout_aw.writer.buffered().len >= 1);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
 }
 
 test "id -P displays passwd entry format" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-P"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Passwd entry format should contain colons separating fields
     const colon_count = blk: {
         var count: usize = 0;
-        for (stdout_buffer.items) |ch| {
+        for (stdout_aw.writer.buffered()) |ch| {
             if (ch == ':') count += 1;
         }
         break :blk count;
@@ -1170,15 +1187,16 @@ test "id -P displays passwd entry format" {
     // passwd entry has at least 6 colons (name:passwd:uid:gid::change:expire:gecos:home:shell)
     try testing.expect(colon_count >= 6);
     // Should end with newline
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+    try testing.expectEqual(@as(u8, '\n'), stdout_aw.writer.buffered()[stdout_aw.writer.buffered().len - 1]);
 }
 
 test "id -P output contains current username" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-P"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // Should start with the current username
@@ -1186,15 +1204,14 @@ test "id -P output contains current username" {
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    try testing.expect(std.mem.startsWith(u8, stdout_buffer.items, user_info.name));
+    try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), user_info.name));
 }
 
 test "printSingleGroup outputs numeric GID with delimiter" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const gid = @as(common.user_group.gid_t, @intCast(getegid()));
     const result = try printSingleGroup(
@@ -1202,17 +1219,17 @@ test "printSingleGroup outputs numeric GID with delimiter" {
         gid,
         false, // print_name = false → numeric output
         '\n', // delimiter
-        stdout_buffer.writer(testing.allocator),
-        stderr_buffer.writer(testing.allocator),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 
     // Output should be the numeric GID followed by a newline
     const expected = try std.fmt.allocPrint(testing.allocator, "{d}\n", .{gid});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 /// Return true if every space-separated token in `subset` also appears in
@@ -1237,24 +1254,25 @@ test "id -G with named user is superset of id -G without username" {
     // but getgrouplist(3) is uncapped, so the named form can legitimately
     // have more groups than the no-user form. The cross-platform invariant
     // is that every group in `id -G` must appear in `id -G <user>`.
+    const io = testing.io;
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_no_user.deinit(testing.allocator);
+    var stdout_no_user_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_no_user_aw.deinit();
     const args_no_user = [_][]const u8{"-G"};
-    const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
+    const result_no_user = try runId(testing.allocator, io, &args_no_user, &stdout_no_user_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
-    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_named.deinit(testing.allocator);
+    var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_named_aw.deinit();
     const args_named = [_][]const u8{ "-G", user_info.name };
-    const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
+    const result_named = try runId(testing.allocator, io, &args_named, &stdout_named_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_named);
 
-    const no_user_trimmed = std.mem.trimRight(u8, stdout_no_user.items, "\n");
-    const named_trimmed = std.mem.trimRight(u8, stdout_named.items, "\n");
+    const no_user_trimmed = std.mem.trimEnd(u8, stdout_no_user_aw.writer.buffered(), "\n");
+    const named_trimmed = std.mem.trimEnd(u8, stdout_named_aw.writer.buffered(), "\n");
 
     try testing.expect(no_user_trimmed.len > 0);
     try testing.expect(named_trimmed.len > 0);
@@ -1262,24 +1280,25 @@ test "id -G with named user is superset of id -G without username" {
 }
 
 test "id -Gn with named user is superset of id -Gn without username" {
+    const io = testing.io;
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_no_user.deinit(testing.allocator);
+    var stdout_no_user_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_no_user_aw.deinit();
     const args_no_user = [_][]const u8{ "-G", "-n" };
-    const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
+    const result_no_user = try runId(testing.allocator, io, &args_no_user, &stdout_no_user_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
-    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_named.deinit(testing.allocator);
+    var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_named_aw.deinit();
     const args_named = [_][]const u8{ "-G", "-n", user_info.name };
-    const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
+    const result_named = try runId(testing.allocator, io, &args_named, &stdout_named_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_named);
 
-    const no_user_trimmed = std.mem.trimRight(u8, stdout_no_user.items, "\n");
-    const named_trimmed = std.mem.trimRight(u8, stdout_named.items, "\n");
+    const no_user_trimmed = std.mem.trimEnd(u8, stdout_no_user_aw.writer.buffered(), "\n");
+    const named_trimmed = std.mem.trimEnd(u8, stdout_named_aw.writer.buffered(), "\n");
 
     try testing.expect(no_user_trimmed.len > 0);
     try testing.expect(named_trimmed.len > 0);
@@ -1290,38 +1309,39 @@ test "id default format with named user includes all groups (superset)" {
     // Same cross-platform invariant as the -G test: the named-user form
     // must return every group that the no-user form returns, but may
     // have more on macOS due to NGROUPS_MAX capping getgroups(2).
+    const io = testing.io;
     const uid = @as(common.user_group.uid_t, @intCast(geteuid()));
     const user_info = try common.user_group.getUserById(uid, testing.allocator);
     defer testing.allocator.free(user_info.name);
 
-    var stdout_no_user = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_no_user.deinit(testing.allocator);
+    var stdout_no_user_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_no_user_aw.deinit();
     const args_no_user = [_][]const u8{};
-    const result_no_user = try runId(testing.allocator, &args_no_user, stdout_no_user.writer(testing.allocator), common.null_writer);
+    const result_no_user = try runId(testing.allocator, io, &args_no_user, &stdout_no_user_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_no_user);
 
-    var stdout_named = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_named.deinit(testing.allocator);
+    var stdout_named_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_named_aw.deinit();
     const args_named = [_][]const u8{user_info.name};
-    const result_named = try runId(testing.allocator, &args_named, stdout_named.writer(testing.allocator), common.null_writer);
+    const result_named = try runId(testing.allocator, io, &args_named, &stdout_named_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_named);
 
     // Extract the groups= portion, strip trailing newline, extract the
     // inner comma-separated list (format is "groups=gid1(name),gid2(name)").
-    const no_user_groups_start = std.mem.indexOf(u8, stdout_no_user.items, "groups=") orelse
+    const no_user_groups_start = std.mem.find(u8, stdout_no_user_aw.writer.buffered(), "groups=") orelse
         return error.TestUnexpectedResult;
-    const named_groups_start = std.mem.indexOf(u8, stdout_named.items, "groups=") orelse
+    const named_groups_start = std.mem.find(u8, stdout_named_aw.writer.buffered(), "groups=") orelse
         return error.TestUnexpectedResult;
 
-    const no_user_groups = std.mem.trimRight(u8, stdout_no_user.items[no_user_groups_start + "groups=".len ..], " \n");
-    const named_groups = std.mem.trimRight(u8, stdout_named.items[named_groups_start + "groups=".len ..], " \n");
+    const no_user_groups = std.mem.trimEnd(u8, stdout_no_user_aw.writer.buffered()[no_user_groups_start + "groups=".len ..], " \n");
+    const named_groups = std.mem.trimEnd(u8, stdout_named_aw.writer.buffered()[named_groups_start + "groups=".len ..], " \n");
 
     // Every comma-separated entry in no_user_groups must appear in named_groups.
     var it = std.mem.tokenizeScalar(u8, no_user_groups, ',');
     while (it.next()) |entry| {
         const trimmed = std.mem.trim(u8, entry, " ");
         if (trimmed.len == 0) continue;
-        try testing.expect(std.mem.indexOf(u8, named_groups, trimmed) != null);
+        try testing.expect(std.mem.find(u8, named_groups, trimmed) != null);
     }
 }
 
@@ -1333,39 +1353,40 @@ test "id -z alone without format flag should exit 2 (GNU rejects)" {
     // GNU id: "id: cannot print only names or real IDs in default format"
     // vibeutils currently accepts -z alone and outputs default format with NUL.
     // GNU rejects -z without -u/-g/-G, exiting 2.
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-z"};
-    const result = try runId(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runId(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // GNU behavior: -z alone is an error (exit 2)
     try testing.expectEqual(@as(u8, 2), result);
     // stderr should contain a diagnostic message
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "id -a is a no-op in GNU, not an alias for -G" {
     // GNU id: -a is ignored (has no effect in default format).
     // vibeutils treats -a as -G, changing the output format.
     // Expected: id -a should produce the SAME output as plain id.
-    var stdout_default = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_default.deinit(testing.allocator);
-    var stdout_with_a = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_with_a.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_default_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_default_aw.deinit();
+    var stdout_with_a_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_with_a_aw.deinit();
 
     const args_default = [_][]const u8{};
-    const result_default = try runId(testing.allocator, &args_default, stdout_default.writer(testing.allocator), common.null_writer);
+    const result_default = try runId(testing.allocator, io, &args_default, &stdout_default_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_default);
 
     const args_a = [_][]const u8{"-a"};
-    const result_a = try runId(testing.allocator, &args_a, stdout_with_a.writer(testing.allocator), common.null_writer);
+    const result_a = try runId(testing.allocator, io, &args_a, &stdout_with_a_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result_a);
 
     // GNU: id -a should produce default format (uid=... gid=... groups=...)
     // not just the -G style group list
-    try testing.expect(std.mem.indexOf(u8, stdout_with_a.items, "uid=") != null);
+    try testing.expect(std.mem.find(u8, stdout_with_a_aw.writer.buffered(), "uid=") != null);
 }
