@@ -16,13 +16,16 @@ const Allocator = std.mem.Allocator;
 /// Returns `error.FileNotFound` or `error.NotDir` (or the underlying realpath
 /// error) if the parent cannot be resolved or is not a directory.
 pub fn canonicalizeParentMustExist(allocator: Allocator, path: []const u8) ![]u8 {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
     // Empty path — GNU realpath exits with FileNotFound on empty input.
     if (path.len == 0) {
         return error.FileNotFound;
     }
 
     // If the full path resolves, use that.
-    if (std.fs.cwd().realpathAlloc(allocator, path)) |resolved| {
+    if (std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator)) |resolved| {
         return resolved;
     } else |_| {}
 
@@ -37,19 +40,19 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, path: []const u8) ![]u8
     }
 
     // "." or ".." as the basename — these are directory operations; the
-    // whole path must exist. If realpathAlloc on the full path failed, bail.
+    // whole path must exist. If realPathFileAlloc on the full path failed, bail.
     if (std.mem.eql(u8, basename, ".") or std.mem.eql(u8, basename, "..")) {
         return error.FileNotFound;
     }
 
-    // Verify parent is an actual directory. `realpathAlloc` resolves files
+    // Verify parent is an actual directory. `realPathFileAlloc` resolves files
     // too, so without this check /etc/passwd/foo would succeed. openDir
     // returns NotDir for files, which propagates the correct GNU error.
-    var parent_dir = try std.fs.cwd().openDir(dirname, .{});
-    parent_dir.close();
+    var parent_dir = try std.Io.Dir.cwd().openDir(io, dirname, .{});
+    try parent_dir.close(io);
 
     // Resolve parent; propagate error (FileNotFound, NotDir, etc.) on failure.
-    const resolved_parent = try std.fs.cwd().realpathAlloc(allocator, dirname);
+    const resolved_parent = try std.Io.Dir.cwd().realPathFileAlloc(io, dirname, allocator);
     defer allocator.free(resolved_parent);
 
     // Join resolved parent + basename.
@@ -63,18 +66,24 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, path: []const u8) ![]u8
 /// Resolves as much as possible via realpath, then appends the remaining
 /// parts with `.` and `..` cleaned logically.
 pub fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
     if (path.len == 0) {
         // Empty path: return current directory
-        return try std.fs.cwd().realpathAlloc(allocator, ".");
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const len = try std.Io.Dir.cwd().realPath(io, &buf);
+        return try allocator.dupe(u8, buf[0..len]);
     }
 
     // Get absolute path
     const abs_path = if (std.fs.path.isAbsolute(path))
         try allocator.dupe(u8, path)
     else blk: {
-        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch return error.FileNotFound;
-        break :blk try std.fs.path.join(allocator, &.{ cwd, path });
+        var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const cwd_len = try std.Io.Dir.cwd().realPath(io, &cwd_buf);
+        const cwd = cwd_buf[0..cwd_len];
+        break :blk try std.fmt.allocPrint(allocator, "{s}/{s}", .{ cwd, path });
     };
     defer allocator.free(abs_path);
 
@@ -112,7 +121,7 @@ pub fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
             pos += comp.len;
         }
 
-        if (std.fs.cwd().realpathAlloc(allocator, prefix)) |resolved| {
+        if (std.Io.Dir.cwd().realPathFileAlloc(io, prefix, allocator)) |resolved| {
             resolved_prefix = resolved;
             resolved_count = try_count;
             break;
@@ -135,7 +144,7 @@ pub fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
             if (std.mem.eql(u8, comp, ".")) {
                 continue;
             } else if (std.mem.eql(u8, comp, "..")) {
-                if (std.mem.lastIndexOfScalar(u8, remaining.items, '/')) |last_slash| {
+                if (std.mem.findLastScalar(u8, remaining.items, '/')) |last_slash| {
                     if (last_slash > 0) {
                         remaining.shrinkRetainingCapacity(last_slash);
                     } else {
@@ -232,11 +241,11 @@ test "canonicalizeMissing: dotdot past root is clamped (security)" {
     // Must resolve to /etc/passwd equivalent (macOS adds /private prefix).
     try testing.expect(std.mem.endsWith(u8, result, "/etc/passwd"));
     // Must not contain any ".." in the resolved output.
-    try testing.expect(std.mem.indexOf(u8, result, "..") == null);
+    try testing.expect(std.mem.find(u8, result, "..") == null);
 }
 
 test "canonicalizeMissing: dotdot past root with fully nonexistent path" {
-    // /nonexistent1/../../nonexistent2: no realpathAlloc prefix resolves,
+    // /nonexistent1/../../nonexistent2: no realPathFileAlloc prefix resolves,
     // so the else-branch does pure string normalization. The second ".." goes
     // past root; the clamp (`if (cleaned.items.len > 0)`) keeps it at root.
     // Result must be /nonexistent2, not /nonexistent1/../nonexistent2 or similar.
@@ -286,9 +295,13 @@ test "canonicalizeParentMustExist: file as parent fails with NotDir" {
     // Create a real file and try to treat it as a parent directory.
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{ .sub_path = "real_file", .data = "x" });
-    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
-    defer testing.allocator.free(dir_path);
+    const io = testing.io;
+    const f = try tmp.dir.createFile(io, "real_file", .{});
+    try f.writeStreamingAll(io, "x");
+    try f.close(io);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..dir_len];
     const bad = try std.fmt.allocPrint(testing.allocator, "{s}/real_file/ghost", .{dir_path});
     defer testing.allocator.free(bad);
     const result = canonicalizeParentMustExist(testing.allocator, bad);

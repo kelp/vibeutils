@@ -16,7 +16,7 @@ extern "c" fn getgrgid(gid: std.c.gid_t) ?*group;
 /// Convert stat buffer to FileInfo
 fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
     // Convert C stat to our FileInfo
-    const kind: std.fs.File.Kind = switch (stat_buf.mode & std.c.S.IFMT) {
+    const kind: std.Io.File.Kind = switch (stat_buf.mode & std.c.S.IFMT) {
         std.c.S.IFREG => .file,
         std.c.S.IFDIR => .directory,
         std.c.S.IFCHR => .character_device,
@@ -60,32 +60,32 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
 /// File stat information wrapper
 pub const FileInfo = struct {
     size: u64,
-    mode: std.fs.File.Mode,
+    mode: std.posix.mode_t,
     atime: i128, // nanoseconds since epoch
     mtime: i128, // nanoseconds since epoch
     ctime: i128 = 0, // nanoseconds since epoch (inode change time)
-    kind: std.fs.File.Kind,
-    inode: std.fs.File.INode,
+    kind: std.Io.File.Kind,
+    inode: std.Io.File.INode,
     uid: u32,
     gid: u32,
     nlink: u32,
 
-    pub fn stat(path: []const u8) !FileInfo {
-        const file = try std.fs.cwd().openFile(path, .{});
-        defer file.close();
+    pub fn stat(io: std.Io, path: []const u8) !FileInfo {
+        const file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer file.close(io);
         return try statFile(file);
     }
 
     /// Get file info without following symlinks (like lstat)
     pub fn lstat(path: []const u8) !FileInfo {
-        var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+        var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+        if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
         @memcpy(buf[0..path.len], path);
         buf[path.len] = 0;
         const c_path = buf[0..path.len :0];
 
         var stat_buf: std.c.Stat = undefined;
-        const result = std.c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
+        const result = std.c.fstatat(std.Io.Dir.cwd().fd, c_path, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
         if (result != 0) {
             const errno = std.posix.errno(result);
             return switch (errno) {
@@ -102,7 +102,7 @@ pub const FileInfo = struct {
         return statToFileInfo(stat_buf);
     }
 
-    pub fn statFile(file: std.fs.File) !FileInfo {
+    pub fn statFile(file: std.Io.File) !FileInfo {
         // Use fstat directly to get all information
         const fd = file.handle;
         var stat_buf: std.c.Stat = undefined;
@@ -114,7 +114,7 @@ pub const FileInfo = struct {
         return statToFileInfo(stat_buf);
     }
 
-    pub fn lstatDir(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !FileInfo {
+    pub fn lstatDir(allocator: std.mem.Allocator, dir: std.Io.Dir, name: []const u8) !FileInfo {
         // Use lstat to get info about the link itself, not the target
         // Stack buffer optimization for short names
         var stack_buffer: [256]u8 = undefined;
@@ -151,7 +151,7 @@ pub const FileInfo = struct {
     }
 
     /// Get file info following symlinks, relative to a directory (like stat)
-    pub fn statDir(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !FileInfo {
+    pub fn statDir(allocator: std.mem.Allocator, dir: std.Io.Dir, name: []const u8) !FileInfo {
         // Stack buffer optimization for short names
         var stack_buffer: [256]u8 = undefined;
         var name_z: [:0]u8 = undefined;
@@ -186,7 +186,7 @@ pub const FileInfo = struct {
 };
 
 /// Format file permissions as a string (e.g., -rw-r--r--)
-pub fn formatPermissions(mode: std.fs.File.Mode, kind: std.fs.File.Kind, buf: []u8) ![]const u8 {
+pub fn formatPermissions(mode: std.posix.mode_t, kind: std.Io.File.Kind, buf: []u8) ![]const u8 {
     if (buf.len < 10) return error.BufferTooSmall;
 
     // File type
@@ -248,12 +248,26 @@ pub fn formatSizeKilobytes(size: u64, buf: []u8) ![]const u8 {
     return std.fmt.bufPrint(buf, "{d}", .{kb});
 }
 
+/// Return current Unix timestamp in seconds via C clock_gettime.
+fn currentTimestampSeconds() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return ts.sec;
+}
+
+/// Return current Unix timestamp in nanoseconds via C clock_gettime.
+pub fn currentTimestampNanoseconds() i128 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
 /// Format modification time for ls -l output
 /// Shows "MMM DD HH:MM" for recent files (< 6 months)
 /// Shows "MMM DD  YYYY" for older files
 pub fn formatTime(mtime_ns: i128, buf: []u8) ![]const u8 {
     const mtime_s = @divTrunc(mtime_ns, std.time.ns_per_s);
-    const now_s = std.time.timestamp();
+    const now_s = currentTimestampSeconds();
     const six_months_s = @import("constants.zig").SIX_MONTHS_SECONDS;
 
     // Convert to broken-down time
@@ -435,24 +449,27 @@ test "formatSizeKilobytes basic" {
 }
 
 test "FileInfo.stat basic" {
+    const io = testing.io;
     // Create a temporary file
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("Hello, World!");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "Hello, World!");
+    file.close(io);
 
     // Get the path
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..path_len];
+    const path = try std.fmt.bufPrint(path_buf[path_len..], "{s}/test.txt", .{dir_path});
 
     // Stat the file
-    const info = try FileInfo.stat(path);
+    const info = try FileInfo.stat(io, path);
 
     // Check basic properties
     try testing.expectEqual(@as(u64, 13), info.size); // "Hello, World!" is 13 bytes
-    try testing.expectEqual(std.fs.File.Kind.file, info.kind);
+    try testing.expectEqual(std.Io.File.Kind.file, info.kind);
     try testing.expect(info.mtime > 0);
     try testing.expect(info.ctime > 0);
 }
@@ -461,7 +478,7 @@ test "formatTime recent file" {
     var buf: [64]u8 = undefined;
 
     // Current time in nanoseconds
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = currentTimestampNanoseconds();
 
     // Test with current time (recent file)
     const result = try formatTime(now_ns, &buf);
@@ -469,7 +486,7 @@ test "formatTime recent file" {
     // Should contain current month and time format HH:MM
     // Can't test exact output due to current time, but check format
     try testing.expect(result.len >= 12); // "MMM DD HH:MM" is at least 12 chars
-    try testing.expect(std.mem.indexOf(u8, result, ":") != null); // Should have time
+    try testing.expect(std.mem.find(u8, result, ":") != null); // Should have time
 }
 
 test "formatTime old file" {
@@ -482,6 +499,6 @@ test "formatTime old file" {
     const result = try formatTime(old_time_ns, &buf);
 
     // Should show year instead of time
-    try testing.expect(std.mem.indexOf(u8, result, "2020") != null);
-    try testing.expect(std.mem.indexOf(u8, result, ":") == null); // Should not have time
+    try testing.expect(std.mem.find(u8, result, "2020") != null);
+    try testing.expect(std.mem.find(u8, result, ":") == null); // Should not have time
 }

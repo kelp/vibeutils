@@ -2,7 +2,7 @@
 //!
 //! This module provides `utilityMain`, a composite wrapper that standardizes:
 //! - Arena allocator setup
-//! - Process argument parsing with argsAlloc
+//! - Process argument parsing
 //! - 8KB buffered stdout/stderr writers
 //! - Calling the run function
 //! - Flushing buffers
@@ -20,46 +20,37 @@ const lib = @import("lib.zig");
 /// calls the run function, flushes buffers, and exits with the returned code.
 ///
 /// The run function signature must be:
-///   fn(std.mem.Allocator, []const []const u8, anytype, anytype) anyerror!u8
+///   fn(std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8
 ///
-/// Where the parameters are: allocator, args (without program name), stdout_writer, stderr_writer
-///
-/// Example:
-/// ```zig
-/// pub fn main() !void {
-///     common.utilityMain(runCat);
-/// }
-/// ```
-pub fn utilityMain(comptime runFn: fn (std.mem.Allocator, []const []const u8, anytype, anytype) anyerror!u8) noreturn {
-    // Set up arena allocator
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+/// Where the parameters are: allocator, io, args (without program name), stdout_writer, stderr_writer
+pub fn utilityMain(
+    init: std.process.Init,
+    comptime runFn: fn (std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8,
+) noreturn {
+    const io = init.io;
+    const allocator = init.arena.allocator();
 
     // Parse process arguments
-    const args = std.process.argsAlloc(allocator) catch |err| {
-        // Cannot allocate args - print error to stderr and exit
+    const args = init.minimal.args.toSlice(allocator) catch |err| {
         var stderr_buf: [256]u8 = undefined;
-        var stderr_w = std.fs.File.stderr().writerStreaming(&stderr_buf);
+        var stderr_w = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
         const stderr = &stderr_w.interface;
         stderr.print("error: failed to allocate arguments: {s}\n", .{lib.posixErrorString(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
     };
-    defer std.process.argsFree(allocator, args);
 
     // Set up 8KB buffered writers for stdout and stderr
     var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
     var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
+    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
     const stderr = &stderr_writer.interface;
 
     // Call the run function (skip program name: args[1..])
-    const exit_code = runFn(allocator, args[1..], stdout, stderr) catch |err| {
-        // Uncaught error from run function - print and exit with error code
+    const exit_code = runFn(allocator, io, args[1..], stdout, stderr) catch |err| {
         stderr.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
         stderr.flush() catch {};
         std.process.exit(1);
@@ -77,23 +68,16 @@ pub fn utilityMain(comptime runFn: fn (std.mem.Allocator, []const []const u8, an
 /// allocator, pre-built arg slice (including program name at index 0), and
 /// caller-supplied writers.  Does NOT call `std.process.exit`; returns the
 /// exit code instead.
-///
-/// Use this in unit tests to exercise the core dispatch logic:
-/// ```zig
-/// var stdout_buf: [256]u8 = undefined;
-/// var stdout_w = std.io.fixedBufferStream(&stdout_buf);
-/// const code = runWithBufferedIO(myRunFn, alloc, argv, stdout_w.writer(), common.null_writer);
-/// try testing.expectEqual(@as(u8, 0), code);
-/// ```
 pub fn runWithBufferedIO(
-    comptime runFn: fn (std.mem.Allocator, []const []const u8, anytype, anytype) anyerror!u8,
+    comptime runFn: fn (std.mem.Allocator, std.Io, []const []const u8, *std.Io.Writer, *std.Io.Writer) anyerror!u8,
     allocator: std.mem.Allocator,
+    io: std.Io,
     args: []const []const u8, // args[0] is the program name and is stripped
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) u8 {
     // Skip program name (mirrors utilityMain's args[1..] call)
-    const exit_code = runFn(allocator, args[1..], stdout_writer, stderr_writer) catch |err| {
+    const exit_code = runFn(allocator, io, args[1..], stdout_writer, stderr_writer) catch |err| {
         stderr_writer.print("error: {s}\n", .{lib.posixErrorString(err)}) catch {};
         return 1;
     };
@@ -111,9 +95,10 @@ pub fn runWithBufferedIO(
 /// A minimal run function that echoes its args to stdout, one per line.
 fn runEchoArgs(
     _: std.mem.Allocator,
+    _: std.Io,
     args: []const []const u8,
-    stdout: anytype,
-    _: anytype,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
 ) anyerror!u8 {
     for (args) |arg| {
         try stdout.print("{s}\n", .{arg});
@@ -124,11 +109,11 @@ fn runEchoArgs(
 /// A run function that allocates memory and writes its size to stdout.
 fn runUseAllocator(
     allocator: std.mem.Allocator,
+    _: std.Io,
     _: []const []const u8,
-    stdout: anytype,
-    _: anytype,
+    stdout: *std.Io.Writer,
+    _: *std.Io.Writer,
 ) anyerror!u8 {
-    // Allocate a small buffer to prove the allocator works
     const buf = try allocator.alloc(u8, 64);
     @memset(buf, 'x');
     try stdout.print("allocated:{d}\n", .{buf.len});
@@ -138,9 +123,10 @@ fn runUseAllocator(
 /// A run function that always returns an error.
 fn runAlwaysErrors(
     _: std.mem.Allocator,
+    _: std.Io,
     _: []const []const u8,
-    _: anytype,
-    _: anytype,
+    _: *std.Io.Writer,
+    _: *std.Io.Writer,
 ) anyerror!u8 {
     return error.SomeError;
 }
@@ -148,9 +134,10 @@ fn runAlwaysErrors(
 /// A run function that writes to both stdout and stderr.
 fn runWritesBoth(
     _: std.mem.Allocator,
+    _: std.Io,
     _: []const []const u8,
-    stdout: anytype,
-    stderr: anytype,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
 ) anyerror!u8 {
     try stdout.print("stdout-line\n", .{});
     try stderr.print("stderr-line\n", .{});
@@ -160,9 +147,10 @@ fn runWritesBoth(
 /// A run function that returns a specific exit code.
 fn runExitCode7(
     _: std.mem.Allocator,
+    _: std.Io,
     _: []const []const u8,
-    _: anytype,
-    _: anytype,
+    _: *std.Io.Writer,
+    _: *std.Io.Writer,
 ) anyerror!u8 {
     return 7;
 }
@@ -172,110 +160,128 @@ fn runExitCode7(
 // ---------------------------------------------------------------------------
 
 test "runWithBufferedIO: program name is stripped from args" {
-    // args[0] is the program name and must NOT be passed to the run function.
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_buf: [256]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const io = std.testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const argv = [_][]const u8{ "/usr/bin/myprog", "arg1", "arg2" };
-    _ = runWithBufferedIO(runEchoArgs, testing.allocator, &argv, stdout_stream.writer(), stderr_stream.writer());
+    _ = runWithBufferedIO(runEchoArgs, testing.allocator, io, &argv, &stdout_aw.writer, &stderr_aw.writer);
 
-    const out = stdout_stream.getWritten();
-    // Program name must not appear; only arg1 and arg2 should be echoed.
-    try testing.expect(std.mem.indexOf(u8, out, "myprog") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "arg1") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "arg2") != null);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "myprog") == null);
+    try testing.expect(std.mem.find(u8, out, "arg1") != null);
+    try testing.expect(std.mem.find(u8, out, "arg2") != null);
 }
 
 test "runWithBufferedIO: allocator is functional (arena allocation works)" {
-    // Use an arena like utilityMain does: the run function doesn't free
-    // individual allocations; the arena cleans up all at once.
+    const io = std.testing.io;
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const argv = [_][]const u8{"prog"};
     const code = runWithBufferedIO(
         runUseAllocator,
         arena.allocator(),
+        io,
         &argv,
-        stdout_stream.writer(),
-        std.io.null_writer,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, 0), code);
-    const out = stdout_stream.getWritten();
-    try testing.expect(std.mem.indexOf(u8, out, "allocated:64") != null);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "allocated:64") != null);
 }
 
 test "runWithBufferedIO: uncaught run error prints to stderr and returns 1" {
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_buf: [256]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const io = std.testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const argv = [_][]const u8{"prog"};
     const code = runWithBufferedIO(
         runAlwaysErrors,
         testing.allocator,
+        io,
         &argv,
-        stdout_stream.writer(),
-        stderr_stream.writer(),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, 1), code);
-    // Error name must appear in stderr
-    const err_out = stderr_stream.getWritten();
-    try testing.expect(std.mem.indexOf(u8, err_out, "SomeError") != null);
-    // Nothing written to stdout
-    try testing.expectEqual(@as(usize, 0), stdout_stream.getWritten().len);
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_out, "SomeError") != null);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "runWithBufferedIO: exit code from run function is returned" {
+    const io = std.testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
     const argv = [_][]const u8{"prog"};
     const code = runWithBufferedIO(
         runExitCode7,
         testing.allocator,
+        io,
         &argv,
-        std.io.null_writer,
-        std.io.null_writer,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, 7), code);
 }
 
 test "runWithBufferedIO: stdout and stderr writers receive correct data" {
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
-    var stderr_buf: [256]u8 = undefined;
-    var stderr_stream = std.io.fixedBufferStream(&stderr_buf);
+    const io = std.testing.io;
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const argv = [_][]const u8{"prog"};
     const code = runWithBufferedIO(
         runWritesBoth,
         testing.allocator,
+        io,
         &argv,
-        stdout_stream.writer(),
-        stderr_stream.writer(),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
     try testing.expectEqual(@as(u8, 42), code);
-    try testing.expectEqualStrings("stdout-line\n", stdout_stream.getWritten());
-    try testing.expectEqualStrings("stderr-line\n", stderr_stream.getWritten());
+    try testing.expectEqualStrings("stdout-line\n", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("stderr-line\n", stderr_aw.writer.buffered());
 }
 
 test "runWithBufferedIO: empty args slice (program name only) passes empty slice to run" {
-    var stdout_buf: [256]u8 = undefined;
-    var stdout_stream = std.io.fixedBufferStream(&stdout_buf);
+    const io = std.testing.io;
 
-    // Only program name in argv; run function should see zero args.
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
     const argv = [_][]const u8{"prog"};
     _ = runWithBufferedIO(
         runEchoArgs,
         testing.allocator,
+        io,
         &argv,
-        stdout_stream.writer(),
-        std.io.null_writer,
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
-    // Nothing echoed because args slice was empty
-    try testing.expectEqual(@as(usize, 0), stdout_stream.getWritten().len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }

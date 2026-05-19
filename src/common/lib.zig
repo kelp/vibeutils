@@ -93,6 +93,9 @@ pub const version = build_options.version;
 /// Name of the utility suite
 pub const name = "vibeutils";
 
+/// Environment variable and terminal detection helpers that work without libc.
+pub const env = @import("env.zig");
+
 /// Common error types used throughout vibeutils
 pub const Error = error{
     /// Invalid command-line arguments were provided
@@ -117,8 +120,15 @@ pub const ExitCode = enum(u8) {
     misuse = 2,
 };
 
-/// Null writer for suppressing output (commonly used in tests)
-pub const null_writer = std.io.null_writer;
+/// Null writer for suppressing output (commonly used in tests).
+///
+/// Backed by a small static buffer with a discarding drain — writes succeed
+/// and are silently dropped. Not thread-safe; use only where concurrent
+/// writes to the same null_writer are not possible (i.e. single-threaded
+/// test helpers).
+var null_writer_buf: [256]u8 = undefined;
+var null_writer_state: std.Io.Writer.Discarding = .init(&null_writer_buf);
+pub const null_writer: *std.Io.Writer = &null_writer_state.writer;
 
 /// DEPRECATED: Use fatalWithWriter() instead
 /// This function will be removed in a future version
@@ -143,11 +153,12 @@ pub fn fatalWithWriter(_: anytype, comptime fmt: []const u8, fmt_args: anytype) 
     // Write directly to stderr with a dedicated buffer to guarantee
     // output is flushed before exit. The passed writer may be buffered
     // with no way to flush through the interface pointer.
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var buf: [4096]u8 = undefined;
-    var w = std.fs.File.stderr().writerStreaming(&buf);
+    var w = std.Io.File.stderr().writerStreaming(io, &buf);
     const stderr = &w.interface;
-    const prog_name = std.fs.path.basename(std.mem.span(std.os.argv[0]));
-    stderr.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
+    stderr.print("error: " ++ fmt ++ "\n", fmt_args) catch {};
     stderr.flush() catch {};
     std.process.exit(@intFromEnum(ExitCode.general_error));
 }
@@ -174,9 +185,9 @@ pub fn printWarning(comptime fmt: []const u8, fmt_args: anytype) void {
 /// Used internally by printErrorWithProgram, printWarningWithProgram, and
 /// printHintWithProgram to decide whether to emit ANSI escape codes.
 fn stderrSupportsColor() bool {
-    if (std.posix.getenv("NO_COLOR") != null) return false;
-    if (!std.posix.isatty(std.fs.File.stderr().handle)) return false;
-    if (std.posix.getenv("TERM")) |term| {
+    if (env.getEnv("NO_COLOR") != null) return false;
+    if (!env.isTty(std.Io.File.stderr().handle)) return false;
+    if (env.getEnv("TERM")) |term| {
         if (std.mem.eql(u8, term, "dumb")) return false;
     }
     return true;
@@ -314,8 +325,9 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     // This test scans utility source files to ensure none use the buggy
     // .stdout().writer( or .stderr().writer( pattern.
     const testing = std.testing;
+    const io = testing.io;
 
-    const src_dir = std.fs.cwd().openDir("src", .{ .iterate = true }) catch {
+    const src_dir = std.Io.Dir.cwd().openDir(io, "src", .{ .iterate = true }) catch {
         // Skip if src/ not available (e.g. installed package)
         return;
     };
@@ -326,13 +338,13 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
     var violations: std.ArrayListUnmanaged(u8) = .empty;
     defer violations.deinit(testing.allocator);
 
-    while (try walker.next()) |entry| {
+    while (try walker.next(io)) |entry| {
         if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
         // Skip test/integration files and this file (contains patterns in strings)
-        if (std.mem.indexOf(u8, entry.path, "integration_tests") != null) continue;
+        if (std.mem.find(u8, entry.path, "integration_tests") != null) continue;
         if (std.mem.eql(u8, entry.basename, "lib.zig")) continue;
 
-        const content = src_dir.readFileAlloc(testing.allocator, entry.path, 1024 * 1024) catch continue;
+        const content = src_dir.readFileAlloc(io, entry.path, testing.allocator, .limited(1024 * 1024)) catch continue;
         defer testing.allocator.free(content);
 
         // Search for buggy pattern: .stdout().writer( or .stderr().writer(
@@ -343,10 +355,10 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
         };
         for (patterns) |pattern| {
             var pos: usize = 0;
-            while (std.mem.indexOfPos(u8, content, pos, pattern)) |idx| {
+            while (std.mem.findPos(u8, content, pos, pattern)) |idx| {
                 // Check it's not writerStreaming (which contains ".writer(" as substring)
                 // writerStreaming( would appear as .writerStreaming( so check preceding chars
-                const before_writer = idx + std.mem.indexOf(u8, pattern, ".writer(").?;
+                const before_writer = idx + std.mem.find(u8, pattern, ".writer(").?;
                 if (before_writer >= "Streaming".len) {
                     const prefix_start = before_writer - "Streaming".len;
                     if (std.mem.eql(u8, content[prefix_start..before_writer], "Streaming")) {
@@ -372,42 +384,42 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
 test "printErrorWithProgram - non-tty output must not contain ANSI escapes" {
     const testing = std.testing;
 
-    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    printErrorWithProgram(testing.allocator, buf.writer(testing.allocator), "test", "something went wrong", .{});
+    printErrorWithProgram(testing.allocator, &aw.writer, "test", "something went wrong", .{});
 
-    const output = buf.items;
+    const output = aw.writer.buffered();
     try testing.expect(output.len > 0);
-    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expect(std.mem.find(u8, output, "\x1b[") == null);
     try testing.expectEqualStrings("test: something went wrong\n", output);
 }
 
 test "printHintWithProgram - non-tty output must not contain ANSI escapes" {
     const testing = std.testing;
 
-    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    printHintWithProgram(testing.allocator, buf.writer(testing.allocator), "test", "use -i for interactive", .{});
+    printHintWithProgram(testing.allocator, &aw.writer, "test", "use -i for interactive", .{});
 
-    const output = buf.items;
+    const output = aw.writer.buffered();
     try testing.expect(output.len > 0);
-    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expect(std.mem.find(u8, output, "\x1b[") == null);
     try testing.expectEqualStrings("test: hint: use -i for interactive\n", output);
 }
 
 test "printWarningWithProgram - non-tty output must not contain ANSI escapes" {
     const testing = std.testing;
 
-    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    printWarningWithProgram(testing.allocator, buf.writer(testing.allocator), "test", "disk almost full", .{});
+    printWarningWithProgram(testing.allocator, &aw.writer, "test", "disk almost full", .{});
 
-    const output = buf.items;
+    const output = aw.writer.buffered();
     try testing.expect(output.len > 0);
-    try testing.expect(std.mem.indexOf(u8, output, "\x1b[") == null);
+    try testing.expect(std.mem.find(u8, output, "\x1b[") == null);
     try testing.expectEqualStrings("test: warning: disk almost full\n", output);
 }
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const process = std.process;
 const testing = std.testing;
+const env = @import("env.zig");
 
 /// Arena allocator for privileged tests to avoid testing.allocator issues under fakeroot
 /// This is a workaround for Zig 0.14 test runner incompatibility with fakeroot
@@ -65,7 +65,7 @@ pub const FakerootContext = struct {
         };
 
         // Check if fakeroot is available
-        if (checkCommandExists("fakeroot")) {
+        if (checkCommandExists()) {
             ctx.method = .fakeroot;
             ctx.available = true;
         }
@@ -75,17 +75,7 @@ pub const FakerootContext = struct {
 
     /// Check if we're running under fakeroot
     pub fn isUnderFakeroot() bool {
-        // Fakeroot sets specific environment variables
-        // Use a fixed buffer to avoid allocation issues
-        var buffer: [1024]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buffer);
-
-        if (process.getEnvVarOwned(fba.allocator(), "FAKEROOTKEY")) |val| {
-            defer fba.allocator().free(val);
-            return true;
-        } else |_| {
-            return false;
-        }
+        return env.getEnv("FAKEROOTKEY") != null;
     }
 };
 
@@ -94,7 +84,7 @@ pub fn requiresPrivilege() !void {
     // Use a simple check without allocator to avoid issues
     if (!FakerootContext.isUnderFakeroot()) {
         // Also check if fakeroot is available in the system
-        if (!checkCommandExists("fakeroot")) {
+        if (!checkCommandExists()) {
             return error.SkipZigTest;
         }
     }
@@ -116,43 +106,35 @@ pub fn withFakeroot(
     return error.SkipZigTest;
 }
 
-/// Check if a command exists in PATH
-fn checkCommandExists(name: []const u8) bool {
+/// Check if fakeroot command exists in PATH
+fn checkCommandExists() bool {
     // In test environments, avoid subprocess execution which can hang
     if (builtin.is_test) {
-        // Check environment to determine if commands are available
-        // This avoids subprocess execution during tests
-        if (std.mem.eql(u8, name, "fakeroot")) {
-            // Check if we're already under fakeroot
-            if (std.process.getEnvVarOwned(std.heap.page_allocator, "FAKEROOTKEY")) |key| {
-                std.heap.page_allocator.free(key);
-                return true;
-            } else |_| {}
+        // Check if we're already under fakeroot
+        if (env.getEnv("FAKEROOTKEY") != null) return true;
 
-            // In Docker containers, fakeroot is typically available
-            if (std.process.getEnvVarOwned(std.heap.page_allocator, "container")) |val| {
-                std.heap.page_allocator.free(val);
-                return true;
-            } else |_| {}
-        }
+        // In Docker containers, fakeroot is typically available
+        if (env.getEnv("container") != null) return true;
+
         return false;
     }
 
-    // Use a general purpose allocator for subprocess operations
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Try to find the command in PATH
-    const argv = [_][]const u8{ "which", name };
-    const result = process.Child.run(.{
-        .allocator = allocator,
-        .argv = &argv,
-    }) catch return false;
+    const argv = [_][]const u8{ "which", "fakeroot" };
+    const result = std.process.run(allocator, io, .{ .argv = &argv }) catch return false;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return result.term.Exited == 0;
+    return switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
 }
 
 // Tests
@@ -178,10 +160,9 @@ test "isUnderFakeroot detection" {
     const under_fakeroot = FakerootContext.isUnderFakeroot();
 
     // If FAKEROOTKEY is set, we should detect it
-    if (std.process.getEnvVarOwned(testing.allocator, "FAKEROOTKEY")) |key| {
-        defer testing.allocator.free(key);
+    if (env.getEnv("FAKEROOTKEY") != null) {
         try testing.expect(under_fakeroot);
-    } else |_| {
+    } else {
         try testing.expect(!under_fakeroot);
     }
 }
@@ -205,39 +186,37 @@ test "requiresPrivilege skip behavior" {
 }
 
 test "simple privileged operation simulation" {
+    const io = testing.io;
+
     // Only run if we're in privileged test mode
     if (!FakerootContext.isUnderFakeroot()) {
-        if (std.process.getEnvVarOwned(testing.allocator, "ZIG_PRIVILEGED_TESTS")) |val| {
-            defer testing.allocator.free(val);
+        if (env.getEnv("ZIG_PRIVILEGED_TESTS")) |val| {
             if (!std.mem.eql(u8, val, "1")) {
                 return error.SkipZigTest;
             }
-        } else |_| {
+        } else {
             return error.SkipZigTest;
         }
     }
 
     // Create a test file
     const test_file = "test_privilege_file.tmp";
-    defer std.fs.cwd().deleteFile(test_file) catch {};
+    defer std.Io.Dir.cwd().deleteFile(io, test_file) catch {};
 
     // Create file
-    const file = try std.fs.cwd().createFile(test_file, .{});
-    file.close();
+    const file = try std.Io.Dir.cwd().createFile(io, test_file, .{});
+    try file.close(io);
 
     // Under fakeroot, we can simulate changing ownership
     if (FakerootContext.isUnderFakeroot()) {
-        // In fakeroot, chown operations succeed but are simulated
-        // This would normally fail without privileges
-        const cwd = std.fs.cwd();
-        const file_handle = try cwd.openFile(test_file, .{});
-        defer file_handle.close();
+        const cwd = std.Io.Dir.cwd();
+        const file_handle = try cwd.openFile(io, test_file, .{});
+        defer file_handle.close(io);
 
         // Try to change ownership - this demonstrates the infrastructure
         // Note: fakeroot may not intercept all file operations through Zig's APIs
         file_handle.chown(0, 0) catch |err| {
             // This is expected - fakeroot doesn't always work with all APIs
-            // The important thing is that we detected we're under fakeroot
             try testing.expect(err == error.AccessDenied or err == error.PermissionDenied);
         };
 

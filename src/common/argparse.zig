@@ -77,7 +77,7 @@ pub const ArgParser = struct {
                     const flag_content = arg[2..];
 
                     // Check for = separator
-                    if (std.mem.indexOfScalar(u8, flag_content, '=')) |eq_pos| {
+                    if (std.mem.findScalar(u8, flag_content, '=')) |eq_pos| {
                         const flag_name = flag_content[0..eq_pos];
                         const flag_value = flag_content[eq_pos + 1 ..];
                         const next_arg: ?[]const u8 = null;
@@ -100,7 +100,7 @@ pub const ArgParser = struct {
                 } else {
                     // Short flag(s): -f or -abc or -o value or -o=value
                     // Check for equals sign for short options too
-                    if (std.mem.indexOfScalar(u8, arg[1..], '=')) |eq_pos| {
+                    if (std.mem.findScalar(u8, arg[1..], '=')) |eq_pos| {
                         // Short flag with = syntax: -o=value
                         const flag_char = arg[1];
                         const flag_value = arg[2 + eq_pos ..];
@@ -172,22 +172,11 @@ pub const ArgParser = struct {
         return result;
     }
 
-    /// Parse arguments from process.args() iterator
+    /// Parse arguments from process args.
+    /// Deprecated: pass args explicitly via parse() instead.
     pub fn parseProcess(comptime T: type, allocator: std.mem.Allocator) !T {
-        var args = try std.ArrayList([]const u8).initCapacity(allocator, 0);
-        defer args.deinit(allocator);
-
-        var iter = try std.process.argsWithAllocator(allocator);
-        defer iter.deinit();
-
-        // Skip program name
-        _ = iter.next();
-
-        while (iter.next()) |arg| {
-            try args.append(allocator, arg);
-        }
-
-        return parse(T, allocator, args.items);
+        _ = allocator;
+        @compileError("parseProcess is removed in 0.16; pass args slice explicitly via ArgParser.parse()");
     }
 
     fn parseLongFlag(comptime T: type, obj: *T, flag_name: []const u8) !bool {
@@ -312,7 +301,7 @@ pub const ArgParser = struct {
         if (comptime std.mem.eql(u8, name, "color")) return 'c';
 
         // Default: use first character if single word
-        if (comptime std.mem.indexOfScalar(u8, name, '_') == null and name.len > 0) {
+        if (comptime std.mem.findScalar(u8, name, '_') == null and name.len > 0) {
             return name[0];
         }
 
@@ -913,87 +902,80 @@ const BasicArgs = struct {
 
 test "parseOrExit: success returns parsed struct" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{ "--help", "file.txt" };
-    const result = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", w);
+    const result = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", &w);
     defer testing.allocator.free(result.positionals);
     try testing.expect(result.help);
     try testing.expectEqual(@as(usize, 1), result.positionals.len);
     try testing.expectEqualStrings("file.txt", result.positionals[0]);
     // No error output
-    try testing.expectEqual(@as(usize, 0), stream.getWritten().len);
+    try testing.expectEqual(@as(usize, 0), w.buffered().len);
 }
 
 test "parseOrExit: UnknownFlag prints prog-name and message" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{"--bogus"};
-    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", &w);
     try testing.expectError(error.ParseFailed, result);
-    const output = stream.getWritten();
-    try testing.expect(std.mem.indexOf(u8, output, "myutil") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "unrecognized option") != null);
+    const output = w.buffered();
+    try testing.expect(std.mem.find(u8, output, "myutil") != null);
+    try testing.expect(std.mem.find(u8, output, "unrecognized option") != null);
     // Must end with newline
     try testing.expect(output[output.len - 1] == '\n');
 }
 
 test "parseOrExit: MissingValue prints prog-name and message" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     // --output with no value
     const args = [_][]const u8{"--output"};
-    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", &w);
     try testing.expectError(error.ParseFailed, result);
-    const output = stream.getWritten();
-    try testing.expect(std.mem.indexOf(u8, output, "myutil") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "option requires an argument") != null);
+    const output = w.buffered();
+    try testing.expect(std.mem.find(u8, output, "myutil") != null);
+    try testing.expect(std.mem.find(u8, output, "option requires an argument") != null);
     try testing.expect(output[output.len - 1] == '\n');
 }
 
 test "parseOrExit: InvalidValue prints prog-name and message" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     // --count with non-integer value
     const args = [_][]const u8{"--count=notanumber"};
-    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", &w);
     try testing.expectError(error.ParseFailed, result);
-    const output = stream.getWritten();
-    try testing.expect(std.mem.indexOf(u8, output, "myutil") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "invalid option value") != null);
+    const output = w.buffered();
+    try testing.expect(std.mem.find(u8, output, "myutil") != null);
+    try testing.expect(std.mem.find(u8, output, "invalid option value") != null);
     try testing.expect(output[output.len - 1] == '\n');
 }
 
 test "parseOrExit: invalid enum value also returns InvalidValue message" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{"--mode=turbo"};
-    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", w);
+    const result = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "myutil", &w);
     try testing.expectError(error.ParseFailed, result);
-    const output = stream.getWritten();
-    try testing.expect(std.mem.indexOf(u8, output, "invalid option value") != null);
+    const output = w.buffered();
+    try testing.expect(std.mem.find(u8, output, "invalid option value") != null);
 }
 
 test "parseOrExit: error message format is 'prog: message\\n'" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{"--zzz"};
-    _ = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", w) catch {};
-    const output = stream.getWritten();
+    _ = ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "testprog", &w) catch {};
+    const output = w.buffered();
     // Exact format check: "testprog: unrecognized option\n"
     try testing.expectEqualStrings("testprog: unrecognized option\n", output);
 }
 
 test "parseOrExit: no output on success" {
     var buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
-    const w = stream.writer();
+    var w: std.Io.Writer = .fixed(&buf);
     const args = [_][]const u8{};
-    _ = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", w);
-    try testing.expectEqual(@as(usize, 0), stream.getWritten().len);
+    _ = try ArgParser.parseOrExit(BasicArgs, testing.allocator, &args, "prog", &w);
+    try testing.expectEqual(@as(usize, 0), w.buffered().len);
 }
