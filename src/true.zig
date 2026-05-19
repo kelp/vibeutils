@@ -8,8 +8,15 @@ const testing = std.testing;
 
 /// Main entry point for the true utility
 /// Always returns success (0) regardless of arguments, following POSIX specification
-pub fn runTrue(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runTrue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     _ = allocator;
+    _ = io;
     _ = args;
     _ = stdout_writer;
     _ = stderr_writer;
@@ -18,8 +25,8 @@ pub fn runTrue(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 }
 
 /// Standard main function - minimal since true never outputs
-pub fn main() !void {
-    std.process.exit(0);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runTrue);
 }
 
 // ============================================================================
@@ -27,6 +34,7 @@ pub fn main() !void {
 // ============================================================================
 
 test "true always returns 0 and ignores all arguments" {
+    const io = testing.io;
     // Test various argument patterns - true should always return 0
     const test_cases = [_][]const []const u8{
         &.{},
@@ -38,28 +46,26 @@ test "true always returns 0 and ignores all arguments" {
     };
 
     for (test_cases) |args| {
-        const result = try runTrue(testing.allocator, args, common.null_writer, common.null_writer);
+        const result = try runTrue(testing.allocator, io, args, common.null_writer, common.null_writer);
         try testing.expectEqual(@as(u8, 0), result);
     }
 }
 
 test "true produces no output" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Test with no arguments
-    _ = try runTrue(testing.allocator, &.{}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    _ = try runTrue(testing.allocator, io, &.{}, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 
-    // Clear buffers and test with arguments
-    stdout_buffer.clearRetainingCapacity();
-    stderr_buffer.clearRetainingCapacity();
-
-    _ = try runTrue(testing.allocator, &.{ "--help", "--version", "test" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    // Test with arguments
+    _ = try runTrue(testing.allocator, io, &.{ "--help", "--version", "test" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }

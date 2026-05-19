@@ -24,7 +24,14 @@ const WhoamiArgs = struct {
 };
 
 /// Main entry point for the whoami utility
-pub fn runWhoami(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runWhoami(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    _ = io;
     // Parse command-line arguments
     const parsed_args = common.argparse.ArgParser.parseOrExit(WhoamiArgs, allocator, args, "whoami", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
@@ -59,12 +66,12 @@ pub fn runWhoami(allocator: Allocator, args: []const []const u8, stdout_writer: 
     return @intFromEnum(common.ExitCode.success);
 }
 
-pub fn main() !void {
-    common.utilityMain(runWhoami);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runWhoami);
 }
 
 /// Print help message to the specified writer
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: whoami [OPTION]...
         \\Print the user name associated with the current effective user ID.
@@ -77,7 +84,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information to the specified writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("whoami ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -86,131 +93,136 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "whoami prints current username" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should return success
     try testing.expectEqual(@as(u8, 0), result);
 
     // Should print a non-empty username ending with newline
-    try testing.expect(stdout_buffer.items.len > 1);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buffer.items[stdout_buffer.items.len - 1]);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 1);
+    try testing.expectEqual(@as(u8, '\n'), out[out.len - 1]);
 
     // Should not print anything to stderr
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "whoami help flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: whoami") != null);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: whoami") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "whoami short help flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: whoami") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: whoami") != null);
 }
 
 test "whoami version flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "whoami") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.name) != null);
-    try testing.expectEqualStrings("", stderr_buffer.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "whoami") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "whoami short version flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "whoami") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "whoami") != null);
 }
 
 test "whoami unknown flag returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "whoami:") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    const err_out = stderr_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, err_out, "whoami:") != null);
+    try testing.expect(std.mem.find(u8, err_out, "unrecognized option") != null);
 }
 
 test "whoami unknown short flag returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-x"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "whoami extra arguments returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"extra"};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expectEqualStrings("", stdout_buffer.items);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
 test "whoami output matches current user" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runWhoami(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runWhoami(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // Verify output matches what user_group reports
@@ -221,5 +233,5 @@ test "whoami output matches current user" {
     // Output should be "username\n"
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{user_info.name});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
