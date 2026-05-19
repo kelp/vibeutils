@@ -55,7 +55,7 @@ pub const FakerootContext = struct {
     available: bool,
 
     /// Initialize the privilege testing context
-    pub fn init(allocator: std.mem.Allocator) !FakerootContext {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) !FakerootContext {
         const platform = Platform.detect();
         var ctx = FakerootContext{
             .allocator = allocator,
@@ -65,7 +65,7 @@ pub const FakerootContext = struct {
         };
 
         // Check if fakeroot is available
-        if (checkCommandExists()) {
+        if (checkCommandExists(io)) {
             ctx.method = .fakeroot;
             ctx.available = true;
         }
@@ -80,11 +80,11 @@ pub const FakerootContext = struct {
 };
 
 /// Skip test if no privilege simulation is available
-pub fn requiresPrivilege() !void {
+pub fn requiresPrivilege(io: std.Io) !void {
     // Use a simple check without allocator to avoid issues
     if (!FakerootContext.isUnderFakeroot()) {
         // Also check if fakeroot is available in the system
-        if (!checkCommandExists()) {
+        if (!checkCommandExists(io)) {
             return error.SkipZigTest;
         }
     }
@@ -107,7 +107,7 @@ pub fn withFakeroot(
 }
 
 /// Check if fakeroot command exists in PATH
-fn checkCommandExists() bool {
+fn checkCommandExists(io: std.Io) bool {
     // In test environments, avoid subprocess execution which can hang
     if (builtin.is_test) {
         // Check if we're already under fakeroot
@@ -119,8 +119,6 @@ fn checkCommandExists() bool {
         return false;
     }
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -149,7 +147,7 @@ test "platform detection" {
 }
 
 test "FakerootContext initialization" {
-    const ctx = try FakerootContext.init(testing.allocator);
+    const ctx = try FakerootContext.init(testing.allocator, testing.io);
 
     // We should at least detect the platform correctly
     try testing.expect(ctx.platform == Platform.detect());
@@ -170,7 +168,7 @@ test "isUnderFakeroot detection" {
 test "requiresPrivilege skip behavior" {
     // This test demonstrates the skip behavior
     // It will skip if no privilege simulation is available
-    requiresPrivilege() catch |err| {
+    requiresPrivilege(testing.io) catch |err| {
         if (err == error.SkipZigTest) {
             // This is expected behavior when not under privilege simulation
             return;
@@ -181,7 +179,7 @@ test "requiresPrivilege skip behavior" {
     // If we get here, we either:
     // 1. Are under fakeroot, OR
     // 2. Have privilege simulation tools available
-    const ctx = try FakerootContext.init(testing.allocator);
+    const ctx = try FakerootContext.init(testing.allocator, testing.io);
     try testing.expect(FakerootContext.isUnderFakeroot() or ctx.available);
 }
 

@@ -9,6 +9,7 @@ const std = @import("std");
 /// The caller is responsible for checking whether stdin is a TTY and whether
 /// prompting is appropriate (e.g., not in CI, not in test mode).
 pub fn promptYesNo(
+    io: std.Io,
     writer: anytype,
     comptime fmt: []const u8,
     args: anytype,
@@ -23,7 +24,7 @@ pub fn promptYesNo(
     }
 
     var stdin_buffer: [8192]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
     const stdin = &stdin_reader.interface;
 
     const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {

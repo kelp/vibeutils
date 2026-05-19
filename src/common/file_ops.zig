@@ -127,9 +127,7 @@ pub fn shouldSkipMacOSCITest() bool {
 ///
 /// Opens both paths and compares their fstat results. Returns false
 /// if either file cannot be opened or stat'd.
-pub fn isSameFile(source: []const u8, dest: []const u8) bool {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+pub fn isSameFile(io: std.Io, source: []const u8, dest: []const u8) bool {
     const source_file = std.Io.Dir.cwd().openFile(io, source, .{}) catch return false;
     defer source_file.close(io);
     const dest_file = std.Io.Dir.cwd().openFile(io, dest, .{}) catch return false;
@@ -193,17 +191,17 @@ test "isSameFile" {
     const path1 = try std.fmt.allocPrint(std.testing.allocator, "{s}/test.txt", .{dir_path});
     defer std.testing.allocator.free(path1);
 
-    try std.testing.expect(isSameFile(path1, path1));
+    try std.testing.expect(isSameFile(io, path1, path1));
 
     // Different files should not match
     const file2 = try tmp_dir.dir.createFile(io, "other.txt", .{});
     try file2.close(io);
     const path2 = try std.fmt.allocPrint(std.testing.allocator, "{s}/other.txt", .{dir_path});
     defer std.testing.allocator.free(path2);
-    try std.testing.expect(!isSameFile(path1, path2));
+    try std.testing.expect(!isSameFile(io, path1, path2));
 
     // Non-existent file should return false
-    try std.testing.expect(!isSameFile(path1, "/nonexistent_file_abc123"));
+    try std.testing.expect(!isSameFile(io, path1, "/nonexistent_file_abc123"));
 }
 
 test "setPermissions with file" {

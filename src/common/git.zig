@@ -41,8 +41,8 @@ pub const GitRepo = struct {
     const Self = @This();
     const REFRESH_INTERVAL_NS: i64 = 5_000_000_000; // 5 seconds in nanoseconds
 
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) !?Self {
-        const git_root = try findGitRoot(allocator, path) orelse return null;
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?Self {
+        const git_root = try findGitRoot(allocator, io, path) orelse return null;
 
         const repo = Self{
             .root_path = git_root,
@@ -66,10 +66,10 @@ pub const GitRepo = struct {
         self.status_map.deinit();
     }
 
-    pub fn getFileStatus(self: *Self, file_path: []const u8) GitStatus {
+    pub fn getFileStatus(self: *Self, io: std.Io, file_path: []const u8) GitStatus {
         // Lazy-load status on first call
         if (!self.status_loaded) {
-            self.refreshStatus() catch {
+            self.refreshStatus(io) catch {
                 // If initial load fails, mark as loaded to avoid repeated attempts
                 self.status_loaded = true;
                 return .not_in_repo;
@@ -89,9 +89,7 @@ pub const GitRepo = struct {
         return self.status_map.get(relative_path) orelse .clean;
     }
 
-    fn refreshStatus(self: *Self) !void {
-        var threaded: std.Io.Threaded = .init_single_threaded;
-        const io = threaded.io();
+    fn refreshStatus(self: *Self, io: std.Io) !void {
 
         // Clear existing status
         var iterator = self.status_map.iterator();
@@ -156,9 +154,7 @@ pub const GitRepo = struct {
 };
 
 /// Find the git repository root directory
-fn findGitRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]const u8 {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+fn findGitRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8) !?[]const u8 {
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const abs_start: []const u8 = if (std.fs.path.isAbsolute(start_path))
@@ -269,7 +265,7 @@ test "findGitRoot in non-git directory" {
 
     // This test may find the actual repo if run inside one, which is OK
     // The important thing is the function doesn't crash or leak memory
-    const result = try findGitRoot(allocator, tmp_path);
+    const result = try findGitRoot(allocator, io, tmp_path);
     if (result) |r| {
         defer allocator.free(r);
         // If we found a repo, it should contain .git
@@ -298,7 +294,7 @@ test "GitRepo init in non-git directory" {
     const tmp_path = path_buf[0..tmp_len];
 
     // This test may find the actual repo if run inside one
-    var repo = try GitRepo.init(allocator, tmp_path);
+    var repo = try GitRepo.init(allocator, io, tmp_path);
     if (repo) |*r| {
         defer r.deinit();
         // Verify the repo has a valid root path

@@ -167,6 +167,7 @@ const EnvState = struct {
 };
 
 test "resolve: VIBEUTILS_STYLE=plain sets all off" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -182,6 +183,7 @@ test "resolve: VIBEUTILS_STYLE=plain sets all off" {
 }
 
 test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -199,6 +201,7 @@ test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
 }
 
 test "resolve: VIBEUTILS_STYLE=always forces all on" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -215,6 +218,7 @@ test "resolve: VIBEUTILS_STYLE=always forces all on" {
 }
 
 test "resolve: VIBEUTILS_STYLE=color respects TTY" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -231,6 +235,7 @@ test "resolve: VIBEUTILS_STYLE=color respects TTY" {
 }
 
 test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -246,6 +251,7 @@ test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
 }
 
 test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -261,6 +267,7 @@ test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
 }
 
 test "resolve: NO_COLOR overrides everything for color" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -277,6 +284,7 @@ test "resolve: NO_COLOR overrides everything for color" {
 }
 
 test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -291,6 +299,7 @@ test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
 }
 
 test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -305,6 +314,7 @@ test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
 }
 
 test "resolve: VIBEUTILS_ICONS=always forces icons on" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -318,6 +328,7 @@ test "resolve: VIBEUTILS_ICONS=always forces icons on" {
 }
 
 test "resolve: TERM=dumb forces color off" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -333,6 +344,7 @@ test "resolve: TERM=dumb forces color off" {
 }
 
 test "resolve: no env vars on non-tty defaults all off" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -346,6 +358,7 @@ test "resolve: no env vars on non-tty defaults all off" {
 }
 
 test "resolve: VIBEUTILS_THEME=none sets theme none" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
@@ -360,6 +373,7 @@ test "resolve: VIBEUTILS_THEME=none sets theme none" {
 }
 
 test "resolve: VIBEUTILS_HIGHLIGHT=never overrides style=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
     if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();

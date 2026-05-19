@@ -138,28 +138,28 @@ pub fn fatal(comptime fmt: []const u8, fmt_args: anytype) noreturn {
     @compileError("fatal() is deprecated - use fatalWithWriter() with explicit stderr writer instead");
 }
 
-/// Print error message to stderr writer and exit with error code
+/// Print error message to the given stderr writer and exit with error code.
 ///
-/// This function formats an error message with the program name prefix,
-/// prints it to the provided stderr writer, and exits with a general error code.
+/// Writes `prog_name: <message>\n` to `stderr_writer`, flushes it, then
+/// exits with `ExitCode.general_error`. The `io` parameter is threaded
+/// through for future use (e.g. waiting on background tasks before exit).
 ///
 /// Example:
 /// ```zig
-/// const stderr = std.io.getStdErr().writer();
-/// common.fatalWithWriter(stderr, "cannot open file: {s}", .{filename});
+/// common.fatalWithWriter(io, stderr_writer, "myprogram",
+///     "cannot open file: {s}", .{filename});
 /// // Output: myprogram: cannot open file: test.txt
 /// ```
-pub fn fatalWithWriter(_: anytype, comptime fmt: []const u8, fmt_args: anytype) noreturn {
-    // Write directly to stderr with a dedicated buffer to guarantee
-    // output is flushed before exit. The passed writer may be buffered
-    // with no way to flush through the interface pointer.
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    var buf: [4096]u8 = undefined;
-    var w = std.Io.File.stderr().writerStreaming(io, &buf);
-    const stderr = &w.interface;
-    stderr.print("error: " ++ fmt ++ "\n", fmt_args) catch {};
-    stderr.flush() catch {};
+pub fn fatalWithWriter(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    prog_name: []const u8,
+    comptime fmt: []const u8,
+    fmt_args: anytype,
+) noreturn {
+    _ = io; // reserved for future use (e.g. draining async tasks before exit)
+    stderr_writer.print("{s}: " ++ fmt ++ "\n", .{prog_name} ++ fmt_args) catch {};
+    stderr_writer.flush() catch {};
     std.process.exit(@intFromEnum(ExitCode.general_error));
 }
 

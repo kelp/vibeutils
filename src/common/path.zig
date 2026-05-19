@@ -15,9 +15,7 @@ const Allocator = std.mem.Allocator;
 ///
 /// Returns `error.FileNotFound` or `error.NotDir` (or the underlying realpath
 /// error) if the parent cannot be resolved or is not a directory.
-pub fn canonicalizeParentMustExist(allocator: Allocator, path: []const u8) ![]u8 {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
 
     // Empty path — GNU realpath exits with FileNotFound on empty input.
     if (path.len == 0) {
@@ -65,9 +63,7 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, path: []const u8) ![]u8
 /// Canonicalize a path where components need not exist.
 /// Resolves as much as possible via realpath, then appends the remaining
 /// parts with `.` and `..` cleaned logically.
-pub fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
 
     if (path.len == 0) {
         // Empty path: return current directory
@@ -198,7 +194,7 @@ pub fn canonicalizeMissing(allocator: Allocator, path: []const u8) ![]u8 {
 const testing = std.testing;
 
 test "canonicalizeMissing: existing path resolves normally" {
-    const result = try canonicalizeMissing(testing.allocator, "/tmp");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/tmp");
     defer testing.allocator.free(result);
     // /tmp exists; result should be its realpath (e.g. /private/tmp on macOS)
     try testing.expect(result.len > 0);
@@ -206,26 +202,26 @@ test "canonicalizeMissing: existing path resolves normally" {
 }
 
 test "canonicalizeMissing: nonexistent tail appended to real prefix" {
-    const result = try canonicalizeMissing(testing.allocator, "/tmp/nonexistent_vibeutils_test_path");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/tmp/nonexistent_vibeutils_test_path");
     defer testing.allocator.free(result);
     try testing.expect(std.mem.endsWith(u8, result, "nonexistent_vibeutils_test_path"));
 }
 
 test "canonicalizeMissing: dotdot past root returns root" {
-    const result = try canonicalizeMissing(testing.allocator, "/nonexistent_vibeutils_test/..");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/nonexistent_vibeutils_test/..");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/", result);
 }
 
 test "canonicalizeMissing: empty path returns cwd" {
-    const result = try canonicalizeMissing(testing.allocator, "");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "");
     defer testing.allocator.free(result);
     try testing.expect(result.len > 0);
     try testing.expectEqual(@as(u8, '/'), result[0]);
 }
 
 test "canonicalizeMissing: root only returns root" {
-    const result = try canonicalizeMissing(testing.allocator, "/");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/", result);
 }
@@ -234,7 +230,7 @@ test "canonicalizeMissing: dotdot past root is clamped (security)" {
     // /../../etc/passwd: multiple leading ".." components must clamp at root
     // before resolving the real path. The result must be the canonical form
     // of /etc/passwd, never a relative escape or something outside root.
-    const result = try canonicalizeMissing(testing.allocator, "/../../etc/passwd");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/../../etc/passwd");
     defer testing.allocator.free(result);
     // Must be an absolute path — never a relative escape.
     try testing.expectEqual(@as(u8, '/'), result[0]);
@@ -249,7 +245,7 @@ test "canonicalizeMissing: dotdot past root with fully nonexistent path" {
     // so the else-branch does pure string normalization. The second ".." goes
     // past root; the clamp (`if (cleaned.items.len > 0)`) keeps it at root.
     // Result must be /nonexistent2, not /nonexistent1/../nonexistent2 or similar.
-    const result = try canonicalizeMissing(testing.allocator, "/nonexistent1_vibeutils/../../nonexistent2_vibeutils");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/nonexistent1_vibeutils/../../nonexistent2_vibeutils");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/nonexistent2_vibeutils", result);
 }
@@ -257,7 +253,7 @@ test "canonicalizeMissing: dotdot past root with fully nonexistent path" {
 test "canonicalizeMissing: many dotdots past root always return root" {
     // /nonexistent/../../../../../.. — far more ".." than path depth.
     // Every branch (resolved prefix and else) must clamp to "/".
-    const result = try canonicalizeMissing(testing.allocator, "/nonexistent_vibeutils/../../../../../..");
+    const result = try canonicalizeMissing(testing.allocator, testing.io, "/nonexistent_vibeutils/../../../../../..");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/", result);
 }
@@ -267,7 +263,7 @@ test "canonicalizeMissing: many dotdots past root always return root" {
 // ============================================================================
 
 test "canonicalizeParentMustExist: existing path resolves fully" {
-    const result = try canonicalizeParentMustExist(testing.allocator, "/tmp");
+    const result = try canonicalizeParentMustExist(testing.allocator, testing.io, "/tmp");
     defer testing.allocator.free(result);
     try testing.expect(result.len > 0);
     try testing.expectEqual(@as(u8, '/'), result[0]);
@@ -275,19 +271,19 @@ test "canonicalizeParentMustExist: existing path resolves fully" {
 
 test "canonicalizeParentMustExist: nonexistent last component at root succeeds" {
     // Parent is "/", which exists; last component may be missing.
-    const result = try canonicalizeParentMustExist(testing.allocator, "/nonexistent_vibeutils_parent_test");
+    const result = try canonicalizeParentMustExist(testing.allocator, testing.io, "/nonexistent_vibeutils_parent_test");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/nonexistent_vibeutils_parent_test", result);
 }
 
 test "canonicalizeParentMustExist: nonexistent last component under existing dir succeeds" {
-    const result = try canonicalizeParentMustExist(testing.allocator, "/tmp/nonexistent_vibeutils_last_test");
+    const result = try canonicalizeParentMustExist(testing.allocator, testing.io, "/tmp/nonexistent_vibeutils_last_test");
     defer testing.allocator.free(result);
     try testing.expect(std.mem.endsWith(u8, result, "nonexistent_vibeutils_last_test"));
 }
 
 test "canonicalizeParentMustExist: missing intermediate fails" {
-    const result = canonicalizeParentMustExist(testing.allocator, "/nonexistent_vibeutils_dir/file");
+    const result = canonicalizeParentMustExist(testing.allocator, testing.io, "/nonexistent_vibeutils_dir/file");
     try testing.expectError(error.FileNotFound, result);
 }
 
@@ -304,36 +300,36 @@ test "canonicalizeParentMustExist: file as parent fails with NotDir" {
     const dir_path = path_buf[0..dir_len];
     const bad = try std.fmt.allocPrint(testing.allocator, "{s}/real_file/ghost", .{dir_path});
     defer testing.allocator.free(bad);
-    const result = canonicalizeParentMustExist(testing.allocator, bad);
+    const result = canonicalizeParentMustExist(testing.allocator, io, bad);
     try testing.expectError(error.NotDir, result);
 }
 
 test "canonicalizeParentMustExist: empty path returns FileNotFound" {
-    const result = canonicalizeParentMustExist(testing.allocator, "");
+    const result = canonicalizeParentMustExist(testing.allocator, testing.io, "");
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "canonicalizeParentMustExist: basename '.' with nonexistent path fails" {
-    const result = canonicalizeParentMustExist(testing.allocator, "/nonexistent_vibeutils_dot/.");
+    const result = canonicalizeParentMustExist(testing.allocator, testing.io, "/nonexistent_vibeutils_dot/.");
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "canonicalizeParentMustExist: basename '..' with nonexistent path fails" {
-    const result = canonicalizeParentMustExist(testing.allocator, "/nonexistent_vibeutils_dotdot/..");
+    const result = canonicalizeParentMustExist(testing.allocator, testing.io, "/nonexistent_vibeutils_dotdot/..");
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "canonicalizeParentMustExist: relative path with existing cwd" {
     // Relative paths need an existing parent relative to cwd.
     // "some_nonexistent_file" has dirname=".", which always resolves.
-    const result = try canonicalizeParentMustExist(testing.allocator, "nonexistent_vibeutils_rel");
+    const result = try canonicalizeParentMustExist(testing.allocator, testing.io, "nonexistent_vibeutils_rel");
     defer testing.allocator.free(result);
     try testing.expect(std.fs.path.isAbsolute(result));
     try testing.expect(std.mem.endsWith(u8, result, "nonexistent_vibeutils_rel"));
 }
 
 test "canonicalizeParentMustExist: trailing slash on existing dir resolves" {
-    const result = try canonicalizeParentMustExist(testing.allocator, "/tmp/");
+    const result = try canonicalizeParentMustExist(testing.allocator, testing.io, "/tmp/");
     defer testing.allocator.free(result);
     try testing.expect(result.len > 0);
     try testing.expectEqual(@as(u8, '/'), result[0]);
