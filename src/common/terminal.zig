@@ -19,8 +19,8 @@ fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16
     }
 
     // Unix-like systems: try ioctl first
-    if (std.posix.isatty(std.Io.File.stdout().handle)) {
-        var ws: std.posix.winsize = undefined;
+    if (std.c.isatty(std.Io.File.stdout().handle) != 0) {
+        var ws: std.c.winsize = undefined;
 
         // Use the appropriate ioctl based on the OS
         const result = switch (builtin.os.tag) {
