@@ -374,31 +374,98 @@ fn parseFileType(str: []const u8) !FileType {
 // Stat helper
 // ============================================================================
 
-fn doStat(path: []const u8, follow_symlinks: bool) !c.Stat {
-    var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-    if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+/// Cross-platform stat result. On Linux c.Stat is void, so we use our own struct.
+const StatInfo = struct {
+    dev: i64 = 0,
+    ino: u64 = 0,
+    mode: u32 = 0,
+    nlink: u64 = 0,
+    uid: u32 = 0,
+    gid: u32 = 0,
+    size: i64 = 0,
+    blksize: i64 = 0,
+    blocks: i64 = 0,
+    atim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    mtim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    ctim: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    /// macOS-only: birthtime. Zero on Linux.
+    birthtimespec: struct { sec: i64 = 0, nsec: i64 = 0 } = .{},
+    /// macOS-only: file flags (chflags). Zero on Linux.
+    flags: u32 = 0,
+};
+
+fn doStat(path: []const u8, follow_symlinks: bool) !StatInfo {
+    var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
 
-    var stat_buf: c.Stat = undefined;
-    const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
-    const result = c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, flags);
-    if (result != 0) {
-        const errno = std.posix.errno(result);
-        return switch (errno) {
-            .ACCES => error.AccessDenied,
-            .NOENT => error.FileNotFound,
-            .NOTDIR => error.NotDir,
-            .NAMETOOLONG => error.NameTooLong,
-            .LOOP => error.SymLinkLoop,
-            else => error.SystemResources,
+    if (builtin.os.tag == .linux) {
+        // On Linux, std.c.fstatat is void; use statx syscall.
+        const linux = std.os.linux;
+        const flags: u32 = if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW;
+        var stx: linux.Statx = undefined;
+        const rc = linux.statx(c.AT.FDCWD, c_path, flags, linux.STATX.BASIC_STATS, &stx);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {},
+            .ACCES => return error.AccessDenied,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .NAMETOOLONG => return error.NameTooLong,
+            .LOOP => return error.SymLinkLoop,
+            else => return error.SystemResources,
+        }
+        return StatInfo{
+            .dev = @intCast((@as(u64, stx.dev_major) << 8) | stx.dev_minor),
+            .ino = stx.ino,
+            .mode = stx.mode,
+            .nlink = stx.nlink,
+            .uid = stx.uid,
+            .gid = stx.gid,
+            .size = @intCast(stx.size),
+            .blksize = @intCast(stx.blksize),
+            .blocks = @intCast(stx.blocks),
+            .atim = .{ .sec = stx.atime.sec, .nsec = @intCast(stx.atime.nsec) },
+            .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
+            .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
+        };
+    } else {
+        var stat_buf: c.Stat = undefined;
+        const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
+        const result = c.fstatat(c.AT.FDCWD, c_path, &stat_buf, flags);
+        if (result != 0) {
+            const errno = std.posix.errno(result);
+            return switch (errno) {
+                .ACCES => error.AccessDenied,
+                .NOENT => error.FileNotFound,
+                .NOTDIR => error.NotDir,
+                .NAMETOOLONG => error.NameTooLong,
+                .LOOP => error.SymLinkLoop,
+                else => error.SystemResources,
+            };
+        }
+        // Build StatInfo from c.Stat (macOS/BSD)
+        return StatInfo{
+            .dev = @intCast(stat_buf.dev),
+            .ino = @intCast(stat_buf.ino),
+            .mode = @intCast(stat_buf.mode),
+            .nlink = @intCast(stat_buf.nlink),
+            .uid = @intCast(stat_buf.uid),
+            .gid = @intCast(stat_buf.gid),
+            .size = @intCast(stat_buf.size),
+            .blksize = @intCast(stat_buf.blksize),
+            .blocks = @intCast(stat_buf.blocks),
+            .atim = .{ .sec = @intCast(stat_buf.atimespec.sec), .nsec = @intCast(stat_buf.atimespec.nsec) },
+            .mtim = .{ .sec = @intCast(stat_buf.mtimespec.sec), .nsec = @intCast(stat_buf.mtimespec.nsec) },
+            .ctim = .{ .sec = @intCast(stat_buf.ctimespec.sec), .nsec = @intCast(stat_buf.ctimespec.nsec) },
+            .birthtimespec = .{ .sec = @intCast(stat_buf.birthtimespec.sec), .nsec = @intCast(stat_buf.birthtimespec.nsec) },
+            .flags = if (@hasField(@TypeOf(stat_buf), "flags")) @intCast(stat_buf.flags) else 0,
         };
     }
-    return stat_buf;
 }
 
-fn getFileKind(mode: c.mode_t) FileType {
+fn getFileKind(mode: u32) FileType {
     const fmt = mode & c.S.IFMT;
     if (fmt == c.S.IFREG) return .regular;
     if (fmt == c.S.IFDIR) return .directory;
@@ -410,56 +477,41 @@ fn getFileKind(mode: c.mode_t) FileType {
     return .regular;
 }
 
-fn getMtime(stat_buf: c.Stat) i64 {
-    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-        return stat_buf.mtimespec.sec;
-    } else {
-        return stat_buf.mtim.sec;
-    }
+fn getMtime(stat_buf: StatInfo) i64 {
+    return stat_buf.mtim.sec;
 }
 
-fn getAtime(stat_buf: c.Stat) i64 {
-    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-        return stat_buf.atimespec.sec;
-    } else {
-        return stat_buf.atim.sec;
-    }
+fn getAtime(stat_buf: StatInfo) i64 {
+    return stat_buf.atim.sec;
 }
 
-fn getCtime(stat_buf: c.Stat) i64 {
-    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-        return stat_buf.ctimespec.sec;
-    } else {
-        return stat_buf.ctim.sec;
-    }
+fn getCtime(stat_buf: StatInfo) i64 {
+    return stat_buf.ctim.sec;
 }
 
 /// Get birth time of a file. On Linux uses statx(); on macOS uses birthtimespec.
 /// Returns null if birth time is not available.
 fn getBirthTime(path: []const u8) ?i64 {
     if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-        // macOS stat has birthtimespec
+        // macOS: birthtimespec is stored in StatInfo.birthtimespec
         const stat_buf = doStat(path, false) catch return null;
         return stat_buf.birthtimespec.sec;
     } else if (builtin.os.tag == .linux) {
-        // Linux: use statx syscall
-        var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        if (path.len > std.fs.max_path_bytes) return null;
+        // Linux: use statx syscall with BTIME flag
+        const linux = std.os.linux;
+        var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+        if (path.len > std.Io.Dir.max_path_bytes) return null;
         @memcpy(path_buf[0..path.len], path);
         path_buf[path.len] = 0;
         const c_path = path_buf[0..path.len :0];
 
-        var stx: std.os.linux.Statx = undefined;
-        const result = std.os.linux.statx(
-            std.fs.cwd().fd,
-            c_path,
-            0, // flags
-            std.os.linux.STATX_BTIME,
-            &stx,
-        );
+        var stx: linux.Statx = undefined;
+        const btime_statx = linux.STATX{ .BTIME = true };
+        const btime_mask: u32 = @bitCast(btime_statx);
+        const result = linux.statx(c.AT.FDCWD, c_path, 0, btime_statx, &stx);
         if (result != 0) return null;
         // Check if btime was actually filled
-        if ((stx.mask & std.os.linux.STATX_BTIME) == 0) return null;
+        if ((@as(u32, @bitCast(stx.mask)) & btime_mask) == 0) return null;
         return @intCast(stx.btime.sec);
     } else {
         return null;
@@ -535,7 +587,7 @@ fn freeRegex(allocator: Allocator, regex: *regex_h.regex_t) void {
 }
 
 fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !FindConfig {
-    var start_paths = std.ArrayListUnmanaged([]const u8){};
+    var start_paths = std.ArrayListUnmanaged([]const u8).empty;
     defer start_paths.deinit(allocator);
 
     var maxdepth: ?u32 = null;
@@ -989,7 +1041,7 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 
     if (std.mem.eql(u8, arg, "-exec")) {
         pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
         defer exec_args.deinit(allocator);
         var is_batch = false;
 
@@ -1073,7 +1125,7 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 
     if (std.mem.eql(u8, arg, "-ok")) {
         pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
         defer exec_args.deinit(allocator);
 
         while (pos.* < args.len) {
@@ -1203,7 +1255,7 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 
     if (std.mem.eql(u8, arg, "-execdir")) {
         pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
         defer exec_args.deinit(allocator);
         var is_batch = false;
 
@@ -1485,7 +1537,7 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
     // -okdir: like -execdir but prompts (stub: always false)
     if (std.mem.eql(u8, arg, "-okdir")) {
         pos.* += 1;
-        var exec_args = std.ArrayListUnmanaged([]const u8){};
+        var exec_args = std.ArrayListUnmanaged([]const u8).empty;
         defer exec_args.deinit(allocator);
 
         while (pos.* < args.len) {
@@ -1608,18 +1660,18 @@ fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has
 // ============================================================================
 
 const BatchContext = struct {
-    exec_paths: std.ArrayListUnmanaged([]const u8) = .{},
-    execdir_paths: std.ArrayListUnmanaged([]const u8) = .{},
+    exec_paths: std.ArrayListUnmanaged([]const u8) = .empty,
+    execdir_paths: std.ArrayListUnmanaged([]const u8) = .empty,
     exec_template: ?[]const []const u8 = null,
     execdir_template: ?[]const []const u8 = null,
     execdir_dir: ?[]const u8 = null,
 
-    fn flushExec(self: *BatchContext, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
+    fn flushExec(self: *BatchContext, io: std.Io, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
         _ = stderr;
         if (self.exec_template == null or self.exec_paths.items.len == 0) return true;
         const template = self.exec_template.?;
 
-        var argv = std.ArrayListUnmanaged([]const u8){};
+        var argv = std.ArrayListUnmanaged([]const u8).empty;
         defer argv.deinit(allocator);
 
         // Build argv: template args, replacing {} with collected paths
@@ -1643,8 +1695,7 @@ const BatchContext = struct {
 
         if (argv.items.len == 0) return true;
 
-        const result = std.process.Child.run(.{
-            .allocator = allocator,
+        const result = std.process.run(allocator, io, .{
             .argv = argv.items,
         }) catch return false;
 
@@ -1655,15 +1706,15 @@ const BatchContext = struct {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
 
-        return result.term.Exited == 0;
+        return result.term == .exited and result.term.exited == 0;
     }
 
-    fn flushExecdir(self: *BatchContext, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
+    fn flushExecdir(self: *BatchContext, io: std.Io, allocator: Allocator, stdout: anytype, stderr: anytype) bool {
         _ = stderr;
         if (self.execdir_template == null or self.execdir_paths.items.len == 0) return true;
         const template = self.execdir_template.?;
 
-        var argv = std.ArrayListUnmanaged([]const u8){};
+        var argv = std.ArrayListUnmanaged([]const u8).empty;
         defer argv.deinit(allocator);
 
         var found_placeholder = false;
@@ -1695,10 +1746,9 @@ const BatchContext = struct {
 
         if (argv.items.len == 0) return true;
 
-        const cwd = if (self.execdir_dir) |d| d else ".";
+        const cwd: std.process.Child.Cwd = if (self.execdir_dir) |d| .{ .path = d } else .inherit;
 
-        const result = std.process.Child.run(.{
-            .allocator = allocator,
+        const result = std.process.run(allocator, io, .{
             .argv = argv.items,
             .cwd = cwd,
         }) catch return false;
@@ -1709,7 +1759,7 @@ const BatchContext = struct {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
 
-        return result.term.Exited == 0;
+        return result.term == .exited and result.term.exited == 0;
     }
 };
 
@@ -1718,10 +1768,11 @@ const BatchContext = struct {
 // ============================================================================
 
 fn evaluate(
+    io: std.Io,
     expr: *const Expression,
     path: []const u8,
     basename: []const u8,
-    stat_buf: c.Stat,
+    stat_buf: StatInfo,
     kind: FileType,
     now: i64,
     depth: u32,
@@ -1770,7 +1821,7 @@ fn evaluate(
         },
         .empty => {
             if (kind == .regular) return stat_buf.size == 0;
-            if (kind == .directory) return isDirEmpty(path) catch false;
+            if (kind == .directory) return isDirEmpty(io, path) catch false;
             return false;
         },
         .newer => {
@@ -1880,7 +1931,7 @@ fn evaluate(
             const file_ctime = getCtime(stat_buf);
             return file_ctime > expr.data.newer_mtime;
         },
-        .execdir => return doExecdir(allocator, path, basename, expr.data.exec_data),
+        .execdir => return doExecdir(io, allocator, path, basename, expr.data.exec_data),
         .ls_action => return doLs(allocator, path, stat_buf, kind, stdout, had_error),
         .fstype => return matchFstype(allocator, path, expr.data.name_str),
         .flags => return matchFlags(stat_buf, expr.data.name_str),
@@ -1909,8 +1960,8 @@ fn evaluate(
             };
             return true;
         },
-        .delete => return doDelete(allocator, path, kind, stderr, had_error),
-        .exec_cmd => return doExec(allocator, path, expr.data.exec_data),
+        .delete => return doDelete(io, allocator, path, kind, stderr, had_error),
+        .exec_cmd => return doExec(io, allocator, path, expr.data.exec_data),
         .exec_batch => {
             if (batch_ctx) |bc| {
                 bc.exec_template = expr.data.exec_data.argv;
@@ -1938,17 +1989,17 @@ fn evaluate(
             return true;
         },
         .and_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
+            const left_result = evaluate(io, expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
             if (!left_result) return false;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
+            return evaluate(io, expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
         },
         .or_expr => {
-            const left_result = evaluate(expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
+            const left_result = evaluate(io, expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
             if (left_result) return true;
-            return evaluate(expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
+            return evaluate(io, expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
         },
         .not_expr => {
-            return !evaluate(expr.data.unary, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
+            return !evaluate(io, expr.data.unary, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
         },
         .prune => {
             pruned.* = true;
@@ -2019,11 +2070,11 @@ fn evaluate(
         .uid_match => return stat_buf.uid == expr.data.uid_val,
         .lname => {
             if (kind != .symlink) return false;
-            return matchSymlinkTarget(allocator, path, expr.data.pattern, false);
+            return matchSymlinkTarget(io, allocator, path, expr.data.pattern, false);
         },
         .ilname => {
             if (kind != .symlink) return false;
-            return matchSymlinkTarget(allocator, path, expr.data.pattern, true);
+            return matchSymlinkTarget(io, allocator, path, expr.data.pattern, true);
         },
         .samefile => {
             const sf = expr.data.samefile_data;
@@ -2140,11 +2191,11 @@ fn isXargsUnsafe(name: []const u8) bool {
     return false;
 }
 
-fn isDirEmpty(path: []const u8) !bool {
-    var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
-    defer dir.close();
+fn isDirEmpty(io: std.Io, path: []const u8) !bool {
+    var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer dir.close(io);
     var iter = dir.iterate();
-    const entry = try iter.next();
+    const entry = try iter.next(io);
     return entry == null;
 }
 
@@ -2184,22 +2235,23 @@ fn matchGroup(name_str: []const u8, gid: c.gid_t) bool {
     return false;
 }
 
-fn matchSymlinkTarget(allocator: Allocator, path: []const u8, pattern: []const u8, case_insensitive: bool) bool {
+fn matchSymlinkTarget(io: std.Io, allocator: Allocator, path: []const u8, pattern: []const u8, case_insensitive: bool) bool {
     _ = allocator;
-    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const target = std.fs.cwd().readLink(path, &link_buf) catch return false;
+    var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = std.Io.Dir.cwd().readLink(io, path, &link_buf) catch return false;
+    const target = link_buf[0..len];
     return if (case_insensitive) glob.globMatchInsensitive(pattern, target) else glob.globMatch(pattern, target);
 }
 
-fn doDelete(allocator: Allocator, path: []const u8, kind: FileType, stderr: anytype, had_error: *bool) bool {
+fn doDelete(io: std.Io, allocator: Allocator, path: []const u8, kind: FileType, stderr: anytype, had_error: *bool) bool {
     if (kind == .directory) {
-        std.fs.cwd().deleteDir(path) catch |err| {
+        std.Io.Dir.cwd().deleteDir(io, path) catch |err| {
             common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, common.posixErrorString(err) });
             had_error.* = true;
             return false;
         };
     } else {
-        std.fs.cwd().deleteFile(path) catch |err| {
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| {
             common.printErrorWithProgram(allocator, stderr, prog_name, "cannot delete '{s}': {s}", .{ path, common.posixErrorString(err) });
             had_error.* = true;
             return false;
@@ -2208,8 +2260,8 @@ fn doDelete(allocator: Allocator, path: []const u8, kind: FileType, stderr: anyt
     return true;
 }
 
-fn doExec(allocator: Allocator, path: []const u8, exec_data: ExecExpr) bool {
-    var argv = std.ArrayListUnmanaged([]const u8){};
+fn doExec(io: std.Io, allocator: Allocator, path: []const u8, exec_data: ExecExpr) bool {
+    var argv = std.ArrayListUnmanaged([]const u8).empty;
     defer argv.deinit(allocator);
 
     for (exec_data.argv) |arg| {
@@ -2222,8 +2274,7 @@ fn doExec(allocator: Allocator, path: []const u8, exec_data: ExecExpr) bool {
 
     if (argv.items.len == 0) return false;
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = argv.items,
     }) catch {
         return false;
@@ -2231,11 +2282,11 @@ fn doExec(allocator: Allocator, path: []const u8, exec_data: ExecExpr) bool {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return result.term.Exited == 0;
+    return result.term == .exited and result.term.exited == 0;
 }
 
-fn doExecdir(allocator: Allocator, path: []const u8, basename: []const u8, exec_data: ExecExpr) bool {
-    var argv = std.ArrayListUnmanaged([]const u8){};
+fn doExecdir(io: std.Io, allocator: Allocator, path: []const u8, basename: []const u8, exec_data: ExecExpr) bool {
+    var argv = std.ArrayListUnmanaged([]const u8).empty;
     defer argv.deinit(allocator);
 
     // Replace {} with ./basename (POSIX says relative to dir)
@@ -2255,17 +2306,16 @@ fn doExecdir(allocator: Allocator, path: []const u8, basename: []const u8, exec_
     // Get the directory of the file
     const dir_path = std.fs.path.dirname(path) orelse ".";
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = argv.items,
-        .cwd = dir_path,
+        .cwd = .{ .path = dir_path },
     }) catch {
         return false;
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    return result.term.Exited == 0;
+    return result.term == .exited and result.term.exited == 0;
 }
 
 fn doOk(allocator: Allocator, path: []const u8, exec_data: ExecExpr, stderr: anytype) bool {
@@ -2280,7 +2330,7 @@ fn doOk(allocator: Allocator, path: []const u8, exec_data: ExecExpr, stderr: any
     return false;
 }
 
-fn doLs(allocator: Allocator, path: []const u8, stat_buf: c.Stat, kind: FileType, stdout: anytype, had_error: *bool) bool {
+fn doLs(allocator: Allocator, path: []const u8, stat_buf: StatInfo, kind: FileType, stdout: anytype, had_error: *bool) bool {
     // Format: inode blocks permissions nlink user group size date name
     const ino = stat_buf.ino;
     const blk = if (stat_buf.blocks > 0) @divTrunc(@as(u64, @intCast(stat_buf.blocks)), 2) else 0;
@@ -2354,8 +2404,8 @@ fn getGroupName(allocator: Allocator, gid: c.gid_t) NameResult {
     return .{ .name = s, .allocated = true };
 }
 
-fn formatPermissions(mode: c.mode_t, buf: *[10]u8) void {
-    const m: u32 = @intCast(mode);
+fn formatPermissions(mode: u32, buf: *[10]u8) void {
+    const m: u32 = mode;
     buf[0] = if (m & 0o400 != 0) 'r' else '-';
     buf[1] = if (m & 0o200 != 0) 'w' else '-';
     buf[2] = if (m & 0o4000 != 0) (if (m & 0o100 != 0) 's' else 'S') else (if (m & 0o100 != 0) 'x' else '-');
@@ -2391,7 +2441,7 @@ fn formatDate(timestamp: i64, buf: *[24]u8) []const u8 {
     const hours = @divTrunc(day_secs.secs, 3600);
     const mins = @divTrunc(@rem(day_secs.secs, 3600), 60);
 
-    const now = std.time.timestamp();
+    const now = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; };
     const six_months: i64 = 180 * 86400;
 
     if (timestamp < now - six_months or timestamp > now + six_months) {
@@ -2463,7 +2513,7 @@ fn matchFstypeLinux(path: []const u8, expected_type: []const u8) bool {
     return false;
 }
 
-fn matchFlags(stat_buf: c.Stat, flag_str: []const u8) bool {
+fn matchFlags(stat_buf: StatInfo, flag_str: []const u8) bool {
     // BSD file flags from st_flags. On macOS, stat has st_flags.
     if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
         return matchFlagsDarwin(stat_buf, flag_str);
@@ -2472,8 +2522,7 @@ fn matchFlags(stat_buf: c.Stat, flag_str: []const u8) bool {
     return false;
 }
 
-fn matchFlagsDarwin(stat_buf: c.Stat, flag_str: []const u8) bool {
-    if (!@hasField(c.Stat, "flags")) return false;
+fn matchFlagsDarwin(stat_buf: StatInfo, flag_str: []const u8) bool {
     const flags: u32 = stat_buf.flags;
 
     // Parse flag names. Support common BSD flags.
@@ -2526,6 +2575,7 @@ fn flagNameToMask(name: []const u8) u32 {
 // ============================================================================
 
 fn walkPath(
+    io: std.Io,
     allocator: Allocator,
     path: []const u8,
     depth: u32,
@@ -2587,7 +2637,7 @@ fn walkPath(
     if (kind != .directory) {
         if (depth >= config.mindepth) {
             var dummy_pruned = false;
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
+            _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
         }
         return;
     }
@@ -2595,7 +2645,7 @@ fn walkPath(
     // Directory: evaluate before traversal (breadth-first)
     var was_pruned = false;
     if (!is_depth_first and depth >= config.mindepth) {
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &was_pruned, batch_ctx);
+        _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &was_pruned, batch_ctx);
     }
 
     // If -prune was triggered, do not descend into this directory
@@ -2606,14 +2656,14 @@ fn walkPath(
         if (depth >= max) {
             if (is_depth_first and depth >= config.mindepth) {
                 var dummy_pruned = false;
-                _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
+                _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
             }
             return;
         }
     }
 
     // Descend into directory
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
         switch (err) {
             error.AccessDenied => {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
@@ -2625,22 +2675,22 @@ fn walkPath(
         had_error.* = true;
         if (is_depth_first and depth >= config.mindepth) {
             var dummy_pruned = false;
-            _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
+            _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
         }
         return;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     if (config.sorted) {
         // Collect all entries, sort by name, then walk
-        var names = std.ArrayListUnmanaged([]const u8){};
+        var names = std.ArrayListUnmanaged([]const u8).empty;
         defer {
             for (names.items) |n| allocator.free(n);
             names.deinit(allocator);
         }
         var iterator = dir.iterate();
         while (true) {
-            const maybe_entry = iterator.next() catch |err| {
+            const maybe_entry = iterator.next(io) catch |err| {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) });
                 had_error.* = true;
                 break;
@@ -2667,12 +2717,12 @@ fn walkPath(
                 continue;
             };
             defer allocator.free(child_path);
-            walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
+            walkPath(io, allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
         }
     } else {
         var iterator = dir.iterate();
         while (true) {
-            const maybe_entry = iterator.next() catch |err| {
+            const maybe_entry = iterator.next(io) catch |err| {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) });
                 had_error.* = true;
                 break;
@@ -2685,14 +2735,14 @@ fn walkPath(
             };
             defer allocator.free(child_path);
 
-            walkPath(allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
+            walkPath(io, allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
         }
     }
 
     // Depth-first: evaluate directory after children
     if (is_depth_first and depth >= config.mindepth) {
         var dummy_pruned = false;
-        _ = evaluate(config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
+        _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
     }
 }
 
@@ -2700,7 +2750,7 @@ fn walkPath(
 // Entry points
 // ============================================================================
 
-pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
+pub fn runFind(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
     // Handle --help and --version before expression parsing
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--help")) {
@@ -2717,7 +2767,7 @@ pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, 
         return @intFromEnum(common.ExitCode.general_error);
     };
 
-    const now = std.time.timestamp();
+    const now = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; };
     var had_error = false;
     var batch_ctx = BatchContext{};
 
@@ -2729,18 +2779,23 @@ pub fn runFind(allocator: Allocator, args: []const []const u8, stdout: anytype, 
                 root_dev = @intCast(sb.dev);
             } else |_| {}
         }
-        walkPath(allocator, path, 0, &config, stdout, stderr, &had_error, now, root_dev, &batch_ctx);
+        walkPath(io, allocator, path, 0, &config, stdout, stderr, &had_error, now, root_dev, &batch_ctx);
     }
 
     // Flush batch exec/execdir commands
-    if (!batch_ctx.flushExec(allocator, stdout, stderr)) had_error = true;
-    if (!batch_ctx.flushExecdir(allocator, stdout, stderr)) had_error = true;
+    if (!batch_ctx.flushExec(io, allocator, stdout, stderr)) had_error = true;
+    if (!batch_ctx.flushExecdir(io, allocator, stdout, stderr)) had_error = true;
 
     return if (had_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
 }
 
-pub fn main() !void {
-    common.utilityMain(runFind);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runFindTyped);
+}
+
+/// Typed wrapper for utilityMain compatibility
+fn runFindTyped(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+    return runFind(allocator, io, args, stdout, stderr);
 }
 
 fn printHelp(allocator: Allocator, writer: anytype) void {
@@ -2810,8 +2865,7 @@ fn printHelp(allocator: Allocator, writer: anytype) void {
 }
 
 fn printVersion(writer: anytype) void {
-    const build_options = @import("build_options");
-    writer.print("find (vibeutils) {s}\n", .{build_options.version}) catch {};
+    writer.print("find ({s}) {s}\n", .{ common.name, common.version }) catch {};
 }
 
 // ============================================================================
@@ -2931,12 +2985,14 @@ test "find: help flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{"--help"}, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{"--help"}, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage:") != null);
 }
 
 test "find: version flag" {
@@ -2944,12 +3000,14 @@ test "find: version flag" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{"--version"}, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{"--version"}, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "vibeutils") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "vibeutils") != null);
 }
 
 test "find: basic directory search" {
@@ -2960,23 +3018,25 @@ test "find: basic directory search" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("hello.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("world.md", .{});
-    f2.close();
-    try tmp.dir.makeDir("subdir");
+    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "world.md", .{});
+    f2.close(testing.io);
+    try tmp.dir.createDir(testing.io, "subdir", .default_dir);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{dir_path}, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{dir_path}, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.md") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "subdir") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "world.md") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "subdir") != null);
 }
 
 test "find: -name filter" {
@@ -2987,21 +3047,23 @@ test "find: -name filter" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("hello.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("world.md", .{});
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "world.md", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.md") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "world.md") == null);
 }
 
 test "find: -type filter" {
@@ -3012,31 +3074,35 @@ test "find: -type filter" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("file.txt", .{});
-    f1.close();
-    try tmp.dir.makeDir("mydir");
+    const f1 = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
+    try tmp.dir.createDir(testing.io, "mydir", .default_dir);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Find only files
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
     }
 
     // Find only directories
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "d" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "d" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "mydir") != null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mydir") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") == null);
     }
 }
 
@@ -3048,24 +3114,26 @@ test "find: -empty" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("empty.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("notempty.txt", .{});
-    try f2.writeAll("content");
-    f2.close();
-    try tmp.dir.makeDir("emptydir");
+    const f1 = try tmp.dir.createFile(testing.io, "empty.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "notempty.txt", .{});
+    try f2.writeStreamingAll(testing.io, "content");
+    f2.close(testing.io);
+    try tmp.dir.createDir(testing.io, "emptydir", .default_dir);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-empty" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-empty" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "empty.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "emptydir") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "notempty.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "empty.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "emptydir") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "notempty.txt") == null);
 }
 
 test "find: -maxdepth" {
@@ -3076,25 +3144,27 @@ test "find: -maxdepth" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("top.txt", .{});
-    f1.close();
-    try tmp.dir.makeDir("sub");
-    var sub = try tmp.dir.openDir("sub", .{});
-    const f2 = try sub.createFile("deep.txt", .{});
-    f2.close();
-    sub.close();
+    const f1 = try tmp.dir.createFile(testing.io, "top.txt", .{});
+    f1.close(testing.io);
+    try tmp.dir.createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    const f2 = try sub.createFile(testing.io, "deep.txt", .{});
+    f2.close(testing.io);
+    sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-maxdepth", "1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-maxdepth", "1" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "top.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "sub") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "deep.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "sub") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "deep.txt") == null);
 }
 
 test "find: -not / !" {
@@ -3105,21 +3175,23 @@ test "find: -not / !" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("keep.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("skip.log", .{});
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "keep.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "skip.log", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-not", "-name", "*.log", "-type", "f" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-not", "-name", "*.log", "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "keep.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "skip.log") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "keep.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "skip.log") == null);
 }
 
 test "find: -or operator" {
@@ -3130,23 +3202,25 @@ test "find: -or operator" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("a.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("b.md", .{});
-    f2.close();
-    const f3 = try tmp.dir.createFile("c.log", .{});
-    f3.close();
+    const f1 = try tmp.dir.createFile(testing.io, "a.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "b.md", .{});
+    f2.close(testing.io);
+    const f3 = try tmp.dir.createFile(testing.io, "c.log", .{});
+    f3.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "*.txt", "-o", "-name", "*.md" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "*.txt", "-o", "-name", "*.md" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "a.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "b.md") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "a.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "b.md") != null);
 }
 
 test "find: parentheses grouping" {
@@ -3157,21 +3231,23 @@ test "find: parentheses grouping" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("a.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("b.md", .{});
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "a.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "b.md", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "(", "-name", "*.txt", "-o", "-name", "*.md", ")" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "(", "-name", "*.txt", "-o", "-name", "*.md", ")" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "a.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "b.md") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "a.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "b.md") != null);
 }
 
 test "find: -print0" {
@@ -3182,21 +3258,23 @@ test "find: -print0" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("file.txt", .{});
-    f1.close();
+    const f1 = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "file.txt", "-print0" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "file.txt", "-print0" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should contain NUL byte
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, &[_]u8{0}) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), &[_]u8{0}) != null);
     // Should not contain newline after filename
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt\n") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt\n") == null);
 }
 
 test "find: nonexistent path" {
@@ -3204,12 +3282,14 @@ test "find: nonexistent path" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{"/tmp/nonexistent_vibeutils_test_path_99999"}, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{"/tmp/nonexistent_vibeutils_test_path_99999"}, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "find: unknown predicate" {
@@ -3217,12 +3297,14 @@ test "find: unknown predicate" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ ".", "-bogus" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ ".", "-bogus" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "unknown predicate") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unknown predicate") != null);
 }
 
 test "find: -mindepth" {
@@ -3233,24 +3315,26 @@ test "find: -mindepth" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("top.txt", .{});
-    f1.close();
-    try tmp.dir.makeDir("sub");
-    var sub = try tmp.dir.openDir("sub", .{});
-    const f2 = try sub.createFile("deep.txt", .{});
-    f2.close();
-    sub.close();
+    const f1 = try tmp.dir.createFile(testing.io, "top.txt", .{});
+    f1.close(testing.io);
+    try tmp.dir.createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    const f2 = try sub.createFile(testing.io, "deep.txt", .{});
+    f2.close(testing.io);
+    sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-mindepth", "2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-mindepth", "2" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "deep.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "top.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "deep.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") == null);
 }
 
 test "find: -delete" {
@@ -3261,18 +3345,20 @@ test "find: -delete" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("deleteme.txt", .{});
-    f1.close();
+    const f1 = try tmp.dir.createFile(testing.io, "deleteme.txt", .{});
+    f1.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "deleteme.txt", "-delete" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "deleteme.txt", "-delete" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const stat = tmp.dir.statFile("deleteme.txt");
+    const stat = tmp.dir.statFile(testing.io, "deleteme.txt", .{});
     try testing.expect(stat == error.FileNotFound);
 }
 
@@ -3284,21 +3370,23 @@ test "find: -iname" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("Hello.TXT", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("world.txt", .{});
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "Hello.TXT", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "world.txt", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-iname", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iname", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Hello.TXT") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Hello.TXT") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "world.txt") != null);
 }
 
 test "find: -size filter" {
@@ -3309,22 +3397,24 @@ test "find: -size filter" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("small.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("medium.txt", .{});
-    try f2.writeAll("a" ** 2048);
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "small.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "medium.txt", .{});
+    try f2.writeStreamingAll(testing.io, "a" ** 2048);
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "+1000c" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "+1000c" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "medium.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "small.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "medium.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "small.txt") == null);
 }
 
 test "find: -perm filter" {
@@ -3335,21 +3425,23 @@ test "find: -perm filter" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("rw.txt", .{ .mode = 0o644 });
-    f1.close();
-    const f2 = try tmp.dir.createFile("rwx.txt", .{ .mode = 0o755 });
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "rw.txt", .{ .permissions = @enumFromInt(0o644) });
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "rwx.txt", .{ .permissions = @enumFromInt(0o755) });
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-perm", "755" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-perm", "755" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rwx.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rw.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "rwx.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "rw.txt") == null);
 }
 
 // ============================================================================
@@ -3364,27 +3456,29 @@ test "find: -path matches full path pattern" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("subdir");
-    var sub = try tmp.dir.openDir("subdir", .{});
-    const f1 = try sub.createFile("file.txt", .{});
-    f1.close();
-    sub.close();
-    const f2 = try tmp.dir.createFile("other.txt", .{});
-    f2.close();
+    try tmp.dir.createDir(testing.io, "subdir", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "subdir", .{});
+    const f1 = try sub.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
+    sub.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "other.txt", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -path matches against the full path, not just basename
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-path", "*/subdir/*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-path", "*/subdir/*" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should match subdir/file.txt (full path contains /subdir/)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
     // Should NOT match other.txt (not under subdir)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "other.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "other.txt") == null);
 }
 
 test "find: -prune prevents descending into directory" {
@@ -3396,37 +3490,39 @@ test "find: -prune prevents descending into directory" {
     defer tmp.cleanup();
 
     // Create a directory to skip and one to keep
-    try tmp.dir.makeDir("skip_me");
-    var skip_dir = try tmp.dir.openDir("skip_me", .{});
-    const f1 = try skip_dir.createFile("hidden.txt", .{});
-    f1.close();
-    skip_dir.close();
+    try tmp.dir.createDir(testing.io, "skip_me", .default_dir);
+    var skip_dir = try tmp.dir.openDir(testing.io, "skip_me", .{});
+    const f1 = try skip_dir.createFile(testing.io, "hidden.txt", .{});
+    f1.close(testing.io);
+    skip_dir.close(testing.io);
 
-    try tmp.dir.makeDir("keep_me");
-    var keep_dir = try tmp.dir.openDir("keep_me", .{});
-    const f2 = try keep_dir.createFile("visible.txt", .{});
-    f2.close();
-    keep_dir.close();
+    try tmp.dir.createDir(testing.io, "keep_me", .default_dir);
+    var keep_dir = try tmp.dir.openDir(testing.io, "keep_me", .{});
+    const f2 = try keep_dir.createFile(testing.io, "visible.txt", .{});
+    f2.close(testing.io);
+    keep_dir.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Classic prune pattern: -name skip_me -prune -o -type f -print
     // This should skip descending into skip_me and only print files
     // from keep_me.
-    const exit_code = try runFind(allocator, &[_][]const u8{
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
         dir_path, "-name",  "skip_me",
         "-prune", "-o",     "-type",
         "f",      "-print",
-    }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // visible.txt should appear (keep_me was not pruned)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "visible.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "visible.txt") != null);
     // hidden.txt must NOT appear (skip_me was pruned)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hidden.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hidden.txt") == null);
 }
 
 test "find: -depth lists directory contents before directory" {
@@ -3437,24 +3533,26 @@ test "find: -depth lists directory contents before directory" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("adir");
-    var sub = try tmp.dir.openDir("adir", .{});
-    const f1 = try sub.createFile("file.txt", .{});
-    f1.close();
-    sub.close();
+    try tmp.dir.createDir(testing.io, "adir", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "adir", .{});
+    const f1 = try sub.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
+    sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // With -depth, file.txt should appear before its parent adir
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-depth" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-depth" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const output = stdout_buf.items;
-    const file_pos = std.mem.indexOf(u8, output, "file.txt");
-    const dir_pos = std.mem.indexOf(u8, output, "adir\n");
+    const output = stdout_aw.writer.buffered();
+    const file_pos = std.mem.find(u8, output, "file.txt");
+    const dir_pos = std.mem.find(u8, output, "adir\n");
 
     // Both must appear
     try testing.expect(file_pos != null);
@@ -3471,22 +3569,24 @@ test "find: -path with non-matching pattern returns no results" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("hello.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("world.md", .{});
-    f2.close();
+    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "world.md", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Pattern that matches nothing in this tree
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-path", "*/nonexistent/*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-path", "*/nonexistent/*" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // No files should match
-    try testing.expect(stdout_buf.items.len == 0);
+    try testing.expect(stdout_aw.writer.buffered().len == 0);
 }
 
 // ============================================================================
@@ -3501,18 +3601,20 @@ test "find: -atime +9999 matches nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("recent.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // No file was accessed more than 9999 days ago; should match nothing
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-atime", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-atime", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -ctime +9999 matches nothing" {
@@ -3523,18 +3625,20 @@ test "find: -ctime +9999 matches nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("recent.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // No file had its status changed more than 9999 days ago
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-ctime", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-ctime", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -links 99 matches nothing" {
@@ -3545,18 +3649,20 @@ test "find: -links 99 matches nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("single.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "single.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // A freshly created file has 1 hard link, not 99
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-links", "99" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-links", "99" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -nouser matches nothing for normal files" {
@@ -3567,19 +3673,21 @@ test "find: -nouser matches nothing for normal files" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("owned.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "owned.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Files created by this user have a valid owner; -nouser should
     // match nothing.
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-nouser" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-nouser" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -xdev is accepted without error" {
@@ -3590,18 +3698,20 @@ test "find: -xdev is accepted without error" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -xdev should parse without error and not prevent finding files
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-xdev", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-xdev", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 // ============================================================================
@@ -3616,24 +3726,26 @@ test "find: -d is alias for -depth" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("adir");
-    var sub = try tmp.dir.openDir("adir", .{});
-    const f1 = try sub.createFile("file.txt", .{});
-    f1.close();
-    sub.close();
+    try tmp.dir.createDir(testing.io, "adir", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "adir", .{});
+    const f1 = try sub.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
+    sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -d should behave like -depth: file.txt before adir
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-d" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-d" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const output = stdout_buf.items;
-    const file_pos = std.mem.indexOf(u8, output, "file.txt");
-    const dir_pos = std.mem.indexOf(u8, output, "adir\n");
+    const output = stdout_aw.writer.buffered();
+    const file_pos = std.mem.find(u8, output, "file.txt");
+    const dir_pos = std.mem.find(u8, output, "adir\n");
     try testing.expect(file_pos != null);
     try testing.expect(dir_pos != null);
     try testing.expect(file_pos.? < dir_pos.?);
@@ -3647,18 +3759,20 @@ test "find: -f specifies explicit search path" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("file.txt", .{});
-    f1.close();
+    const f1 = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -f path should specify the search path
-    const exit_code = try runFind(allocator, &[_][]const u8{ "-f", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-f", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -x is alias for -xdev" {
@@ -3669,18 +3783,20 @@ test "find: -x is alias for -xdev" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -x should be accepted just like -xdev
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-x", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-x", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -X warns about xargs-unsafe filenames" {
@@ -3692,27 +3808,29 @@ test "find: -X warns about xargs-unsafe filenames" {
     defer tmp.cleanup();
 
     // Create a file with a space in its name (xargs-problematic)
-    const f1 = try tmp.dir.createFile("has space.txt", .{});
-    f1.close();
+    const f1 = try tmp.dir.createFile(testing.io, "has space.txt", .{});
+    f1.close(testing.io);
     // Create a normal file
-    const f2 = try tmp.dir.createFile("safe.txt", .{});
-    f2.close();
+    const f2 = try tmp.dir.createFile(testing.io, "safe.txt", .{});
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -X should warn about the file with a space
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-X", "-type", "f" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-X", "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // safe.txt should appear in output
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "safe.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "safe.txt") != null);
     // has space.txt should NOT appear in output (skipped by -X)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "has space.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "has space.txt") == null);
     // Warning about the problematic name should be on stderr
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "has space.txt") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "has space.txt") != null);
 }
 
 test "find: -mmin matches recently modified files" {
@@ -3723,18 +3841,20 @@ test "find: -mmin matches recently modified files" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("fresh.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "fresh.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // File was just created, so modified less than 5 minutes ago
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "fresh.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "fresh.txt") != null);
 }
 
 test "find: -mmin +9999 matches nothing" {
@@ -3745,17 +3865,19 @@ test "find: -mmin +9999 matches nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("recent.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-mmin", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -inum matches file by inode number" {
@@ -3766,10 +3888,10 @@ test "find: -inum matches file by inode number" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("target.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "target.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Get the inode number of target.txt
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "target.txt" });
@@ -3778,12 +3900,14 @@ test "find: -inum matches file by inode number" {
     var ino_buf: [32]u8 = undefined;
     const ino_str = std.fmt.bufPrint(&ino_buf, "{d}", .{ino}) catch unreachable;
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-inum", ino_str }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-inum", ino_str }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") != null);
 }
 
 test "find: -inum with non-matching inode returns nothing" {
@@ -3794,18 +3918,20 @@ test "find: -inum with non-matching inode returns nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Inode 0 should not match any real file
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-inum", "0" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-inum", "0" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 // ============================================================================
@@ -3820,18 +3946,20 @@ test "find: -amin -5 matches recently accessed files" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("accessed.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "accessed.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // File was just created, so accessed less than 5 minutes ago
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-amin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-amin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "accessed.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "accessed.txt") != null);
 }
 
 test "find: -amin +9999 matches nothing" {
@@ -3842,17 +3970,19 @@ test "find: -amin +9999 matches nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("recent.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-amin", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-amin", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -cmin -5 matches recently changed files" {
@@ -3863,17 +3993,19 @@ test "find: -cmin -5 matches recently changed files" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("changed.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "changed.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "changed.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "changed.txt") != null);
 }
 
 test "find: -cmin +9999 matches nothing" {
@@ -3884,17 +4016,19 @@ test "find: -cmin +9999 matches nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("recent.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "recent.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "+9999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-cmin", "+9999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -anewer matches files accessed after reference" {
@@ -3906,14 +4040,14 @@ test "find: -anewer matches files accessed after reference" {
     defer tmp.cleanup();
 
     // Create reference file first
-    const ref = try tmp.dir.createFile("old_ref.txt", .{});
-    ref.close();
+    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Set the reference file's mtime to the past so newly created files
     // will have a later access time
-    const past = std.time.timestamp() - 3600; // 1 hour ago
+    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600; // 1 hour ago
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -3921,19 +4055,21 @@ test "find: -anewer matches files accessed after reference" {
     ref_path_buf[ref_abs_path.len] = 0;
     const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
     var times = [2]std.posix.timespec{ past_ts, past_ts };
-    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+    _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
     // Create the test file (will have current atime)
-    const f = try tmp.dir.createFile("newer.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    f.close(testing.io);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Use absolute path for the reference file
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-anewer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-anewer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
 }
 
 test "find: -cnewer matches files changed after reference" {
@@ -3945,13 +4081,13 @@ test "find: -cnewer matches files changed after reference" {
     defer tmp.cleanup();
 
     // Create reference file first
-    const ref = try tmp.dir.createFile("old_ref.txt", .{});
-    ref.close();
+    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Set the reference file's mtime to the past
-    const past = std.time.timestamp() - 3600;
+    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600;
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -3959,19 +4095,21 @@ test "find: -cnewer matches files changed after reference" {
     ref_path_buf[ref_abs_path.len] = 0;
     const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
     var times = [2]std.posix.timespec{ past_ts, past_ts };
-    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+    _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
     // Create test file (will have current ctime)
-    const f = try tmp.dir.createFile("newer.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    f.close(testing.io);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Use absolute path for the reference file
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-cnewer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-cnewer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
 }
 
 test "find: -ok is parsed as valid primary" {
@@ -3979,12 +4117,14 @@ test "find: -ok is parsed as valid primary" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -ok should be parsed without error; it prompts on /dev/tty so we
     // cannot test execution, but parsing should succeed.
-    const exit_code = try runFind(allocator, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-ok", "echo", "{}", ";" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-ok", "echo", "{}", ";" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -3996,16 +4136,18 @@ test "find: -execdir runs command in file directory" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("testfile.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "testfile.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -execdir should be parsed and accepted
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-execdir", "echo", "{}", ";" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-execdir", "echo", "{}", ";" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -4017,21 +4159,23 @@ test "find: -ls produces listing output" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("listed.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "listed.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "listed.txt", "-ls" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "listed.txt", "-ls" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // -ls output should contain the filename and some stat-like info
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "listed.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "listed.txt") != null);
     // Should contain permission bits (e.g., rw-)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "rw") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "rw") != null);
 }
 
 test "find: -fstype is accepted without error" {
@@ -4042,16 +4186,18 @@ test "find: -fstype is accepted without error" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -fstype should be parsed without error; use a type that exists on macOS
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-fstype", "apfs" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-fstype", "apfs" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -4063,16 +4209,18 @@ test "find: -flags is accepted without error" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -flags should be parsed without error
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-flags", "uchg" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-flags", "uchg" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -4088,17 +4236,19 @@ test "find: -P global option accepted as no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ "-P", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-P", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -E global option accepted as no-op" {
@@ -4109,17 +4259,19 @@ test "find: -E global option accepted as no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ "-E", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-E", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -s global option accepted as no-op" {
@@ -4130,17 +4282,19 @@ test "find: -s global option accepted as no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ "-s", dir_path, "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-s", dir_path, "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -ipath case-insensitive path matching" {
@@ -4151,21 +4305,23 @@ test "find: -ipath case-insensitive path matching" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.makeDir("SubDir");
-    var sub = try tmp.dir.openDir("SubDir", .{});
-    const f = try sub.createFile("File.TXT", .{});
-    f.close();
-    sub.close();
+    try tmp.dir.createDir(testing.io, "SubDir", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "SubDir", .{});
+    const f = try sub.createFile(testing.io, "File.TXT", .{});
+    f.close(testing.io);
+    sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Case-insensitive path matching
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-ipath", "*/subdir/*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-ipath", "*/subdir/*" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "File.TXT") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File.TXT") != null);
 }
 
 test "find: -iwholename is alias for -ipath" {
@@ -4176,17 +4332,19 @@ test "find: -iwholename is alias for -ipath" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("Test.TXT", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "Test.TXT", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-iwholename", "*test*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iwholename", "*test*" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Test.TXT") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Test.TXT") != null);
 }
 
 test "find: -regex matches full path" {
@@ -4197,17 +4355,19 @@ test "find: -regex matches full path" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-regex", ".*\\.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-regex", ".*\\.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -iregex matches case-insensitively" {
@@ -4218,17 +4378,19 @@ test "find: -iregex matches case-insensitively" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iregex", ".*\\.TXT" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -Bmin stub accepted (always true)" {
@@ -4239,17 +4401,19 @@ test "find: -Bmin stub accepted (always true)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-Bmin", "-5" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-Bmin", "-5" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
 
 test "find: -Bnewer parses and evaluates" {
@@ -4260,17 +4424,19 @@ test "find: -Bnewer parses and evaluates" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -Bnewer self: a file should NOT be newer than itself
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-Bnewer", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-Bnewer", file_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // File should not match -Bnewer self (not newer than itself)
 }
@@ -4283,18 +4449,20 @@ test "find: -Btime evaluates birth time" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -Btime -1: born less than 1 day ago -- a just-created file should match
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-Btime", "-1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-Btime", "-1" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(stdout_buf.items.len > 0);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
 }
 
 test "find: -acl stub accepted (always false)" {
@@ -4305,18 +4473,20 @@ test "find: -acl stub accepted (always false)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-acl" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-acl" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -acl always returns false, so nothing should match
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -depth N matches files at exact depth" {
@@ -4327,37 +4497,41 @@ test "find: -depth N matches files at exact depth" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("top.txt", .{});
-    f1.close();
-    try tmp.dir.makeDir("sub");
-    var sub = try tmp.dir.openDir("sub", .{});
-    const f2 = try sub.createFile("deep.txt", .{});
-    f2.close();
-    sub.close();
+    const f1 = try tmp.dir.createFile(testing.io, "top.txt", .{});
+    f1.close(testing.io);
+    try tmp.dir.createDir(testing.io, "sub", .default_dir);
+    var sub = try tmp.dir.openDir(testing.io, "sub", .{});
+    const f2 = try sub.createFile(testing.io, "deep.txt", .{});
+    f2.close(testing.io);
+    sub.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // depth 1 should match top.txt and sub (not the root dir at depth 0)
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-depth", "1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-depth", "1" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "top.txt") != null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "sub\n") != null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "deep.txt") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "sub\n") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "deep.txt") == null);
     }
 
     // depth 2 should match deep.txt only
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-depth", "2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-depth", "2" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "deep.txt") != null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "top.txt") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "deep.txt") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "top.txt") == null);
     }
 }
 
@@ -4369,10 +4543,10 @@ test "find: -gid matches numeric group ID" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Get the GID of the test file
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
@@ -4380,12 +4554,14 @@ test "find: -gid matches numeric group ID" {
     var gid_buf: [32]u8 = undefined;
     const gid_str = std.fmt.bufPrint(&gid_buf, "{d}", .{stat_buf.gid}) catch unreachable;
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-gid", gid_str }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-gid", gid_str }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -gid with non-matching GID returns nothing" {
@@ -4396,18 +4572,20 @@ test "find: -gid with non-matching GID returns nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // GID 99999 is unlikely to match any file
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-gid", "99999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-gid", "99999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -uid matches numeric user ID" {
@@ -4418,10 +4596,10 @@ test "find: -uid matches numeric user ID" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Get the UID of the test file
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
@@ -4429,12 +4607,14 @@ test "find: -uid matches numeric user ID" {
     var uid_buf: [32]u8 = undefined;
     const uid_str = std.fmt.bufPrint(&uid_buf, "{d}", .{stat_buf.uid}) catch unreachable;
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-uid", uid_str }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-uid", uid_str }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -uid with non-matching UID returns nothing" {
@@ -4445,18 +4625,20 @@ test "find: -uid with non-matching UID returns nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // UID 99999 is unlikely to match any file
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-uid", "99999" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-uid", "99999" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -ignore_readdir_race accepted as no-op" {
@@ -4467,17 +4649,19 @@ test "find: -ignore_readdir_race accepted as no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-ignore_readdir_race", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-ignore_readdir_race", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -noignore_readdir_race accepted as no-op" {
@@ -4488,17 +4672,19 @@ test "find: -noignore_readdir_race accepted as no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-noignore_readdir_race", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-noignore_readdir_race", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -noleaf accepted as no-op" {
@@ -4509,17 +4695,19 @@ test "find: -noleaf accepted as no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-noleaf", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-noleaf", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -lname matches symlink target" {
@@ -4530,20 +4718,22 @@ test "find: -lname matches symlink target" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("target.txt", .{});
-    f.close();
-    try tmp.dir.symLink("target.txt", "link.txt", .{});
+    const f = try tmp.dir.createFile(testing.io, "target.txt", .{});
+    f.close(testing.io);
+    try tmp.dir.symLink(testing.io, "target.txt", "link.txt", .{});
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-lname", "target*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-lname", "target*" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "link.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link.txt") != null);
     // target.txt is not a symlink, should not match
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") == null);
 }
 
 test "find: -ilname case-insensitive symlink target matching" {
@@ -4554,19 +4744,21 @@ test "find: -ilname case-insensitive symlink target matching" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("Target.TXT", .{});
-    f.close();
-    try tmp.dir.symLink("Target.TXT", "link.txt", .{});
+    const f = try tmp.dir.createFile(testing.io, "Target.TXT", .{});
+    f.close(testing.io);
+    try tmp.dir.symLink(testing.io, "Target.TXT", "link.txt", .{});
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Case-insensitive match against symlink target
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-ilname", "target*" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-ilname", "target*" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "link.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link.txt") != null);
 }
 
 test "find: -mnewer is alias for -newer" {
@@ -4577,13 +4769,13 @@ test "find: -mnewer is alias for -newer" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const ref = try tmp.dir.createFile("old_ref.txt", .{});
-    ref.close();
+    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Set reference file mtime to the past
-    const past = std.time.timestamp() - 3600;
+    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600;
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -4591,17 +4783,19 @@ test "find: -mnewer is alias for -newer" {
     ref_path_buf[ref_abs_path.len] = 0;
     const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
     var times = [2]std.posix.timespec{ past_ts, past_ts };
-    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+    _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
-    const f = try tmp.dir.createFile("newer.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    f.close(testing.io);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-mnewer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-mnewer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
 }
 
 test "find: -mount is alias for -xdev" {
@@ -4612,17 +4806,19 @@ test "find: -mount is alias for -xdev" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-mount", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-mount", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -newerXY parses and evaluates" {
@@ -4633,18 +4829,20 @@ test "find: -newerXY parses and evaluates" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -newermm: file's mtime newer than ref's mtime
     // A file is not newer than itself
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-newermm", file_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-newermm", file_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // file.txt should not match -newermm self (not newer than itself)
 }
@@ -4654,10 +4852,12 @@ test "find: -okdir stub accepted (always false)" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-okdir", "echo", "{}", ";" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-okdir", "echo", "{}", ";" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -4666,12 +4866,14 @@ test "find: -quit is accepted as valid primary" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -quit with -maxdepth 0 -false ensures we never actually reach -quit
     // (so the test process doesn't exit)
-    const exit_code = try runFind(allocator, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-false", "-quit" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "/tmp", "-maxdepth", "0", "-false", "-quit" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
@@ -4683,18 +4885,20 @@ test "find: -samefile matches files with same inode" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("original.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "original.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
     const orig_path = try std.fs.path.join(allocator, &.{ dir_path, "original.txt" });
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-samefile", orig_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-samefile", orig_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "original.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "original.txt") != null);
 }
 
 test "find: -sparse stub accepted (always false)" {
@@ -4705,17 +4909,19 @@ test "find: -sparse stub accepted (always false)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-sparse" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-sparse" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -xattr stub accepted (always false)" {
@@ -4726,17 +4932,19 @@ test "find: -xattr stub accepted (always false)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-xattr" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-xattr" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -xattrname stub accepted (always false)" {
@@ -4747,17 +4955,19 @@ test "find: -xattrname stub accepted (always false)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-xattrname", "com.apple.metadata" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-xattrname", "com.apple.metadata" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -printf stub accepted (prints like -print)" {
@@ -4768,17 +4978,19 @@ test "find: -printf stub accepted (prints like -print)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "file.txt", "-printf", "%p\\n" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "file.txt", "-printf", "%p\\n" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -false always evaluates to false" {
@@ -4789,18 +5001,20 @@ test "find: -false always evaluates to false" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -false should prevent any output
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-false" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-false" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "find: -true always evaluates to true" {
@@ -4811,18 +5025,20 @@ test "find: -true always evaluates to true" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -true should match everything (equivalent to no test)
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-true" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-true" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -false -o -true evaluates to true" {
@@ -4833,17 +5049,19 @@ test "find: -false -o -true evaluates to true" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "(", "-false", "-o", "-true", ")" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "(", "-false", "-o", "-true", ")" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "file.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "file.txt") != null);
 }
 
 test "find: -regex rejects non-matching pattern" {
@@ -4854,19 +5072,21 @@ test "find: -regex rejects non-matching pattern" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("hello.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-regex", "^impossible_pattern_that_matches_nothing$" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-regex", "^impossible_pattern_that_matches_nothing$" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // No files should match an impossible regex pattern
-    try testing.expectEqualStrings("", stdout_buf.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "find: -iregex rejects non-matching pattern" {
@@ -4877,19 +5097,21 @@ test "find: -iregex rejects non-matching pattern" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("hello.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-iregex", "^impossible_pattern_that_matches_nothing$" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-iregex", "^impossible_pattern_that_matches_nothing$" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // No files should match an impossible regex pattern
-    try testing.expectEqualStrings("", stdout_buf.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 // F56: -size uses wrong block rounding (bytes not 512-byte blocks)
@@ -4908,20 +5130,22 @@ test "find: -size 1 matches 100-byte file (block rounding)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("small.txt", .{});
-    try f.writeAll("x" ** 100);
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "small.txt", .{});
+    try f.writeStreamingAll(testing.io, "x" ** 100);
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -size 1 means exactly 1 block (512 bytes); 100 bytes rounds up to 1 block
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "1" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "1" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "small.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "small.txt") != null);
 }
 
 test "find: -size 2 matches 513-byte file (block rounding)" {
@@ -4935,20 +5159,22 @@ test "find: -size 2 matches 513-byte file (block rounding)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("medium.txt", .{});
-    try f.writeAll("x" ** 513);
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "medium.txt", .{});
+    try f.writeStreamingAll(testing.io, "x" ** 513);
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -size 2 means exactly 2 blocks; 513 bytes rounds up to 2 blocks
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "2" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "medium.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "medium.txt") != null);
 }
 
 test "find: -size -2 excludes 513-byte file (block rounding)" {
@@ -4963,27 +5189,29 @@ test "find: -size -2 excludes 513-byte file (block rounding)" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("twoblk.txt", .{});
-    try f1.writeAll("x" ** 513);
-    f1.close();
+    const f1 = try tmp.dir.createFile(testing.io, "twoblk.txt", .{});
+    try f1.writeStreamingAll(testing.io, "x" ** 513);
+    f1.close(testing.io);
 
-    const f2 = try tmp.dir.createFile("oneblk.txt", .{});
-    try f2.writeAll("x" ** 100);
-    f2.close();
+    const f2 = try tmp.dir.createFile(testing.io, "oneblk.txt", .{});
+    try f2.writeStreamingAll(testing.io, "x" ** 100);
+    f2.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -size -2 means fewer than 2 blocks; 513 bytes = 2 blocks, should NOT match
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-size", "-2" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-size", "-2" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // oneblk.txt (100 bytes = 1 block) should match -size -2
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "oneblk.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "oneblk.txt") != null);
     // twoblk.txt (513 bytes = 2 blocks) should NOT match -size -2
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "twoblk.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "twoblk.txt") == null);
 }
 
 // ================================================================
@@ -5003,30 +5231,34 @@ test "find: -exec runs command and filters on exit code" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("target.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "target.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Test 1: -exec /usr/bin/true {} ; -print => file printed
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/true", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/true", "{}", ";", "-print" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") != null);
     }
 
     // Test 2: -exec /usr/bin/false {} ; -print => nothing printed
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/false", "{}", ";", "-print" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-exec", "/usr/bin/false", "{}", ";", "-print" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
         // -exec /usr/bin/false returns false, so AND -print never fires
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "target.txt") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "target.txt") == null);
     }
 }
 
@@ -5041,10 +5273,10 @@ test "find: -user matches files by username" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("myfile.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "myfile.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Get the UID of the test file, then look up the username
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "myfile.txt" });
@@ -5053,12 +5285,14 @@ test "find: -user matches files by username" {
     try testing.expect(pw != null);
     const username = std.mem.sliceTo(pw.?.pw_name, 0);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-user", username }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-user", username }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "myfile.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "myfile.txt") != null);
 }
 
 // ================================================================
@@ -5072,10 +5306,10 @@ test "find: -group matches files by group name" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("grpfile.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "grpfile.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Get the GID of the test file, then look up the group name
     const file_path = try std.fs.path.join(allocator, &.{ dir_path, "grpfile.txt" });
@@ -5084,12 +5318,14 @@ test "find: -group matches files by group name" {
     try testing.expect(gr != null);
     const groupname = std.mem.sliceTo(gr.?.gr_name, 0);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-group", groupname }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-group", groupname }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "grpfile.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "grpfile.txt") != null);
 }
 
 // ================================================================
@@ -5103,19 +5339,21 @@ test "find: -nogroup matches nothing for normal files" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("normalfile.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "normalfile.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Files created by this user have a valid group; -nogroup should
     // not match anything.
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-nogroup" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-nogroup" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "normalfile.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "normalfile.txt") == null);
 }
 
 // ================================================================
@@ -5131,14 +5369,14 @@ test "find: -newer matches files modified after reference" {
     defer tmp.cleanup();
 
     // Create reference file first
-    const ref = try tmp.dir.createFile("old_ref.txt", .{});
-    ref.close();
+    const ref = try tmp.dir.createFile(testing.io, "old_ref.txt", .{});
+    ref.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Set the reference file's mtime to the past so newly created files
     // will have a later modification time
-    const past = std.time.timestamp() - 3600; // 1 hour ago
+    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600; // 1 hour ago
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -5146,21 +5384,23 @@ test "find: -newer matches files modified after reference" {
     ref_path_buf[ref_abs_path.len] = 0;
     const ref_c_path = ref_path_buf[0..ref_abs_path.len :0];
     var times = [2]std.posix.timespec{ past_ts, past_ts };
-    _ = std.c.utimensat(std.fs.cwd().fd, ref_c_path, &times, 0);
+    _ = std.c.utimensat(std.Io.Dir.cwd().handle, ref_c_path, &times, 0);
 
     // Create the test file (will have current mtime)
-    const f = try tmp.dir.createFile("newer.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "newer.txt", .{});
+    f.close(testing.io);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -newer compares mtime of found file against mtime of reference file
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-type", "f", "-newer", ref_abs_path }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-type", "f", "-newer", ref_abs_path }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "newer.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "newer.txt") != null);
     // old_ref.txt should NOT match -newer old_ref.txt (not newer than itself)
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "old_ref.txt") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "old_ref.txt") == null);
 }
 
 // ================================================================
@@ -5175,24 +5415,26 @@ test "find: -L follows symlinks to directories" {
     defer tmp.cleanup();
 
     // Create a real directory with a file
-    try tmp.dir.makeDir("realdir");
-    const f = try tmp.dir.createFile("realdir/deep.txt", .{});
-    f.close();
+    try tmp.dir.createDir(testing.io, "realdir", .default_dir);
+    const f = try tmp.dir.createFile(testing.io, "realdir/deep.txt", .{});
+    f.close(testing.io);
 
     // Create a symlink to that directory
-    try tmp.dir.symLink("realdir", "linkdir", .{ .is_directory = true });
+    try tmp.dir.symLink(testing.io, "realdir", "linkdir", .{ .is_directory = true });
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Without -L, find should NOT descend into linkdir (it's a symlink)
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "deep.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "deep.txt" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
         // Should find deep.txt under realdir but NOT under linkdir
-        const output = stdout_buf.items;
+        const output = stdout_aw.writer.buffered();
         var count: usize = 0;
         var pos: usize = 0;
         while (std.mem.indexOfPos(u8, output, pos, "deep.txt")) |idx| {
@@ -5204,13 +5446,15 @@ test "find: -L follows symlinks to directories" {
 
     // With -L, find should follow the symlink and descend into linkdir too
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ "-L", dir_path, "-name", "deep.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", dir_path, "-name", "deep.txt" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
         // With -L, should find deep.txt under both realdir and linkdir
-        const output = stdout_buf.items;
+        const output = stdout_aw.writer.buffered();
         var count: usize = 0;
         var pos: usize = 0;
         while (std.mem.indexOfPos(u8, output, pos, "deep.txt")) |idx| {
@@ -5233,24 +5477,26 @@ test "find: -H follows only command-line symlinks" {
     defer tmp.cleanup();
 
     // Create a real directory with a file
-    try tmp.dir.makeDir("target");
-    const f = try tmp.dir.createFile("target/inner.txt", .{});
-    f.close();
+    try tmp.dir.createDir(testing.io, "target", .default_dir);
+    const f = try tmp.dir.createFile(testing.io, "target/inner.txt", .{});
+    f.close(testing.io);
 
     // Create a symlink to that directory at top level
-    try tmp.dir.symLink("target", "toplink", .{ .is_directory = true });
+    try tmp.dir.symLink(testing.io, "target", "toplink", .{ .is_directory = true });
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
     const link_path = try std.fs.path.join(allocator, &.{ dir_path, "toplink" });
 
     // With -H, passing the symlink as the starting path should follow it
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runFind(allocator, &[_][]const u8{ "-H", link_path, "-name", "inner.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-H", link_path, "-name", "inner.txt" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -H should follow the symlink given on the command line
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "inner.txt") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "inner.txt") != null);
 }
 
 // ================================================================
@@ -5268,19 +5514,21 @@ test "find: -follow in expression position is accepted" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f = try tmp.dir.createFile("file.txt", .{});
-    f.close();
+    const f = try tmp.dir.createFile(testing.io, "file.txt", .{});
+    f.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -follow after -maxdepth should be accepted, not "unknown predicate"
-    const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-maxdepth", "1", "-follow" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-maxdepth", "1", "-follow" }, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should not produce an error about unknown predicate
-    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 // ================================================================
@@ -5294,39 +5542,43 @@ test "find: -a and -and operators combine predicates" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const f1 = try tmp.dir.createFile("hello.txt", .{});
-    f1.close();
-    const f2 = try tmp.dir.createFile("hello.md", .{});
-    f2.close();
-    const f3 = try tmp.dir.createFile("world.txt", .{});
-    f3.close();
+    const f1 = try tmp.dir.createFile(testing.io, "hello.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp.dir.createFile(testing.io, "hello.md", .{});
+    f2.close(testing.io);
+    const f3 = try tmp.dir.createFile(testing.io, "world.txt", .{});
+    f3.close(testing.io);
 
-    const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Test -a (short form)
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
         // -name "hello*" -a -name "*.txt" should match only hello.txt
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "hello*", "-a", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "hello*", "-a", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.txt") != null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.md") == null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.txt") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.md") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "world.txt") == null);
     }
 
     // Test -and (long form)
     {
-        var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-        var stderr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
 
-        const exit_code = try runFind(allocator, &[_][]const u8{ dir_path, "-name", "hello*", "-and", "-name", "*.txt" }, stdout_buf.writer(allocator), stderr_buf.writer(allocator));
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ dir_path, "-name", "hello*", "-and", "-name", "*.txt" }, &stdout_aw.writer, &stderr_aw.writer);
         try testing.expectEqual(@as(u8, 0), exit_code);
 
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.txt") != null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello.md") == null);
-        try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "world.txt") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.txt") != null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello.md") == null);
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "world.txt") == null);
     }
 }

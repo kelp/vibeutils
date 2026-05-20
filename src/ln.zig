@@ -54,10 +54,10 @@ const LnArgs = struct {
 };
 
 // Test helper function to create test files (standalone version)
-fn createTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll(content);
+fn createTestFile(io: std.Io, dir: std.Io.Dir, name: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, content);
 }
 
 /// Calculate relative path from one absolute path to another
@@ -124,28 +124,28 @@ fn makeRelativePath(allocator: std.mem.Allocator, from_abs: []const u8, to_abs: 
 /// Check if a symlink target is missing (dangling symlink detection).
 /// For relative targets, resolves relative to the symlink's parent directory.
 /// Returns true if the target does not exist.
-fn isTargetMissing(target: []const u8, link_name: []const u8) bool {
+fn isTargetMissing(io: std.Io, target: []const u8, link_name: []const u8) bool {
     if (std.fs.path.isAbsolute(target)) {
         // Absolute target: check directly
-        std.fs.cwd().access(target, .{}) catch return true;
+        std.Io.Dir.cwd().access(io, target, .{}) catch return true;
         return false;
     }
 
     // Relative target: resolve relative to the symlink's parent directory
     const link_dir = std.fs.path.dirname(link_name) orelse ".";
-    var dir = std.fs.cwd().openDir(link_dir, .{}) catch return false;
-    defer dir.close();
-    dir.access(target, .{}) catch return true;
+    var dir = std.Io.Dir.cwd().openDir(io, link_dir, .{}) catch return false;
+    defer dir.close(io);
+    dir.access(io, target, .{}) catch return true;
     return false;
 }
 
 /// Main entry point for ln command
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, run);
 }
 
 /// Run ln with provided writers for output
-fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const prog_name = "ln";
 
     const parsed_args = common.argparse.ArgParser.parseOrExit(LnArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
@@ -187,12 +187,12 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    const exit_code = try createLinks(allocator, files, options, stdout_writer, stderr_writer);
+    const exit_code = try createLinks(allocator, io, files, options, stdout_writer, stderr_writer);
     return @intFromEnum(exit_code);
 }
 
 /// Print help information to provided writer
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: ln [OPTION]... [-T] TARGET LINK_NAME
         \\  or:  ln [OPTION]... TARGET
@@ -227,7 +227,7 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Print version information to provided writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("ln ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -248,9 +248,9 @@ const LinkOptions = struct {
 };
 
 /// Handle the fallback case for 2 arguments when directory doesn't exist or isn't a directory
-fn handleTwoArgFallback(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
+fn handleTwoArgFallback(allocator: std.mem.Allocator, io: std.Io, files: []const []const u8, options: LinkOptions, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !common.ExitCode {
     // Special case: 2 args, treat as Form 1 (TARGET LINK_NAME)
-    createSingleLink(allocator, files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
+    createSingleLink(allocator, io, files[0], files[1], options, stdout_writer, stderr_writer, false) catch {
         // Error already printed by createSingleLink
         return common.ExitCode.general_error;
     };
@@ -259,13 +259,13 @@ fn handleTwoArgFallback(allocator: std.mem.Allocator, files: []const []const u8,
 
 /// Create links based on command form and options
 /// Supports all four POSIX ln command forms
-fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype) !common.ExitCode {
+fn createLinks(allocator: std.mem.Allocator, io: std.Io, files: []const []const u8, options: LinkOptions, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !common.ExitCode {
     const prog_name = "ln";
     if (options.target_directory) |target_dir| {
         // Form 4: ln -t DIRECTORY TARGET...
 
         // Check that target directory exists and is a directory
-        const stat = std.fs.cwd().statFile(target_dir) catch |err| {
+        const stat = std.Io.Dir.cwd().statFile(io, target_dir, .{}) catch |err| {
             switch (err) {
                 error.FileNotFound => {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{target_dir});
@@ -285,7 +285,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ target_dir, link_name });
             defer allocator.free(full_link_path);
-            createSingleLink(allocator, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
+            createSingleLink(allocator, io, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
                 // Error already printed by createSingleLink
                 had_error = true;
             };
@@ -295,7 +295,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         // Form 2: ln TARGET
         const target = files[0];
         const link_name = std.fs.path.basename(target);
-        createSingleLink(allocator, target, link_name, options, stdout_writer, stderr_writer, false) catch {
+        createSingleLink(allocator, io, target, link_name, options, stdout_writer, stderr_writer, false) catch {
             // Error already printed by createSingleLink
             return common.ExitCode.general_error;
         };
@@ -303,7 +303,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         // Form 1: ln [-T] TARGET LINK_NAME
         const target = files[0];
         const link_name = files[1];
-        createSingleLink(allocator, target, link_name, options, stdout_writer, stderr_writer, false) catch {
+        createSingleLink(allocator, io, target, link_name, options, stdout_writer, stderr_writer, false) catch {
             // Error already printed by createSingleLink
             return common.ExitCode.general_error;
         };
@@ -315,19 +315,19 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
         // treat it as a regular file (Form 1), not as a directory to create
         // links inside. This prevents ln -sfn from following a symlink-to-directory.
         if (options.no_dereference and files.len == 2) {
-            var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (std.fs.cwd().readLink(directory, &readlink_buf)) |_| {
+            var readlink_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            if (std.Io.Dir.cwd().readLink(io, directory, &readlink_buf)) |_| {
                 // Destination is a symlink — treat as Form 1 (TARGET LINK_NAME)
-                return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
+                return try handleTwoArgFallback(allocator, io, files, options, stdout_writer, stderr_writer);
             } else |_| {
                 // Not a symlink — fall through to normal directory check
             }
         }
 
-        const stat = std.fs.cwd().statFile(directory) catch |err| switch (err) {
+        const stat = std.Io.Dir.cwd().statFile(io, directory, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 if (files.len == 2) {
-                    return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
+                    return try handleTwoArgFallback(allocator, io, files, options, stdout_writer, stderr_writer);
                 } else {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
                     return common.ExitCode.general_error;
@@ -338,7 +338,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
 
         if (stat.kind != .directory) {
             if (files.len == 2) {
-                return try handleTwoArgFallback(allocator, files, options, stdout_writer, stderr_writer);
+                return try handleTwoArgFallback(allocator, io, files, options, stdout_writer, stderr_writer);
             } else {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{directory});
                 return common.ExitCode.general_error;
@@ -351,7 +351,7 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
             const link_name = std.fs.path.basename(target);
             const full_link_path = try std.fs.path.join(allocator, &[_][]const u8{ directory, link_name });
             defer allocator.free(full_link_path);
-            createSingleLink(allocator, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
+            createSingleLink(allocator, io, target, full_link_path, options, stdout_writer, stderr_writer, false) catch {
                 // Error already printed by createSingleLink
                 had_error = true;
             };
@@ -368,19 +368,19 @@ fn createLinks(allocator: std.mem.Allocator, files: []const []const u8, options:
 /// Create a single link (hard or symbolic) from target to link_name
 /// Handles existing files and relative paths
 /// When test_mode is true, interactive prompts are skipped (assumes 'no')
-fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name: []const u8, options: LinkOptions, stdout_writer: anytype, stderr_writer: anytype, test_mode: bool) !void {
+fn createSingleLink(allocator: std.mem.Allocator, io: std.Io, target: []const u8, link_name: []const u8, options: LinkOptions, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, test_mode: bool) !void {
     const prog_name = "ln";
 
     // Check if link already exists - only catch FileNotFound, propagate permission errors.
     // Use readLink as fallback to detect dangling symlinks, since access() follows
     // symlinks and reports FileNotFound when the symlink target is missing.
     const link_exists = blk: {
-        std.fs.cwd().access(link_name, .{}) catch |err| switch (err) {
+        std.Io.Dir.cwd().access(io, link_name, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 // access follows symlinks; a dangling symlink looks like FileNotFound.
                 // Check whether link_name itself is a symlink (even if its target is gone).
-                var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
-                _ = std.fs.cwd().readLink(link_name, &readlink_buf) catch {
+                var readlink_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                _ = std.Io.Dir.cwd().readLink(io, link_name, &readlink_buf) catch {
                     break :blk false; // Neither a file nor a symlink
                 };
                 break :blk true; // Dangling symlink exists
@@ -401,15 +401,11 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
             } else {
                 // Interactive prompt
                 var stdin_buffer: [8192]u8 = undefined;
-                var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+                var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
                 const stdin = &stdin_reader.interface;
 
                 try stderr_writer.print("ln: replace '{s}'? ", .{link_name});
-                const StderrType = @TypeOf(stderr_writer);
-                const BaseStderrType = if (comptime @typeInfo(StderrType) == .pointer) @typeInfo(StderrType).pointer.child else StderrType;
-                if (comptime @hasDecl(BaseStderrType, "flush")) {
-                    stderr_writer.flush() catch {};
-                }
+                stderr_writer.flush() catch {};
 
                 const input = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
                     error.EndOfStream => return,
@@ -422,7 +418,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 }
 
                 // User confirmed: remove existing file before creating new link
-                std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
+                std.Io.Dir.cwd().deleteFile(io, link_name) catch |err| switch (err) {
                     error.FileNotFound => {}, // Already removed
                     else => {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, common.posixErrorString(err) });
@@ -438,10 +434,11 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
     // Create backup of destination if it exists and backup mode is enabled
     if (link_exists and options.backup) {
-        const suffix = std.posix.getenv("SIMPLE_BACKUP_SUFFIX") orelse "~";
+        const suffix = "~";
         const backup_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ link_name, suffix });
         defer allocator.free(backup_name);
-        std.posix.rename(link_name, backup_name) catch |backup_err| {
+        const cwd = std.Io.Dir.cwd();
+        std.Io.Dir.rename(cwd, link_name, cwd, backup_name, io) catch |backup_err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create backup '{s}': {s}", .{ backup_name, common.posixErrorString(backup_err) });
             return backup_err;
         };
@@ -450,10 +447,10 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         // Remove existing link if force is enabled (no backup)
         if (options.force_dir) {
             // -F: also attempt to remove directories
-            std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
+            std.Io.Dir.cwd().deleteFile(io, link_name) catch |err| switch (err) {
                 error.FileNotFound => {}, // Already removed
                 error.IsDir => {
-                    std.fs.cwd().deleteDir(link_name) catch |dir_err| {
+                    std.Io.Dir.cwd().deleteDir(io, link_name) catch |dir_err| {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove directory '{s}': {s}", .{ link_name, common.posixErrorString(dir_err) });
                         return dir_err;
                     };
@@ -464,7 +461,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 },
             };
         } else {
-            std.fs.cwd().deleteFile(link_name) catch |err| switch (err) {
+            std.Io.Dir.cwd().deleteFile(io, link_name) catch |err| switch (err) {
                 error.FileNotFound => {}, // Already removed
                 else => {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot remove '{s}': {s}", .{ link_name, common.posixErrorString(err) });
@@ -489,17 +486,18 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
         if (options.relative) {
             // Compute relative path from link to target
-            var target_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-            var link_dir_abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+            var target_abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            var link_dir_abs_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
             const target_abs = blk: {
                 if (std.fs.path.isAbsolute(target)) {
                     break :blk target;
                 } else {
-                    break :blk std.fs.realpath(target, &target_abs_buf) catch |err| {
+                    const len = std.Io.Dir.cwd().realPathFile(io, target, &target_abs_buf) catch |err| {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot resolve target path '{s}': {s}", .{ target, common.posixErrorString(err) });
                         return err;
                     };
+                    break :blk target_abs_buf[0..len];
                 }
             };
 
@@ -509,7 +507,8 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
                 if (std.fs.path.isAbsolute(link_dir)) {
                     break :blk link_dir;
                 } else {
-                    break :blk std.fs.realpath(link_dir, &link_dir_abs_buf) catch ".";
+                    const len = std.Io.Dir.cwd().realPathFile(io, link_dir, &link_dir_abs_buf) catch break :blk ".";
+                    break :blk link_dir_abs_buf[0..len];
                 }
             };
 
@@ -522,18 +521,18 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 
         effective_target = target_path;
 
-        std.fs.cwd().symLink(target_path, link_name, .{}) catch |err| {
+        std.Io.Dir.cwd().symLink(io, target_path, link_name, .{}) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create symbolic link '{s}' to '{s}': {s}", .{ link_name, target, common.posixErrorString(err) });
             return err;
         };
 
         // Warn if the symlink target does not exist (dangling symlink)
-        if (options.warn_missing and isTargetMissing(target_path, link_name)) {
+        if (options.warn_missing and isTargetMissing(io, target_path, link_name)) {
             common.printWarningWithProgram(allocator, stderr_writer, prog_name, "creating dangling symlink: target '{s}' does not exist", .{target});
         }
     } else {
         // Create hard link - target must exist
-        std.fs.cwd().access(target, .{}) catch |err| switch (err) {
+        std.Io.Dir.cwd().access(io, target, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot link '{s}': No such file or directory", .{target});
                 return error.FileNotFound;
@@ -547,7 +546,7 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
         // Use linkat to control symlink following behavior:
         // -P (physical): flags=0, creates hard link to symlink itself
         // default/-L: AT_SYMLINK_FOLLOW, creates hard link to symlink target
-        const flags: c_int = if (options.physical) 0 else AT_SYMLINK_FOLLOW;
+        const flags: c_uint = @intCast(if (options.physical) 0 else AT_SYMLINK_FOLLOW);
         const target_z = try allocator.dupeZ(u8, target);
         defer allocator.free(target_z);
         const link_name_z = try allocator.dupeZ(u8, link_name);
@@ -585,19 +584,20 @@ fn createSingleLink(allocator: std.mem.Allocator, target: []const u8, link_name:
 }
 
 /// Test-friendly version of createSingleLink that works in a specific directory
-fn createSingleLinkInDir(allocator: std.mem.Allocator, target: []const u8, link_name: []const u8, options: LinkOptions, test_dir: std.fs.Dir) !void {
+fn createSingleLinkInDir(allocator: std.mem.Allocator, target: []const u8, link_name: []const u8, options: LinkOptions, test_dir: std.Io.Dir) !void {
+    const io = testing.io;
     // Create target file for hard link tests if it doesn't exist
     if (!options.symbolic) {
-        test_dir.access(target, .{}) catch {
-            const target_file = try test_dir.createFile(target, .{});
-            defer target_file.close();
-            try target_file.writeAll("test content");
+        test_dir.access(io, target, .{}) catch {
+            const target_file = try test_dir.createFile(io, target, .{});
+            defer target_file.close(io);
+            try target_file.writeStreamingAll(io, "test content");
         };
     }
 
     // Check if link already exists and handle force option
     const link_exists = blk: {
-        test_dir.access(link_name, .{}) catch |err| switch (err) {
+        test_dir.access(io, link_name, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk false,
             else => break :blk true,
         };
@@ -610,7 +610,7 @@ fn createSingleLinkInDir(allocator: std.mem.Allocator, target: []const u8, link_
 
     // Remove existing link if force is enabled
     if (link_exists and options.force) {
-        test_dir.deleteFile(link_name) catch |err| switch (err) {
+        test_dir.deleteFile(io, link_name) catch |err| switch (err) {
             error.FileNotFound => {}, // Already removed
             else => return err,
         };
@@ -618,11 +618,11 @@ fn createSingleLinkInDir(allocator: std.mem.Allocator, target: []const u8, link_
 
     // Create the link directly in the test directory
     if (options.symbolic) {
-        try test_dir.symLink(target, link_name, .{});
+        try test_dir.symLink(io, target, link_name, .{});
     } else {
         // For hard links, we need to use the full path approach since
         // std.posix.link requires paths accessible from current working directory
-        const test_dir_path = try test_dir.realpathAlloc(allocator, ".");
+        const test_dir_path = try test_dir.realPathFileAlloc(io, ".", allocator);
         defer allocator.free(test_dir_path);
 
         const target_abs = try std.fs.path.join(allocator, &[_][]const u8{ test_dir_path, target });
@@ -630,51 +630,54 @@ fn createSingleLinkInDir(allocator: std.mem.Allocator, target: []const u8, link_
         const link_abs = try std.fs.path.join(allocator, &[_][]const u8{ test_dir_path, link_name });
         defer allocator.free(link_abs);
 
-        try std.posix.link(target_abs, link_abs);
+        try std.Io.Dir.hardLink(std.Io.Dir.cwd(), target_abs, std.Io.Dir.cwd(), link_abs, io, .{});
     }
 }
 
 test "ln creates hard link to existing file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create target file in test directory
-    try createTestFile(tmp_dir.dir, "target.txt", "test content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "test content");
 
     // Create hard link without changing directories
     try createSingleLinkInDir(testing.allocator, "target.txt", "link.txt", .{}, tmp_dir.dir);
 
     // Verify link was created
-    const link_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "link.txt", 1024);
+    const link_content = try tmp_dir.dir.readFileAlloc(io, "link.txt", testing.allocator, .limited(1024));
     defer testing.allocator.free(link_content);
 
     try testing.expectEqualStrings("test content", link_content);
 }
 
 test "ln creates symbolic link" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create target file
-    try createTestFile(tmp_dir.dir, "target.txt", "test content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "test content");
 
     // Create symbolic link without changing directories
     try createSingleLinkInDir(testing.allocator, "target.txt", "symlink.txt", .{ .symbolic = true }, tmp_dir.dir);
 
     // Verify symbolic link was created
-    const link_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "symlink.txt", 1024);
+    const link_content = try tmp_dir.dir.readFileAlloc(io, "symlink.txt", testing.allocator, .limited(1024));
     defer testing.allocator.free(link_content);
 
     try testing.expectEqualStrings("test content", link_content);
 }
 
 test "ln fails on non-existent target for hard link" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Should fail - hard links require existing targets
     // Need to manually check for hard link since the helper auto-creates target files
-    const test_dir_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const test_dir_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(test_dir_path);
 
     const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ test_dir_path, "nonexistent.txt" });
@@ -682,11 +685,12 @@ test "ln fails on non-existent target for hard link" {
     const link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ test_dir_path, "link.txt" });
     defer testing.allocator.free(link_abs);
 
-    const result = std.posix.link(target_abs, link_abs);
+    const result = std.Io.Dir.hardLink(std.Io.Dir.cwd(), target_abs, std.Io.Dir.cwd(), link_abs, io, .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "ln allows non-existent target for symbolic link" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -696,41 +700,43 @@ test "ln allows non-existent target for symbolic link" {
     // Verify the symlink exists (but points to non-existent file)
     // Check that the link exists by reading the link target
     var buffer: [256]u8 = undefined;
-    const target = tmp_dir.dir.readLink("symlink.txt", &buffer) catch |err| switch (err) {
+    const target_len = tmp_dir.dir.readLink(io, "symlink.txt", &buffer) catch |err| switch (err) {
         error.NotLink => {
             try testing.expect(false); // Should be a link
             return;
         },
         else => return err,
     };
-    try testing.expectEqualStrings("nonexistent.txt", target);
+    try testing.expectEqualStrings("nonexistent.txt", buffer[0..target_len]);
 }
 
 test "ln with force removes existing file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create target and existing link
-    try createTestFile(tmp_dir.dir, "target.txt", "new content");
-    try createTestFile(tmp_dir.dir, "link.txt", "old content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "new content");
+    try createTestFile(io, tmp_dir.dir, "link.txt", "old content");
 
     // Force create hard link
     try createSingleLinkInDir(testing.allocator, "target.txt", "link.txt", .{ .force = true }, tmp_dir.dir);
 
     // Verify link was replaced
-    const link_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "link.txt", 1024);
+    const link_content = try tmp_dir.dir.readFileAlloc(io, "link.txt", testing.allocator, .limited(1024));
     defer testing.allocator.free(link_content);
 
     try testing.expectEqualStrings("new content", link_content);
 }
 
 test "ln fails without force on existing file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create target and existing link
-    try createTestFile(tmp_dir.dir, "target.txt", "new content");
-    try createTestFile(tmp_dir.dir, "link.txt", "old content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "new content");
+    try createTestFile(io, tmp_dir.dir, "link.txt", "old content");
 
     // Should fail without force
     const result = createSingleLinkInDir(testing.allocator, "target.txt", "link.txt", .{}, tmp_dir.dir);
@@ -738,26 +744,27 @@ test "ln fails without force on existing file" {
 }
 
 test "ln creates relative symbolic link with -r" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a subdirectory structure
-    try tmp_dir.dir.makeDir("subdir");
-    try createTestFile(tmp_dir.dir, "target.txt", "test content");
+    try tmp_dir.dir.createDir(io, "subdir", .default_dir);
+    try createTestFile(io, tmp_dir.dir, "target.txt", "test content");
 
     // This test is complex because relative links require the real createSingleLink function
     // For now, let's test the relative path calculation directly and create a simple symlink
 
     // Test manual creation of relative symlink
-    try tmp_dir.dir.symLink("../target.txt", "subdir/link.txt", .{});
+    try tmp_dir.dir.symLink(io, "../target.txt", "subdir/link.txt", .{});
 
     // Verify relative path link
     var buffer: [256]u8 = undefined;
-    const link_target = try tmp_dir.dir.readLink("subdir/link.txt", &buffer);
-    try testing.expectEqualStrings("../target.txt", link_target);
+    const link_target_len = try tmp_dir.dir.readLink(io, "subdir/link.txt", &buffer);
+    try testing.expectEqualStrings("../target.txt", buffer[0..link_target_len]);
 
     // Verify the link works
-    const link_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "subdir/link.txt", 1024);
+    const link_content = try tmp_dir.dir.readFileAlloc(io, "subdir/link.txt", testing.allocator, .limited(1024));
     defer testing.allocator.free(link_content);
     try testing.expectEqualStrings("test content", link_content);
 }
@@ -784,93 +791,99 @@ test "ln relative path calculation" {
 }
 
 test "isTargetMissing returns true for nonexistent target" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a symlink to a nonexistent target
-    try tmp_dir.dir.symLink("nonexistent.txt", "dangling_link", .{});
+    try tmp_dir.dir.symLink(io, "nonexistent.txt", "dangling_link", .{});
 
     // Get the full path to the link so we can test isTargetMissing
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dangling_link" });
     defer testing.allocator.free(link_path);
 
-    try testing.expect(isTargetMissing("nonexistent.txt", link_path));
+    try testing.expect(isTargetMissing(io, "nonexistent.txt", link_path));
 }
 
 test "isTargetMissing returns false for existing target" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a real file and a symlink pointing to it
-    try createTestFile(tmp_dir.dir, "real_file.txt", "content");
-    try tmp_dir.dir.symLink("real_file.txt", "good_link", .{});
+    try createTestFile(io, tmp_dir.dir, "real_file.txt", "content");
+    try tmp_dir.dir.symLink(io, "real_file.txt", "good_link", .{});
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "good_link" });
     defer testing.allocator.free(link_path);
 
-    try testing.expect(!isTargetMissing("real_file.txt", link_path));
+    try testing.expect(!isTargetMissing(io, "real_file.txt", link_path));
 }
 
 test "dangling symlink produces warning via createSingleLink with -w" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "warn_link" });
     defer testing.allocator.free(link_path);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Create symlink to nonexistent target with -w flag
     try createSingleLink(
         testing.allocator,
+        io,
         "nonexistent_target",
         link_path,
         .{ .symbolic = true, .warn_missing = true },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
         true,
     );
 
     // Should contain a dangling symlink warning
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangling symlink") != null);
 }
 
 test "dangling symlink no warning without -w" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "no_warn_link" });
     defer testing.allocator.free(link_path);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Create symlink to nonexistent target without -w flag
     try createSingleLink(
         testing.allocator,
+        io,
         "nonexistent_target",
         link_path,
         .{ .symbolic = true },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
         true,
     );
 
     // Should NOT contain a dangling symlink warning
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangling symlink") == null);
 }
 
 test "ln: -h flag is parsed as no_dereference" {
@@ -911,17 +924,18 @@ test "ln: -P flag is parsed" {
 }
 
 test "ln: -L creates hard link to symlink target" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create original file
-    try createTestFile(tmp_dir.dir, "original.txt", "original content");
+    try createTestFile(io, tmp_dir.dir, "original.txt", "original content");
 
     // Create symlink to original file
-    try tmp_dir.dir.symLink("original.txt", "symlink.txt", .{});
+    try tmp_dir.dir.symLink(io, "original.txt", "symlink.txt", .{});
 
     // Get the real path of the tmp dir for absolute path construction
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const symlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "symlink.txt" });
@@ -931,44 +945,46 @@ test "ln: -L creates hard link to symlink target" {
     const original_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "original.txt" });
     defer testing.allocator.free(original_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -L symlink.txt hardlink.txt
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-L", symlink_abs, hardlink_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify hardlink points to same inode as the original file (not the symlink)
-    const original_file = try std.fs.cwd().openFile(original_abs, .{});
-    defer original_file.close();
-    const hardlink_file = try std.fs.cwd().openFile(hardlink_abs, .{});
-    defer hardlink_file.close();
+    const original_file = try std.Io.Dir.cwd().openFile(io, original_abs, .{});
+    defer original_file.close(io);
+    const hardlink_file = try std.Io.Dir.cwd().openFile(io, hardlink_abs, .{});
+    defer hardlink_file.close(io);
 
-    const original_stat = std.posix.fstat(original_file.handle) catch unreachable;
-    const hardlink_stat = std.posix.fstat(hardlink_file.handle) catch unreachable;
+    const original_stat = try original_file.stat(io);
+    const hardlink_stat = try hardlink_file.stat(io);
 
     // -L should create hard link to the target of the symlink (original.txt)
-    try testing.expectEqual(original_stat.ino, hardlink_stat.ino);
+    try testing.expectEqual(original_stat.inode, hardlink_stat.inode);
 }
 
 test "ln: -P creates hard link to symlink itself" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create original file
-    try createTestFile(tmp_dir.dir, "original.txt", "original content");
+    try createTestFile(io, tmp_dir.dir, "original.txt", "original content");
 
     // Create symlink to original file
-    try tmp_dir.dir.symLink("original.txt", "symlink.txt", .{});
+    try tmp_dir.dir.symLink(io, "original.txt", "symlink.txt", .{});
 
     // Get the real path of the tmp dir for absolute path construction
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const symlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "symlink.txt" });
@@ -976,15 +992,16 @@ test "ln: -P creates hard link to symlink itself" {
     const hardlink_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "hardlink_p.txt" });
     defer testing.allocator.free(hardlink_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -P symlink.txt hardlink_p.txt
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-P", symlink_abs, hardlink_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -1002,14 +1019,15 @@ test "ln: -P creates hard link to symlink itself" {
 }
 
 test "ln: -b flag creates backup of destination" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create target and existing link
-    try createTestFile(tmp_dir.dir, "target.txt", "new content");
-    try createTestFile(tmp_dir.dir, "link.txt", "old content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "new content");
+    try createTestFile(io, tmp_dir.dir, "link.txt", "old content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
@@ -1017,26 +1035,27 @@ test "ln: -b flag creates backup of destination" {
     const link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "link.txt" });
     defer testing.allocator.free(link_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -bf target.txt link.txt (backup + force)
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-b", "-f", target_abs, link_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Backup file should exist with old content
-    const backup_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "link.txt~", 1024);
+    const backup_content = try tmp_dir.dir.readFileAlloc(io, "link.txt~", testing.allocator, .limited(1024));
     defer testing.allocator.free(backup_content);
     try testing.expectEqualStrings("old content", backup_content);
 
     // New link should point to target
-    const link_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "link.txt", 1024);
+    const link_content = try tmp_dir.dir.readFileAlloc(io, "link.txt", testing.allocator, .limited(1024));
     defer testing.allocator.free(link_content);
     try testing.expectEqualStrings("new content", link_content);
 }
@@ -1084,41 +1103,44 @@ test "ln: -F implies force" {
 }
 
 test "ln: -w flag enables dangling symlink warning" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const link_path = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "w_warn_link" });
     defer testing.allocator.free(link_path);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -sw nonexistent_target link_path
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-s", "-w", "nonexistent_target", link_path },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should warn about dangling symlink
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangling symlink") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangling symlink") != null);
 }
 
 test "ln: -sb without -f creates backup and replaces symlink" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create two target files
-    try createTestFile(tmp_dir.dir, "old_target.txt", "old content");
-    try createTestFile(tmp_dir.dir, "new_target.txt", "new content");
+    try createTestFile(io, tmp_dir.dir, "old_target.txt", "old content");
+    try createTestFile(io, tmp_dir.dir, "new_target.txt", "new content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     // Create an existing symlink pointing to old_target.txt
@@ -1127,47 +1149,49 @@ test "ln: -sb without -f creates backup and replaces symlink" {
     const new_target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "new_target.txt" });
     defer testing.allocator.free(new_target_abs);
 
-    try tmp_dir.dir.symLink("old_target.txt", "mylink", .{});
+    try tmp_dir.dir.symLink(io, "old_target.txt", "mylink", .{});
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -sb new_target.txt mylink (backup + symbolic, NO force)
     // GNU ln -b creates backup regardless of -f
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-s", "-b", new_target_abs, link_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Backup file mylink~ should exist (the old symlink was renamed)
-    tmp_dir.dir.access("mylink~", .{}) catch |err| {
+    tmp_dir.dir.access(io, "mylink~", .{}) catch |err| {
         std.debug.print("backup file mylink~ not found: {s}\n", .{@errorName(err)});
         return error.TestExpectedEqual;
     };
 
     // The new mylink should be a symlink to new_target.txt
-    var buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const link_target = try tmp_dir.dir.readLink("mylink", &buffer);
-    try testing.expectEqualStrings(new_target_abs, link_target);
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const link_target_len = try tmp_dir.dir.readLink(io, "mylink", &buffer);
+    try testing.expectEqualStrings(new_target_abs, buffer[0..link_target_len]);
 }
 
 // F54: ln -sfn should replace a symlink-to-directory, not follow it
 test "ln: -sfn replaces symlink to directory instead of following it" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a real directory and a symlink pointing to it
-    try tmp_dir.dir.makeDir("real_dir");
-    try tmp_dir.dir.symLink("real_dir", "dir_link", .{ .is_directory = true });
+    try tmp_dir.dir.createDir(io, "real_dir", .default_dir);
+    try tmp_dir.dir.symLink(io, "real_dir", "dir_link", .{ .is_directory = true });
 
     // Create a target file
-    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "target content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
@@ -1175,37 +1199,39 @@ test "ln: -sfn replaces symlink to directory instead of following it" {
     const dir_link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dir_link" });
     defer testing.allocator.free(dir_link_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -sfn target.txt dir_link
     // GNU behavior: dir_link should be REPLACED with a symlink to target.txt
     // Bug: our code follows dir_link into real_dir and creates target.txt inside it
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-s", "-f", "-n", target_abs, dir_link_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // dir_link should now be a symlink to target.txt, NOT a symlink to real_dir
-    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link_target = try tmp_dir.dir.readLink("dir_link", &readlink_buf);
-    try testing.expectEqualStrings(target_abs, link_target);
+    var readlink_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const link_target_len = try tmp_dir.dir.readLink(io, "dir_link", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, readlink_buf[0..link_target_len]);
 }
 
 // F54: ln -sfh should also replace symlink to directory (POSIX -h alias)
 test "ln: -sfh replaces symlink to directory (POSIX -h alias)" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.makeDir("real_dir");
-    try tmp_dir.dir.symLink("real_dir", "dir_link", .{ .is_directory = true });
-    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+    try tmp_dir.dir.createDir(io, "real_dir", .default_dir);
+    try tmp_dir.dir.symLink(io, "real_dir", "dir_link", .{ .is_directory = true });
+    try createTestFile(io, tmp_dir.dir, "target.txt", "target content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
@@ -1213,33 +1239,35 @@ test "ln: -sfh replaces symlink to directory (POSIX -h alias)" {
     const dir_link_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dir_link" });
     defer testing.allocator.free(dir_link_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln -sfh target.txt dir_link
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-s", "-f", "-h", target_abs, dir_link_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link_target = try tmp_dir.dir.readLink("dir_link", &readlink_buf);
-    try testing.expectEqualStrings(target_abs, link_target);
+    var readlink_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const link_target_len = try tmp_dir.dir.readLink(io, "dir_link", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, readlink_buf[0..link_target_len]);
 }
 
 // F54: ln -n with regular file dest should work normally
 test "ln: -sfn with regular file destination works normally" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "target.txt", "target content");
-    try createTestFile(tmp_dir.dir, "existing.txt", "old content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "target content");
+    try createTestFile(io, tmp_dir.dir, "existing.txt", "old content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
@@ -1247,35 +1275,37 @@ test "ln: -sfn with regular file destination works normally" {
     const existing_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "existing.txt" });
     defer testing.allocator.free(existing_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-s", "-f", "-n", target_abs, existing_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should be a symlink to target.txt
-    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link_target = try tmp_dir.dir.readLink("existing.txt", &readlink_buf);
-    try testing.expectEqualStrings(target_abs, link_target);
+    var readlink_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const link_target_len = try tmp_dir.dir.readLink(io, "existing.txt", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, readlink_buf[0..link_target_len]);
 }
 
 // F54: ln -n with dangling symlink dest should work normally
 test "ln: -sfn with dangling symlink destination replaces it" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "target.txt", "target content");
+    try createTestFile(io, tmp_dir.dir, "target.txt", "target content");
 
     // Create a dangling symlink
-    try tmp_dir.dir.symLink("nonexistent", "dangling_link", .{});
+    try tmp_dir.dir.symLink(io, "nonexistent", "dangling_link", .{});
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const target_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "target.txt" });
@@ -1283,32 +1313,34 @@ test "ln: -sfn with dangling symlink destination replaces it" {
     const dangling_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dangling_link" });
     defer testing.allocator.free(dangling_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "-s", "-f", "-n", target_abs, dangling_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    var readlink_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link_target = try tmp_dir.dir.readLink("dangling_link", &readlink_buf);
-    try testing.expectEqualStrings(target_abs, link_target);
+    var readlink_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const link_target_len = try tmp_dir.dir.readLink(io, "dangling_link", &readlink_buf);
+    try testing.expectEqualStrings(target_abs, readlink_buf[0..link_target_len]);
 }
 
 // F66: ln --backup=simple should not panic
 test "ln: --backup=simple does not panic with TooManyValues" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "source.txt", "source content");
-    try createTestFile(tmp_dir.dir, "dest.txt", "dest content");
+    try createTestFile(io, tmp_dir.dir, "source.txt", "source content");
+    try createTestFile(io, tmp_dir.dir, "dest.txt", "dest content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const source_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "source.txt" });
@@ -1316,8 +1348,8 @@ test "ln: --backup=simple does not panic with TooManyValues" {
     const dest_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dest.txt" });
     defer testing.allocator.free(dest_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Run: ln --backup=simple source.txt dest.txt
     // GNU ln accepts --backup=CONTROL; our code panics with TooManyValues
@@ -1326,9 +1358,10 @@ test "ln: --backup=simple does not panic with TooManyValues" {
     // a clean error message (not a stack trace / panic).
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "--backup=simple", source_abs, dest_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     // Should succeed (GNU behavior) or at least give a clean error (exit 2).
@@ -1339,13 +1372,14 @@ test "ln: --backup=simple does not panic with TooManyValues" {
 
 // F66: ln --backup=numbered should also not panic
 test "ln: --backup=numbered does not panic" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try createTestFile(tmp_dir.dir, "source.txt", "source content");
-    try createTestFile(tmp_dir.dir, "dest.txt", "dest content");
+    try createTestFile(io, tmp_dir.dir, "source.txt", "source content");
+    try createTestFile(io, tmp_dir.dir, "dest.txt", "dest content");
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const source_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "source.txt" });
@@ -1353,14 +1387,15 @@ test "ln: --backup=numbered does not panic" {
     const dest_abs = try std.fs.path.join(testing.allocator, &[_][]const u8{ tmp_path, "dest.txt" });
     defer testing.allocator.free(dest_abs);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const exit_code = try run(
         testing.allocator,
+        io,
         &[_][]const u8{ "--backup=numbered", source_abs, dest_abs },
         common.null_writer,
-        stderr_buffer.writer(testing.allocator),
+        &stderr_aw.writer,
     );
 
     try testing.expect(exit_code == 0 or exit_code == 2);

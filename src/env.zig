@@ -12,7 +12,6 @@ const common = @import("common");
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
-const process = std.process;
 
 /// Options parsed from command-line arguments
 const EnvOptions = struct {
@@ -56,12 +55,33 @@ const Assignment = struct {
 };
 
 /// Main entry point
-pub fn main() !void {
-    common.utilityMain(runEnv);
+/// Standard entry point - needs init to access environ_map
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.arena.allocator();
+
+    const args = init.minimal.args.toSlice(allocator) catch std.process.exit(1);
+
+    var stdout_buffer: [8192]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    var stderr_buffer: [8192]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writerStreaming(io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
+
+    const exit_code = runEnv(allocator, io, args[1..], init.environ_map, stdout, stderr) catch |err| {
+        stderr.print("error: {s}\n", .{common.posixErrorString(err)}) catch {};
+        stderr.flush() catch {};
+        std.process.exit(1);
+    };
+    stdout.flush() catch {};
+    stderr.flush() catch {};
+    std.process.exit(exit_code);
 }
 
 /// Run the env utility with given arguments
-pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) anyerror!u8 {
+pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent_environ: *const std.process.Environ.Map, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) anyerror!u8 {
     var options = parseArgs(allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
@@ -98,9 +118,9 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // Handle -S: split string into tokens, process as assignments/command
     if (options.split_string) |split_str| {
-        var split_assignments = std.ArrayListUnmanaged(Assignment){};
+        var split_assignments = std.ArrayListUnmanaged(Assignment).empty;
         defer split_assignments.deinit(allocator);
-        var split_command = std.ArrayListUnmanaged([]const u8){};
+        var split_command = std.ArrayListUnmanaged([]const u8).empty;
         var in_command = false;
 
         var token_it = std.mem.tokenizeAny(u8, split_str, " \t");
@@ -130,7 +150,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
         // Merge -S assignments with any from the command line
         if (split_assignments.items.len > 0) {
-            var merged = std.ArrayListUnmanaged(Assignment){};
+            var merged = std.ArrayListUnmanaged(Assignment).empty;
             // Add original assignments first
             for (options.assignments) |a| {
                 merged.append(allocator, a) catch {
@@ -164,7 +184,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
     }
 
     // Build the environment
-    var env_map = buildEnvMap(allocator, options) catch |err| {
+    var env_map = buildEnvMap(allocator, options, parent_environ) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "env", "failed to build environment: {s}", .{common.posixErrorString(err)});
         return @intFromEnum(common.ExitCode.general_error);
     };
@@ -185,7 +205,7 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // Handle -C/--chdir
     if (options.chdir) |dir| {
-        std.posix.chdir(dir) catch |err| {
+        std.Io.Threaded.chdir(dir) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "env", "cannot change directory to '{s}': {s}", .{ dir, common.posixErrorString(err) });
             return 125;
         };
@@ -214,15 +234,15 @@ pub fn runEnv(allocator: Allocator, args: []const []const u8, stdout_writer: any
     }
 
     // Execute the command
-    return execCommand(allocator, options.command, &env_map, stderr_writer);
+    return execCommand(allocator, io, options.command, &env_map, stderr_writer);
 }
 
 /// Parse command-line arguments manually (env has unusual argument syntax)
 fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag, MissingValue, OutOfMemory }!EnvOptions {
     var options = EnvOptions{};
-    var unsets = std.ArrayListUnmanaged([]const u8){};
+    var unsets = std.ArrayListUnmanaged([]const u8).empty;
     errdefer unsets.deinit(allocator);
-    var assignments = std.ArrayListUnmanaged(Assignment){};
+    var assignments = std.ArrayListUnmanaged(Assignment).empty;
     errdefer assignments.deinit(allocator);
     var i: usize = 0;
     var past_options = false;
@@ -399,15 +419,21 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
 }
 
 /// Build the environment map based on options
-fn buildEnvMap(allocator: Allocator, options: EnvOptions) !process.EnvMap {
-    var env_map = if (options.ignore_environment)
-        process.EnvMap.init(allocator)
-    else
-        try process.getEnvMap(allocator);
+fn buildEnvMap(allocator: Allocator, options: EnvOptions, parent_environ: *const std.process.Environ.Map) !std.process.Environ.Map {
+    var env_map = std.process.Environ.Map.init(allocator);
+
+    if (!options.ignore_environment) {
+        // Copy parent environment
+        const keys = parent_environ.keys();
+        const vals = parent_environ.values();
+        for (keys, vals) |k, v| {
+            try env_map.put(k, v);
+        }
+    }
 
     // Apply unsets
     for (options.unsets) |name| {
-        env_map.remove(name);
+        _ = env_map.swapRemove(name);
     }
 
     // Apply assignments
@@ -419,10 +445,11 @@ fn buildEnvMap(allocator: Allocator, options: EnvOptions) !process.EnvMap {
 }
 
 /// Print the environment to stdout
-fn printEnvironment(writer: anytype, env_map: *const process.EnvMap, null_delimiter: bool) !void {
-    var it = env_map.iterator();
-    while (it.next()) |entry| {
-        try writer.print("{s}={s}", .{ entry.key_ptr.*, entry.value_ptr.* });
+fn printEnvironment(writer: *std.Io.Writer, env_map: *const std.process.Environ.Map, null_delimiter: bool) !void {
+    const keys = env_map.keys();
+    const vals = env_map.values();
+    for (keys, vals) |k, v| {
+        try writer.print("{s}={s}", .{ k, v });
         if (null_delimiter) {
             try writer.writeByte(0);
         } else {
@@ -432,32 +459,30 @@ fn printEnvironment(writer: anytype, env_map: *const process.EnvMap, null_delimi
 }
 
 /// Execute a command with the given environment
-fn execCommand(allocator: Allocator, command: []const []const u8, env_map: *const process.EnvMap, stderr_writer: anytype) u8 {
-    var child = process.Child.init(command, allocator);
-    child.env_map = env_map;
-
-    child.spawn() catch |err| {
+fn execCommand(allocator: Allocator, io: std.Io, command: []const []const u8, env_map: *const std.process.Environ.Map, stderr_writer: *std.Io.Writer) u8 {
+    var child = std.process.spawn(io, .{
+        .argv = command,
+        .environ_map = env_map,
+    }) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], common.posixErrorString(err) });
         return 127;
     };
 
-    const result = child.wait() catch |err| {
+    const result = child.wait(io) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "env", "'{s}': {s}", .{ command[0], common.posixErrorString(err) });
-        // FileNotFound means the command was not found (127)
-        // Other errors mean it was found but could not be invoked (126)
-        return if (err == error.FileNotFound) 127 else 126;
+        return 126;
     };
 
     return switch (result) {
-        .Exited => |code| code,
-        .Signal => |signal| @as(u8, @intCast(@min(signal + 128, 255))),
-        .Stopped => |signal| @as(u8, @intCast(@min(signal + 128, 255))),
-        .Unknown => |code| @as(u8, @intCast(@min(code, 255))),
+        .exited => |code| code,
+        .signal => |signal| @as(u8, @intCast(@min(@intFromEnum(signal) + 128, 255))),
+        .stopped => |signal| @as(u8, @intCast(@min(@intFromEnum(signal) + 128, 255))),
+        .unknown => |code| @as(u8, @intCast(@min(code, 255))),
     };
 }
 
 /// Print help message
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: env [OPTION]... [-] [NAME=VALUE]... [COMMAND [ARG]...]
         \\Set each NAME to VALUE in the environment and run COMMAND.
@@ -486,7 +511,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("env ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -700,20 +725,21 @@ test "env parseArgs: -C/tmp inline value" {
 }
 
 test "env buildEnvMap: ignore environment" {
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     const options = EnvOptions{
         .ignore_environment = true,
     };
-    var env_map = try buildEnvMap(testing.allocator, options);
+    var env_map = try buildEnvMap(testing.allocator, options, &empty_env);
     defer env_map.deinit();
 
     // Should be empty
-    var it = env_map.iterator();
-    var count: usize = 0;
-    while (it.next()) |_| count += 1;
-    try testing.expectEqual(@as(usize, 0), count);
+    try testing.expectEqual(@as(usize, 0), env_map.keys().len);
 }
 
 test "env buildEnvMap: ignore environment with assignments" {
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     const assignments = [_]Assignment{
         .{ .name = "FOO", .value = "bar" },
         .{ .name = "BAZ", .value = "qux" },
@@ -722,7 +748,7 @@ test "env buildEnvMap: ignore environment with assignments" {
         .ignore_environment = true,
         .assignments = &assignments,
     };
-    var env_map = try buildEnvMap(testing.allocator, options);
+    var env_map = try buildEnvMap(testing.allocator, options, &empty_env);
     defer env_map.deinit();
 
     try testing.expectEqualStrings("bar", env_map.get("FOO").?);
@@ -730,6 +756,8 @@ test "env buildEnvMap: ignore environment with assignments" {
 }
 
 test "env buildEnvMap: unset before assign" {
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     // With -i, set a var, unset should happen before assignment
     const assignments = [_]Assignment{
         .{ .name = "X", .value = "new" },
@@ -740,7 +768,7 @@ test "env buildEnvMap: unset before assign" {
         .unsets = &unsets,
         .assignments = &assignments,
     };
-    var env_map = try buildEnvMap(testing.allocator, options);
+    var env_map = try buildEnvMap(testing.allocator, options, &empty_env);
     defer env_map.deinit();
 
     // Unset happens first (on empty env), then assignment sets it
@@ -748,134 +776,160 @@ test "env buildEnvMap: unset before assign" {
 }
 
 test "env printEnvironment: basic output" {
-    var env_map = process.EnvMap.init(testing.allocator);
+    var env_map = std.process.Environ.Map.init(testing.allocator);
     defer env_map.deinit();
     try env_map.put("FOO", "bar");
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try printEnvironment(buffer.writer(testing.allocator), &env_map, false);
-    try testing.expectEqualStrings("FOO=bar\n", buffer.items);
+    try printEnvironment(&aw.writer, &env_map, false);
+    try testing.expectEqualStrings("FOO=bar\n", aw.writer.buffered());
 }
 
 test "env printEnvironment: null delimiter" {
-    var env_map = process.EnvMap.init(testing.allocator);
+    var env_map = std.process.Environ.Map.init(testing.allocator);
     defer env_map.deinit();
     try env_map.put("FOO", "bar");
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try printEnvironment(buffer.writer(testing.allocator), &env_map, true);
+    try printEnvironment(&aw.writer, &env_map, true);
 
     // Should end with NUL instead of newline
-    try testing.expectEqual(@as(usize, 8), buffer.items.len);
-    try testing.expectEqualStrings("FOO=bar", buffer.items[0..7]);
-    try testing.expectEqual(@as(u8, 0), buffer.items[7]);
+    const out = aw.writer.buffered();
+    try testing.expectEqual(@as(usize, 8), out.len);
+    try testing.expectEqualStrings("FOO=bar", out[0..7]);
+    try testing.expectEqual(@as(u8, 0), out[7]);
 }
 
 test "env printEnvironment: empty environment" {
-    var env_map = process.EnvMap.init(testing.allocator);
+    var env_map = std.process.Environ.Map.init(testing.allocator);
     defer env_map.deinit();
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try printEnvironment(buffer.writer(testing.allocator), &env_map, false);
-    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try printEnvironment(&aw.writer, &env_map, false);
+    try testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }
 
 test "env runEnv: help flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{"--help"}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{"--help"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: env") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: env") != null);
 }
 
 test "env runEnv: version flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{"--version"}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{"--version"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "env") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "env") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
 test "env runEnv: print environment with -i and assignment" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("FOO=bar\n", stdout_buffer.items);
+    try testing.expectEqualStrings("FOO=bar\n", stdout_aw.writer.buffered());
 }
 
 test "env runEnv: empty environment with -i" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{"-i"}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{"-i"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "env runEnv: -i with multiple assignments" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "A=1", "B=2" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "A=1", "B=2" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Both should be present (order may vary in hash map)
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "A=1\n") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "B=2\n") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "A=1\n") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "B=2\n") != null);
 }
 
 test "env runEnv: null delimiter output" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "-0", "X=y" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-0", "X=y" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("X=y", stdout_buffer.items[0..3]);
-    try testing.expectEqual(@as(u8, 0), stdout_buffer.items[3]);
+    const out = stdout_aw.writer.buffered();
+    try testing.expectEqualStrings("X=y", out[0..3]);
+    try testing.expectEqual(@as(u8, 0), out[3]);
 }
 
 test "env runEnv: unknown flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{"--badoption"}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{"--badoption"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
 }
 
 test "env runEnv: invalid chdir" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-C", "/nonexistent_dir_12345" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-C", "/nonexistent_dir_12345" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 125), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot change directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot change directory") != null);
 }
 
 test "env parseArgs: -P flag" {
@@ -925,53 +979,65 @@ test "env parseArgs: -v flag" {
 }
 
 test "env runEnv: -P does not set PATH when printing environment" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Per spec, -P only affects utility search path, not the environment
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "PATH=") == null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "PATH=") == null);
     // Assignment should still appear
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar\n") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "FOO=bar\n") != null);
 }
 
 test "env runEnv: -S processes assignments" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "-S", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-S", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // -S should process the string, not print a stub warning
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "FOO=bar") != null);
 }
 
 test "env runEnv: -v verbose with -i" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-iv", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-iv", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Verbose should mention clearing and setting
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "clearing environment") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "setenv FOO=bar") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "clearing environment") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "setenv FOO=bar") != null);
 }
 
 test "env runEnv: -v verbose with -u" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-v", "-u", "NONEXISTENT_VAR_TEST" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-v", "-u", "NONEXISTENT_VAR_TEST" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unsetenv NONEXISTENT_VAR_TEST") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unsetenv NONEXISTENT_VAR_TEST") != null);
 }
 
 // ============================================================================
@@ -998,27 +1064,33 @@ test "env parseArgs: bare dash with assignments and command" {
 }
 
 test "env runEnv: bare dash clears environment" {
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     // `env -` with no command should print empty environment
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{"-"}, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{"-"}, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
 }
 
 test "env runEnv: bare dash with assignment prints only that var" {
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     // `env - FOO=bar` should print only FOO=bar (clean environment)
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("FOO=bar\n", stdout_buffer.items);
+    try testing.expectEqualStrings("FOO=bar\n", stdout_aw.writer.buffered());
 }
 
 // ============================================================================
@@ -1026,18 +1098,21 @@ test "env runEnv: bare dash with assignment prints only that var" {
 // ============================================================================
 
 test "env runEnv: -S splits string into assignment" {
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     // `env -i -S "FOO=bar"` should process FOO=bar as an assignment
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "-S", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-S", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should actually set FOO=bar in the environment, not just warn
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "FOO=bar\n") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "FOO=bar\n") != null);
     // Should NOT print a stub warning
-    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 // ========== AUDIT WAVE 4: env IMPORTANT findings ==========
@@ -1049,6 +1124,9 @@ test "env runEnv: -S splits string into assignment" {
 // this combination before executing. We verify via parseArgs that
 // both null_delimiter and command are set, which the fix should prevent.
 test "audit: env -0 with utility should be detected" {
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
     // Parse args: -0 echo hello — both null_delimiter and command are set
     const options = try parseArgs(testing.allocator, &.{ "-0", "echo", "hello" });
     defer options.deinit(testing.allocator);
@@ -1059,14 +1137,14 @@ test "audit: env -0 with utility should be detected" {
     try testing.expect(options.command.len > 0);
     // Now verify runEnv rejects the combination with exit 125.
     // (This avoids spawning a child process in tests.)
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Use -i so no inherited env, and a nonexistent command to avoid spawn.
     // But the validation should reject BEFORE reaching exec.
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "-0", "NONEXISTENT_CMD_AUDIT_TEST_12345" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-0", "NONEXISTENT_CMD_AUDIT_TEST_12345" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     // Per spec, should exit 125 rejecting the -0+utility combination.
     // Currently returns 127 (command not found) because validation is missing.
     try testing.expectEqual(@as(u8, 125), exit_code);
@@ -1096,15 +1174,18 @@ test "audit: env flags after NAME=VALUE should not be parsed" {
 // Currently: `env -i -P /usr/bin FOO=bar` puts PATH=/usr/bin in output.
 // Expected: Only FOO=bar should appear (PATH should not be in child env).
 test "audit: env -P should not set PATH in child environment" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var empty_env = std.process.Environ.Map.init(testing.allocator);
+    defer empty_env.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // env -i -P /custom/path FOO=bar — print env with -i, -P, and assignment
     // -P should NOT inject PATH into the child's environment
-    const exit_code = try runEnv(testing.allocator, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runEnv(testing.allocator, io, &.{ "-i", "-P", "/custom/path", "FOO=bar" }, &empty_env, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Only FOO=bar should be printed; PATH should NOT appear
-    try testing.expectEqualStrings("FOO=bar\n", stdout_buffer.items);
+    try testing.expectEqualStrings("FOO=bar\n", stdout_aw.writer.buffered());
 }

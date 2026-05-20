@@ -64,12 +64,12 @@ const GrepOptions = struct {
     after_context: usize = 0,
     before_context: usize = 0,
     color: common.display_config.ResolvedMode = .off,
-    include_globs: std.ArrayListUnmanaged([]const u8) = .{},
-    exclude_globs: std.ArrayListUnmanaged([]const u8) = .{},
-    exclude_dirs: std.ArrayListUnmanaged([]const u8) = .{},
-    patterns: std.ArrayListUnmanaged([]const u8) = .{},
-    pattern_file_contents: std.ArrayListUnmanaged([]const u8) = .{},
-    files: std.ArrayListUnmanaged([]const u8) = .{},
+    include_globs: std.ArrayListUnmanaged([]const u8) = .empty,
+    exclude_globs: std.ArrayListUnmanaged([]const u8) = .empty,
+    exclude_dirs: std.ArrayListUnmanaged([]const u8) = .empty,
+    patterns: std.ArrayListUnmanaged([]const u8) = .empty,
+    pattern_file_contents: std.ArrayListUnmanaged([]const u8) = .empty,
+    files: std.ArrayListUnmanaged([]const u8) = .empty,
     help: bool = false,
     version: bool = false,
 
@@ -103,7 +103,7 @@ const CompiledPattern = union(enum) {
 
 /// Parse grep command-line arguments
 /// Returns null on error (error already printed to stderr)
-fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anytype) !?GrepOptions {
+fn parseArgs(allocator: Allocator, io: std.Io, args: []const []const u8, stderr_writer: *std.Io.Writer) !?GrepOptions {
     var opts = GrepOptions{};
     errdefer opts.deinit(allocator);
 
@@ -184,7 +184,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                 try opts.patterns.append(allocator, flag["regexp=".len..]);
             } else if (std.mem.startsWith(u8, flag, "file=")) {
                 const pattern_file = flag["file=".len..];
-                try loadPatternsFromFile(allocator, &opts.patterns, &opts.pattern_file_contents, pattern_file, stderr_writer);
+                try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, pattern_file, stderr_writer);
             } else if (std.mem.startsWith(u8, flag, "max-count=")) {
                 const val_str = flag["max-count=".len..];
                 opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch {
@@ -214,7 +214,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
             } else if (std.mem.eql(u8, flag, "color") or std.mem.eql(u8, flag, "colour")) {
                 opts.color = .on;
             } else if (std.mem.startsWith(u8, flag, "color=") or std.mem.startsWith(u8, flag, "colour=")) {
-                const eq_pos = std.mem.indexOfScalar(u8, flag, '=').?;
+                const eq_pos = std.mem.findScalar(u8, flag, '=').?;
                 const when = flag[eq_pos + 1 ..];
                 if (std.mem.eql(u8, when, "auto")) {
                     // Keep resolved value (TTY-dependent)
@@ -317,7 +317,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
                             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'f'", .{});
                             return null;
                         };
-                        try loadPatternsFromFile(allocator, &opts.patterns, &opts.pattern_file_contents, value, stderr_writer);
+                        try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, value, stderr_writer);
                         break;
                     },
                     'm' => {
@@ -437,8 +437,8 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
 }
 
 /// Load patterns from a file, one per line
-fn loadPatternsFromFile(allocator: Allocator, patterns: *std.ArrayListUnmanaged([]const u8), pattern_file_contents: *std.ArrayListUnmanaged([]const u8), path: []const u8, stderr_writer: anytype) !void {
-    const content = std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024) catch {
+fn loadPatternsFromFile(allocator: Allocator, io: std.Io, patterns: *std.ArrayListUnmanaged([]const u8), pattern_file_contents: *std.ArrayListUnmanaged([]const u8), path: []const u8, stderr_writer: *std.Io.Writer) !void {
+    const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(10 * 1024 * 1024)) catch {
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: No such file or directory", .{path});
         return;
     };
@@ -471,7 +471,7 @@ const AnchorResult = struct {
 /// alternative with ^...$. When alternation is present, produce an
 /// ERE pattern instead of BRE to avoid \| which macOS doesn't support.
 fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult {
-    var parts = std.ArrayListUnmanaged([]const u8){};
+    var parts = std.ArrayListUnmanaged([]const u8).empty;
     var start: usize = 0;
     var i: usize = 0;
     while (i < pattern.len) {
@@ -493,7 +493,7 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
     }
 
     // Alternation present: produce ERE "^(alt1|alt2|...)$"
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
     buf.appendSlice(allocator, "^(") catch return .{ .pattern = null, .use_ere = false };
     for (parts.items, 0..) |part, idx| {
         if (idx > 0) {
@@ -509,7 +509,7 @@ fn anchorBreAlternatives(allocator: Allocator, pattern: []const u8) AnchorResult
 }
 
 /// Compile a single pattern. Returns null on error.
-fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOptions, stderr_writer: anytype) ?CompiledPattern {
+fn compilePattern(allocator: Allocator, pattern: []const u8, opts: *const GrepOptions, stderr_writer: *std.Io.Writer) ?CompiledPattern {
     if (opts.regex_mode == .fixed) {
         if (opts.ignore_case) {
             const lower = toLower(allocator, pattern) catch return null;
@@ -617,7 +617,7 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
                 defer if (need_free) allocator.free(haystack);
                 var pos: usize = 0;
                 while (pos <= haystack.len) {
-                    const idx = std.mem.indexOf(u8, haystack[pos..], needle) orelse return .{ .matched = false };
+                    const idx = std.mem.find(u8, haystack[pos..], needle) orelse return .{ .matched = false };
                     const abs_start = pos + idx;
                     const abs_end = abs_start + needle.len;
                     const left_ok = if (abs_start == 0)
@@ -635,12 +635,12 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
             if (fp.lower) |lower_pattern| {
                 const lower_line = toLower(allocator, line) catch return .{ .matched = false };
                 defer allocator.free(lower_line);
-                if (std.mem.indexOf(u8, lower_line, lower_pattern)) |pos| {
+                if (std.mem.find(u8, lower_line, lower_pattern)) |pos| {
                     return .{ .matched = true, .match_start = pos, .match_end = pos + lower_pattern.len };
                 }
                 return .{ .matched = false };
             }
-            if (std.mem.indexOf(u8, line, fp.text)) |pos| {
+            if (std.mem.find(u8, line, fp.text)) |pos| {
                 return .{ .matched = true, .match_start = pos, .match_end = pos + fp.text.len };
             }
             return .{ .matched = false };
@@ -714,7 +714,7 @@ const Color = struct {
 };
 
 /// Print a filename prefix
-fn printFilename(writer: anytype, filename: []const u8, use_color: bool) void {
+fn printFilename(writer: *std.Io.Writer, filename: []const u8, use_color: bool) void {
     if (use_color) {
         writer.print("{s}{s}{s}", .{ Color.filename, filename, Color.reset }) catch {};
     } else {
@@ -723,7 +723,7 @@ fn printFilename(writer: anytype, filename: []const u8, use_color: bool) void {
 }
 
 /// Print a line number
-fn printLineNumber(writer: anytype, line_num: usize, use_color: bool) void {
+fn printLineNumber(writer: *std.Io.Writer, line_num: usize, use_color: bool) void {
     if (use_color) {
         writer.print("{s}{d}{s}", .{ Color.line_number, line_num, Color.reset }) catch {};
     } else {
@@ -732,7 +732,7 @@ fn printLineNumber(writer: anytype, line_num: usize, use_color: bool) void {
 }
 
 /// Print a byte offset
-fn printByteOffset(writer: anytype, offset: usize, use_color: bool) void {
+fn printByteOffset(writer: *std.Io.Writer, offset: usize, use_color: bool) void {
     if (use_color) {
         writer.print("{s}{d}{s}", .{ Color.line_number, offset, Color.reset }) catch {};
     } else {
@@ -741,7 +741,7 @@ fn printByteOffset(writer: anytype, offset: usize, use_color: bool) void {
 }
 
 /// Print a separator character
-fn printSep(writer: anytype, sep: u8, use_color: bool) void {
+fn printSep(writer: *std.Io.Writer, sep: u8, use_color: bool) void {
     if (sep == 0) {
         // NUL separator: write raw byte, no color wrapping
         writer.writeByte(0) catch {};
@@ -753,7 +753,7 @@ fn printSep(writer: anytype, sep: u8, use_color: bool) void {
 }
 
 /// Print a line with optional color highlighting of the match
-fn printMatchLine(writer: anytype, line: []const u8, match_start: usize, match_end: usize, use_color: bool, terminator: u8) void {
+fn printMatchLine(writer: *std.Io.Writer, line: []const u8, match_start: usize, match_end: usize, use_color: bool, terminator: u8) void {
     if (use_color and match_end > match_start and match_end <= line.len) {
         writer.writeAll(line[0..match_start]) catch {};
         writer.print("{s}", .{Color.match_highlight}) catch {};
@@ -773,15 +773,18 @@ fn printMatchLine(writer: anytype, line: []const u8, match_start: usize, match_e
 /// Process a single file/stream. Returns true if any match was found.
 fn processFile(
     allocator: Allocator,
-    file: std.fs.File,
+    io: std.Io,
+    file: std.Io.File,
     filename: []const u8,
     patterns: []const CompiledPattern,
     opts: *const GrepOptions,
-    stdout_writer: anytype,
+    stdout_writer: *std.Io.Writer,
     show_filename: bool,
     use_color: bool,
 ) bool {
-    const content = file.readToEndAlloc(allocator, 512 * 1024 * 1024) catch return false;
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
+    const content = file_reader.interface.allocRemaining(allocator, .limited(512 * 1024 * 1024)) catch return false;
     defer allocator.free(content);
 
     var found_match = false;
@@ -798,9 +801,9 @@ fn processFile(
     const line_term: u8 = if (opts.null_line_sep) 0 else '\n';
 
     // Split into lines, tracking byte offsets
-    var lines = std.ArrayListUnmanaged([]const u8){};
+    var lines = std.ArrayListUnmanaged([]const u8).empty;
     defer lines.deinit(allocator);
-    var line_offsets = std.ArrayListUnmanaged(usize){};
+    var line_offsets = std.ArrayListUnmanaged(usize).empty;
     defer line_offsets.deinit(allocator);
     {
         var start: usize = 0;
@@ -959,7 +962,7 @@ fn processFile(
 }
 
 /// Print a context line (with - separator instead of :)
-fn printContextLine(writer: anytype, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool, fn_sep: u8, line_term: u8) void {
+fn printContextLine(writer: *std.Io.Writer, line: []const u8, line_num: usize, filename: []const u8, show_filename: bool, show_line_number: bool, show_byte_offset: bool, byte_offset: usize, use_color: bool, fn_sep: u8, line_term: u8) void {
     if (show_filename) {
         printFilename(writer, filename, use_color);
         printSep(writer, if (fn_sep == 0) @as(u8, 0) else '-', use_color);
@@ -1013,43 +1016,44 @@ fn shouldExcludeDir(dirname: []const u8, opts: *const GrepOptions) bool {
 /// Recursively search a directory
 fn searchDirectory(
     allocator: Allocator,
+    io: std.Io,
     dir_path: []const u8,
     patterns: []const CompiledPattern,
     opts: *const GrepOptions,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
     use_color: bool,
     found_any: *bool,
 ) void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         if (!opts.no_messages) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ dir_path, common.posixErrorString(err) });
         }
         return;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         // Build full path
         const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
 
         switch (entry.kind) {
             .directory => {
                 if (!shouldExcludeDir(entry.name, opts)) {
-                    searchDirectory(allocator, full_path, patterns, opts, stdout_writer, stderr_writer, use_color, found_any);
+                    searchDirectory(allocator, io, full_path, patterns, opts, stdout_writer, stderr_writer, use_color, found_any);
                 }
             },
             .file => {
                 if (shouldIncludeFile(entry.name, opts)) {
-                    const file = std.fs.cwd().openFile(full_path, .{}) catch |err| {
+                    const file = std.Io.Dir.cwd().openFile(io, full_path, .{}) catch |err| {
                         if (!opts.no_messages) {
                             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ full_path, common.posixErrorString(err) });
                         }
                         continue;
                     };
-                    defer file.close();
-                    if (processFile(allocator, file, full_path, patterns, opts, stdout_writer, true, use_color)) {
+                    defer file.close(io);
+                    if (processFile(allocator, io, file, full_path, patterns, opts, stdout_writer, true, use_color)) {
                         found_any.* = true;
                     }
                 }
@@ -1058,15 +1062,15 @@ fn searchDirectory(
                 if (opts.dereference_recursive) {
                     // Follow symlink - try as file first, then as directory
                     if (shouldIncludeFile(entry.name, opts)) {
-                        const file = std.fs.cwd().openFile(full_path, .{}) catch {
+                        const file = std.Io.Dir.cwd().openFile(io, full_path, .{}) catch {
                             // Might be a directory symlink
                             if (!shouldExcludeDir(entry.name, opts)) {
-                                searchDirectory(allocator, full_path, patterns, opts, stdout_writer, stderr_writer, use_color, found_any);
+                                searchDirectory(allocator, io, full_path, patterns, opts, stdout_writer, stderr_writer, use_color, found_any);
                             }
                             continue;
                         };
-                        defer file.close();
-                        if (processFile(allocator, file, full_path, patterns, opts, stdout_writer, true, use_color)) {
+                        defer file.close(io);
+                        if (processFile(allocator, io, file, full_path, patterns, opts, stdout_writer, true, use_color)) {
                             found_any.* = true;
                         }
                     }
@@ -1081,7 +1085,7 @@ fn searchDirectory(
 // Help and Version
 // ============================================================================
 
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: grep [OPTION]... PATTERNS [FILE]...
         \\Search for PATTERNS in each FILE.
@@ -1137,7 +1141,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
     );
 }
 
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     writer.print("grep ({s}) {s}\n", .{ common.name, common.version }) catch {};
 }
 
@@ -1145,17 +1149,13 @@ fn printVersion(writer: anytype) !void {
 // Main Entry Point
 // ============================================================================
 
-fn run(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
-    return runGrep(allocator, args, stdout, stderr);
-}
-
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runGrep);
 }
 
 /// Public entry point for the grep utility
-pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) u8 {
-    var opts = (parseArgs(allocator, args, stderr_writer) catch {
+pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) anyerror!u8 {
+    var opts = (parseArgs(allocator, io, args, stderr_writer) catch {
         return @intFromEnum(common.ExitCode.misuse);
     }) orelse return @intFromEnum(common.ExitCode.misuse);
     defer opts.deinit(allocator);
@@ -1177,7 +1177,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     // Compile patterns
-    var compiled = std.ArrayListUnmanaged(CompiledPattern){};
+    var compiled = std.ArrayListUnmanaged(CompiledPattern).empty;
     defer {
         for (compiled.items) |*cp| freePattern(allocator, cp);
         compiled.deinit(allocator);
@@ -1214,18 +1214,18 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     if (opts.files.items.len == 0 and !opts.recursive) {
         // Read from stdin
-        const stdin_file = std.fs.File.stdin();
-        if (processFile(allocator, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
+        const stdin_file = std.Io.File.stdin();
+        if (processFile(allocator, io, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
             found_any = true;
         }
     } else if (opts.files.items.len == 0 and opts.recursive) {
         // Recursive with no files means search current directory
-        searchDirectory(allocator, ".", compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
+        searchDirectory(allocator, io, ".", compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
     } else {
         for (opts.files.items) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
-                const stdin_file = std.fs.File.stdin();
-                if (processFile(allocator, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
+                const stdin_file = std.Io.File.stdin();
+                if (processFile(allocator, io, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
                     found_any = true;
                 }
                 continue;
@@ -1233,7 +1233,7 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
             if (opts.recursive or opts.skip_dirs) {
                 // Check if it's a directory
-                const stat = std.fs.cwd().statFile(file_path) catch |err| {
+                const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
                     if (!opts.no_messages) {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     }
@@ -1242,20 +1242,20 @@ pub fn runGrep(allocator: Allocator, args: []const []const u8, stdout_writer: an
                 };
                 if (stat.kind == .directory) {
                     if (opts.skip_dirs) continue; // -d skip: silently skip
-                    searchDirectory(allocator, file_path, compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
+                    searchDirectory(allocator, io, file_path, compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
                     continue;
                 }
             }
 
-            const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+            const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                 if (!opts.no_messages) {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                 }
                 had_error = true;
                 continue;
             };
-            defer file.close();
-            if (processFile(allocator, file, file_path, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
+            defer file.close(io);
+            if (processFile(allocator, io, file, file_path, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
                 found_any = true;
             }
             if (opts.quiet and found_any) return 0;
@@ -1289,7 +1289,7 @@ fn toLower(allocator: Allocator, s: []const u8) ![]u8 {
 
 test "parseArgs basic pattern" {
     const args = [_][]const u8{"hello"};
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
@@ -1299,7 +1299,7 @@ test "parseArgs basic pattern" {
 
 test "parseArgs pattern and files" {
     const args = [_][]const u8{ "pattern", "file1.txt", "file2.txt" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
@@ -1311,7 +1311,7 @@ test "parseArgs pattern and files" {
 
 test "parseArgs -e multiple patterns" {
     const args = [_][]const u8{ "-e", "foo", "-e", "bar" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 2), opts.patterns.items.len);
@@ -1321,7 +1321,7 @@ test "parseArgs -e multiple patterns" {
 
 test "parseArgs -e with files" {
     const args = [_][]const u8{ "-e", "pattern", "file1.txt" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
@@ -1332,7 +1332,7 @@ test "parseArgs -e with files" {
 
 test "parseArgs short flags" {
     const args = [_][]const u8{ "-ivn", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expect(opts.ignore_case);
@@ -1342,7 +1342,7 @@ test "parseArgs short flags" {
 
 test "parseArgs long flags" {
     const args = [_][]const u8{ "--ignore-case", "--count", "--recursive", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expect(opts.ignore_case);
@@ -1353,19 +1353,19 @@ test "parseArgs long flags" {
 test "parseArgs regex modes" {
     {
         const args = [_][]const u8{ "-E", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(RegexMode.extended, opts.regex_mode);
     }
     {
         const args = [_][]const u8{ "-F", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(RegexMode.fixed, opts.regex_mode);
     }
     {
         const args = [_][]const u8{ "-G", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(RegexMode.basic, opts.regex_mode);
     }
@@ -1373,7 +1373,7 @@ test "parseArgs regex modes" {
 
 test "parseArgs -m max-count" {
     const args = [_][]const u8{ "-m", "5", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 5), opts.max_count.?);
@@ -1382,19 +1382,19 @@ test "parseArgs -m max-count" {
 test "parseArgs context flags" {
     {
         const args = [_][]const u8{ "-A", "3", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(@as(usize, 3), opts.after_context);
     }
     {
         const args = [_][]const u8{ "-B", "2", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(@as(usize, 2), opts.before_context);
     }
     {
         const args = [_][]const u8{ "-C", "1", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(@as(usize, 1), opts.before_context);
         try testing.expectEqual(@as(usize, 1), opts.after_context);
@@ -1404,19 +1404,19 @@ test "parseArgs context flags" {
 test "parseArgs color modes" {
     {
         const args = [_][]const u8{ "--color=always", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(common.display_config.ResolvedMode.on, opts.color);
     }
     {
         const args = [_][]const u8{ "--color=never", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         try testing.expectEqual(common.display_config.ResolvedMode.off, opts.color);
     }
     {
         const args = [_][]const u8{ "--color=auto", "pattern" };
-        var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+        var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
         defer opts.deinit(testing.allocator);
         // --color=auto keeps the resolved value; in tests stdout is not a TTY, so .off
         try testing.expectEqual(common.display_config.ResolvedMode.off, opts.color);
@@ -1425,7 +1425,7 @@ test "parseArgs color modes" {
 
 test "parseArgs -- separator" {
     const args = [_][]const u8{ "-e", "pattern", "--", "-file.txt" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
@@ -1435,13 +1435,13 @@ test "parseArgs -- separator" {
 
 test "parseArgs invalid option returns null" {
     const args = [_][]const u8{ "-j", "pattern" };
-    const result = try parseArgs(testing.allocator, &args, common.null_writer);
+    const result = try parseArgs(testing.allocator, testing.io, &args, common.null_writer);
     try testing.expect(result == null);
 }
 
 test "parseArgs --include and --exclude" {
     const args = [_][]const u8{ "--include=*.c", "--exclude=*.o", "--exclude-dir=.git", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
 
     try testing.expectEqual(@as(usize, 1), opts.include_globs.items.len);
@@ -1532,32 +1532,33 @@ test "toLower empty string" {
 
 test "runGrep no pattern returns misuse" {
     const args = [_][]const u8{};
-    const exit_code = runGrep(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runGrep --help returns success" {
     const args = [_][]const u8{"--help"};
-    const exit_code = runGrep(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 test "runGrep --version returns success" {
     const args = [_][]const u8{"--version"};
-    const exit_code = runGrep(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 /// Helper to run grep in tests with arena allocator (grep is designed for arena usage)
 fn testRunGrep(file_content: []const u8, grep_args: []const []const u8) !u8 {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll(file_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, file_content);
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     // Use arena for runGrep since it relies on arena-style allocation
@@ -1566,7 +1567,7 @@ fn testRunGrep(file_content: []const u8, grep_args: []const []const u8) !u8 {
     const allocator = arena.allocator();
 
     // Build args list with the temp file path appended
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     defer args.deinit(allocator);
     try args.append(allocator, "--color=never");
     for (grep_args) |a| {
@@ -1574,7 +1575,7 @@ fn testRunGrep(file_content: []const u8, grep_args: []const []const u8) !u8 {
     }
     try args.append(allocator, tmp_path);
 
-    return runGrep(allocator, args.items, common.null_writer, common.null_writer);
+    return runGrep(allocator, io, args.items, common.null_writer, common.null_writer);
 }
 
 test "runGrep with file" {
@@ -1611,7 +1612,7 @@ test "runGrep nonexistent file returns error" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "--color=never", "pattern", "/nonexistent/path/file.txt" };
-    const exit_code = runGrep(arena.allocator(), &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(arena.allocator(), testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
@@ -1629,7 +1630,7 @@ test "runGrep invalid regex returns misuse" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "--color=never", "[invalid", "/dev/null" };
-    const exit_code = runGrep(arena.allocator(), &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(arena.allocator(), testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
@@ -1640,77 +1641,80 @@ test "runGrep -m max-count" {
 
 /// Helper to run grep and capture stdout output
 fn testRunGrepOutput(file_content: []const u8, grep_args: []const []const u8) !struct { exit_code: u8, output: []const u8, arena: std.heap.ArenaAllocator } {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll(file_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, file_content);
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     const allocator = arena.allocator();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     for (grep_args) |a| {
         try args.append(allocator, a);
     }
     try args.append(allocator, tmp_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
+    const output = try arena.allocator().dupe(u8, stdout_aw.writer.buffered());
 
-    return .{ .exit_code = exit_code, .output = stdout_buf.items, .arena = arena };
+    return .{ .exit_code = exit_code, .output = output, .arena = arena };
 }
 
 test "parseArgs -b sets byte_offset" {
     const args = [_][]const u8{ "-b", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.byte_offset);
 }
 
 test "parseArgs --byte-offset sets byte_offset" {
     const args = [_][]const u8{ "--byte-offset", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.byte_offset);
 }
 
 test "parseArgs -a flag accepted (no-op)" {
     const args = [_][]const u8{ "-a", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --text flag accepted (no-op)" {
     const args = [_][]const u8{ "--text", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -I flag accepted (no-op)" {
     const args = [_][]const u8{ "-I", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -U flag accepted (no-op)" {
     const args = [_][]const u8{ "-U", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --binary flag accepted (no-op)" {
     const args = [_][]const u8{ "--binary", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
@@ -1748,80 +1752,86 @@ test "runGrep -b multiple matches" {
 
 test "parseArgs -Z sets null_data" {
     const args = [_][]const u8{ "-Z", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.null_data);
 }
 
 test "parseArgs --null sets null_data" {
     const args = [_][]const u8{ "--null", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.null_data);
 }
 
 test "runGrep -lZ uses NUL byte after filename" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("hello world\n");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "hello world\n");
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     try args.append(allocator, "-lZ");
     try args.append(allocator, "hello");
     try args.append(allocator, tmp_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
     // Output should be filename followed by NUL byte (not newline)
     const expected_len = tmp_path.len + 1;
-    try testing.expectEqual(expected_len, stdout_buf.items.len);
-    try testing.expectEqualStrings(tmp_path, stdout_buf.items[0..tmp_path.len]);
-    try testing.expectEqual(@as(u8, 0), stdout_buf.items[tmp_path.len]);
+    try testing.expectEqual(expected_len, out.len);
+    try testing.expectEqualStrings(tmp_path, out[0..tmp_path.len]);
+    try testing.expectEqual(@as(u8, 0), out[tmp_path.len]);
 }
 
 test "runGrep -l without -Z uses newline after filename" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("hello world\n");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "hello world\n");
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     try args.append(allocator, "-l");
     try args.append(allocator, "hello");
     try args.append(allocator, tmp_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
+    const out = stdout_aw.writer.buffered();
     // Output should be filename followed by newline
     const expected_len = tmp_path.len + 1;
-    try testing.expectEqual(expected_len, stdout_buf.items.len);
-    try testing.expectEqualStrings(tmp_path, stdout_buf.items[0..tmp_path.len]);
-    try testing.expectEqual(@as(u8, '\n'), stdout_buf.items[tmp_path.len]);
+    try testing.expectEqual(expected_len, out.len);
+    try testing.expectEqualStrings(tmp_path, out[0..tmp_path.len]);
+    try testing.expectEqual(@as(u8, '\n'), out[tmp_path.len]);
 }
 
 // ============================================================================
@@ -1832,98 +1842,98 @@ test "runGrep -l without -Z uses newline after filename" {
 
 test "parseArgs -J flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-J", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -M flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-M", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -O flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-O", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -p flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-p", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -S flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-S", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -u flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-u", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -X flag accepted (no-op stub)" {
     const args = [_][]const u8{ "-X", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -D flag accepted (stub)" {
     const args = [_][]const u8{ "-D", "read", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs -D skip accepted (stub)" {
     const args = [_][]const u8{ "-D", "skip", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --line-buffered accepted (no-op)" {
     const args = [_][]const u8{ "--line-buffered", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --binary-files=text accepted (stub)" {
     const args = [_][]const u8{ "--binary-files=text", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --binary-files=without-match accepted (stub)" {
     const args = [_][]const u8{ "--binary-files=without-match", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --mmap accepted (no-op)" {
     const args = [_][]const u8{ "--mmap", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
 
 test "parseArgs --include-dir=PATTERN accepted (no-op stub)" {
     const args = [_][]const u8{ "--include-dir=src", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 1), opts.patterns.items.len);
 }
@@ -1932,7 +1942,7 @@ test "parseArgs --include-dir=PATTERN accepted (no-op stub)" {
 
 test "parseArgs -y sets ignore_case (alias for -i)" {
     const args = [_][]const u8{ "-y", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.ignore_case);
 }
@@ -1945,7 +1955,7 @@ test "runGrep -y case insensitive match" {
 // --- -P error stub ---
 
 test "parseArgs -P returns null (error stub)" {
-    const result = try parseArgs(testing.allocator, &[_][]const u8{ "-P", "pattern" }, common.null_writer);
+    const result = try parseArgs(testing.allocator, testing.io, &[_][]const u8{ "-P", "pattern" }, common.null_writer);
     try testing.expect(result == null);
 }
 
@@ -1953,7 +1963,7 @@ test "runGrep -P returns misuse exit code" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = [_][]const u8{ "-P", "pattern", "/dev/null" };
-    const exit_code = runGrep(arena.allocator(), &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(arena.allocator(), testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
@@ -1961,39 +1971,40 @@ test "runGrep -P returns misuse exit code" {
 
 test "parseArgs -d recurse sets recursive" {
     const args = [_][]const u8{ "-d", "recurse", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.recursive);
 }
 
 test "parseArgs -d skip sets skip_dirs" {
     const args = [_][]const u8{ "-d", "skip", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.skip_dirs);
 }
 
 test "parseArgs -d read is default (no change)" {
     const args = [_][]const u8{ "-d", "read", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(!opts.recursive);
     try testing.expect(!opts.skip_dirs);
 }
 
 test "runGrep -d skip silently skips directories" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with matching content
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("hello world\n");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "hello world\n");
+    file.close(io);
 
     // Create a subdirectory
-    try tmp_dir.dir.makeDir("subdir");
+    try tmp_dir.dir.createDir(io, "subdir", .default_dir);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     const file_path = try std.fs.path.join(testing.allocator, &.{ tmp_path, "test.txt" });
@@ -2006,7 +2017,7 @@ test "runGrep -d skip silently skips directories" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     try args.append(allocator, "-d");
     try args.append(allocator, "skip");
@@ -2014,65 +2025,68 @@ test "runGrep -d skip silently skips directories" {
     try args.append(allocator, dir_path);
     try args.append(allocator, file_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     // Should find match in file, skip directory
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "hello world") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "hello world") != null);
 }
 
 // --- -z / --null-data (NUL line separator) ---
 
 test "parseArgs -z sets null_line_sep" {
     const args = [_][]const u8{ "-z", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.null_line_sep);
 }
 
 test "parseArgs --null-data sets null_line_sep" {
     const args = [_][]const u8{ "--null-data", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expect(opts.null_line_sep);
 }
 
 test "runGrep -z splits on NUL and terminates with NUL" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with NUL-separated records
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("hello world\x00foo bar\x00hello again\x00");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "hello world\x00foo bar\x00hello again\x00");
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     try args.append(allocator, "-z");
     try args.append(allocator, "hello");
     try args.append(allocator, tmp_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should be NUL-terminated: "hello world\0hello again\0"
-    try testing.expectEqualStrings("hello world\x00hello again\x00", stdout_buf.items);
+    try testing.expectEqualStrings("hello world\x00hello again\x00", stdout_aw.writer.buffered());
 }
 
 // --- --label=LABEL ---
 
 test "parseArgs --label=LABEL sets stdin_label" {
     const args = [_][]const u8{ "--label=MYINPUT", "pattern" };
-    var opts = (try parseArgs(testing.allocator, &args, common.null_writer)).?;
+    var opts = (try parseArgs(testing.allocator, testing.io, &args, common.null_writer)).?;
     defer opts.deinit(testing.allocator);
     try testing.expectEqualStrings("MYINPUT", opts.stdin_label.?);
 }
@@ -2080,44 +2094,47 @@ test "parseArgs --label=LABEL sets stdin_label" {
 // --- --null / -Z extended behavior (NUL after filename in normal output) ---
 
 test "runGrep -HZ uses NUL after filename in normal output" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("hello world\n");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "hello world\n");
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     try args.append(allocator, "-HZ");
     try args.append(allocator, "hello");
     try args.append(allocator, tmp_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should have NUL after filename: "path\0hello world\n"
     const expected = try std.fmt.allocPrint(allocator, "{s}\x00hello world\n", .{tmp_path});
-    try testing.expectEqualStrings(expected, stdout_buf.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "runGrep -cZ uses NUL after filename in count output" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll("hello world\nhello again\n");
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try file.writeStreamingAll(io, "hello world\nhello again\n");
+    file.close(io);
 
-    const tmp_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(tmp_path);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2125,19 +2142,20 @@ test "runGrep -cZ uses NUL after filename in count output" {
     const allocator = arena.allocator();
 
     // Use -H to force filename display with single file
-    var args = std.ArrayListUnmanaged([]const u8){};
+    var args = std.ArrayListUnmanaged([]const u8).empty;
     try args.append(allocator, "--color=never");
     try args.append(allocator, "-cHZ");
     try args.append(allocator, "hello");
     try args.append(allocator, tmp_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
-    const exit_code = runGrep(allocator, args.items, stdout_buf.writer(allocator), common.null_writer);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Output should have NUL after filename: "path\02\n"
     const expected = try std.fmt.allocPrint(allocator, "{s}\x002\n", .{tmp_path});
-    try testing.expectEqualStrings(expected, stdout_buf.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 // --- readToEndAlloc safety-net tests (line 659 code path) ---
@@ -2168,8 +2186,8 @@ test "processFile reads file with many lines and matches selectively" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buf = std.ArrayListUnmanaged(u8){};
-    var expected = std.ArrayListUnmanaged(u8){};
+    var buf = std.ArrayListUnmanaged(u8).empty;
+    var expected = std.ArrayListUnmanaged(u8).empty;
     for (0..200) |i| {
         if (i % 10 == 0) {
             const line = try std.fmt.allocPrint(allocator, "NEEDLE line {d}\n", .{i});
@@ -2189,29 +2207,30 @@ test "processFile reads file with many lines and matches selectively" {
 }
 
 test "runGrep -f pattern file does not leak file contents buffer" {
+    const io = testing.io;
     // Create a temp dir with a pattern file and a data file
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Write pattern file containing one pattern per line
-    const pattern_file = try tmp_dir.dir.createFile("patterns.txt", .{});
-    try pattern_file.writeAll("hello\nworld\n");
-    pattern_file.close();
+    const pattern_file = try tmp_dir.dir.createFile(io, "patterns.txt", .{});
+    try pattern_file.writeStreamingAll(io, "hello\nworld\n");
+    pattern_file.close(io);
 
     // Write data file to search
-    const data_file = try tmp_dir.dir.createFile("data.txt", .{});
-    try data_file.writeAll("hello there\ngoodbye now\nworld peace\n");
-    data_file.close();
+    const data_file = try tmp_dir.dir.createFile(io, "data.txt", .{});
+    try data_file.writeStreamingAll(io, "hello there\ngoodbye now\nworld peace\n");
+    data_file.close(io);
 
-    const pattern_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "patterns.txt");
+    const pattern_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "patterns.txt", testing.allocator);
     defer testing.allocator.free(pattern_path);
 
-    const data_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "data.txt");
+    const data_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "data.txt", testing.allocator);
     defer testing.allocator.free(data_path);
 
     // Use testing.allocator directly (not arena) so leaks are detected
     const args = [_][]const u8{ "--color=never", "-f", pattern_path, data_path };
-    const exit_code = runGrep(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runGrep(testing.allocator, io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
