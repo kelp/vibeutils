@@ -32,7 +32,7 @@ pub fn setPermissions(allocator: std.mem.Allocator, handle: anytype, mode: std.p
     const fd = if (handle_type == std.Io.File)
         handle.handle
     else if (handle_type == std.Io.Dir)
-        handle.fd
+        handle.handle
     else
         @compileError("setPermissions expects std.Io.File or std.Io.Dir");
 
@@ -169,7 +169,11 @@ pub const COPY_BUFFER_SIZE = 64 * 1024;
 pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.File) !void {
     var buffer: [COPY_BUFFER_SIZE]u8 = undefined;
     while (true) {
-        const bytes_read = try source_file.read(io, &buffer);
+        const buf_slice: []u8 = &buffer;
+        const bytes_read = source_file.readStreaming(io, &.{buf_slice}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
         if (bytes_read == 0) break;
         try dest_file.writeStreamingAll(io, buffer[0..bytes_read]);
     }

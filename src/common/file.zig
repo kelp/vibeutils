@@ -51,10 +51,81 @@ fn statToFileInfo(stat_buf: std.c.Stat) FileInfo {
         .ctime = ctime_ns,
         .kind = kind,
         .inode = stat_buf.ino,
+        .dev = @intCast(stat_buf.dev),
         .uid = @intCast(stat_buf.uid),
         .gid = @intCast(stat_buf.gid),
         .nlink = @intCast(stat_buf.nlink),
     };
+}
+
+/// Stat a path by file descriptor + relative path using fstatat (or statx on Linux).
+/// follow = .follow means follow symlinks (like stat); .no_follow means like lstat.
+const StatFollow = enum { follow, no_follow };
+
+fn fstatatToFileInfo(dirfd: std.posix.fd_t, path_z: [*:0]const u8, follow: StatFollow) !FileInfo {
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        const flags: u32 = if (follow == .no_follow) linux.AT.SYMLINK_NOFOLLOW else 0;
+        var sx: linux.Statx = undefined;
+        const rc = linux.statx(dirfd, path_z, flags, linux.STATX.BASIC_STATS, &sx);
+        if (linux.errno(rc) != .SUCCESS) {
+            return switch (linux.errno(rc)) {
+                .SUCCESS => unreachable,
+                .ACCES => error.AccessDenied,
+                .BADF => error.FileNotFound,
+                .NOTDIR => error.NotDir,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOENT => error.FileNotFound,
+                else => error.SystemResources,
+            };
+        }
+
+        const atime_ns: i128 = @as(i128, sx.atime.sec) * std.time.ns_per_s + sx.atime.nsec;
+        const mtime_ns: i128 = @as(i128, sx.mtime.sec) * std.time.ns_per_s + sx.mtime.nsec;
+        const ctime_ns: i128 = @as(i128, sx.ctime.sec) * std.time.ns_per_s + sx.ctime.nsec;
+
+        const kind: std.Io.File.Kind = switch (sx.mode & std.c.S.IFMT) {
+            std.c.S.IFREG => .file,
+            std.c.S.IFDIR => .directory,
+            std.c.S.IFCHR => .character_device,
+            std.c.S.IFBLK => .block_device,
+            std.c.S.IFIFO => .named_pipe,
+            std.c.S.IFLNK => .sym_link,
+            std.c.S.IFSOCK => .unix_domain_socket,
+            else => .unknown,
+        };
+
+        return FileInfo{
+            .size = sx.size,
+            .mode = @intCast(sx.mode),
+            .atime = atime_ns,
+            .mtime = mtime_ns,
+            .ctime = ctime_ns,
+            .kind = kind,
+            .inode = sx.ino,
+            .dev = (@as(u64, sx.dev_major) << 8) | @as(u64, sx.dev_minor),
+            .uid = sx.uid,
+            .gid = sx.gid,
+            .nlink = @intCast(sx.nlink),
+        };
+    } else {
+        // macOS and other platforms support std.c.fstatat.
+        const flags: u32 = if (follow == .no_follow) std.c.AT.SYMLINK_NOFOLLOW else 0;
+        var stat_buf: std.c.Stat = undefined;
+        const result = std.c.fstatat(dirfd, path_z, &stat_buf, flags);
+        if (result != 0) {
+            return switch (std.posix.errno(result)) {
+                .SUCCESS => unreachable,
+                .ACCES => error.AccessDenied,
+                .BADF => error.FileNotFound,
+                .NOTDIR => error.NotDir,
+                .NAMETOOLONG => error.NameTooLong,
+                .NOENT => error.FileNotFound,
+                else => error.SystemResources,
+            };
+        }
+        return statToFileInfo(stat_buf);
+    }
 }
 
 /// File stat information wrapper
@@ -66,6 +137,7 @@ pub const FileInfo = struct {
     ctime: i128 = 0, // nanoseconds since epoch (inode change time)
     kind: std.Io.File.Kind,
     inode: std.Io.File.INode,
+    dev: u64 = 0, // device ID
     uid: u32,
     gid: u32,
     nlink: u32,
@@ -84,104 +156,67 @@ pub const FileInfo = struct {
         buf[path.len] = 0;
         const c_path = buf[0..path.len :0];
 
-        var stat_buf: std.c.Stat = undefined;
-        const result = std.c.fstatat(std.Io.Dir.cwd().fd, c_path, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
-        if (result != 0) {
-            const errno = std.posix.errno(result);
-            return switch (errno) {
-                .SUCCESS => unreachable,
-                .ACCES => error.AccessDenied,
-                .BADF => error.FileNotFound,
-                .NOTDIR => error.NotDir,
-                .NAMETOOLONG => error.NameTooLong,
-                .NOENT => error.FileNotFound,
-                else => error.SystemResources,
-            };
-        }
-
-        return statToFileInfo(stat_buf);
+        return fstatatToFileInfo(std.Io.Dir.cwd().handle, c_path, .no_follow);
     }
 
     pub fn statFile(file: std.Io.File) !FileInfo {
-        // Use fstat directly to get all information
         const fd = file.handle;
-        var stat_buf: std.c.Stat = undefined;
-        const result = std.c.fstat(fd, &stat_buf);
-        if (result != 0) {
-            return error.StatFailed;
-        }
+        if (builtin.os.tag == .linux) {
+            // On Linux, std.c.fstat is void; use statx via the Linux syscall.
+            const linux = std.os.linux;
+            var sx: linux.Statx = undefined;
+            const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, linux.STATX.BASIC_STATS, &sx);
+            if (linux.errno(rc) != .SUCCESS) return error.StatFailed;
 
-        return statToFileInfo(stat_buf);
+            const atime_ns: i128 = @as(i128, sx.atime.sec) * std.time.ns_per_s + sx.atime.nsec;
+            const mtime_ns: i128 = @as(i128, sx.mtime.sec) * std.time.ns_per_s + sx.mtime.nsec;
+            const ctime_ns: i128 = @as(i128, sx.ctime.sec) * std.time.ns_per_s + sx.ctime.nsec;
+
+            const kind: std.Io.File.Kind = switch (sx.mode & std.c.S.IFMT) {
+                std.c.S.IFREG => .file,
+                std.c.S.IFDIR => .directory,
+                std.c.S.IFCHR => .character_device,
+                std.c.S.IFBLK => .block_device,
+                std.c.S.IFIFO => .named_pipe,
+                std.c.S.IFLNK => .sym_link,
+                std.c.S.IFSOCK => .unix_domain_socket,
+                else => .unknown,
+            };
+
+            return FileInfo{
+                .size = sx.size,
+                .mode = @intCast(sx.mode),
+                .atime = atime_ns,
+                .mtime = mtime_ns,
+                .ctime = ctime_ns,
+                .kind = kind,
+                .inode = sx.ino,
+                .dev = (@as(u64, sx.dev_major) << 8) | @as(u64, sx.dev_minor),
+                .uid = sx.uid,
+                .gid = sx.gid,
+                .nlink = @intCast(sx.nlink),
+            };
+        } else {
+            // macOS and other platforms support std.c.fstat.
+            var stat_buf: std.c.Stat = undefined;
+            const result = std.c.fstat(fd, &stat_buf);
+            if (result != 0) return error.StatFailed;
+            return statToFileInfo(stat_buf);
+        }
     }
 
     pub fn lstatDir(allocator: std.mem.Allocator, dir: std.Io.Dir, name: []const u8) !FileInfo {
         // Use lstat to get info about the link itself, not the target
-        // Stack buffer optimization for short names
-        var stack_buffer: [256]u8 = undefined;
-        var name_z: [:0]u8 = undefined;
-        var should_free = false;
-
-        if (name.len < stack_buffer.len - 1) {
-            // Use stack buffer for short names
-            @memcpy(stack_buffer[0..name.len], name);
-            stack_buffer[name.len] = 0;
-            name_z = stack_buffer[0..name.len :0];
-        } else {
-            // Use heap allocation for long names
-            name_z = try allocator.dupeZ(u8, name);
-            should_free = true;
-        }
-        defer if (should_free) allocator.free(name_z);
-
-        var stat_buf: std.c.Stat = undefined;
-        const result = std.c.fstatat(dir.fd, name_z, &stat_buf, std.c.AT.SYMLINK_NOFOLLOW);
-        if (result != 0) {
-            return switch (std.posix.errno(result)) {
-                .SUCCESS => unreachable,
-                .ACCES => error.AccessDenied,
-                .BADF => error.FileNotFound,
-                .NOTDIR => error.NotDir,
-                .NAMETOOLONG => error.NameTooLong,
-                .NOENT => error.FileNotFound,
-                else => error.SystemResources,
-            };
-        }
-
-        return statToFileInfo(stat_buf);
+        const name_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_z);
+        return fstatatToFileInfo(dir.handle, name_z, .no_follow);
     }
 
     /// Get file info following symlinks, relative to a directory (like stat)
     pub fn statDir(allocator: std.mem.Allocator, dir: std.Io.Dir, name: []const u8) !FileInfo {
-        // Stack buffer optimization for short names
-        var stack_buffer: [256]u8 = undefined;
-        var name_z: [:0]u8 = undefined;
-        var should_free = false;
-
-        if (name.len < stack_buffer.len - 1) {
-            @memcpy(stack_buffer[0..name.len], name);
-            stack_buffer[name.len] = 0;
-            name_z = stack_buffer[0..name.len :0];
-        } else {
-            name_z = try allocator.dupeZ(u8, name);
-            should_free = true;
-        }
-        defer if (should_free) allocator.free(name_z);
-
-        var stat_buf: std.c.Stat = undefined;
-        const result = std.c.fstatat(dir.fd, name_z, &stat_buf, 0);
-        if (result != 0) {
-            return switch (std.posix.errno(result)) {
-                .SUCCESS => unreachable,
-                .ACCES => error.AccessDenied,
-                .BADF => error.FileNotFound,
-                .NOTDIR => error.NotDir,
-                .NAMETOOLONG => error.NameTooLong,
-                .NOENT => error.FileNotFound,
-                else => error.SystemResources,
-            };
-        }
-
-        return statToFileInfo(stat_buf);
+        const name_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_z);
+        return fstatatToFileInfo(dir.handle, name_z, .follow);
     }
 };
 

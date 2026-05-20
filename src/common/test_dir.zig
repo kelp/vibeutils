@@ -51,7 +51,11 @@ pub const TestDir = struct {
     /// Get the absolute path of a file in the temp directory
     pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
         const io = testing.io;
-        return try self.tmp_dir.dir.realPathFileAlloc(io, name, self.allocator);
+        // realPathFileAlloc returns [:0]u8 (sentinel-terminated); dupe strips the
+        // sentinel so callers can free via allocator.free([]u8) without size mismatch.
+        const sentinel_path = try self.tmp_dir.dir.realPathFileAlloc(io, name, self.allocator);
+        defer self.allocator.free(sentinel_path);
+        return try self.allocator.dupe(u8, sentinel_path[0..sentinel_path.len]);
     }
 
     /// Get the absolute path of the temp directory itself
