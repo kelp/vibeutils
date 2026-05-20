@@ -947,13 +947,13 @@ pub const IconColorInfo = struct {
     g: u8,
     b: u8,
     c256: u8,
-    basic: @import("style.zig").Style(std.fs.File.Writer).Color,
+    basic: @import("style.zig").Style(*std.Io.Writer).Color,
 };
 
 /// Map icon glyph to its brand color across all terminal color modes.
 pub fn getIconColorInfo(icon: []const u8) ?IconColorInfo {
     const theme = IconTheme{};
-    const Color = @import("style.zig").Style(std.fs.File.Writer).Color;
+    const Color = @import("style.zig").Style(*std.Io.Writer).Color;
     const eql = std.mem.eql;
 
     // Programming languages — researched brand colors
@@ -1242,7 +1242,7 @@ test "get icon for new file types" {
 
 test "getIconColorInfo brand colors" {
     const theme = IconTheme{};
-    const Color = @import("style.zig").Style(std.fs.File.Writer).Color;
+    const Color = @import("style.zig").Style(*std.Io.Writer).Color;
 
     // Zig icon returns yellow/orange brand color
     const zig_color = getIconColorInfo(theme.zig).?;
