@@ -292,17 +292,17 @@ test "recursive: lists subdirectories with proper structure" {
     try env.createDir("dir1");
 
     var dir1 = try env.createDirAndOpen("dir1");
-    defer dir1.close();
+    defer dir1.close(std.testing.io);
 
-    const file2 = try dir1.createFile("file2.txt", .{});
-    file2.close();
+    const file2 = try dir1.createFile(std.testing.io, "file2.txt", .{});
+    file2.close(std.testing.io);
 
-    try dir1.makeDir("subdir1");
-    var subdir1 = try dir1.openDir("subdir1", .{});
-    defer subdir1.close();
+    try dir1.createDir(std.testing.io, "subdir1", .default_dir);
+    var subdir1 = try dir1.openDir(std.testing.io, "subdir1", .{});
+    defer subdir1.close(std.testing.io);
 
-    const file3 = try subdir1.createFile("file3.txt", .{});
-    file3.close();
+    const file3 = try subdir1.createFile(std.testing.io, "file3.txt", .{});
+    file3.close(std.testing.io);
 
     try env.runLs(.{ .recursive = true, .one_per_line = true });
 
@@ -321,8 +321,8 @@ test "recursive: shows directory headers with proper formatting" {
     try env.createDir("dir2");
 
     var dir1 = try env.createDirAndOpen("dir1");
-    defer dir1.close();
-    try dir1.makeDir("subdir");
+    defer dir1.close(std.testing.io);
+    try dir1.createDir(std.testing.io, "subdir", .default_dir);
 
     try env.runLs(.{ .recursive = true });
 
@@ -339,10 +339,10 @@ test "recursive: handles symlink cycles safely" {
     try env.createDir("dir1");
 
     var dir1 = try env.createDirAndOpen("dir1");
-    defer dir1.close();
+    defer dir1.close(std.testing.io);
 
     // Create a symlink back to parent directory
-    try dir1.symLink("..", "parent_link", .{});
+    try dir1.symLink(std.testing.io, "..", "parent_link", .{});
 
     try env.runLs(.{ .recursive = true });
 
@@ -437,7 +437,7 @@ test "omit_owner: long format without owner column" {
     try LsAssertions.expectContainsPermissions(output, "-rw-");
 
     // Compare with normal long format to verify owner is missing
-    env.stdout_buffer.clearRetainingCapacity();
+    env.clearOutput();
     try env.runLs(.{ .long_format = true });
 
     const normal_output = env.getStdout();
@@ -476,7 +476,7 @@ test "omit_group: long format without group column" {
     try LsAssertions.expectContainsPermissions(output, "-rw-");
 
     // Compare with normal long format to verify group is missing
-    env.stdout_buffer.clearRetainingCapacity();
+    env.clearOutput();
     try env.runLs(.{ .long_format = true });
 
     const normal_output = env.getStdout();
@@ -716,7 +716,7 @@ test "follow_symlinks: -L shows target file info instead of link info" {
     defer testing.allocator.free(without_L);
 
     // With -L: should show target file info (kind = file)
-    env.stdout_buffer.clearRetainingCapacity();
+    env.clearOutput();
     try env.runLs(.{ .long_format = true, .follow_all_symlinks = true });
     const with_L = env.getStdout();
 
@@ -889,32 +889,33 @@ test "output_width: -w overrides terminal width" {
 // F49: ls exit code must be non-zero on error (nonexistent path)
 // ============================================================================
 
-test "F49: runUtility returns non-zero exit for nonexistent path" {
+test "F49: runLs returns non-zero exit for nonexistent path" {
     // GNU ls exits 2 when given a nonexistent path.
-    // Our runUtility wraps lsMain and should propagate the error
+    // Our runLs wraps lsMain and should propagate the error
     // as a non-zero exit code.
     const main = @import("main.zig");
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const exit_code = try main.runUtility(
+    const exit_code = try main.runLs(
         testing.allocator,
+        testing.io,
         &.{"/tmp/vibeutils_nonexistent_path_f49_test"},
-        stdout_buf.writer(testing.allocator),
-        stderr_buf.writer(testing.allocator),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
 
     // Should be non-zero (GNU uses 2, we accept any non-zero)
     try testing.expect(exit_code != 0);
 
     // Should have printed an error message on stderr
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
-test "F49: runUtility returns non-zero when one of multiple paths is invalid" {
+test "F49: runLs returns non-zero when one of multiple paths is invalid" {
     // When listing multiple paths and one fails, GNU ls still
     // lists the valid ones but exits non-zero.
     const main = @import("main.zig");
@@ -923,21 +924,21 @@ test "F49: runUtility returns non-zero when one of multiple paths is invalid" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const f = try tmp_dir.dir.createFile("real.txt", .{});
-    f.close();
+    const f = try tmp_dir.dir.createFile(testing.io, "real.txt", .{});
+    f.close(testing.io);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    // We can't easily pass the tmp dir path to runUtility since it
-    // resolves paths from CWD. Use an absolute nonexistent path instead.
-    const exit_code = try main.runUtility(
+    // Use an absolute nonexistent path to guarantee an error.
+    const exit_code = try main.runLs(
         testing.allocator,
+        testing.io,
         &.{"/tmp/vibeutils_nonexistent_mixed_f49"},
-        stdout_buf.writer(testing.allocator),
-        stderr_buf.writer(testing.allocator),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
 
     try testing.expect(exit_code != 0);

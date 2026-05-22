@@ -376,7 +376,7 @@ fn formatByteCount(buf: []u8, bytes: usize) []const u8 {
 }
 
 /// Print transfer statistics to stderr
-fn printStats(stderr: anytype, stats: DdStats, status: StatusLevel) void {
+fn printStats(io: std.Io, stderr: *std.Io.Writer, stats: DdStats, status: StatusLevel) void {
     if (status == .none) return;
 
     stderr.print("{d}+{d} records in\n", .{
@@ -390,7 +390,7 @@ fn printStats(stderr: anytype, stats: DdStats, status: StatusLevel) void {
 
     if (status == .noxfer) return;
 
-    const elapsed_ns = std.time.nanoTimestamp() - stats.start_ns;
+    const elapsed_ns = std.Io.Timestamp.now(io, .real).nanoseconds - stats.start_ns;
     const elapsed_s: f64 = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
     const elapsed_display = if (elapsed_s < 0.0001) 0.0001 else elapsed_s;
 
@@ -474,7 +474,7 @@ fn printVersion(writer: anytype) !void {
 }
 
 /// Execute the dd copy operation
-pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
+pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
     const config = parseOperands(args) catch |err| {
         switch (err) {
             error.InvalidValue => {
@@ -547,47 +547,49 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     defer allocator.free(out_buf);
 
     // Open input
-    const input_file: std.fs.File = if (config.input_file) |path| blk: {
-        break :blk std.fs.cwd().openFile(path, .{}) catch |err| {
+    const input_file: std.Io.File = if (config.input_file) |path| blk: {
+        break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
-    } else std.fs.File.stdin();
-    defer if (config.input_file != null) input_file.close();
+    } else std.Io.File.stdin();
+    defer if (config.input_file != null) input_file.close(io);
 
     // Open output
-    const output_file: std.fs.File = if (config.output_file) |path| blk: {
-        const flags: std.fs.File.CreateFlags = .{
+    const output_file: std.Io.File = if (config.output_file) |path| blk: {
+        const flags: std.Io.File.CreateFlags = .{
             .truncate = !config.conv_notrunc,
         };
-        break :blk std.fs.cwd().createFile(path, flags) catch |err| {
+        break :blk std.Io.Dir.cwd().createFile(io, path, flags) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.general_error);
         };
-    } else std.fs.File.stdout();
-    defer if (config.output_file != null) output_file.close();
+    } else std.Io.File.stdout();
+    defer if (config.output_file != null) output_file.close(io);
 
     // Skip input blocks
     if (config.skip > 0) {
         var skipped: usize = 0;
         while (skipped < config.skip) : (skipped += 1) {
-            const bytes_read = input_file.read(in_buf) catch |err| {
-                common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{common.posixErrorString(err)});
-                return @intFromEnum(common.ExitCode.general_error);
+            _ = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
+                error.EndOfStream => break, // EOF before all skips done
+                else => {
+                    common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{common.posixErrorString(err)});
+                    return @intFromEnum(common.ExitCode.general_error);
+                },
             };
-            if (bytes_read == 0) break; // EOF before all skips done
         }
     }
 
     // Seek output blocks
     if (config.seek > 0) {
         const seek_bytes = config.seek * obs;
-        output_file.seekTo(seek_bytes) catch {
+        io.vtable.fileSeekTo(io.userdata, output_file, seek_bytes) catch {
             // If seeking fails (e.g., stdout), try writing zeros
             var seeked: usize = 0;
             @memset(out_buf, 0);
             while (seeked < config.seek) : (seeked += 1) {
-                output_file.writeAll(out_buf) catch |write_err| {
+                output_file.writeStreamingAll(io, out_buf) catch |write_err| {
                     common.printErrorWithProgram(allocator, stderr, "dd", "error seeking output: {s}", .{common.posixErrorString(write_err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -608,7 +610,7 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     defer if (cbs_buf) |b| allocator.free(b);
 
     var stats = DdStats{
-        .start_ns = std.time.nanoTimestamp(),
+        .start_ns = std.Io.Timestamp.now(io, .real).nanoseconds,
     };
 
     // Use simple copy mode when bs= is set and no block/unblock conversion
@@ -628,34 +630,35 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
         }
 
         // Read one input block
-        const bytes_read = input_file.read(in_buf) catch |err| {
-            if (config.conv_noerror) {
-                // Continue after read errors
-                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
-                if (config.conv_sync) {
-                    // Fill with NULs when sync is specified
-                    @memset(in_buf, 0);
-                    // Count as a full block
-                    stats.full_blocks_in += 1;
-                    blocks_read += 1;
-                    if (simple_copy) {
-                        // Write the NUL-filled block
-                        output_file.writeAll(in_buf) catch |werr| {
-                            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(werr)});
-                            return @intFromEnum(common.ExitCode.general_error);
-                        };
-                        stats.full_blocks_out += 1;
-                        stats.bytes_copied += ibs;
+        const bytes_read = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
+            error.EndOfStream => break, // EOF
+            else => {
+                if (config.conv_noerror) {
+                    // Continue after read errors
+                    common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
+                    if (config.conv_sync) {
+                        // Fill with NULs when sync is specified
+                        @memset(in_buf, 0);
+                        // Count as a full block
+                        stats.full_blocks_in += 1;
+                        blocks_read += 1;
+                        if (simple_copy) {
+                            // Write the NUL-filled block
+                            output_file.writeStreamingAll(io, in_buf) catch |werr| {
+                                common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(werr)});
+                                return @intFromEnum(common.ExitCode.general_error);
+                            };
+                            stats.full_blocks_out += 1;
+                            stats.bytes_copied += ibs;
+                        }
                     }
+                    continue;
                 }
-                continue;
-            }
-            common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
-            printStats(stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
+                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
+                printStats(io, stderr, stats, config.status);
+                return @intFromEnum(common.ExitCode.general_error);
+            },
         };
-
-        if (bytes_read == 0) break; // EOF
 
         blocks_read += 1;
 
@@ -690,9 +693,9 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                     if (cbs_pos < cbs) {
                         @memset(record_buf[cbs_pos..], config.fillchar);
                     }
-                    output_file.writeAll(record_buf[0..cbs]) catch |err| {
+                    output_file.writeStreamingAll(io, record_buf[0..cbs]) catch |err| {
                         common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(stderr, stats, config.status);
+                        printStats(io, stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                     stats.bytes_copied += cbs;
@@ -727,14 +730,14 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                     // Complete record: strip trailing spaces and add newline
                     var end: usize = cbs;
                     while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
-                    output_file.writeAll(out_buf[0..end]) catch |err| {
+                    output_file.writeStreamingAll(io, out_buf[0..end]) catch |err| {
                         common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(stderr, stats, config.status);
+                        printStats(io, stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
-                    output_file.writeAll("\n") catch |err| {
+                    output_file.writeStreamingAll(io, "\n") catch |err| {
                         common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(stderr, stats, config.status);
+                        printStats(io, stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                     stats.bytes_copied += end + 1;
@@ -751,17 +754,17 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
                 // Pad partial block to obs size with NULs
                 @memcpy(out_buf[0..data.len], data);
                 @memset(out_buf[data.len..obs], 0);
-                output_file.writeAll(out_buf[0..obs]) catch |err| {
+                output_file.writeStreamingAll(io, out_buf[0..obs]) catch |err| {
                     common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                    printStats(stderr, stats, config.status);
+                    printStats(io, stderr, stats, config.status);
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 stats.bytes_copied += obs;
                 stats.full_blocks_out += 1;
             } else {
-                output_file.writeAll(data) catch |err| {
+                output_file.writeStreamingAll(io, data) catch |err| {
                     common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                    printStats(stderr, stats, config.status);
+                    printStats(io, stderr, stats, config.status);
                     return @intFromEnum(common.ExitCode.general_error);
                 };
                 stats.bytes_copied += data.len;
@@ -783,9 +786,9 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 
                 if (out_pos == obs) {
                     // Output buffer is full, write it
-                    output_file.writeAll(out_buf[0..obs]) catch |err| {
+                    output_file.writeStreamingAll(io, out_buf[0..obs]) catch |err| {
                         common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(stderr, stats, config.status);
+                        printStats(io, stderr, stats, config.status);
                         return @intFromEnum(common.ExitCode.general_error);
                     };
                     stats.full_blocks_out += 1;
@@ -800,9 +803,9 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     if (config.conv_block and cbs_pos > 0) {
         const record_buf = cbs_buf.?;
         @memset(record_buf[cbs_pos..], config.fillchar);
-        output_file.writeAll(record_buf[0..cbs]) catch |err| {
+        output_file.writeStreamingAll(io, record_buf[0..cbs]) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(stderr, stats, config.status);
+            printStats(io, stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
         stats.bytes_copied += cbs;
@@ -813,14 +816,14 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     if (config.conv_unblock and unblock_pos > 0) {
         var end: usize = unblock_pos;
         while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
-        output_file.writeAll(out_buf[0..end]) catch |err| {
+        output_file.writeStreamingAll(io, out_buf[0..end]) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(stderr, stats, config.status);
+            printStats(io, stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
-        output_file.writeAll("\n") catch |err| {
+        output_file.writeStreamingAll(io, "\n") catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(stderr, stats, config.status);
+            printStats(io, stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
         stats.bytes_copied += end + 1;
@@ -834,9 +837,9 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             @memset(out_buf[out_pos..obs], 0);
             break :blk obs;
         } else out_pos;
-        output_file.writeAll(out_buf[0..write_len]) catch |err| {
+        output_file.writeStreamingAll(io, out_buf[0..write_len]) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(stderr, stats, config.status);
+            printStats(io, stderr, stats, config.status);
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (config.conv_osync) {
@@ -850,21 +853,21 @@ pub fn runDd(allocator: Allocator, args: []const []const u8, stdout: anytype, st
 
     // fsync the output file if requested
     if (config.conv_fsync) {
-        output_file.sync() catch |err| {
+        output_file.sync(io) catch |err| {
             common.printErrorWithProgram(allocator, stderr, "dd", "fsync error: {s}", .{common.posixErrorString(err)});
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
 
     // Print statistics
-    printStats(stderr, stats, config.status);
+    printStats(io, stderr, stats, config.status);
 
     return @intFromEnum(common.ExitCode.success);
 }
 
 /// Process files or stdin with dd operands
-pub fn main() !void {
-    common.utilityMain(runDd);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runDd);
 }
 
 // ============================================================================
@@ -1062,41 +1065,44 @@ test "formatByteCount - various sizes" {
 }
 
 test "runDd - help flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const exit_code = try runDd(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: dd") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: dd") != null);
 }
 
 test "runDd - version flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const exit_code = try runDd(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "dd (vibeutils)") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "dd (vibeutils)") != null);
 }
 
 test "runDd - basic file copy" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "Hello, dd!\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "Hello, dd!\n");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
 
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1106,31 +1112,32 @@ test "runDd - basic file copy" {
     const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
     defer testing.allocator.free(of_arg);
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify output file contents
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Hello, dd!\n", content);
 }
 
 test "runDd - copy with count" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file with multiple 512-byte blocks worth of data
     const data = "ABCDEFGHIJ" ** 52; // 520 bytes > 1 block
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", data);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", data);
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1142,25 +1149,26 @@ test "runDd - copy with count" {
 
     // Copy 1 block of 10 bytes
     const args = [_][]const u8{ if_arg, of_arg, "bs=10", "count=1", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 10), content.len);
     try testing.expectEqualStrings("ABCDEFGHIJ", content);
 }
 
 test "runDd - copy with conv=ucase" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "hello world");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello world");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1171,24 +1179,25 @@ test "runDd - copy with conv=ucase" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ucase", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("HELLO WORLD", content);
 }
 
 test "runDd - copy with conv=lcase" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "HELLO WORLD");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "HELLO WORLD");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1199,24 +1208,25 @@ test "runDd - copy with conv=lcase" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=lcase", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("hello world", content);
 }
 
 test "runDd - skip blocks" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "AAAABBBB");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "AAAABBBB");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1228,24 +1238,25 @@ test "runDd - skip blocks" {
 
     // Skip 1 block of 4 bytes, should get "BBBB"
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "skip=1", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BBBB", content);
 }
 
 test "runDd - statistics output" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "test data");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1255,28 +1266,29 @@ test "runDd - statistics output" {
     const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
     defer testing.allocator.free(of_arg);
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should contain records in/out
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "records in") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "records out") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "bytes") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "records in") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "records out") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "bytes") != null);
 }
 
 test "runDd - status=none suppresses output" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "test data");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1286,25 +1298,26 @@ test "runDd - status=none suppresses output" {
     const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
     defer testing.allocator.free(of_arg);
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 test "runDd - status=noxfer omits transfer line" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "test data");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "test data");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1314,69 +1327,74 @@ test "runDd - status=noxfer omits transfer line" {
     const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
     defer testing.allocator.free(of_arg);
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ if_arg, of_arg, "status=noxfer" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Should have records but not bytes line
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "records in") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "records out") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "bytes") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "records in") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "records out") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "bytes") == null);
 }
 
 test "runDd - mutually exclusive lcase and ucase" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=lcase,ucase"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runDd - nonexistent input file" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "if=/nonexistent/path/to/file.txt", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "runDd - invalid operand" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"invalid=operand"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runDd - zero block size" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"bs=0"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runDd - different ibs and obs" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ABCDEFGHIJKLMNOP");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ABCDEFGHIJKLMNOP");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1388,24 +1406,25 @@ test "runDd - different ibs and obs" {
 
     // Read 4 bytes at a time, write 8 bytes at a time
     const args = [_][]const u8{ if_arg, of_arg, "ibs=4", "obs=8", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("ABCDEFGHIJKLMNOP", content);
 }
 
 test "runDd - count=0 copies nothing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "some data");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "some data");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1416,11 +1435,11 @@ test "runDd - count=0 copies nothing" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "count=0", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 0), content.len);
 }
@@ -1541,14 +1560,15 @@ test "applyConversions - ibm conversion" {
 }
 
 test "runDd - conv=swab swaps byte pairs" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.bin", "ABCD");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.bin", "ABCD");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.bin");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1559,24 +1579,25 @@ test "runDd - conv=swab swaps byte pairs" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=swab", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BADC", content);
 }
 
 test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "A");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "A");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1587,25 +1608,26 @@ test "runDd - conv=ebcdic converts ASCII to EBCDIC" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ebcdic", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(u8, 0xC1), content[0]);
 }
 
 test "runDd - conv=ascii converts EBCDIC to ASCII" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Write raw EBCDIC byte 0xC1 which should convert to ASCII 'A'
-    try tmp_dir.dir.writeFile(.{ .sub_path = "input.bin", .data = &[_]u8{0xC1} });
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "input.bin", .data = &[_]u8{0xC1} });
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.bin");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.bin", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1616,25 +1638,26 @@ test "runDd - conv=ascii converts EBCDIC to ASCII" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "conv=ascii", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("A", content);
 }
 
 test "runDd - conv=osync pads final block" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Write 3 bytes with obs=8, final block should be padded to 8
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ABC");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ABC");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1645,11 +1668,11 @@ test "runDd - conv=osync pads final block" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "obs=8", "conv=osync", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     // Should be padded to 8 bytes
     try testing.expectEqual(@as(usize, 8), content.len);
@@ -1660,15 +1683,16 @@ test "runDd - conv=osync pads final block" {
 }
 
 test "runDd - conv=block pads records to cbs size" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Input: two newline-terminated records
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ab\ncd\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ab\ncd\n");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1680,11 +1704,11 @@ test "runDd - conv=block pads records to cbs size" {
 
     // cbs=5: each record padded to 5 bytes with spaces
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     // "ab" padded to 5 = "ab   ", "cd" padded to 5 = "cd   "
     try testing.expectEqual(@as(usize, 10), content.len);
@@ -1692,15 +1716,16 @@ test "runDd - conv=block pads records to cbs size" {
 }
 
 test "runDd - conv=unblock replaces trailing spaces with newline" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Input: two 5-byte fixed records with trailing spaces
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ab   cd   ");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ab   cd   ");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1712,62 +1737,67 @@ test "runDd - conv=unblock replaces trailing spaces with newline" {
 
     // cbs=5: each 5-byte record, trailing spaces replaced with newline
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=unblock", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("ab\ncd\n", content);
 }
 
 test "runDd - conv=noxfer is rejected" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=noxfer"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     // conv=noxfer should be rejected; noxfer is only valid as status=noxfer
     try testing.expect(exit_code != 0);
 }
 
 test "runDd - mutually exclusive ascii and ebcdic" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=ascii,ebcdic"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runDd - mutually exclusive block and unblock" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=block,unblock"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runDd - block requires cbs" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=block"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "runDd - unblock requires cbs" {
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"conv=unblock"};
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
@@ -1891,14 +1921,15 @@ test "parseConversions - multiple parity and sparse" {
 }
 
 test "runDd - conv=block with fillchar" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "ab\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "ab\n");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1910,25 +1941,26 @@ test "runDd - conv=block with fillchar" {
 
     // cbs=5, fillchar=X: record "ab" padded to "abXXX"
     const args = [_][]const u8{ if_arg, of_arg, "cbs=5", "conv=block", "fillchar=X", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 5), content.len);
     try testing.expectEqualStrings("abXXX", content);
 }
 
 test "runDd - iseek skips input blocks" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "AAAABBBB");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "AAAABBBB");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1940,25 +1972,26 @@ test "runDd - iseek skips input blocks" {
 
     // iseek=1 with bs=4 should skip first 4 bytes, get "BBBB"
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "iseek=1", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("BBBB", content);
 }
 
 test "runDd - multi-block copy with bs and count" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // 5 blocks of 4 bytes each = 20 bytes; copy only first 3 blocks
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "AAAABBBBCCCCddddeeee");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "AAAABBBBCCCCddddeeee");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{base_path});
     defer testing.allocator.free(output_path);
@@ -1969,11 +2002,11 @@ test "runDd - multi-block copy with bs and count" {
     defer testing.allocator.free(of_arg);
 
     const args = [_][]const u8{ if_arg, of_arg, "bs=4", "count=3", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 12), content.len);
     try testing.expectEqualStrings("AAAABBBBCCCC", content);
@@ -2009,6 +2042,7 @@ test "audit: conv=swab odd-length 5-byte input preserves last byte" {
 }
 
 test "audit: conv=sync pads with spaces when conv=block is active" {
+    const io = testing.io;
     // Audit finding: conv=sync always pads with NUL; should use spaces when
     // block-oriented conversion (block/unblock) is specified.
     // Location: src/dd.zig:674-677
@@ -2023,11 +2057,11 @@ test "audit: conv=sync pads with spaces when conv=block is active" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "input.txt", "X\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "X\n");
 
-    const input_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "input.txt");
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
     defer testing.allocator.free(input_path);
-    const base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(base_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
     defer testing.allocator.free(output_path);
@@ -2043,11 +2077,11 @@ test "audit: conv=sync pads with spaces when conv=block is active" {
     // then 4 trailing spaces form another record "    " padded to "      ".
     // Output = "X     " (6 bytes) + "      " (6 bytes) = 12 bytes, no NUL.
     const args = [_][]const u8{ if_arg, of_arg, "ibs=6", "obs=6", "cbs=6", "conv=sync,block", "status=none" };
-    const exit_code = try runDd(testing.allocator, &args, common.null_writer, common.null_writer);
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.bin", 4096);
+    const content = try tmp_dir.dir.readFileAlloc(io, "output.bin", testing.allocator, .unlimited);
     defer testing.allocator.free(content);
 
     // The output should contain NO NUL bytes - all padding should be spaces

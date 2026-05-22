@@ -15,15 +15,15 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
 /// CLI entry point -- parses process arguments and sets up I/O buffers.
-pub fn main() !void {
-    common.utilityMain(runPrintf);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runPrintf);
 }
 
 /// Run the printf utility with given arguments.
 ///
 /// printf does not use ArgParser since FORMAT is a positional argument.
 /// Only --help and --version are handled as special cases.
-pub fn runPrintf(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runPrintf(allocator: Allocator, _: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     if (args.len == 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "printf", "usage: printf FORMAT [ARGUMENT...]", .{});
         return @intFromEnum(common.ExitCode.misuse);
@@ -1205,445 +1205,439 @@ fn printVersion(writer: anytype) !void {
 // ========== TESTS ==========
 
 test "printf basic string" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s", "hello" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello", buffer.items);
+    try testing.expectEqualStrings("hello", buffer_aw.writer.buffered());
 }
 
 test "printf string with newline escape" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s\\n", "hello" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\n", buffer.items);
+    try testing.expectEqualStrings("hello\n", buffer_aw.writer.buffered());
 }
 
 test "printf integer formatting" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("42", buffer.items);
+    try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
 
 test "printf negative integer" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "-7" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("-7", buffer.items);
+    try testing.expectEqualStrings("-7", buffer_aw.writer.buffered());
 }
 
 test "printf octal" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%o", "255" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("377", buffer.items);
+    try testing.expectEqualStrings("377", buffer_aw.writer.buffered());
 }
 
 test "printf hex lowercase" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%x", "255" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("ff", buffer.items);
+    try testing.expectEqualStrings("ff", buffer_aw.writer.buffered());
 }
 
 test "printf hex uppercase" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%X", "255" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("FF", buffer.items);
+    try testing.expectEqualStrings("FF", buffer_aw.writer.buffered());
 }
 
 test "printf unsigned integer" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%u", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("42", buffer.items);
+    try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
 
 test "printf character" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%c", "A" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A", buffer.items);
+    try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
 
 test "printf float" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%f", "3.14" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("3.140000", buffer.items);
+    try testing.expectEqualStrings("3.140000", buffer_aw.writer.buffered());
 }
 
 test "printf literal percent" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"100%%"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("100%", buffer.items);
+    try testing.expectEqualStrings("100%", buffer_aw.writer.buffered());
 }
 
 test "printf width right-aligned" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%10s", "hello" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("     hello", buffer.items);
+    try testing.expectEqualStrings("     hello", buffer_aw.writer.buffered());
 }
 
 test "printf width left-aligned" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%-10s", "hello" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello     ", buffer.items);
+    try testing.expectEqualStrings("hello     ", buffer_aw.writer.buffered());
 }
 
 test "printf precision truncates string" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.3s", "hello" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hel", buffer.items);
+    try testing.expectEqualStrings("hel", buffer_aw.writer.buffered());
 }
 
 test "printf zero-padded integer" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%05d", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("00042", buffer.items);
+    try testing.expectEqualStrings("00042", buffer_aw.writer.buffered());
 }
 
 test "printf format string reuse" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%s\\n", "a", "b", "c" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("a\nb\nc\n", buffer.items);
+    try testing.expectEqualStrings("a\nb\nc\n", buffer_aw.writer.buffered());
 }
 
 test "printf missing argument defaults to empty string" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%s"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
 
 test "printf missing argument defaults to zero for integers" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%d"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0", buffer.items);
+    try testing.expectEqualStrings("0", buffer_aw.writer.buffered());
 }
 
 test "printf escape sequences in format" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\t\\n\\r\\a"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\t\n\r\x07", buffer.items);
+    try testing.expectEqualStrings("\t\n\r\x07", buffer_aw.writer.buffered());
 }
 
 test "printf octal escape in format" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\0101"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A", buffer.items);
+    try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
 
 test "printf hex escape in format" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\x41"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A", buffer.items);
+    try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
 
 test "printf backslash escape" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\\\"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\\", buffer.items);
+    try testing.expectEqualStrings("\\", buffer_aw.writer.buffered());
 }
 
 test "printf %b with escape sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b", "hello\\nworld" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\nworld", buffer.items);
+    try testing.expectEqualStrings("hello\nworld", buffer_aw.writer.buffered());
 }
 
 test "printf no arguments shows usage error" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    var stderr = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), stderr.writer(testing.allocator));
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
 }
 
 test "printf --help" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: printf") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "Usage: printf") != null);
 }
 
 test "printf --version" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "printf") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "printf") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), common.version) != null);
 }
 
 test "printf multiple format specifiers" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "Name: %s Age: %d\\n", "Alice", "30" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("Name: Alice Age: 30\n", buffer.items);
+    try testing.expectEqualStrings("Name: Alice Age: 30\n", buffer_aw.writer.buffered());
 }
 
 test "printf character from quote syntax" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "'A" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("65", buffer.items);
+    try testing.expectEqualStrings("65", buffer_aw.writer.buffered());
 }
 
 test "printf hex argument prefix" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "0xff" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("255", buffer.items);
+    try testing.expectEqualStrings("255", buffer_aw.writer.buffered());
 }
 
 test "printf octal argument prefix" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%d", "010" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("8", buffer.items);
+    try testing.expectEqualStrings("8", buffer_aw.writer.buffered());
 }
 
 test "printf scientific notation" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%e", "100000" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1.000000e+05", buffer.items);
+    try testing.expectEqualStrings("1.000000e+05", buffer_aw.writer.buffered());
 }
 
 test "printf plus sign flag" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%+d", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("+42", buffer.items);
+    try testing.expectEqualStrings("+42", buffer_aw.writer.buffered());
 }
 
 test "printf hash flag for octal" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%#o", "8" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("010", buffer.items);
+    try testing.expectEqualStrings("010", buffer_aw.writer.buffered());
 }
 
 test "printf hash flag for hex" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%#x", "255" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0xff", buffer.items);
+    try testing.expectEqualStrings("0xff", buffer_aw.writer.buffered());
 }
 
 test "printf width with integer" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%8d", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("      42", buffer.items);
+    try testing.expectEqualStrings("      42", buffer_aw.writer.buffered());
 }
 
 test "printf empty format" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{""};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
 
 test "printf plain text no specifiers" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"hello world"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello world", buffer.items);
+    try testing.expectEqualStrings("hello world", buffer_aw.writer.buffered());
 }
 
 test "printf %g removes trailing zeros" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%g", "3.0" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("3", buffer.items);
+    try testing.expectEqualStrings("3", buffer_aw.writer.buffered());
 }
 
 test "printf %c with empty argument" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%c", "" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
 
 test "printf %c with missing argument" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"%c"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
 
 test "printf float with precision" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "3.14159" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("3.14", buffer.items);
+    try testing.expectEqualStrings("3.14", buffer_aw.writer.buffered());
 }
 
 test "printf float zero" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%f", "0" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0.000000", buffer.items);
+    try testing.expectEqualStrings("0.000000", buffer_aw.writer.buffered());
 }
 
 test "processEscape should propagate write errors not swallow them" {
-    // A writer that always fails with BrokenPipe, simulating a broken
-    // pipe or disk-full condition.  processEscape currently swallows
-    // all write errors via `catch {}`, so this test documents the bug:
-    // printf reports success (exit 0) even though output was lost.
-    const failing_write_fn = struct {
-        fn f(_: void, _: []const u8) error{BrokenPipe}!usize {
-            return error.BrokenPipe;
-        }
-    }.f;
-    const FailingWriter = std.Io.GenericWriter(void, error{BrokenPipe}, failing_write_fn);
-    var fw = FailingWriter{ .context = {} };
+    // A writer that always fails, simulating a broken pipe or disk-full
+    // condition.  processEscape currently swallows all write errors via
+    // `catch {}`, so this test documents the bug: printf reports success
+    // (exit 0) even though output was lost.
+    var fw = std.Io.Writer.failing;
 
     // Format string "\\n" is a single escape sequence with no literal
     // characters, so all output goes through processEscape.  If write
     // errors propagated, runPrintf would return a non-zero exit code.
     const args = [_][]const u8{"\\n"};
-    const result = try runPrintf(testing.allocator, &args, &fw, common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &fw, common.null_writer);
 
     // The write failed, so printf should report an error.
     // BUG: processEscape swallows the error, so result is 0.
@@ -1651,53 +1645,53 @@ test "processEscape should propagate write errors not swallow them" {
 }
 
 test "printf float carry propagation past decimal: 9.995 -> 10.00" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "9.995" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("10.00", buffer.items);
+    try testing.expectEqualStrings("10.00", buffer_aw.writer.buffered());
 }
 
 test "printf float carry propagation past decimal: 9.95 -> 10.0" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.1f", "9.95" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("10.0", buffer.items);
+    try testing.expectEqualStrings("10.0", buffer_aw.writer.buffered());
 }
 
 test "printf float carry propagation zero precision: 9.5 -> 10" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.0f", "9.5" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("10", buffer.items);
+    try testing.expectEqualStrings("10", buffer_aw.writer.buffered());
 }
 
 test "printf float carry propagation multi-digit integer: 99.999 -> 100.00" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "99.999" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("100.00", buffer.items);
+    try testing.expectEqualStrings("100.00", buffer_aw.writer.buffered());
 }
 
 test "printf float simple rounding no carry overflow: 1.005 -> 1.01" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%.2f", "1.005" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1.01", buffer.items);
+    try testing.expectEqualStrings("1.01", buffer_aw.writer.buffered());
 }
 
 // ========== AUDIT FINDING TESTS ==========
@@ -1707,47 +1701,47 @@ test "printf float simple rounding no carry overflow: 1.005 -> 1.01" {
 // Our processEscape only matches '0' after backslash, so \1xx falls
 // through to the else branch and outputs a literal backslash.
 test "F31: format string \\NNN octal without leading zero" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // \101 = octal 101 = 65 = 'A'
     const args = [_][]const u8{"\\101"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A", buffer.items);
+    try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
 
 test "F31: format string \\NNN octal 1-digit" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // \7 = octal 7 = 0x07
     const args = [_][]const u8{"\\7"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\x07", buffer.items);
+    try testing.expectEqualStrings("\x07", buffer_aw.writer.buffered());
 }
 
 test "F31: format string \\NNN octal 2-digit" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // \62 = octal 62 = 50 = '2'
     const args = [_][]const u8{"\\62"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("2", buffer.items);
+    try testing.expectEqualStrings("2", buffer_aw.writer.buffered());
 }
 
 test "F31: format string \\NNN octal 3-digit" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // \110 = octal 110 = 72 = 'H'
     const args = [_][]const u8{"\\110"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("H", buffer.items);
+    try testing.expectEqualStrings("H", buffer_aw.writer.buffered());
 }
 
 // F32: %b octal \0NNN off-by-one -- first digit re-read after consuming '0'
@@ -1755,38 +1749,38 @@ test "F31: format string \\NNN octal 3-digit" {
 // Our formatBString re-reads the initial digit in the while loop because
 // j starts at 1 (the position of the matched digit), causing an off-by-one.
 test "F32: percent-b octal \\0NNN produces correct byte" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // %b with \0101: the '0' is a prefix, '101' is octal = 65 = 'A'
     const args = [_][]const u8{ "%b", "\\0101" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A", buffer.items);
+    try testing.expectEqualStrings("A", buffer_aw.writer.buffered());
 }
 
 test "F32: percent-b octal \\0NNN 3-digit non-zero start" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // %b \0110: the '0' is a prefix, '110' is octal = 72 = 'H'
     // Bug: code re-reads the '0' prefix, processes '011' = 9 instead
     const args = [_][]const u8{ "%b", "\\0110" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("H", buffer.items);
+    try testing.expectEqualStrings("H", buffer_aw.writer.buffered());
 }
 
 test "F32: percent-b octal \\0NNN followed by text" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // %b \0101X: octal 101 = 65 = 'A', then literal 'X'
     // Bug: code reads '010' = 8, then outputs char(8) + '1' + 'X'
     const args = [_][]const u8{ "%b", "\\0101X" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("AX", buffer.items);
+    try testing.expectEqualStrings("AX", buffer_aw.writer.buffered());
 }
 
 // F33: \c in format string not handled
@@ -1794,24 +1788,24 @@ test "F32: percent-b octal \\0NNN followed by text" {
 // Our processEscape does not handle 'c' -- it falls through to else
 // and outputs a literal backslash, continuing with the rest.
 test "F33: format string \\c stops output" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"before\\cafter"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     _ = result;
     // Should output only "before", nothing after \c
-    try testing.expectEqualStrings("before", buffer.items);
+    try testing.expectEqualStrings("before", buffer_aw.writer.buffered());
 }
 
 test "F33: format string \\c at start produces no output" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"\\chello"};
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     _ = result;
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", buffer_aw.writer.buffered());
 }
 
 // F34: %b \c does not halt format-string reuse
@@ -1819,25 +1813,25 @@ test "F33: format string \\c at start produces no output" {
 // Our formatBString returns early on \c, but runPrintf continues
 // reusing the format string for the remaining "world" argument.
 test "F34: percent-b \\c halts format-string reuse" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b\\n", "hello\\c", "world" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     _ = result;
     // Should output only "hello" -- \c stops everything, no newline, no "world"
-    try testing.expectEqualStrings("hello", buffer.items);
+    try testing.expectEqualStrings("hello", buffer_aw.writer.buffered());
 }
 
 test "F34: percent-b \\c halts even within single format pass" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%b %b", "hi\\c", "bye" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     _ = result;
     // \c in first %b should halt all output; "bye" never printed
-    try testing.expectEqualStrings("hi", buffer.items);
+    try testing.expectEqualStrings("hi", buffer_aw.writer.buffered());
 }
 
 // F35: %F, %a, %A format specifiers not implemented
@@ -1845,50 +1839,50 @@ test "F34: percent-b \\c halts even within single format pass" {
 // GNU printf '%a\n' 1.5 outputs hex float like "0xcp-3".
 // Our processSpecifier falls through to else for these, outputting literals.
 test "F35: percent-F uppercase float" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%F", "3.14" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("3.140000", buffer.items);
+    try testing.expectEqualStrings("3.140000", buffer_aw.writer.buffered());
 }
 
 test "F35: percent-F with zero" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%F", "0" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("0.000000", buffer.items);
+    try testing.expectEqualStrings("0.000000", buffer_aw.writer.buffered());
 }
 
 test "F35: percent-a hex float" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%a", "1.5" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // GNU outputs "0xcp-3" for 1.5 -- hex float representation
     // Must start with "0x" and contain "p" (hex float format)
-    try testing.expect(buffer.items.len > 0);
-    try testing.expect(std.mem.startsWith(u8, buffer.items, "0x"));
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "p") != null);
+    try testing.expect(buffer_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.startsWith(u8, buffer_aw.writer.buffered(), "0x"));
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "p") != null);
 }
 
 test "F35: percent-A hex float uppercase" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%A", "1.5" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // GNU outputs "0XCP-3" for 1.5
-    try testing.expect(buffer.items.len > 0);
-    try testing.expect(std.mem.startsWith(u8, buffer.items, "0X"));
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "P") != null);
+    try testing.expect(buffer_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.startsWith(u8, buffer_aw.writer.buffered(), "0X"));
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "P") != null);
 }
 
 // ========== AUDIT WAVE 4: printf IMPORTANT findings ==========
@@ -1897,130 +1891,130 @@ test "F35: percent-A hex float uppercase" {
 // GNU printf '%d\n' abc outputs "0\n" to stdout, warns on stderr, exits 1.
 // Our implementation silently returns "0\n" and exits 0.
 test "audit: printf %d with non-numeric input exits 1 and warns" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "%d\\n", "abc" };
-    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runPrintf(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // GNU outputs "0\n" to stdout
-    try testing.expectEqualStrings("0\n", stdout_buf.items);
+    try testing.expectEqualStrings("0\n", stdout_aw.writer.buffered());
     // Must exit 1 (not 0) when argument is not a valid number
     try testing.expectEqual(@as(u8, 1), result);
     // Must emit a warning on stderr
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 // IMPORTANT: %d with partial numeric input (e.g. "5abc") should also warn
 test "audit: printf %d with partial numeric input warns" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "%d", "5abc" };
-    const result = try runPrintf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runPrintf(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // GNU outputs "5" for partial numeric
-    try testing.expectEqualStrings("5", stdout_buf.items);
+    try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
     // Must exit 1 and warn
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(stderr_buf.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 // Test gap: %i format specifier (synonym for %d)
 // GNU printf '%i\n' 42 outputs "42\n"
 test "audit: printf %i format specifier" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%i", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("42", buffer.items);
+    try testing.expectEqualStrings("42", buffer_aw.writer.buffered());
 }
 
 // Test gap: %i with negative number
 test "audit: printf %i negative" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%i", "-7" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("-7", buffer.items);
+    try testing.expectEqualStrings("-7", buffer_aw.writer.buffered());
 }
 
 // Test gap: %E format specifier (uppercase scientific notation)
 // GNU printf '%E\n' 1234.5 outputs "1.234500E+03\n"
 test "audit: printf %E uppercase scientific" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%E", "1234.5" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1.234500E+03", buffer.items);
+    try testing.expectEqualStrings("1.234500E+03", buffer_aw.writer.buffered());
 }
 
 // Test gap: %G format specifier (uppercase general float)
 // GNU printf '%G\n' 0.00001 outputs "1E-05\n"
 test "audit: printf %G uppercase general" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%G", "0.00001" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Must contain uppercase E, not lowercase e
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "E") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "E") != null);
 }
 
 // Test gap: * dynamic width
 // GNU printf '%*d\n' 10 42 outputs "        42\n"
 test "audit: printf dynamic width with *" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%*d", "10", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("        42", buffer.items);
+    try testing.expectEqualStrings("        42", buffer_aw.writer.buffered());
 }
 
 // IMPORTANT: Negative * width implies left-justify
 // GNU printf '"%*d"\n' -5 42 outputs '"42   "'
 test "audit: printf negative dynamic width implies left-justify" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "%*d", "-5", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("42   ", buffer.items);
+    try testing.expectEqualStrings("42   ", buffer_aw.writer.buffered());
 }
 
 // Test gap: space-sign flag
 // GNU printf '% d\n' 42 outputs " 42\n" (space before positive number)
 test "audit: printf space-sign flag positive" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "% d", "42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings(" 42", buffer.items);
+    try testing.expectEqualStrings(" 42", buffer_aw.writer.buffered());
 }
 
 // GNU printf '% d\n' -42 outputs "-42\n" (negative sign replaces space)
 test "audit: printf space-sign flag negative" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{ "% d", "-42" };
-    const result = try runPrintf(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("-42", buffer.items);
+    try testing.expectEqualStrings("-42", buffer_aw.writer.buffered());
 }
 
 // %u is already tested in "printf unsigned integer" above -- no gap.

@@ -8,7 +8,8 @@ const LsOptions = types.LsOptions;
 /// Recursively list contents of a subdirectory.
 /// BrokenPipe errors are propagated, others are printed but don't stop processing
 pub fn recurseIntoSubdirectory(
-    sub_dir: std.fs.Dir,
+    io: std.Io,
+    sub_dir: std.Io.Dir,
     subdir_path: []const u8,
     writer: anytype,
     stderr_writer: anytype,
@@ -20,7 +21,7 @@ pub fn recurseIntoSubdirectory(
 ) anyerror!void {
     // Import core module to avoid circular dependency
     const core = @import("core.zig");
-    core.listDirectoryImplWithVisited(sub_dir, subdir_path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context) catch |err| switch (err) {
+    core.listDirectoryImplWithVisited(io, sub_dir, subdir_path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context) catch |err| switch (err) {
         error.BrokenPipe => return err, // Propagate BrokenPipe for correct pipe behavior
         else => {
             common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ subdir_path, err });

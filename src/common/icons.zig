@@ -922,12 +922,13 @@ pub fn getIcon(theme: *const IconTheme, name: []const u8, is_dir: bool, is_link:
 
 /// Get icon mode from environment variable, with fallback
 pub fn getIconModeFromEnv(allocator: std.mem.Allocator) IconMode {
-    if (std.process.getEnvVarOwned(allocator, "LS_ICONS")) |val| {
-        defer allocator.free(val);
+    _ = allocator;
+    const env = @import("env.zig");
+    if (env.getEnv("LS_ICONS")) |val| {
         if (std.mem.eql(u8, val, "always")) return .always;
         if (std.mem.eql(u8, val, "never")) return .never;
         if (std.mem.eql(u8, val, "auto")) return .auto;
-    } else |_| {}
+    }
 
     return .auto; // Default to auto mode
 }

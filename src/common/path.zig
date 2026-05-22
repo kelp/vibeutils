@@ -8,6 +8,24 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+/// Resolve a path to its canonical absolute form, returning a heap-allocated
+/// `[]u8` slice (not sentinel-terminated). Using `allocator.dupe` avoids the
+/// debug-allocator size mismatch that occurs when `realPathFileAlloc` returns
+/// `[:0]u8` and the caller frees it as `[]u8`.
+fn realPathDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try std.Io.Dir.cwd().realPathFile(io, path, &buf);
+    return allocator.dupe(u8, buf[0..len]);
+}
+
+/// Resolve an absolute path to its canonical form, returning a heap-allocated
+/// `[]u8` slice. Same rationale as `realPathDupe`.
+fn realPathAbsoluteDupe(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try std.Io.Dir.realPathFileAbsolute(io, path, &buf);
+    return allocator.dupe(u8, buf[0..len]);
+}
+
 /// Canonicalize a path where all components except the last must exist.
 /// This matches GNU `realpath -E` (the default) and `readlink -f` semantics:
 /// the parent directory must be resolvable via realpath and must actually
@@ -23,7 +41,7 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []con
     }
 
     // If the full path resolves, use that.
-    if (std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator)) |resolved| {
+    if (realPathDupe(allocator, io, path)) |resolved| {
         return resolved;
     } else |_| {}
 
@@ -38,19 +56,19 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []con
     }
 
     // "." or ".." as the basename — these are directory operations; the
-    // whole path must exist. If realPathFileAlloc on the full path failed, bail.
+    // whole path must exist. If realPathDupe on the full path failed, bail.
     if (std.mem.eql(u8, basename, ".") or std.mem.eql(u8, basename, "..")) {
         return error.FileNotFound;
     }
 
-    // Verify parent is an actual directory. `realPathFileAlloc` resolves files
+    // Verify parent is an actual directory. `realPathDupe` resolves files
     // too, so without this check /etc/passwd/foo would succeed. openDir
     // returns NotDir for files, which propagates the correct GNU error.
     var parent_dir = try std.Io.Dir.cwd().openDir(io, dirname, .{});
-    try parent_dir.close(io);
+    parent_dir.close(io);
 
     // Resolve parent; propagate error (FileNotFound, NotDir, etc.) on failure.
-    const resolved_parent = try std.Io.Dir.cwd().realPathFileAlloc(io, dirname, allocator);
+    const resolved_parent = try realPathDupe(allocator, io, dirname);
     defer allocator.free(resolved_parent);
 
     // Join resolved parent + basename.
@@ -84,7 +102,7 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
     defer allocator.free(abs_path);
 
     // Collect all components
-    var all_components = std.ArrayListUnmanaged([]const u8){};
+    var all_components: std.ArrayListUnmanaged([]const u8) = .empty;
     defer all_components.deinit(allocator);
 
     var it = std.mem.tokenizeScalar(u8, abs_path, '/');
@@ -117,7 +135,7 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
             pos += comp.len;
         }
 
-        if (std.Io.Dir.cwd().realPathFileAlloc(io, prefix, allocator)) |resolved| {
+        if (realPathDupe(allocator, io, prefix)) |resolved| {
             resolved_prefix = resolved;
             resolved_count = try_count;
             break;
@@ -132,7 +150,7 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
         }
 
         // Append remaining components, resolving . and ..
-        var remaining = std.ArrayListUnmanaged(u8){};
+        var remaining = std.ArrayListUnmanaged(u8).empty;
         defer remaining.deinit(allocator);
         try remaining.appendSlice(allocator, prefix);
 
@@ -140,7 +158,7 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
             if (std.mem.eql(u8, comp, ".")) {
                 continue;
             } else if (std.mem.eql(u8, comp, "..")) {
-                if (std.mem.findLastScalar(u8, remaining.items, '/')) |last_slash| {
+                if (std.mem.findScalarLast(u8, remaining.items, '/')) |last_slash| {
                     if (last_slash > 0) {
                         remaining.shrinkRetainingCapacity(last_slash);
                     } else {
@@ -156,10 +174,10 @@ pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) !
         return try allocator.dupe(u8, remaining.items);
     } else {
         // Nothing resolved at all, build cleaned absolute path
-        var result = std.ArrayListUnmanaged(u8){};
+        var result = std.ArrayListUnmanaged(u8).empty;
         defer result.deinit(allocator);
 
-        var cleaned = std.ArrayListUnmanaged([]const u8){};
+        var cleaned = std.ArrayListUnmanaged([]const u8).empty;
         defer cleaned.deinit(allocator);
 
         for (all_components.items) |comp| {

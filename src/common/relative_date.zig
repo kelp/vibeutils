@@ -150,7 +150,8 @@ pub fn formatAbsoluteDate(timestamp_ns: i128, allocator: std.mem.Allocator) ![]u
 
     // Format as "Jan 15 2024" or "Jan 15 15:30" for current year
     const current_year = blk: {
-        const now_s = @divTrunc(std.time.nanoTimestamp(), std.time.ns_per_s);
+        const file = @import("file.zig");
+        const now_s = @divTrunc(file.currentTimestampNanoseconds(), std.time.ns_per_s);
         const now_epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(now_s) };
         const now_year_day = now_epoch.getEpochDay().calculateYearDay();
         break :blk now_year_day.year;
@@ -172,7 +173,8 @@ pub fn formatAbsoluteDate(timestamp_ns: i128, allocator: std.mem.Allocator) ![]u
 /// Get current timestamp in nanoseconds since Unix epoch.
 /// This is the primary time unit used throughout the relative date system.
 pub fn nowNanoseconds() i128 {
-    return std.time.nanoTimestamp();
+    const file = @import("file.zig");
+    return file.currentTimestampNanoseconds();
 }
 
 /// Create a default configuration using current time as reference point.

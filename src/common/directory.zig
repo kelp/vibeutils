@@ -24,14 +24,26 @@ pub const FileSystemId = struct {
     /// This gets the real device ID from the underlying filesystem, which allows
     /// basic detection of filesystem boundaries for cycle prevention.
     pub fn fromDir(dir: std.Io.Dir) !FileSystemId {
-        // Use fstat() on the directory's file descriptor to get real device ID
-        var stat_info: std.c.Stat = undefined;
-        if (std.c.fstat(dir.fd, &stat_info) != 0) return error.SystemResources;
-
-        return FileSystemId{
-            .device = @intCast(stat_info.dev),
-            .inode = stat_info.ino,
-        };
+        const fd = dir.handle;
+        if (@import("builtin").os.tag == .linux) {
+            // On Linux, std.c.fstat is void; use statx via the Linux syscall.
+            const linux = std.os.linux;
+            var sx: linux.Statx = undefined;
+            const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, linux.STATX.BASIC_STATS, &sx);
+            if (linux.errno(rc) != .SUCCESS) return error.SystemResources;
+            return FileSystemId{
+                .device = (@as(u64, sx.dev_major) << 8) | @as(u64, sx.dev_minor),
+                .inode = sx.ino,
+            };
+        } else {
+            // macOS and other platforms support std.c.fstat.
+            var stat_info: std.c.Stat = undefined;
+            if (std.c.fstat(fd, &stat_info) != 0) return error.SystemResources;
+            return FileSystemId{
+                .device = @intCast(stat_info.dev),
+                .inode = stat_info.ino,
+            };
+        }
     }
 
     /// Context for HashMap usage with FileSystemId keys

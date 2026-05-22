@@ -147,7 +147,7 @@ fn writeSizeColored(style: anytype, writer: anytype, size_str: []const u8, size:
 /// Recent files are bright green, aging through blue to dim gray.
 fn writeDateColored(style: anytype, writer: anytype, time_str: []const u8, mtime_ns: i128, max_time_width: usize) !void {
     if (style.color_mode != .none) {
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = common.file.currentTimestampNanoseconds();
         const age_ns = now_ns - mtime_ns;
 
         switch (style.color_mode) {
@@ -226,7 +226,7 @@ pub fn formatTimeWithStyle(mtime_ns: i128, time_style: TimeStyle, allocator: std
             const day = month_day.day_index + 1;
 
             // Determine if file is older than 6 months
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = common.file.currentTimestampNanoseconds();
             const age_ns = now_ns - mtime_ns;
 
             if (age_ns >= NS_PER_6MONTHS) {
@@ -404,9 +404,9 @@ fn printLongFormatEntryAligned(allocator: std.mem.Allocator, entry: Entry, write
     if (entry.symlink_target) |target| {
         try writer.writeAll(" -> ");
         if (style.color_mode != .none) {
-            // Stat the target (following symlinks) to get its kind
+            // Stat the target (lstat — no io needed) to get its kind for coloring
             const target_kind = blk: {
-                const stat = std.fs.cwd().statFile(target) catch break :blk null;
+                const stat = common.file.FileInfo.lstat(target) catch break :blk null;
                 break :blk stat.kind;
             };
             if (target_kind) |kind| {
@@ -706,7 +706,7 @@ test "formatter - formatTimeWithStyle relative" {
     var buf: [128]u8 = undefined;
 
     // Test recent time (should show relative format)
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const one_hour_ago = now_ns - (3600 * std.time.ns_per_s);
 
     const result = try formatTimeWithStyle(one_hour_ago, .relative, allocator, &buf);
@@ -719,7 +719,7 @@ test "formatter - formatTimeWithStyle default recent" {
     var buf: [128]u8 = undefined;
 
     // Test recent time (should show "Mon DD HH:MM" format)
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const one_hour_ago = now_ns - (3600 * std.time.ns_per_s);
 
     const result = try formatTimeWithStyle(one_hour_ago, .default, testing.allocator, &buf);
@@ -734,7 +734,7 @@ test "formatter - formatTimeWithStyle default old" {
     var buf: [128]u8 = undefined;
 
     // Test old time (> 6 months, should show "Mon DD  YYYY" format)
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const one_year_ago = now_ns - (365 * 86400 * @as(i128, std.time.ns_per_s));
 
     const result = try formatTimeWithStyle(one_year_ago, .default, testing.allocator, &buf);
@@ -769,7 +769,7 @@ test "formatter - formatTimeWithStyle full always shows year" {
     var buf: [128]u8 = undefined;
 
     // Test recent timestamp (should still show year, unlike default)
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const one_hour_ago = now_ns - (3600 * std.time.ns_per_s);
 
     const result = try formatTimeWithStyle(one_hour_ago, .full, testing.allocator, &buf);
@@ -798,8 +798,8 @@ test "formatter - formatTimeWithStyle iso" {
 }
 
 test "formatter - printColumnar basic" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
 
     var entries = [_]Entry{
         .{ .name = "file1", .kind = .file },
@@ -808,11 +808,11 @@ test "formatter - printColumnar basic" {
     };
 
     const options = LsOptions{ .terminal_width = 40 };
-    const style = try display.initStyle(testing.allocator, buffer.writer(testing.allocator), .never);
+    const style = try display.initStyle(testing.allocator, &buf_aw.writer, .never);
 
-    try printColumnar(testing.allocator, &entries, buffer.writer(testing.allocator), options, style);
+    try printColumnar(testing.allocator, &entries, &buf_aw.writer, options, style);
 
-    const output = buffer.items;
+    const output = buf_aw.writer.buffered();
 
     // Should contain all files
     try testing.expect(std.mem.indexOf(u8, output, "file1") != null);
@@ -821,29 +821,28 @@ test "formatter - printColumnar basic" {
 }
 
 // Helper to create a test style with a specific color mode
-const TestWriter = std.ArrayList(u8).Writer;
-const TestStyle = common.style.Style(TestWriter);
+const TestStyle = common.style.Style(*std.Io.Writer);
 
-fn makeTestStyle(buffer: *std.ArrayList(u8), color_mode: TestStyle.ColorMode) TestStyle {
-    return TestStyle{ .color_mode = color_mode, .writer = buffer.writer(testing.allocator) };
+fn makeTestStyle(writer: *std.Io.Writer, color_mode: TestStyle.ColorMode) TestStyle {
+    return TestStyle{ .color_mode = color_mode, .writer = writer };
 }
 
 test "writeColoredPermissions - no color mode writes plain string" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeColoredPermissions(style, buffer.writer(testing.allocator), "drwxr-xr-x");
-    try testing.expectEqualSlices(u8, "drwxr-xr-x", buffer.items);
+    try writeColoredPermissions(style, &buf_aw.writer, "drwxr-xr-x");
+    try testing.expectEqualSlices(u8, "drwxr-xr-x", buf_aw.writer.buffered());
 }
 
 test "writeColoredPermissions - basic mode adds ANSI codes" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeColoredPermissions(style, buffer.writer(testing.allocator), "drwx------");
-    const output = buffer.items;
+    try writeColoredPermissions(style, &buf_aw.writer, "drwx------");
+    const output = buf_aw.writer.buffered();
 
     // Output should contain ANSI escape sequences
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[") != null);
@@ -856,12 +855,12 @@ test "writeColoredPermissions - basic mode adds ANSI codes" {
 }
 
 test "writeColoredPermissions - symlink permissions" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeColoredPermissions(style, buffer.writer(testing.allocator), "lrwxrwxrwx");
-    const output = buffer.items;
+    try writeColoredPermissions(style, &buf_aw.writer, "lrwxrwxrwx");
+    const output = buf_aw.writer.buffered();
 
     // Should contain cyan code for 'l' (36) and bold (1)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null);
@@ -869,21 +868,21 @@ test "writeColoredPermissions - symlink permissions" {
 }
 
 test "writeNlinkColored - no color writes plain" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeNlinkColored(style, buffer.writer(testing.allocator), 3);
-    try testing.expectEqualSlices(u8, "   3 ", buffer.items);
+    try writeNlinkColored(style, &buf_aw.writer, 3);
+    try testing.expectEqualSlices(u8, "   3 ", buf_aw.writer.buffered());
 }
 
 test "writeNlinkColored - basic mode uses bright_black" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeNlinkColored(style, buffer.writer(testing.allocator), 1);
-    const output = buffer.items;
+    try writeNlinkColored(style, &buf_aw.writer, 1);
+    const output = buf_aw.writer.buffered();
 
     // Should contain bright_black (90) escape code
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[90m") != null);
@@ -893,21 +892,21 @@ test "writeNlinkColored - basic mode uses bright_black" {
 }
 
 test "writeUserGroupColored - no color writes plain" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", false, false);
-    try testing.expectEqualSlices(u8, "root     wheel    ", buffer.items);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false);
+    try testing.expectEqualSlices(u8, "root     wheel    ", buf_aw.writer.buffered());
 }
 
 test "writeUserGroupColored - basic mode uses yellow for user and cyan for group" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", false, false);
-    const output = buffer.items;
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, false);
+    const output = buf_aw.writer.buffered();
 
     // Should contain yellow (33) for user and cyan (36) for group
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[33m") != null);
@@ -917,48 +916,48 @@ test "writeUserGroupColored - basic mode uses yellow for user and cyan for group
 }
 
 test "writeUserGroupColored - omit_owner hides user column" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", true, false);
-    try testing.expectEqualSlices(u8, "wheel    ", buffer.items);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", true, false);
+    try testing.expectEqualSlices(u8, "wheel    ", buf_aw.writer.buffered());
 }
 
 test "writeUserGroupColored - omit_group hides group column" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeUserGroupColored(style, buffer.writer(testing.allocator), "root", "wheel", false, true);
-    try testing.expectEqualSlices(u8, "root     ", buffer.items);
+    try writeUserGroupColored(style, &buf_aw.writer, "root", "wheel", false, true);
+    try testing.expectEqualSlices(u8, "root     ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - no color writes plain" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeSizeColored(style, buffer.writer(testing.allocator), "4096", 4096, false);
-    try testing.expectEqualSlices(u8, "    4096 ", buffer.items);
+    try writeSizeColored(style, &buf_aw.writer, "4096", 4096, false);
+    try testing.expectEqualSlices(u8, "    4096 ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - human readable format" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    try writeSizeColored(style, buffer.writer(testing.allocator), "4.0K", 4096, true);
-    try testing.expectEqualSlices(u8, " 4.0K ", buffer.items);
+    try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true);
+    try testing.expectEqualSlices(u8, " 4.0K ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - truecolor small file uses green" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .truecolor);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
-    try writeSizeColored(style, buffer.writer(testing.allocator), "512", 512, false);
-    const output = buffer.items;
+    try writeSizeColored(style, &buf_aw.writer, "512", 512, false);
+    const output = buf_aw.writer.buffered();
 
     // Small file: RGB (115, 195, 120)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;115;195;120m") != null);
@@ -966,49 +965,49 @@ test "writeSizeColored - truecolor small file uses green" {
 }
 
 test "writeSizeColored - truecolor large file uses red-orange" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .truecolor);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
     const large_size: u64 = 20 * 1024 * 1024; // 20MB
-    try writeSizeColored(style, buffer.writer(testing.allocator), "20971520", large_size, false);
-    const output = buffer.items;
+    try writeSizeColored(style, &buf_aw.writer, "20971520", large_size, false);
+    const output = buf_aw.writer.buffered();
 
     // Large file: RGB (210, 115, 100)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;210;115;100m") != null);
 }
 
 test "writeSizeColored - 256 color mode" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .extended);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .extended);
 
     // 50KB file should use index 149 (yellow-green)
-    try writeSizeColored(style, buffer.writer(testing.allocator), "51200", 51200, false);
-    const output = buffer.items;
+    try writeSizeColored(style, &buf_aw.writer, "51200", 51200, false);
+    const output = buf_aw.writer.buffered();
 
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;5;149m") != null);
 }
 
 test "writeSizeColored - basic mode uses green" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeSizeColored(style, buffer.writer(testing.allocator), "100", 100, false);
-    const output = buffer.items;
+    try writeSizeColored(style, &buf_aw.writer, "100", 100, false);
+    const output = buf_aw.writer.buffered();
 
     // Basic mode: green (32)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[32m") != null);
 }
 
 test "writeSizeColored - basic mode bold for human readable" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    try writeSizeColored(style, buffer.writer(testing.allocator), "4.0K", 4096, true);
-    const output = buffer.items;
+    try writeSizeColored(style, &buf_aw.writer, "4.0K", 4096, true);
+    const output = buf_aw.writer.buffered();
 
     // Basic mode with human_readable: bold + green
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[1m") != null);
@@ -1016,82 +1015,82 @@ test "writeSizeColored - basic mode bold for human readable" {
 }
 
 test "writeDateColored - no color writes plain" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    const now_ns = std.time.nanoTimestamp();
-    try writeDateColored(style, buffer.writer(testing.allocator), "2024-01-15 15:30", now_ns, 16);
-    try testing.expectEqualSlices(u8, "2024-01-15 15:30 ", buffer.items);
+    const now_ns = common.file.currentTimestampNanoseconds();
+    try writeDateColored(style, &buf_aw.writer, "2024-01-15 15:30", now_ns, 16);
+    try testing.expectEqualSlices(u8, "2024-01-15 15:30 ", buf_aw.writer.buffered());
 }
 
 test "writeDateColored - truecolor recent file uses bright green" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .truecolor);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
     // File modified 30 seconds ago (< 1 minute)
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const recent_ns = now_ns - (30 * std.time.ns_per_s);
-    try writeDateColored(style, buffer.writer(testing.allocator), "just now", recent_ns, 8);
-    const output = buffer.items;
+    try writeDateColored(style, &buf_aw.writer, "just now", recent_ns, 8);
+    const output = buf_aw.writer.buffered();
 
     // Recent: RGB (115, 230, 120)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;115;230;120m") != null);
 }
 
 test "writeDateColored - truecolor old file uses gray" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .truecolor);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
     // File modified 1 year ago (> 6 months)
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const old_ns = now_ns - (365 * 86400 * @as(i128, std.time.ns_per_s));
-    try writeDateColored(style, buffer.writer(testing.allocator), "2023-01-15", old_ns, 10);
-    const output = buffer.items;
+    try writeDateColored(style, &buf_aw.writer, "2023-01-15", old_ns, 10);
+    const output = buf_aw.writer.buffered();
 
     // Old: RGB (140, 140, 155)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;2;140;140;155m") != null);
 }
 
 test "writeDateColored - 256 color mode recent" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .extended);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .extended);
 
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const recent_ns = now_ns - (30 * std.time.ns_per_s);
-    try writeDateColored(style, buffer.writer(testing.allocator), "just now", recent_ns, 8);
-    const output = buffer.items;
+    try writeDateColored(style, &buf_aw.writer, "just now", recent_ns, 8);
+    const output = buf_aw.writer.buffered();
 
     // Recent: index 119
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[38;5;119m") != null);
 }
 
 test "writeDateColored - basic mode uses blue" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .basic);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .basic);
 
-    const now_ns = std.time.nanoTimestamp();
-    try writeDateColored(style, buffer.writer(testing.allocator), "2024-01-15", now_ns, 10);
-    const output = buffer.items;
+    const now_ns = common.file.currentTimestampNanoseconds();
+    try writeDateColored(style, &buf_aw.writer, "2024-01-15", now_ns, 10);
+    const output = buf_aw.writer.buffered();
 
     // Basic mode: blue (34)
     try testing.expect(std.mem.indexOf(u8, output, "\x1b[34m") != null);
 }
 
 test "writeDateColored - pads to max width" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const style = makeTestStyle(&buffer, .none);
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+    const style = makeTestStyle(&buf_aw.writer, .none);
 
-    const now_ns = std.time.nanoTimestamp();
-    try writeDateColored(style, buffer.writer(testing.allocator), "short", now_ns, 10);
+    const now_ns = common.file.currentTimestampNanoseconds();
+    try writeDateColored(style, &buf_aw.writer, "short", now_ns, 10);
 
     // "short" is 5 chars, max_time_width is 10, so 5 spaces of padding + 1 trailing space
-    try testing.expectEqualSlices(u8, "short      ", buffer.items);
+    try testing.expectEqualSlices(u8, "short      ", buf_aw.writer.buffered());
 }
 
 test "writeSizeColored - all truecolor tiers" {
@@ -1103,23 +1102,25 @@ test "writeSizeColored - all truecolor tiers" {
         .{ .size = 50_000_000, .r = 210, .g = 115, .b = 100 }, // > 10M
     };
 
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+
     inline for (tiers) |tier| {
-        var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-        defer buffer.deinit(testing.allocator);
-        const style = makeTestStyle(&buffer, .truecolor);
+        buf_aw.writer.end = 0;
+        const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
         var size_buf: [32]u8 = undefined;
         const size_str = std.fmt.bufPrint(&size_buf, "{d}", .{tier.size}) catch unreachable;
-        try writeSizeColored(style, buffer.writer(testing.allocator), size_str, tier.size, false);
+        try writeSizeColored(style, &buf_aw.writer, size_str, tier.size, false);
 
         var expected_buf: [64]u8 = undefined;
         const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
-        try testing.expect(std.mem.indexOf(u8, buffer.items, expected) != null);
+        try testing.expect(std.mem.indexOf(u8, buf_aw.writer.buffered(), expected) != null);
     }
 }
 
 test "writeDateColored - all truecolor age tiers" {
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = common.file.currentTimestampNanoseconds();
     const tiers = .{
         .{ .age = 30 * std.time.ns_per_s, .r = 115, .g = 230, .b = 120 }, // < 1 min
         .{ .age = 30 * NS_PER_MINUTE, .r = 100, .g = 200, .b = 170 }, // < 1 hour
@@ -1131,17 +1132,19 @@ test "writeDateColored - all truecolor age tiers" {
         .{ .age = 365 * NS_PER_DAY, .r = 140, .g = 140, .b = 155 }, // >= 6 months
     };
 
+    var buf_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buf_aw.deinit();
+
     inline for (tiers) |tier| {
-        var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-        defer buffer.deinit(testing.allocator);
-        const style = makeTestStyle(&buffer, .truecolor);
+        buf_aw.writer.end = 0;
+        const style = makeTestStyle(&buf_aw.writer, .truecolor);
 
         const mtime_ns = now_ns - tier.age;
-        try writeDateColored(style, buffer.writer(testing.allocator), "test", mtime_ns, 4);
+        try writeDateColored(style, &buf_aw.writer, "test", mtime_ns, 4);
 
         var expected_buf: [64]u8 = undefined;
         const expected = std.fmt.bufPrint(&expected_buf, "\x1b[38;2;{d};{d};{d}m", .{ tier.r, tier.g, tier.b }) catch unreachable;
-        try testing.expect(std.mem.indexOf(u8, buffer.items, expected) != null);
+        try testing.expect(std.mem.indexOf(u8, buf_aw.writer.buffered(), expected) != null);
     }
 }
 

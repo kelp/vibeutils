@@ -13,6 +13,7 @@ const LsOptions = types.LsOptions;
 /// following the project's writer-based architecture pattern.
 ///
 /// Parameters:
+/// - io: Io interface for blocking operations
 /// - dir: Directory handle to list contents from
 /// - base_path: Path string to use for recursive operations and error messages
 /// - stdout_writer: Writer for normal output (file listings)
@@ -20,7 +21,8 @@ const LsOptions = types.LsOptions;
 /// - options: ls command-line options to apply
 /// - allocator: Memory allocator for temporary data structures
 pub fn listDirectoryTest(
-    dir: std.fs.Dir,
+    io: std.Io,
+    dir: std.Io.Dir,
     base_path: []const u8,
     stdout_writer: anytype,
     stderr_writer: anytype,
@@ -43,7 +45,7 @@ pub fn listDirectoryTest(
     }
 
     // Collect and filter entries
-    var entries = try entry_collector.collectFilteredEntries(allocator, dir, test_options);
+    var entries = try entry_collector.collectFilteredEntries(io, allocator, dir, test_options);
     defer {
         entry_collector.freeEntries(entries.items, allocator);
         entries.deinit(allocator);
@@ -51,7 +53,7 @@ pub fn listDirectoryTest(
 
     // Enhance with metadata if needed
     if (entry_collector.needsMetadata(test_options)) {
-        try entry_collector.enhanceEntriesWithMetadata(allocator, entries.items, dir, test_options, null, stderr_writer);
+        try entry_collector.enhanceEntriesWithMetadata(io, allocator, entries.items, dir, test_options, null, stderr_writer);
     }
 
     // Sort entries based on options (skip if -f)
@@ -75,17 +77,16 @@ pub fn listDirectoryTest(
 
     // Handle recursive listing
     if (test_options.recursive) {
-        // For test purposes, we'll implement a simple recursive handler
         var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
         defer visited_fs_ids.deinit();
 
-        try entry_collector.processSubdirectoriesRecursively(entries.items, dir, base_path, stdout_writer, stderr_writer, test_options, allocator, style, &visited_fs_ids, null);
+        try entry_collector.processSubdirectoriesRecursively(io, entries.items, dir, base_path, stdout_writer, stderr_writer, test_options, allocator, style, &visited_fs_ids, null);
     }
 }
 
 /// Create a test entry with the given properties.
 /// Allocates memory for the entry name that must be freed with freeTestEntry().
-pub fn createTestEntry(allocator: std.mem.Allocator, name: []const u8, kind: std.fs.File.Kind) !types.Entry {
+pub fn createTestEntry(allocator: std.mem.Allocator, name: []const u8, kind: std.Io.File.Kind) !types.Entry {
     return types.Entry{
         .name = try allocator.dupe(u8, name),
         .kind = kind,
@@ -138,9 +139,9 @@ pub const TEST_TERMINAL_WIDTH = 40;
 /// Manages temporary directory, buffers, and provides convenient helpers.
 pub const LsTestEnv = struct {
     tmp_dir: std.testing.TmpDir,
-    test_dir: std.fs.Dir,
-    stdout_buffer: std.ArrayList(u8),
-    stderr_buffer: std.ArrayList(u8),
+    test_dir: std.Io.Dir,
+    stdout_aw: std.Io.Writer.Allocating,
+    stderr_aw: std.Io.Writer.Allocating,
     allocator: std.mem.Allocator,
 
     /// Initialize test environment with fresh temporary directory and buffers.
@@ -148,80 +149,91 @@ pub const LsTestEnv = struct {
         var tmp_dir = std.testing.tmpDir(.{});
         errdefer tmp_dir.cleanup();
 
-        var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-        errdefer test_dir.close();
+        var test_dir = try tmp_dir.dir.openDir(std.testing.io, ".", .{ .iterate = true });
+        errdefer test_dir.close(std.testing.io);
 
         return LsTestEnv{
             .tmp_dir = tmp_dir,
             .test_dir = test_dir,
-            .stdout_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .stderr_buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .stdout_aw = .init(allocator),
+            .stderr_aw = .init(allocator),
             .allocator = allocator,
         };
     }
 
     /// Clean up all resources including temporary directory and buffers.
     pub fn deinit(self: *LsTestEnv) void {
-        self.stdout_buffer.deinit(self.allocator);
-        self.stderr_buffer.deinit(self.allocator);
-        self.test_dir.close();
+        self.stdout_aw.deinit();
+        self.stderr_aw.deinit();
+        self.test_dir.close(std.testing.io);
         self.tmp_dir.cleanup();
+    }
+
+    /// Clear output buffers for fresh output (use before a second runLs call in the same test).
+    pub fn clearOutput(self: *LsTestEnv) void {
+        self.stdout_aw.writer.end = 0;
+        self.stderr_aw.writer.end = 0;
     }
 
     /// Create a regular file with specified name and content.
     pub fn createFile(self: *LsTestEnv, name: []const u8, content: []const u8) !void {
-        const file = try self.tmp_dir.dir.createFile(name, .{});
-        defer file.close();
-        try file.writeAll(content);
+        const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
+        defer file.close(std.testing.io);
+        try file.writeStreamingAll(std.testing.io, content);
     }
 
     /// Create a regular file with specified name and size (filled with repeating pattern).
     pub fn createFileWithSize(self: *LsTestEnv, name: []const u8, size: usize, fill_char: u8) !void {
-        const file = try self.tmp_dir.dir.createFile(name, .{});
-        defer file.close();
+        const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
+        defer file.close(std.testing.io);
 
         const data = try self.allocator.alloc(u8, size);
         defer self.allocator.free(data);
         @memset(data, fill_char);
-        try file.writeAll(data);
+        try file.writeStreamingAll(std.testing.io, data);
     }
 
     /// Create an executable file with specified permissions.
     pub fn createExecutableFile(self: *LsTestEnv, name: []const u8) !void {
-        const file = try self.tmp_dir.dir.createFile(name, .{ .mode = 0o755 });
-        file.close();
+        const file = try self.tmp_dir.dir.createFile(std.testing.io, name, .{});
+        file.close(std.testing.io);
+        // Set executable bit via fchmodat relative to the tmp dir
+        const name_z = try std.testing.allocator.dupeZ(u8, name);
+        defer std.testing.allocator.free(name_z);
+        _ = std.c.fchmodat(self.tmp_dir.dir.handle, name_z, 0o755, 0);
     }
 
     /// Create a directory with specified name.
     pub fn createDir(self: *LsTestEnv, name: []const u8) !void {
-        try self.tmp_dir.dir.makeDir(name);
+        try self.tmp_dir.dir.createDir(std.testing.io, name, .default_dir);
     }
 
     /// Create a symbolic link pointing to target.
     pub fn createSymlink(self: *LsTestEnv, target: []const u8, link_name: []const u8) !void {
-        try self.tmp_dir.dir.symLink(target, link_name, .{});
+        try self.tmp_dir.dir.symLink(std.testing.io, target, link_name, .{});
     }
 
     /// Create a directory and return an opened handle for further operations.
-    pub fn createDirAndOpen(self: *LsTestEnv, name: []const u8) !std.fs.Dir {
-        self.tmp_dir.dir.makeDir(name) catch |err| switch (err) {
+    pub fn createDirAndOpen(self: *LsTestEnv, name: []const u8) !std.Io.Dir {
+        self.tmp_dir.dir.createDir(std.testing.io, name, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => {}, // Directory already exists, that's fine
             else => return err,
         };
-        return try self.tmp_dir.dir.openDir(name, .{});
+        return try self.tmp_dir.dir.openDir(std.testing.io, name, .{});
     }
 
     /// Run ls with specified options and capture output to buffers.
     pub fn runLs(self: *LsTestEnv, options: LsOptions) !void {
         // Clear buffers for fresh output
-        self.stdout_buffer.clearRetainingCapacity();
-        self.stderr_buffer.clearRetainingCapacity();
+        self.stdout_aw.writer.end = 0;
+        self.stderr_aw.writer.end = 0;
 
         try listDirectoryTest(
+            std.testing.io,
             self.test_dir,
             ".",
-            self.stdout_buffer.writer(self.allocator),
-            self.stderr_buffer.writer(self.allocator),
+            &self.stdout_aw.writer,
+            &self.stderr_aw.writer,
             options,
             self.allocator,
         );
@@ -229,12 +241,12 @@ pub const LsTestEnv = struct {
 
     /// Get stdout output as string.
     pub fn getStdout(self: *LsTestEnv) []const u8 {
-        return self.stdout_buffer.items;
+        return self.stdout_aw.writer.buffered();
     }
 
     /// Get stderr output as string.
     pub fn getStderr(self: *LsTestEnv) []const u8 {
-        return self.stderr_buffer.items;
+        return self.stderr_aw.writer.buffered();
     }
 };
 
@@ -242,7 +254,7 @@ pub const LsTestEnv = struct {
 pub const LsAssertions = struct {
     /// Assert that stdout contains the specified filename.
     pub fn expectContainsFile(stdout: []const u8, filename: []const u8) !void {
-        if (std.mem.indexOf(u8, stdout, filename) == null) {
+        if (std.mem.find(u8, stdout, filename) == null) {
             std.debug.print("Expected to find '{s}' in output:\n{s}\n", .{ filename, stdout });
             return error.FileNotFound;
         }
@@ -250,7 +262,7 @@ pub const LsAssertions = struct {
 
     /// Assert that stdout does not contain the specified filename.
     pub fn expectNotContainsFile(stdout: []const u8, filename: []const u8) !void {
-        if (std.mem.indexOf(u8, stdout, filename) != null) {
+        if (std.mem.find(u8, stdout, filename) != null) {
             std.debug.print("Expected NOT to find '{s}' in output:\n{s}\n", .{ filename, stdout });
             return error.UnexpectedFileFound;
         }
@@ -258,7 +270,7 @@ pub const LsAssertions = struct {
 
     /// Assert that stdout contains the specified permission string.
     pub fn expectContainsPermissions(stdout: []const u8, perms: []const u8) !void {
-        if (std.mem.indexOf(u8, stdout, perms) == null) {
+        if (std.mem.find(u8, stdout, perms) == null) {
             std.debug.print("Expected to find permissions '{s}' in output:\n{s}\n", .{ perms, stdout });
             return error.PermissionsNotFound;
         }
@@ -299,7 +311,7 @@ pub const LsAssertions = struct {
         const expected_format = try std.fmt.allocPrint(std.testing.allocator, "{s} -> {s}", .{ link_name, target });
         defer std.testing.allocator.free(expected_format);
 
-        if (std.mem.indexOf(u8, stdout, expected_format) == null) {
+        if (std.mem.find(u8, stdout, expected_format) == null) {
             std.debug.print("Expected symlink format '{s}' in output:\n{s}\n", .{ expected_format, stdout });
             return error.SymlinkFormatNotFound;
         }
@@ -307,7 +319,7 @@ pub const LsAssertions = struct {
 
     /// Assert that output contains file type indicators.
     pub fn expectFileTypeIndicator(stdout: []const u8, name_with_indicator: []const u8) !void {
-        if (std.mem.indexOf(u8, stdout, name_with_indicator) == null) {
+        if (std.mem.find(u8, stdout, name_with_indicator) == null) {
             std.debug.print("Expected file type indicator '{s}' in output:\n{s}\n", .{ name_with_indicator, stdout });
             return error.FileTypeIndicatorNotFound;
         }
@@ -315,7 +327,7 @@ pub const LsAssertions = struct {
 
     /// Assert that output contains directory headers for recursive listing.
     pub fn expectDirectoryHeader(stdout: []const u8, header: []const u8) !void {
-        if (std.mem.indexOf(u8, stdout, header) == null) {
+        if (std.mem.find(u8, stdout, header) == null) {
             std.debug.print("Expected directory header '{s}' in output:\n{s}\n", .{ header, stdout });
             return error.DirectoryHeaderNotFound;
         }
@@ -358,7 +370,7 @@ pub const LsAssertions = struct {
 
     /// Assert that output contains a specific size format (like "2.0K" for human readable).
     pub fn expectHumanReadableSize(stdout: []const u8, expected_size: []const u8) !void {
-        if (std.mem.indexOf(u8, stdout, expected_size) == null) {
+        if (std.mem.find(u8, stdout, expected_size) == null) {
             std.debug.print("Expected human readable size '{s}' in output:\n{s}\n", .{ expected_size, stdout });
             return error.HumanReadableSizeNotFound;
         }
@@ -399,7 +411,7 @@ test "test_utils - createTestEntry" {
     defer freeTestEntry(entry, testing.allocator);
 
     try testing.expectEqualStrings("test.txt", entry.name);
-    try testing.expectEqual(std.fs.File.Kind.file, entry.kind);
+    try testing.expectEqual(std.Io.File.Kind.file, entry.kind);
 }
 
 test "test_utils - createTestEntries" {

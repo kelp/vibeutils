@@ -8,8 +8,9 @@ const LsOptions = types.LsOptions;
 
 /// Collect directory entries with filtering
 pub fn collectFilteredEntries(
+    io: std.Io,
     allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     options: LsOptions,
 ) anyerror!std.ArrayList(Entry) {
     var entries = try std.ArrayList(Entry).initCapacity(allocator, 0);
@@ -52,7 +53,7 @@ pub fn collectFilteredEntries(
 
     // Collect entries
     var iter = dir.iterate();
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         // Apply filtering
         if (!filter.shouldInclude(entry.name)) {
             continue;
@@ -92,10 +93,10 @@ pub fn needsMetadata(options: LsOptions) bool {
 }
 
 /// Simplified symlink reading that trusts OS readLink syscall completely
-fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, stderr_writer: anytype) !?[]u8 {
-    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+fn readSymlinkSafely(io: std.Io, allocator: std.mem.Allocator, dir: std.Io.Dir, name: []const u8, stderr_writer: anytype) !?[]u8 {
+    var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
-    const target = dir.readLink(name, &target_buf) catch |err| switch (err) {
+    const target_len = dir.readLink(io, name, &target_buf) catch |err| switch (err) {
         error.NotLink => return null,
         // For all other errors, use OS error message directly - no custom categories
         else => {
@@ -105,14 +106,15 @@ fn readSymlinkSafely(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []cons
     };
 
     // Trust OS completely - no post-readLink validation needed
-    return try allocator.dupe(u8, target);
+    return try allocator.dupe(u8, target_buf[0..target_len]);
 }
 
 /// Enhance entries with stat info, symlink targets, and git status
 pub fn enhanceEntriesWithMetadata(
+    io: std.Io,
     allocator: std.mem.Allocator,
     entries: []Entry,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     options: LsOptions,
     git_context: ?*types.GitContext,
     stderr_writer: anytype,
@@ -168,22 +170,23 @@ pub fn enhanceEntriesWithMetadata(
     // Batch process symlink operations
     if (symlink_indices.items.len > 0) {
         for (symlink_indices.items) |i| {
-            entries[i].symlink_target = readSymlinkSafely(allocator, dir, entries[i].name, stderr_writer) catch null;
+            entries[i].symlink_target = readSymlinkSafely(io, allocator, dir, entries[i].name, stderr_writer) catch null;
         }
     }
 
     // Batch process git operations
     if (needs_git and git_context != null) {
         for (git_indices.items) |i| {
-            entries[i].git_status = git_context.?.getFileStatus(entries[i].name) orelse .not_in_repo;
+            entries[i].git_status = git_context.?.getFileStatus(io, entries[i].name) orelse .not_in_repo;
         }
     }
 }
 
 /// Process subdirectories recursively
 pub fn processSubdirectoriesRecursively(
+    io: std.Io,
     entries: []const Entry,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     base_path: []const u8,
     writer: anytype,
     stderr_writer: anytype,
@@ -216,11 +219,11 @@ pub fn processSubdirectoriesRecursively(
         };
 
         // Open the subdirectory relative to the current directory
-        var sub_dir = dir.openDir(subdir.name, .{ .iterate = true }) catch |err| {
+        var sub_dir = dir.openDir(io, subdir.name, .{ .iterate = true }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {}", .{ subdir.path, err });
             continue;
         };
-        defer sub_dir.close();
+        defer sub_dir.close(io);
 
         // Atomically check for cycles and mark as visited (TOCTOU-safe)
         const is_cycle = cycle_detector.checkAndMarkVisited(sub_dir) catch |err| {
@@ -235,7 +238,7 @@ pub fn processSubdirectoriesRecursively(
 
         // Recurse using the recursive module implementation
         const recursive = @import("recursive.zig");
-        try recursive.recurseIntoSubdirectory(sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context);
+        try recursive.recurseIntoSubdirectory(io, sub_dir, subdir.path, writer, stderr_writer, options, allocator, style, visited_fs_ids, git_context);
     }
 }
 
@@ -295,16 +298,16 @@ test "entry_collector - collectFilteredEntries basic" {
     defer tmp_dir.cleanup();
 
     // Create test files
-    const file1 = try tmp_dir.dir.createFile("visible.txt", .{});
-    file1.close();
-    const file2 = try tmp_dir.dir.createFile(".hidden", .{});
-    file2.close();
+    const file1 = try tmp_dir.dir.createFile(testing.io, "visible.txt", .{});
+    file1.close(testing.io);
+    const file2 = try tmp_dir.dir.createFile(testing.io, ".hidden", .{});
+    file2.close(testing.io);
 
     // Test without showing hidden files
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{});
+    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{});
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);
@@ -320,16 +323,16 @@ test "entry_collector - collectFilteredEntries with all option" {
     defer tmp_dir.cleanup();
 
     // Create test files
-    const file1 = try tmp_dir.dir.createFile("visible.txt", .{});
-    file1.close();
-    const file2 = try tmp_dir.dir.createFile(".hidden", .{});
-    file2.close();
+    const file1 = try tmp_dir.dir.createFile(testing.io, "visible.txt", .{});
+    file1.close(testing.io);
+    const file2 = try tmp_dir.dir.createFile(testing.io, ".hidden", .{});
+    file2.close(testing.io);
 
     // Test with showing all files
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{ .all = true });
+    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{ .all = true });
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);
@@ -353,17 +356,17 @@ test "entry_collector - hide_backups filters tilde files" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const f1 = try tmp_dir.dir.createFile("file.txt", .{});
-    f1.close();
-    const f2 = try tmp_dir.dir.createFile("file.txt~", .{});
-    f2.close();
-    const f3 = try tmp_dir.dir.createFile("backup~", .{});
-    f3.close();
+    const f1 = try tmp_dir.dir.createFile(testing.io, "file.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp_dir.dir.createFile(testing.io, "file.txt~", .{});
+    f2.close(testing.io);
+    const f3 = try tmp_dir.dir.createFile(testing.io, "backup~", .{});
+    f3.close(testing.io);
 
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{ .hide_backups = true });
+    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{ .hide_backups = true });
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);
@@ -378,19 +381,19 @@ test "entry_collector - ignore_pattern filters matching files" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const f1 = try tmp_dir.dir.createFile("readme.md", .{});
-    f1.close();
-    const f2 = try tmp_dir.dir.createFile("main.c", .{});
-    f2.close();
-    const f3 = try tmp_dir.dir.createFile("test.c", .{});
-    f3.close();
-    const f4 = try tmp_dir.dir.createFile("notes.txt", .{});
-    f4.close();
+    const f1 = try tmp_dir.dir.createFile(testing.io, "readme.md", .{});
+    f1.close(testing.io);
+    const f2 = try tmp_dir.dir.createFile(testing.io, "main.c", .{});
+    f2.close(testing.io);
+    const f3 = try tmp_dir.dir.createFile(testing.io, "test.c", .{});
+    f3.close(testing.io);
+    const f4 = try tmp_dir.dir.createFile(testing.io, "notes.txt", .{});
+    f4.close(testing.io);
 
-    var test_dir = try tmp_dir.dir.openDir(".", .{ .iterate = true });
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{ .iterate = true });
+    defer test_dir.close(testing.io);
 
-    var entries = try collectFilteredEntries(testing.allocator, test_dir, LsOptions{ .ignore_pattern = "*.c" });
+    var entries = try collectFilteredEntries(testing.io, testing.allocator, test_dir, LsOptions{ .ignore_pattern = "*.c" });
     defer {
         freeEntries(entries.items, testing.allocator);
         entries.deinit(testing.allocator);

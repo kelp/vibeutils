@@ -11,11 +11,9 @@ const builtin = @import("builtin");
 ///
 /// Returns null if the variable is not set.
 pub fn getEnv(key: []const u8) ?[]const u8 {
-    if (builtin.is_test) {
-        const result = std.testing.environ.getPosix(key);
-        if (result) |val| return val;
-        return null;
-    } else {
+    // When libc is linked, use C getenv so that C setenv/unsetenv calls
+    // (e.g., in tests that manipulate the process environment) are visible.
+    if (builtin.link_libc) {
         var key_buf: [256]u8 = undefined;
         if (key.len >= key_buf.len) return null;
         @memcpy(key_buf[0..key.len], key);
@@ -23,6 +21,13 @@ pub fn getEnv(key: []const u8) ?[]const u8 {
         const ptr = std.c.getenv(key_buf[0..key.len :0]) orelse return null;
         return std.mem.span(ptr);
     }
+    // Without libc (common-only tests), use the Zig testing environ.
+    if (builtin.is_test) {
+        const result = std.testing.environ.getPosix(key);
+        if (result) |val| return val;
+        return null;
+    }
+    return null;
 }
 
 /// Check if a file descriptor refers to a terminal.

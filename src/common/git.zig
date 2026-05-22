@@ -110,7 +110,7 @@ pub const GitRepo = struct {
         defer self.allocator.free(result.stderr);
 
         switch (result.term) {
-            .Exited => |code| if (code != 0) return,
+            .exited => |code| if (code != 0) return,
             else => return,
         }
 

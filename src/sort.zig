@@ -54,7 +54,7 @@ const CheckMode = enum {
 /// Parsed command-line options for sort
 const SortOptions = struct {
     global_flags: SortFlags = .{},
-    keys: std.ArrayListUnmanaged(KeyDef) = .{},
+    keys: std.ArrayListUnmanaged(KeyDef) = .empty,
     field_separator: ?u8 = null,
     unique: bool = false,
     stable: bool = false,
@@ -72,7 +72,7 @@ const SortOptions = struct {
     random_source: ?[]const u8 = null,
     help: bool = false,
     version: bool = false,
-    files: std.ArrayListUnmanaged([]const u8) = .{},
+    files: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn deinit(self: *SortOptions, allocator: Allocator) void {
         self.keys.deinit(allocator);
@@ -405,32 +405,12 @@ fn applyKeyFlags(flags: *SortFlags, opts: []const u8) void {
 }
 
 /// Main entry point
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runSort(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    std.process.exit(exit_code);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runSort);
 }
 
 /// Public entry point for the sort utility
-pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     var opts = (try parseArgs(allocator, args, stderr_writer)) orelse
         return @intFromEnum(common.ExitCode.misuse);
     defer opts.deinit(allocator);
@@ -453,14 +433,16 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
         }
         const is_stdin = std.mem.eql(u8, f0f_path, "-");
         const f0f_file = if (is_stdin)
-            std.fs.File.stdin()
+            std.Io.File.stdin()
         else
-            std.fs.cwd().openFile(f0f_path, .{}) catch |err| {
+            std.Io.Dir.cwd().openFile(io, f0f_path, .{}) catch |err| {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot open '{s}' for reading: {s}", .{ f0f_path, common.posixErrorString(err) });
                 return @intFromEnum(common.ExitCode.misuse);
             };
-        defer if (!is_stdin) f0f_file.close();
-        const content = f0f_file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| {
+        defer if (!is_stdin) f0f_file.close(io);
+        var f0f_buf: [8192]u8 = undefined;
+        var f0f_reader = f0f_file.readerStreaming(io, &f0f_buf);
+        const content = f0f_reader.interface.allocRemaining(allocator, .unlimited) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read '{s}': {s}", .{ f0f_path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
@@ -481,29 +463,29 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // For merge mode, read each file separately and merge
     if (opts.merge_only and opts.files.items.len > 1) {
-        var per_file_lines = std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)){};
+        var per_file_lines: std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
         defer {
             for (per_file_lines.items) |*fl| fl.deinit(allocator);
             per_file_lines.deinit(allocator);
         }
-        var merge_buffers = std.ArrayListUnmanaged([]const u8){};
+        var merge_buffers : std.ArrayListUnmanaged([]const u8) = .empty;
         defer {
             for (merge_buffers.items) |buf| allocator.free(buf);
             merge_buffers.deinit(allocator);
         }
 
         for (opts.files.items) |file_path| {
-            var file_lines = std.ArrayListUnmanaged([]const u8){};
+            var file_lines : std.ArrayListUnmanaged([]const u8) = .empty;
             if (std.mem.eql(u8, file_path, "-")) {
-                const stdin_file = std.fs.File.stdin();
-                try readLines(allocator, stdin_file, &file_lines, delimiter, &merge_buffers);
+                const stdin_file = std.Io.File.stdin();
+                try readLines(allocator, io, stdin_file, &file_lines, delimiter, &merge_buffers);
             } else {
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
-                defer file.close();
-                try readLines(allocator, file, &file_lines, delimiter, &merge_buffers);
+                defer file.close(io);
+                try readLines(allocator, io, file, &file_lines, delimiter, &merge_buffers);
             }
             try per_file_lines.append(allocator, file_lines);
         }
@@ -520,13 +502,13 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
         // Write output
         if (opts.output_file) |out_path| {
-            const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
+            const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
                 return @intFromEnum(common.ExitCode.misuse);
             };
-            defer out_file.close();
+            defer out_file.close(io);
             var out_buffer: [8192]u8 = undefined;
-            var file_writer = out_file.writer(&out_buffer);
+            var file_writer = out_file.writerStreaming(io, &out_buffer);
             const out_writer = &file_writer.interface;
             try writeLines(out_writer, merged.items, &opts, delimiter);
             out_writer.flush() catch {};
@@ -538,9 +520,9 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
     }
 
     // Read all lines from files or stdin
-    var lines = std.ArrayListUnmanaged([]const u8){};
+    var lines : std.ArrayListUnmanaged([]const u8) = .empty;
     defer lines.deinit(allocator);
-    var buffers = std.ArrayListUnmanaged([]const u8){};
+    var buffers: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (buffers.items) |buf| allocator.free(buf);
         buffers.deinit(allocator);
@@ -548,20 +530,20 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     if (opts.files.items.len == 0) {
         // Read from stdin
-        const stdin_file = std.fs.File.stdin();
-        try readLines(allocator, stdin_file, &lines, delimiter, &buffers);
+        const stdin_file = std.Io.File.stdin();
+        try readLines(allocator, io, stdin_file, &lines, delimiter, &buffers);
     } else {
         for (opts.files.items) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
-                const stdin_file = std.fs.File.stdin();
-                try readLines(allocator, stdin_file, &lines, delimiter, &buffers);
+                const stdin_file = std.Io.File.stdin();
+                try readLines(allocator, io, stdin_file, &lines, delimiter, &buffers);
             } else {
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
-                defer file.close();
-                try readLines(allocator, file, &lines, delimiter, &buffers);
+                defer file.close(io);
+                try readLines(allocator, io, file, &lines, delimiter, &buffers);
             }
         }
     }
@@ -576,13 +558,13 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
 
     // Determine output target
     if (opts.output_file) |out_path| {
-        const out_file = std.fs.cwd().createFile(out_path, .{ .truncate = true }) catch |err| {
+        const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
             return @intFromEnum(common.ExitCode.misuse);
         };
-        defer out_file.close();
+        defer out_file.close(io);
         var out_buffer: [8192]u8 = undefined;
-        var file_writer = out_file.writer(&out_buffer);
+        var file_writer = out_file.writerStreaming(io, &out_buffer);
         const out_writer = &file_writer.interface;
         try writeLines(out_writer, lines.items, &opts, delimiter);
         out_writer.flush() catch {};
@@ -596,8 +578,10 @@ pub fn runSort(allocator: Allocator, args: []const []const u8, stdout_writer: an
 /// Read lines from a file into the lines list.
 /// The file content is kept alive via the buffers list so that line
 /// slices remain valid until the caller frees the buffers.
-fn readLines(allocator: Allocator, file: std.fs.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8, buffers: *std.ArrayListUnmanaged([]const u8)) !void {
-    const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| switch (err) {
+fn readLines(allocator: Allocator, io: std.Io, file: std.Io.File, lines: *std.ArrayListUnmanaged([]const u8), delimiter: u8, buffers: *std.ArrayListUnmanaged([]const u8)) !void {
+    var file_buf: [8192]u8 = undefined;
+    var file_reader = file.readerStreaming(io, &file_buf);
+    const content = file_reader.interface.allocRemaining(allocator, .unlimited) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return,
     };
@@ -1288,7 +1272,7 @@ fn parseBufferSize(s: []const u8) ?usize {
 
 /// Merge pre-sorted line lists using a simple merge
 fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx: SortContext) !std.ArrayListUnmanaged([]const u8) {
-    var result = std.ArrayListUnmanaged([]const u8){};
+    var result : std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer result.deinit(allocator);
 
     // Track current position in each file's lines
@@ -1444,43 +1428,43 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "sort --help shows help message" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runSort(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runSort(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: sort") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "Usage: sort") != null);
 }
 
 test "sort --version shows version" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runSort(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runSort(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "sort") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "sort") != null);
 }
 
 // -V test removed: -V is now version-sort (not --version).
 // The --version test above covers version output.
 
 test "sort unknown flag returns misuse" {
-    var stderr_buf = std.ArrayListUnmanaged(u8){};
-    defer stderr_buf.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runSort(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const result = try runSort(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
 }
 
 test "sort invalid short flag returns misuse" {
-    var stderr_buf = std.ArrayListUnmanaged(u8){};
-    defer stderr_buf.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-x"};
-    const result = try runSort(testing.allocator, &args, common.null_writer, stderr_buf.writer(testing.allocator));
+    const result = try runSort(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
 }
 
@@ -1804,28 +1788,29 @@ test "sort -R produces all input lines" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // Create a temp file with test data
     const tmp_path = "/tmp/sort_test_random.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("apple\nbanana\ncherry\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{ "-R", tmp_path };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // All three lines must appear in output
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "apple") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "banana") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "cherry") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "apple") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "banana") != null);
+    try testing.expect(std.mem.find(u8, buffer_aw.writer.buffered(), "cherry") != null);
 }
 
 test "sort -m merges pre-sorted files" {
@@ -1833,35 +1818,36 @@ test "sort -m merges pre-sorted files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     // Create two pre-sorted temp files
     const tmp1 = "/tmp/sort_test_merge1.txt";
     const tmp2 = "/tmp/sort_test_merge2.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp1, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp1, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("a\nc\ne\n");
         try writer.interface.flush();
     }
     {
-        const file = try std.fs.cwd().createFile(tmp2, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp2, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("b\nd\nf\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp1) catch {};
-    defer std.fs.cwd().deleteFile(tmp2) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp1) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp2) catch {};
 
     const args = [_][]const u8{ "-m", tmp1, tmp2 };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
-    try testing.expectEqualStrings("a\nb\nc\nd\ne\nf\n", buffer.items);
+    try testing.expectEqualStrings("a\nb\nc\nd\ne\nf\n", buffer_aw.writer.buffered());
 }
 
 test "sort -M sorts by month name" {
@@ -1869,24 +1855,25 @@ test "sort -M sorts by month name" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const tmp_path = "/tmp/sort_test_month.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("MAR\nJAN\nFEB\nDEC\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{ "-M", tmp_path };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
-    try testing.expectEqualStrings("JAN\nFEB\nMAR\nDEC\n", buffer.items);
+    try testing.expectEqualStrings("JAN\nFEB\nMAR\nDEC\n", buffer_aw.writer.buffered());
 }
 
 // ============================================================================
@@ -1993,24 +1980,25 @@ test "runSort basic alphabetical sort" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const tmp_path = "/tmp/sort_test_basic_alpha.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("b\na\nc\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{tmp_path};
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
-    try testing.expectEqualStrings("a\nb\nc\n", buffer.items);
+    try testing.expectEqualStrings("a\nb\nc\n", buffer_aw.writer.buffered());
 }
 
 test "readLines does not leak the content buffer" {
@@ -2019,28 +2007,28 @@ test "readLines does not leak the content buffer" {
     // Create a temporary file with known content
     const tmp_path = "/tmp/sort_test_readlines_leak.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("alpha\nbeta\ngamma\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     // Open the file and call readLines with testing.allocator
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(testing.io, tmp_path, .{});
+    defer file.close(testing.io);
 
-    var lines = std.ArrayListUnmanaged([]const u8){};
+    var lines : std.ArrayListUnmanaged([]const u8) = .empty;
     defer lines.deinit(allocator);
-    var bufs = std.ArrayListUnmanaged([]const u8){};
+    var bufs : std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (bufs.items) |buf| allocator.free(buf);
         bufs.deinit(allocator);
     }
 
-    try readLines(allocator, file, &lines, '\n', &bufs);
+    try readLines(allocator, testing.io, file, &lines, '\n', &bufs);
 
     // Verify readLines produced the expected lines
     try testing.expectEqual(@as(usize, 3), lines.items.len);
@@ -2064,26 +2052,27 @@ test "sort -V should version-sort, not print version" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const tmp_path = "/tmp/sort_test_version_sort.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("v1.10\nv1.9\nv1.2\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{ "-V", tmp_path };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // GNU sort -V produces version-sorted output: v1.2, v1.9, v1.10
     // Currently, our -V prints version info and ignores the file.
-    try testing.expectEqualStrings("v1.2\nv1.9\nv1.10\n", buffer.items);
+    try testing.expectEqualStrings("v1.2\nv1.9\nv1.10\n", buffer_aw.writer.buffered());
 }
 
 // F25: sort -h should sort by suffix rank, not raw byte value.
@@ -2095,26 +2084,27 @@ test "sort -h orders by suffix rank not raw byte value" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const tmp_path = "/tmp/sort_test_human_suffix.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         try writer.interface.writeAll("1M\n12345K\n1G\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{ "-h", tmp_path };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // GNU sort -h: 12345K comes before 1M because K-suffix < M-suffix.
     // Our implementation produces "1M\n12345K\n1G\n" (wrong: compares byte values).
-    try testing.expectEqualStrings("12345K\n1M\n1G\n", buffer.items);
+    try testing.expectEqualStrings("12345K\n1M\n1G\n", buffer_aw.writer.buffered());
 }
 
 // F25: direct unit test of compareHumanNumeric
@@ -2133,29 +2123,30 @@ test "sort -k2 without -s uses full-line tiebreaker" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const tmp_path = "/tmp/sort_test_tiebreak.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         // Input order: b before a. Key field (field 2) is identical.
         try writer.interface.writeAll("b 1\na 1\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{ "-k2,2", tmp_path };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // GNU sort without -s: when keys tie, full-line byte comparison
     // is used as last-resort. "a 1" < "b 1" so "a 1" comes first.
     // Our implementation returns false (equal) and preserves input
     // order, so it produces "b 1\na 1\n" — same as -s behavior.
-    try testing.expectEqualStrings("a 1\nb 1\n", buffer.items);
+    try testing.expectEqualStrings("a 1\nb 1\n", buffer_aw.writer.buffered());
 }
 
 test "sort -k2 -s preserves input order on tie" {
@@ -2163,25 +2154,26 @@ test "sort -k2 -s preserves input order on tie" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var buffer = std.ArrayListUnmanaged(u8){};
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
 
     const tmp_path = "/tmp/sort_test_stable.txt";
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().createFile(testing.io, tmp_path, .{ .truncate = true });
+        defer file.close(testing.io);
         var write_buf: [4096]u8 = undefined;
-        var writer = file.writer(&write_buf);
+        var writer = file.writerStreaming(testing.io, &write_buf);
         // Input order: b before a. Key field (field 2) is identical.
         try writer.interface.writeAll("b 1\na 1\n");
         try writer.interface.flush();
     }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteFile(testing.io, tmp_path) catch {};
 
     const args = [_][]const u8{ "-k2,2", "-s", tmp_path };
-    const result = try runSort(allocator, &args, buffer.writer(allocator), common.null_writer);
+    const result = try runSort(allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // With -s (stable), input order is preserved when keys tie.
     // "b 1" appeared before "a 1" in input, so it stays first.
-    try testing.expectEqualStrings("b 1\na 1\n", buffer.items);
+    try testing.expectEqualStrings("b 1\na 1\n", buffer_aw.writer.buffered());
 }
