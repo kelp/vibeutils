@@ -305,8 +305,14 @@ fn generateTemp(allocator: Allocator, io: std.Io, template: []const u8, x_count:
             };
             return candidate;
         } else {
-            // Try to create file atomically with exclusive flag
-            const file = std.Io.Dir.cwd().createFile(io, candidate, .{ .exclusive = true, .truncate = false }) catch |err| {
+            // Try to create file atomically with exclusive flag.
+            // POSIX requires mktemp to create files with mode 0600 so the
+            // tmp file is not world-readable; the 0.16 default is 0o666.
+            const file = std.Io.Dir.cwd().createFile(io, candidate, .{
+                .exclusive = true,
+                .truncate = false,
+                .permissions = std.Io.File.Permissions.fromMode(0o600),
+            }) catch |err| {
                 allocator.free(candidate);
                 switch (err) {
                     error.PathAlreadyExists => continue,

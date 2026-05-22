@@ -311,21 +311,43 @@ pub fn processInput(reader: *std.Io.Reader, writer: *std.Io.Writer, options: Hea
         const delimiter = options.line_delimiter;
         var lines_written: u64 = 0;
         while (lines_written < options.line_count) {
-            const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
-                error.EndOfStream => {
-                    // Output any remaining partial line (no trailing delimiter)
-                    const remaining = reader.buffered();
-                    if (remaining.len > 0) {
-                        try writer.writeAll(remaining);
-                        reader.toss(remaining.len);
-                    }
-                    break;
-                },
-                else => |e| return e,
-            };
-            try writer.writeAll(line);
-            lines_written += 1;
+            const got_delim = streamOneLine(reader, writer, delimiter) catch |err| return err;
+            if (got_delim) {
+                lines_written += 1;
+            } else {
+                break; // EOF
+            }
         }
+    }
+}
+
+/// Read one delimiter-terminated line from `reader` and write it to `writer`.
+/// Returns true if a delimiter byte was consumed; false on EOF (no delimiter).
+/// Handles lines longer than the reader's buffer by streaming through in
+/// chunks rather than failing with `error.StreamTooLong`.
+fn streamOneLine(reader: *std.Io.Reader, writer: *std.Io.Writer, delimiter: u8) !bool {
+    while (true) {
+        const line = reader.takeDelimiterInclusive(delimiter) catch |err| switch (err) {
+            error.EndOfStream => {
+                const remaining = reader.buffered();
+                if (remaining.len > 0) {
+                    try writer.writeAll(remaining);
+                    reader.toss(remaining.len);
+                }
+                return false;
+            },
+            error.StreamTooLong => {
+                // Line longer than read buffer; flush the buffered prefix
+                // and keep looking for the delimiter on the next refill.
+                const chunk = reader.buffered();
+                try writer.writeAll(chunk);
+                reader.toss(chunk.len);
+                continue;
+            },
+            else => |e| return e,
+        };
+        try writer.writeAll(line);
+        return true;
     }
 }
 
@@ -510,6 +532,41 @@ test "head with -c 0 outputs nothing" {
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     try testing.expectEqualStrings("", stdout_aw.writer.buffered());
+}
+
+test "head handles lines longer than read buffer (regression: StreamTooLong)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Build a file whose first line is 9000 bytes long (> default 8192
+    // read buffer). takeDelimiterInclusive returns StreamTooLong when a
+    // line doesn't fit in the buffer; head must chunk past that.
+    const long_line_len: usize = 9000;
+    const content = blk: {
+        var buf = try testing.allocator.alloc(u8, long_line_len + 1 + 6);
+        @memset(buf[0..long_line_len], 'A');
+        buf[long_line_len] = '\n';
+        @memcpy(buf[long_line_len + 1 ..][0..6], "next\n\n");
+        break :blk buf;
+    };
+    defer testing.allocator.free(content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "long.txt", content);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "long.txt", testing.allocator);
+    defer testing.allocator.free(file_path);
+
+    const args = [_][]const u8{ "-n", "1", file_path };
+    const exit_code = try runHead(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    try testing.expectEqual(long_line_len + 1, out.len);
+    for (out[0..long_line_len]) |c| try testing.expectEqual(@as(u8, 'A'), c);
+    try testing.expectEqual(@as(u8, '\n'), out[long_line_len]);
 }
 
 test "head processes lines efficiently" {
