@@ -333,28 +333,12 @@ fn chownSingle(io: std.Io, allocator: std.mem.Allocator, path: []const u8, owner
     }
 }
 
-/// Get the device ID for a path
-fn getDeviceId(path: []const u8, allocator: std.mem.Allocator) !u64 {
-    const path_c = try allocator.dupeZ(u8, path);
-    defer allocator.free(path_c);
-    if (@import("builtin").os.tag == .linux) {
-        const linux = std.os.linux;
-        var sx: linux.Statx = undefined;
-        const rc = linux.statx(
-            std.Io.Dir.cwd().handle,
-            path_c,
-            0,
-            linux.STATX.BASIC_STATS,
-            &sx,
-        );
-        if (linux.errno(rc) != .SUCCESS) return error.StatFailed;
-        return @intCast(sx.dev_major * 256 + sx.dev_minor);
-    } else {
-        var stat_buf: std.c.Stat = undefined;
-        const result = std.c.stat(path_c.ptr, &stat_buf);
-        if (result != 0) return error.StatFailed;
-        return @intCast(stat_buf.dev);
-    }
+/// Get the device ID for a path. Uses the cross-platform
+/// common.file.FileInfo.stat which handles Linux (statx) and
+/// macOS/BSD (fstat via the file descriptor) uniformly.
+fn getDeviceId(io: std.Io, path: []const u8) !u64 {
+    const info = common.file.FileInfo.stat(io, path) catch return error.StatFailed;
+    return info.dev;
 }
 
 /// Recursively change ownership of directory and contents
@@ -384,7 +368,7 @@ fn chownRecursive(
 
     // -x: skip entries on different filesystems
     if (options.no_cross_device) {
-        const dev = getDeviceId(path, allocator) catch 0;
+        const dev = getDeviceId(io, path) catch 0;
         if (root_dev) |rd| {
             if (dev != rd) return;
         }
@@ -392,7 +376,7 @@ fn chownRecursive(
 
     // Determine effective root_dev for children
     const effective_root_dev: ?u64 = if (options.no_cross_device)
-        root_dev orelse (getDeviceId(path, allocator) catch null)
+        root_dev orelse (getDeviceId(io, path) catch null)
     else
         null;
 

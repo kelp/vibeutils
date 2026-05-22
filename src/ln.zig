@@ -434,7 +434,8 @@ fn createSingleLink(allocator: std.mem.Allocator, io: std.Io, target: []const u8
 
     // Create backup of destination if it exists and backup mode is enabled
     if (link_exists and options.backup) {
-        const suffix = "~";
+        // GNU ln honors SIMPLE_BACKUP_SUFFIX; default '~'.
+        const suffix = common.env.getEnv("SIMPLE_BACKUP_SUFFIX") orelse "~";
         const backup_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ link_name, suffix });
         defer allocator.free(backup_name);
         const cwd = std.Io.Dir.cwd();

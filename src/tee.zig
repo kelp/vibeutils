@@ -145,6 +145,25 @@ fn runTeeWithInput(
         }
     }
 
+    // Flush stdout: buffered writes (e.g. to /dev/full) only surface
+    // their underlying error on flush, not on writeAll. GNU tee always
+    // reports a diagnostic on stdout failure, even without -p.
+    if (!stdout_broken) {
+        stdout_writer.flush() catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
+            has_error = true;
+        };
+    }
+
+    // Flush per-file writers for the same reason.
+    for (multi.files, multi.is_stdout, args.positionals) |*file_entry, is_dash, name| {
+        if (is_dash) continue;
+        file_entry.writer.interface.flush() catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, common.posixErrorString(err) });
+            has_error = true;
+        };
+    }
+
     return @intFromEnum(if (has_error) common.ExitCode.general_error else common.ExitCode.success);
 }
 

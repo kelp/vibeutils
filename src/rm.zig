@@ -308,7 +308,7 @@ fn removeDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8, stdou
 
     // Determine root device ID for -x (don't cross mount points)
     const root_dev: ?u64 = if (options.no_cross_device)
-        getDeviceId(dir_path, allocator) catch null
+        getDeviceId(io, dir_path) catch null
     else
         null;
 
@@ -316,25 +316,12 @@ fn removeDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8, stdou
     try removeDirectoryRecursive(allocator, io, dir_path, stdout_writer, stderr_writer, options, root_dev);
 }
 
-/// Get the device ID for a path using statx (Linux) or fstatat (macOS/BSD).
-fn getDeviceId(path: []const u8, allocator: Allocator) !u64 {
-    const path_c = try allocator.dupeZ(u8, path);
-    defer allocator.free(path_c);
-    if (builtin.os.tag == .linux) {
-        const linux = std.os.linux;
-        var stx: linux.Statx = undefined;
-        const rc = linux.statx(std.c.AT.FDCWD, path_c.ptr, 0, linux.STATX.BASIC_STATS, &stx);
-        switch (linux.errno(rc)) {
-            .SUCCESS => {},
-            else => return error.StatFailed,
-        }
-        return (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
-    } else {
-        var stat_buf: std.c.Stat = undefined;
-        const result = std.c.fstatat(std.Io.Dir.cwd().handle, path_c.ptr, &stat_buf, 0);
-        if (result != 0) return error.StatFailed;
-        return @intCast(stat_buf.dev);
-    }
+/// Get the device ID for a path. Uses the cross-platform
+/// common.file.FileInfo.stat which handles Linux (statx) and
+/// macOS/BSD (fstat via the file descriptor) uniformly.
+fn getDeviceId(io: std.Io, path: []const u8) !u64 {
+    const info = common.file.FileInfo.stat(io, path) catch return error.StatFailed;
+    return info.dev;
 }
 
 /// Depth-first recursive directory removal with per-entry verbose/interactive support.
@@ -342,7 +329,7 @@ fn removeDirectoryRecursive(allocator: Allocator, io: std.Io, dir_path: []const 
     // -x: skip directories on different filesystems
     if (options.no_cross_device) {
         if (root_dev) |rd| {
-            const dev = getDeviceId(dir_path, allocator) catch 0;
+            const dev = getDeviceId(io, dir_path) catch 0;
             if (dev != rd) return;
         }
     }
@@ -1287,8 +1274,8 @@ test "rm: symlink to directory removed without -r" {
 
 test "rm: getDeviceId returns consistent results" {
     // "/" always exists on all systems
-    const dev1 = try getDeviceId("/", testing.allocator);
-    const dev2 = try getDeviceId("/", testing.allocator);
+    const dev1 = try getDeviceId(testing.io, "/");
+    const dev2 = try getDeviceId(testing.io, "/");
     try testing.expectEqual(dev1, dev2);
     try testing.expect(dev1 > 0);
 }
