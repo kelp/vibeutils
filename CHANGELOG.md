@@ -15,7 +15,6 @@
   lines longer than its 8 KB read buffer instead of erroring
   with `StreamTooLong`; `mktemp` passes explicit `0o600`
   permissions since 0.16's default is `0o666`.
-
 ### Bug Fixes
 - **ls: memory leak in git status integration.** When
   `git status --porcelain` reported the same filename twice
