@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 
 /// Terminal capability detection and styling
 pub fn Style(comptime Writer: type) type {
@@ -13,32 +14,29 @@ pub fn Style(comptime Writer: type) type {
             truecolor, // 24-bit RGB
 
             /// Detect color mode from environment
-            pub fn detect(allocator: std.mem.Allocator) !ColorMode {
+            pub fn detect(_: std.mem.Allocator) !ColorMode {
                 // Check NO_COLOR standard (just check existence)
-                if (std.process.hasEnvVar(allocator, "NO_COLOR") catch false) {
+                if (env.getEnv("NO_COLOR") != null) {
                     return .none;
                 }
 
                 // Check TERM
-                if (std.process.getEnvVarOwned(allocator, "TERM")) |term| {
-                    defer allocator.free(term);
-
+                if (env.getEnv("TERM")) |term| {
                     if (std.mem.eql(u8, term, "dumb")) return .none;
-                    if (std.mem.indexOf(u8, term, "256color") != null) return .extended;
-                    if (std.mem.indexOf(u8, term, "truecolor") != null) return .truecolor;
+                    if (std.mem.find(u8, term, "256color") != null) return .extended;
+                    if (std.mem.find(u8, term, "truecolor") != null) return .truecolor;
 
                     // Check COLORTERM for true color
-                    if (std.process.getEnvVarOwned(allocator, "COLORTERM")) |colorterm| {
-                        defer allocator.free(colorterm);
+                    if (env.getEnv("COLORTERM")) |colorterm| {
                         if (std.mem.eql(u8, colorterm, "truecolor") or
                             std.mem.eql(u8, colorterm, "24bit"))
                         {
                             return .truecolor;
                         }
-                    } else |_| {}
+                    }
 
                     return .basic;
-                } else |_| {
+                } else {
                     return .none;
                 }
             }
@@ -113,52 +111,52 @@ pub fn Style(comptime Writer: type) type {
 }
 
 test "Style color detection" {
-    const TestStyle = Style(std.ArrayList(u8).Writer);
+    const TestStyle = Style(*std.Io.Writer);
     const mode = try TestStyle.ColorMode.detect(std.testing.allocator);
     try std.testing.expect(@intFromEnum(mode) >= 0);
 }
 
 test "Style setRgb truecolor" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const TestStyle = Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(std.testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const TestStyle = Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try s.setRgb(100, 200, 50);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;2;100;200;50m", buffer.items);
+    try std.testing.expectEqualStrings("\x1b[38;2;100;200;50m", aw.writer.buffered());
 }
 
 test "Style setRgb no-op on basic" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const TestStyle = Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(std.testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const TestStyle = Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try s.setRgb(100, 200, 50);
-    try std.testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try std.testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }
 
 test "Style set256 extended" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const TestStyle = Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .extended, .writer = buffer.writer(std.testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const TestStyle = Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .extended, .writer = &aw.writer };
     try s.set256(142);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;142m", buffer.items);
+    try std.testing.expectEqualStrings("\x1b[38;5;142m", aw.writer.buffered());
 }
 
 test "Style set256 works on truecolor too" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const TestStyle = Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(std.testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const TestStyle = Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try s.set256(42);
-    try std.testing.expectEqualSlices(u8, "\x1b[38;5;42m", buffer.items);
+    try std.testing.expectEqualStrings("\x1b[38;5;42m", aw.writer.buffered());
 }
 
 test "Style set256 no-op on basic" {
-    var buffer = try std.ArrayList(u8).initCapacity(std.testing.allocator, 0);
-    defer buffer.deinit(std.testing.allocator);
-    const TestStyle = Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(std.testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    const TestStyle = Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try s.set256(42);
-    try std.testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try std.testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }

@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+const env = @import("env.zig");
 
 /// Resolved on/off mode for display features.
 pub const ResolvedMode = enum {
@@ -37,7 +39,7 @@ pub const DisplayConfig = struct {
         _ = allocator;
 
         // Step 1: Defaults based on isTty(stdout)
-        const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
+        const is_tty = env.isTty(std.Io.File.stdout().handle);
 
         var color: ResolvedMode = if (is_tty) .on else .off;
         var icons: ResolvedMode = if (is_tty) .on else .off;
@@ -47,7 +49,7 @@ pub const DisplayConfig = struct {
         // Step 2: Apply VIBEUTILS_STYLE shortcut
         // Presets set preferences but respect TTY detection.
         // Only "always" forces features on through pipes.
-        if (std.posix.getenv("VIBEUTILS_STYLE")) |vibe_style| {
+        if (env.getEnv("VIBEUTILS_STYLE")) |vibe_style| {
             if (std.mem.eql(u8, vibe_style, "plain")) {
                 color = .off;
                 icons = .off;
@@ -73,29 +75,29 @@ pub const DisplayConfig = struct {
         }
 
         // Step 3: Apply individual overrides
-        if (std.posix.getenv("VIBEUTILS_COLOR")) |val| {
+        if (env.getEnv("VIBEUTILS_COLOR")) |val| {
             if (std.mem.eql(u8, val, "always")) color = .on else if (std.mem.eql(u8, val, "never")) color = .off;
         }
 
-        if (std.posix.getenv("VIBEUTILS_ICONS")) |val| {
+        if (env.getEnv("VIBEUTILS_ICONS")) |val| {
             if (std.mem.eql(u8, val, "always")) icons = .on else if (std.mem.eql(u8, val, "never")) icons = .off;
         }
 
-        if (std.posix.getenv("VIBEUTILS_HIGHLIGHT")) |val| {
+        if (env.getEnv("VIBEUTILS_HIGHLIGHT")) |val| {
             if (std.mem.eql(u8, val, "always")) highlight = .on else if (std.mem.eql(u8, val, "never")) highlight = .off;
         }
 
-        if (std.posix.getenv("VIBEUTILS_THEME")) |val| {
+        if (env.getEnv("VIBEUTILS_THEME")) |val| {
             if (std.mem.eql(u8, val, "none")) theme = .none else if (std.mem.eql(u8, val, "default")) theme = .default;
         }
 
         // Step 4: NO_COLOR forces color off (any value)
-        if (std.posix.getenv("NO_COLOR") != null) {
+        if (env.getEnv("NO_COLOR") != null) {
             color = .off;
         }
 
         // Step 5: TERM=dumb forces color off
-        if (std.posix.getenv("TERM")) |term| {
+        if (env.getEnv("TERM")) |term| {
             if (std.mem.eql(u8, term, "dumb")) {
                 color = .off;
             }
@@ -119,7 +121,7 @@ extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_
 extern fn unsetenv(name: [*:0]const u8) c_int;
 
 /// Names of all environment variables that affect DisplayConfig.
-const env_var_names = [_][*:0]const u8{
+const env_var_names = [_][:0]const u8{
     "VIBEUTILS_STYLE",
     "VIBEUTILS_COLOR",
     "VIBEUTILS_ICONS",
@@ -132,12 +134,12 @@ const env_var_names = [_][*:0]const u8{
 /// Snapshot of environment variables used by DisplayConfig.
 /// Create with `save()`, restore in a `defer` with `restore()`.
 const EnvState = struct {
-    values: [env_var_names.len]?[:0]const u8,
+    values: [env_var_names.len]?[]const u8,
 
     fn save() EnvState {
         var state: EnvState = undefined;
         for (env_var_names, 0..) |name, i| {
-            state.values[i] = std.posix.getenv(std.mem.span(name));
+            state.values[i] = env.getEnv(name);
         }
         return state;
     }
@@ -145,9 +147,13 @@ const EnvState = struct {
     fn restore(self: *const EnvState) void {
         for (env_var_names, 0..) |name, i| {
             if (self.values[i]) |val| {
-                _ = setenv(name, val.ptr, 1);
+                // setenv requires a null-terminated value. The value returned
+                // by env.getEnv in test builds points into the test environ
+                // which is already null-terminated, so casting is safe here.
+                const val_z: [*:0]const u8 = @ptrCast(val.ptr);
+                _ = setenv(name.ptr, val_z, 1);
             } else {
-                _ = unsetenv(name);
+                _ = unsetenv(name.ptr);
             }
         }
     }
@@ -155,12 +161,14 @@ const EnvState = struct {
     /// Clear all tracked env vars so tests start from a known state.
     fn clearAll() void {
         for (env_var_names) |name| {
-            _ = unsetenv(name);
+            _ = unsetenv(name.ptr);
         }
     }
 };
 
 test "resolve: VIBEUTILS_STYLE=plain sets all off" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -175,6 +183,8 @@ test "resolve: VIBEUTILS_STYLE=plain sets all off" {
 }
 
 test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -191,6 +201,8 @@ test "resolve: VIBEUTILS_STYLE=full respects TTY (no-op on non-TTY)" {
 }
 
 test "resolve: VIBEUTILS_STYLE=always forces all on" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -206,6 +218,8 @@ test "resolve: VIBEUTILS_STYLE=always forces all on" {
 }
 
 test "resolve: VIBEUTILS_STYLE=color respects TTY" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -221,6 +235,8 @@ test "resolve: VIBEUTILS_STYLE=color respects TTY" {
 }
 
 test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -235,6 +251,8 @@ test "resolve: VIBEUTILS_COLOR=always overrides style=plain" {
 }
 
 test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -249,6 +267,8 @@ test "resolve: VIBEUTILS_COLOR=never overrides style=always" {
 }
 
 test "resolve: NO_COLOR overrides everything for color" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -264,6 +284,8 @@ test "resolve: NO_COLOR overrides everything for color" {
 }
 
 test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -277,6 +299,8 @@ test "resolve: NO_COLOR overrides VIBEUTILS_COLOR=always" {
 }
 
 test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -290,6 +314,8 @@ test "resolve: NO_COLOR overrides VIBEUTILS_STYLE=always" {
 }
 
 test "resolve: VIBEUTILS_ICONS=always forces icons on" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -302,6 +328,8 @@ test "resolve: VIBEUTILS_ICONS=always forces icons on" {
 }
 
 test "resolve: TERM=dumb forces color off" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -316,6 +344,8 @@ test "resolve: TERM=dumb forces color off" {
 }
 
 test "resolve: no env vars on non-tty defaults all off" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -328,6 +358,8 @@ test "resolve: no env vars on non-tty defaults all off" {
 }
 
 test "resolve: VIBEUTILS_THEME=none sets theme none" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();
@@ -341,6 +373,8 @@ test "resolve: VIBEUTILS_THEME=none sets theme none" {
 }
 
 test "resolve: VIBEUTILS_HIGHLIGHT=never overrides style=always" {
+    // setenv/unsetenv are libc externs; skip when building without -lc.
+    if (!builtin.link_libc) return error.SkipZigTest;
     const saved = EnvState.save();
     defer saved.restore();
     EnvState.clearAll();

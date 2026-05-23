@@ -64,8 +64,8 @@ test "CycleDetector - basic same-directory detection" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var test_dir = try tmp_dir.dir.openDir(".", .{});
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    defer test_dir.close(testing.io);
 
     // First visit should return false (not a cycle)
     const first_visit = try detector.checkAndMarkVisited(test_dir);
@@ -81,14 +81,12 @@ test "CycleDetector - real device ID extraction" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var test_dir = try tmp_dir.dir.openDir(".", .{});
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    defer test_dir.close(testing.io);
 
     const fs_id = try common.directory.FileSystemId.fromDir(test_dir);
 
     // Device ID should not be zero (which was the old hardcoded value)
-    // Note: On some filesystems, device ID might legitimately be 0, but
-    // we're testing that we're at least calling fstat() and getting some value
     _ = fs_id.device; // Just verify we can access it without error
 
     // Inode should be non-zero for a real directory
@@ -100,8 +98,8 @@ test "Symlink processing - error handling via metadata enhancement" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var test_dir = try tmp_dir.dir.openDir(".", .{});
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    defer test_dir.close(testing.io);
 
     // Create an entry that appears to be a symlink but doesn't exist as a target
     var entries = [_]types.Entry{
@@ -112,13 +110,19 @@ test "Symlink processing - error handling via metadata enhancement" {
     };
     defer testing.allocator.free(entries[0].name);
 
-    var error_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer error_buffer.deinit(testing.allocator);
+    var error_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer error_aw.deinit();
 
     // This should handle the error gracefully and not crash
-    try entry_collector.enhanceEntriesWithMetadata(testing.allocator, &entries, test_dir, types.LsOptions{ .long_format = true }, // Request symlink target reading
+    try entry_collector.enhanceEntriesWithMetadata(
+        testing.io,
+        testing.allocator,
+        &entries,
+        test_dir,
+        types.LsOptions{ .long_format = true }, // Request symlink target reading
         null, // No git context
-        error_buffer.writer(testing.allocator));
+        &error_aw.writer,
+    );
 
     // Should complete without crashing (symlink_target will be null)
     try testing.expect(entries[0].symlink_target == null);
@@ -131,34 +135,34 @@ test "Cycle detection - performance with nested directories" {
     defer tmp_dir.cleanup();
 
     // Create a nested directory structure: root/subdir1/subdir2/subdir3
-    try tmp_dir.dir.makeDir("subdir1");
-    var subdir1 = try tmp_dir.dir.openDir("subdir1", .{});
-    defer subdir1.close();
+    try tmp_dir.dir.createDir(testing.io, "subdir1", .default_dir);
+    var subdir1 = try tmp_dir.dir.openDir(testing.io, "subdir1", .{});
+    defer subdir1.close(testing.io);
 
-    try subdir1.makeDir("subdir2");
-    var subdir2 = try subdir1.openDir("subdir2", .{});
-    defer subdir2.close();
+    try subdir1.createDir(testing.io, "subdir2", .default_dir);
+    var subdir2 = try subdir1.openDir(testing.io, "subdir2", .{});
+    defer subdir2.close(testing.io);
 
-    try subdir2.makeDir("subdir3");
-    var subdir3 = try subdir2.openDir("subdir3", .{});
-    defer subdir3.close();
+    try subdir2.createDir(testing.io, "subdir3", .default_dir);
+    var subdir3 = try subdir2.openDir(testing.io, "subdir3", .{});
+    defer subdir3.close(testing.io);
 
     // Add some files at each level
     for (0..10) |i| {
         var name_buf: [32]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "file{d}.txt", .{i}) catch unreachable;
 
-        const file1 = try tmp_dir.dir.createFile(name, .{});
-        file1.close();
+        const file1 = try tmp_dir.dir.createFile(testing.io, name, .{});
+        file1.close(testing.io);
 
-        const file2 = try subdir1.createFile(name, .{});
-        file2.close();
+        const file2 = try subdir1.createFile(testing.io, name, .{});
+        file2.close(testing.io);
 
-        const file3 = try subdir2.createFile(name, .{});
-        file3.close();
+        const file3 = try subdir2.createFile(testing.io, name, .{});
+        file3.close(testing.io);
 
-        const file4 = try subdir3.createFile(name, .{});
-        file4.close();
+        const file4 = try subdir3.createFile(testing.io, name, .{});
+        file4.close(testing.io);
     }
 
     // Test cycle detection through the directory hierarchy
@@ -166,11 +170,11 @@ test "Cycle detection - performance with nested directories" {
     defer visited.deinit();
     var detector = common.directory.CycleDetector.init(&visited);
 
-    const start = std.time.nanoTimestamp();
+    const start = common.file.currentTimestampNanoseconds();
 
     // Simulate recursive traversal by checking each directory level
-    var test_dir = try tmp_dir.dir.openDir(".", .{});
-    defer test_dir.close();
+    var test_dir = try tmp_dir.dir.openDir(testing.io, ".", .{});
+    defer test_dir.close(testing.io);
 
     const dir1_cycle = try detector.checkAndMarkVisited(test_dir);
     try testing.expect(!dir1_cycle); // First visit should not detect cycle
@@ -188,7 +192,7 @@ test "Cycle detection - performance with nested directories" {
     const revisit_cycle = try detector.checkAndMarkVisited(test_dir);
     try testing.expect(revisit_cycle);
 
-    const end = std.time.nanoTimestamp();
+    const end = common.file.currentTimestampNanoseconds();
     const duration_ms = @as(f64, @floatFromInt(end - start)) / 1_000_000.0;
 
     // Cycle detection should be fast (< 100ms for this small test)

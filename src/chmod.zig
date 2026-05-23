@@ -63,7 +63,7 @@ const ChmodArgs = struct {
 };
 
 /// Main entry point for chmod utility
-pub fn runChmod(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runChmod(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Pre-process: if an argument looks like a symbolic mode starting
     // with '-' (e.g. "-w", "-rwx"), insert "--" before it so the
     // argparser treats it and everything after as positionals.
@@ -145,7 +145,7 @@ pub fn runChmod(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
         }
     }
 
-    chmodFiles(allocator, mode_str, files, stdout_writer, stderr_writer, options) catch |err| {
+    chmodFiles(io, allocator, mode_str, files, stdout_writer, stderr_writer, options) catch |err| {
         switch (err) {
             ChmodError.FileOperationFailed => {
                 // Specific file errors already reported, just return failure code
@@ -162,8 +162,8 @@ pub fn runChmod(allocator: std.mem.Allocator, args: []const []const u8, stdout_w
     return @intFromEnum(common.ExitCode.success);
 }
 
-pub fn main() !void {
-    common.utilityMain(runChmod);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runChmod);
 }
 
 /// Print usage information and examples
@@ -261,11 +261,11 @@ const ModeSpec = union(enum) {
 
 /// Apply chmod operations to files
 /// Handles both single files and recursive directory operations
-fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const []const u8, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
+fn chmodFiles(io: std.Io, allocator: std.mem.Allocator, mode_str: []const u8, files: []const []const u8, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     // Handle reference file mode if specified
     var reference_mode: ?Mode = null;
     if (options.reference_file) |ref_file| {
-        const ref_stat = std.fs.cwd().statFile(ref_file) catch |err| {
+        const ref_stat = statByPath(ref_file) catch |err| {
             if (!options.quiet) {
                 common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, common.posixErrorString(err) });
             }
@@ -338,7 +338,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
 
             const effective_kind = if (should_follow) blk: {
                 // Follow the symlink to check the target type
-                const target_stat = std.fs.cwd().statFile(file_path) catch |err| {
+                const target_stat = statByPath(file_path) catch |err| {
                     if (!options.quiet) {
                         common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
                     }
@@ -349,7 +349,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             } else lstat_result.kind;
 
             if (effective_kind == .directory) {
-                chmodRecursive(allocator, file_path, mode_spec, writer, stderr_writer, options) catch {
+                chmodRecursive(io, allocator, file_path, mode_spec, writer, stderr_writer, options) catch {
                     had_errors = true;
                 };
             } else {
@@ -360,7 +360,7 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
             }
         } else {
             // Non-recursive processing - track errors from helper function
-            const result = applyModeToPath(allocator, file_path, mode_spec, writer, stderr_writer, options);
+            const result = applyModeToPath(io, allocator, file_path, mode_spec, writer, stderr_writer, options);
             if (!result) {
                 had_errors = true;
             }
@@ -375,7 +375,8 @@ fn chmodFiles(allocator: std.mem.Allocator, mode_str: []const u8, files: []const
 
 /// Apply mode to a single path with proper error handling
 /// Returns true on success, false on failure
-fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) bool {
+fn applyModeToPath(io: std.Io, allocator: std.mem.Allocator, file_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) bool {
+    _ = io;
     applyModeSpecToFile(file_path, mode_spec, writer, options) catch |err| {
         if (!options.quiet) {
             switch (err) {
@@ -398,44 +399,44 @@ fn applyModeToPath(allocator: std.mem.Allocator, file_path: []const u8, mode_spe
 
 /// Recursively apply chmod to a directory and all its contents
 /// Processes directory contents first, then the directory itself to avoid permission conflicts
-fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
+fn chmodRecursive(io: std.Io, allocator: std.mem.Allocator, dir_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
     // Open directory for iteration FIRST, before changing its permissions
     // This ensures we can access the directory contents even if the new permissions would block access
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         if (!options.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
         }
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     // Track if any file operations failed in this directory
     var had_errors = false;
 
     // Process all directory contents FIRST
     var iterator = dir.iterate();
-    while (try iterator.next()) |entry| {
+    while (try iterator.next(io)) |entry| {
         const full_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
         defer allocator.free(full_path);
 
         switch (entry.kind) {
             .directory => {
                 // Recursively process subdirectory
-                chmodRecursive(allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
+                chmodRecursive(io, allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
                     had_errors = true;
                 };
             },
             .sym_link => {
                 // With -L, follow symlinks to directories during traversal
                 if (options.traverse_all_symlinks) {
-                    const target_stat = std.fs.cwd().statFile(full_path) catch {
+                    const target_stat = statByPath(full_path) catch {
                         // Symlink target inaccessible; apply chmod to symlink itself
-                        const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
+                        const result = applyModeToPath(io, allocator, full_path, mode_spec, writer, stderr_writer, options);
                         if (!result) had_errors = true;
                         continue;
                     };
                     if (target_stat.kind == .directory) {
-                        chmodRecursive(allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
+                        chmodRecursive(io, allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
                             had_errors = true;
                         };
                         continue;
@@ -449,7 +450,7 @@ fn chmodRecursive(allocator: std.mem.Allocator, dir_path: []const u8, mode_spec:
             },
             else => {
                 // Handle all other file types (regular files, devices, etc.)
-                const result = applyModeToPath(allocator, full_path, mode_spec, writer, stderr_writer, options);
+                const result = applyModeToPath(io, allocator, full_path, mode_spec, writer, stderr_writer, options);
                 if (!result) {
                     had_errors = true;
                 }
@@ -504,6 +505,72 @@ fn hasNonOctalDigits(mode_str: []const u8) bool {
 
 /// Parse a mode string (octal or symbolic) into a Mode struct
 /// First attempts octal parsing, then falls back to symbolic mode parsing
+/// Stat a path, following symlinks. Returns mode and kind without needing io.
+fn statByPath(path: []const u8) !struct { mode: std.posix.mode_t, kind: std.Io.File.Kind } {
+    var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+    const c_path = buf[0..path.len :0];
+
+    const raw_mode: u32, const kind: std.Io.File.Kind = blk: {
+        if (builtin.os.tag == .linux) {
+            // On Linux, std.c.fstatat is void; use statx syscall directly.
+            const linux = std.os.linux;
+            var sx: linux.Statx = undefined;
+            const rc = linux.statx(
+                std.Io.Dir.cwd().handle,
+                c_path,
+                0, // follow symlinks
+                linux.STATX.BASIC_STATS,
+                &sx,
+            );
+            switch (linux.errno(rc)) {
+                .SUCCESS => {},
+                .ACCES => return error.AccessDenied,
+                .NOENT => return error.FileNotFound,
+                .NOTDIR => return error.NotDir,
+                .NAMETOOLONG => return error.NameTooLong,
+                else => return error.Unexpected,
+            }
+            const mode: u32 = @intCast(sx.mode);
+            const file_kind: std.Io.File.Kind = switch (mode & std.c.S.IFMT) {
+                std.c.S.IFREG => .file,
+                std.c.S.IFDIR => .directory,
+                std.c.S.IFLNK => .sym_link,
+                else => .unknown,
+            };
+            break :blk .{ mode & 0o7777, file_kind };
+        } else {
+            var stat_buf: std.c.Stat = undefined;
+            const result = std.c.fstatat(std.Io.Dir.cwd().handle, c_path, &stat_buf, 0);
+            if (result != 0) {
+                const errno = std.posix.errno(result);
+                return switch (errno) {
+                    .SUCCESS => unreachable,
+                    .ACCES => error.AccessDenied,
+                    .BADF => error.FileNotFound,
+                    .NOTDIR => error.NotDir,
+                    .NAMETOOLONG => error.NameTooLong,
+                    .NOENT => error.FileNotFound,
+                    else => error.Unexpected,
+                };
+            }
+            const mode: u32 = @intCast(stat_buf.mode);
+            const S = std.posix.S;
+            const file_kind: std.Io.File.Kind = blk2: {
+                if (S.ISREG(stat_buf.mode)) break :blk2 .file;
+                if (S.ISDIR(stat_buf.mode)) break :blk2 .directory;
+                if (S.ISLNK(stat_buf.mode)) break :blk2 .sym_link;
+                break :blk2 .unknown;
+            };
+            break :blk .{ mode & 0o7777, file_kind };
+        }
+    };
+
+    return .{ .mode = @intCast(raw_mode), .kind = kind };
+}
+
 /// Read and restore the process umask (POSIX has no non-destructive getter).
 fn getUmask() u32 {
     const m = std.c.umask(0);
@@ -547,39 +614,35 @@ fn parseMode(mode_str: []const u8) !Mode {
 /// Reports changes if verbose or changes_only flags are set
 /// When no_dereference is set, operates on symlinks themselves via fchmodat
 fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anytype, options: ChmodOptions) !void {
-    // Get file stats - use lstat when no_dereference to get symlink info
-    const stat = if (options.no_dereference) blk: {
-        const info = common.file.FileInfo.lstat(file_path) catch |err| {
-            return switch (err) {
-                error.FileNotFound => error.FileNotFound,
-                else => err,
+    // Get file stats - use lstat when no_dereference to get symlink info,
+    // otherwise follow symlinks.
+    const stat_mode: std.posix.mode_t, const stat_kind: std.Io.File.Kind = blk: {
+        if (options.no_dereference) {
+            const info = common.file.FileInfo.lstat(file_path) catch |err| {
+                return switch (err) {
+                    error.FileNotFound => error.FileNotFound,
+                    else => err,
+                };
             };
-        };
-        // If it's a symlink with -h, the mode change may be a no-op
-        // on most systems, but we accept the flag per POSIX
-        break :blk std.fs.File.Stat{
-            .size = 0,
-            .mode = @intCast(info.mode),
-            .mtime = 0,
-            .atime = 0,
-            .ctime = 0,
-            .kind = info.kind,
-            .inode = info.inode,
-        };
-    } else std.fs.cwd().statFile(file_path) catch |err| switch (err) {
-        error.FileNotFound => return error.FileNotFound,
-        error.AccessDenied => return error.AccessDenied,
-        else => return err,
+            break :blk .{ info.mode, info.kind };
+        } else {
+            const s = statByPath(file_path) catch |err| switch (err) {
+                error.FileNotFound => return error.FileNotFound,
+                error.AccessDenied => return error.AccessDenied,
+                else => return err,
+            };
+            break :blk .{ s.mode, s.kind };
+        }
     };
 
-    const old_mode = @as(u32, @intCast(stat.mode & 0o7777));
+    const old_mode = @as(u32, @intCast(stat_mode & 0o7777));
 
     // Compute new mode based on spec type
     const new_mode = switch (mode_spec) {
         .octal => |m| m.toOctal(),
         .reference => |m| m.toOctal(),
         .symbolic => |mode_str| blk: {
-            const is_directory = stat.kind == .directory;
+            const is_directory = stat_kind == .directory;
             const new_mode_struct = common.mode.parseSymbolic(
                 mode_str,
                 old_mode,
@@ -670,7 +733,7 @@ fn modeToString(mode: u32) [9]u8 {
 
 /// Helper function for testing chmod functionality
 /// Used in integration tests to simulate command-line usage
-fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype, stderr_writer: anytype) !void {
+fn chmod(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8, writer: anytype, stderr_writer: anytype) !void {
     if (args.len < 2) {
         return error.InvalidArguments;
     }
@@ -679,7 +742,7 @@ fn chmod(allocator: std.mem.Allocator, args: []const []const u8, writer: anytype
     const files = args[1..];
     const options = ChmodOptions{};
 
-    try chmodFiles(allocator, mode_str, files, writer, stderr_writer, options);
+    try chmodFiles(io, allocator, mode_str, files, writer, stderr_writer, options);
 }
 
 // Tests: Basic numeric mode parsing and application
@@ -754,7 +817,7 @@ test "privileged: applyModeSpecToFile basic functionality" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     // Run test under privilege simulation
     try privilege_test.withFakeroot(allocator, struct {
@@ -763,30 +826,30 @@ test "privileged: applyModeSpecToFile basic functionality" {
             defer tmp_dir.cleanup();
 
             const test_file_path = "test_file.txt";
-            const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
-            defer test_file.close();
+            const test_file = try tmp_dir.dir.createFile(testing.io, test_file_path, .{});
+            defer test_file.close(testing.io);
 
             // Test applying mode 644
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
             const mode = Mode.fromOctal(0o644);
             const mode_spec = ModeSpec{ .octal = mode };
             const options = ChmodOptions{ .verbose = true };
 
-            const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, test_file_path);
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, test_file_path, inner_allocator);
 
-            try applyModeSpecToFile(abs_path, mode_spec, stdout_buffer.writer(inner_allocator), options);
+            try applyModeSpecToFile(abs_path, mode_spec, &stdout_aw.writer, options);
 
             // Verify the file mode changed
-            const stat = try std.fs.cwd().statFile(abs_path);
+            const stat = try statByPath(abs_path);
             try testing.expectEqual(@as(u32, 0o644), @as(u32, @intCast(stat.mode & 0o777)));
 
             // Verify verbose output
-            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mode of") != null);
-            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "test_file.txt") != null);
+            try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mode of") != null);
+            try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "test_file.txt") != null);
         }
     }.testFn);
 }
@@ -796,7 +859,7 @@ test "privileged: chmodFiles handles multiple files" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
@@ -808,25 +871,25 @@ test "privileged: chmodFiles handles multiple files" {
             defer test_files_abs.deinit(inner_allocator);
 
             for (test_files_rel) |filename| {
-                const file = try tmp_dir.dir.createFile(filename, .{});
-                file.close();
+                const file = try tmp_dir.dir.createFile(testing.io, filename, .{});
+                file.close(testing.io);
 
-                const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, filename);
+                const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, filename, inner_allocator);
                 try test_files_abs.append(inner_allocator, abs_path);
             }
 
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
             const options = ChmodOptions{ .changes_only = true };
 
-            try chmodFiles(inner_allocator, "755", test_files_abs.items, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            try chmodFiles(testing.io, inner_allocator, "755", test_files_abs.items, &stdout_aw.writer, &stderr_aw.writer, options);
 
             // Verify both files were processed
             for (test_files_abs.items) |abs_path| {
-                const stat = try std.fs.cwd().statFile(abs_path);
+                const stat = try statByPath(abs_path);
                 try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(stat.mode & 0o777)));
             }
         }
@@ -834,16 +897,16 @@ test "privileged: chmodFiles handles multiple files" {
 }
 
 test "chmodFiles handles nonexistent files gracefully" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
     const options = ChmodOptions{ .quiet = true };
 
     // Should return error for nonexistent files, even in quiet mode
-    _ = chmodFiles(testing.allocator, "644", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch |err| {
+    _ = chmodFiles(testing.io, testing.allocator, "644", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch |err| {
         try testing.expect(err == ChmodError.FileOperationFailed);
         return;
     };
@@ -858,7 +921,7 @@ test "privileged: chmod integration test with octal mode" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
@@ -866,21 +929,21 @@ test "privileged: chmod integration test with octal mode" {
             defer tmp_dir.cleanup();
 
             const test_file_path = "integration_test.txt";
-            const test_file = try tmp_dir.dir.createFile(test_file_path, .{});
-            defer test_file.close();
+            const test_file = try tmp_dir.dir.createFile(testing.io, test_file_path, .{});
+            defer test_file.close(testing.io);
 
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
-            const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, test_file_path);
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, test_file_path, inner_allocator);
 
             const args = [_][]const u8{ "755", abs_path };
-            try chmod(inner_allocator, &args, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator));
+            try chmod(testing.io, inner_allocator, &args, &stdout_aw.writer, &stderr_aw.writer);
 
             // Verify the mode was applied
-            const stat = try std.fs.cwd().statFile(abs_path);
+            const stat = try statByPath(abs_path);
             try testing.expectEqual(@as(u32, 0o755), @as(u32, @intCast(stat.mode & 0o777)));
         }
     }.testFn);
@@ -1112,39 +1175,39 @@ test "privileged: recursive chmod on directory structure" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
-            try tmp_dir.dir.makeDir("subdir");
-            try tmp_dir.dir.makeDir("subdir/deeper");
+            try tmp_dir.dir.createDir(testing.io, "subdir", .default_dir);
+            try tmp_dir.dir.createDir(testing.io, "subdir/deeper", .default_dir);
 
-            const test_file1 = try tmp_dir.dir.createFile("file1.txt", .{});
-            defer test_file1.close();
+            const test_file1 = try tmp_dir.dir.createFile(testing.io, "file1.txt", .{});
+            defer test_file1.close(testing.io);
 
-            const test_file2 = try tmp_dir.dir.createFile("subdir/file2.txt", .{});
-            defer test_file2.close();
+            const test_file2 = try tmp_dir.dir.createFile(testing.io, "subdir/file2.txt", .{});
+            defer test_file2.close(testing.io);
 
-            const test_file3 = try tmp_dir.dir.createFile("subdir/deeper/file3.txt", .{});
-            defer test_file3.close();
+            const test_file3 = try tmp_dir.dir.createFile(testing.io, "subdir/deeper/file3.txt", .{});
+            defer test_file3.close(testing.io);
 
-            const abs_root = try tmp_dir.dir.realpathAlloc(inner_allocator, ".");
+            const abs_root = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", inner_allocator);
 
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
             const options = ChmodOptions{ .recursive = true, .verbose = true };
             const files = [_][]const u8{abs_root};
 
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
 
             // Basic verification
-            try testing.expect(stdout_buffer.items.len > 0); // Should have verbose output
+            try testing.expect(stdout_aw.writer.buffered().len > 0); // Should have verbose output
         }
     }.testFn);
 }
@@ -1154,28 +1217,28 @@ test "privileged: recursive flag processes files and directories" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
-            try tmp_dir.dir.makeDir("testdir");
-            const test_file = try tmp_dir.dir.createFile("testdir/test.txt", .{});
-            defer test_file.close();
+            try tmp_dir.dir.createDir(testing.io, "testdir", .default_dir);
+            const test_file = try tmp_dir.dir.createFile(testing.io, "testdir/test.txt", .{});
+            defer test_file.close(testing.io);
 
-            const abs_dir = try tmp_dir.dir.realpathAlloc(inner_allocator, "testdir");
+            const abs_dir = try tmp_dir.dir.realPathFileAlloc(testing.io, "testdir", inner_allocator);
 
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
             const options = ChmodOptions{ .recursive = true, .changes_only = true };
             const files = [_][]const u8{abs_dir};
 
-            try chmodFiles(inner_allocator, "644", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            try chmodFiles(testing.io, inner_allocator, "644", &files, &stdout_aw.writer, &stderr_aw.writer, options);
 
             // The test passes if no errors are thrown
         }
@@ -1189,32 +1252,32 @@ test "privileged: verbose flag outputs changes" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
-            const test_file = try tmp_dir.dir.createFile("test_verbose.txt", .{});
-            defer test_file.close();
+            const test_file = try tmp_dir.dir.createFile(testing.io, "test_verbose.txt", .{});
+            defer test_file.close(testing.io);
 
-            const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, "test_verbose.txt");
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_verbose.txt", inner_allocator);
 
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
             const options = ChmodOptions{ .verbose = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
 
             // Should have verbose output
-            try testing.expect(stdout_buffer.items.len > 0);
-            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mode of") != null);
-            try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "changed from") != null);
+            try testing.expect(stdout_aw.writer.buffered().len > 0);
+            try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mode of") != null);
+            try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "changed from") != null);
         }
     }.testFn);
 }
@@ -1224,56 +1287,58 @@ test "privileged: changes flag only outputs when mode changes" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    try privilege_test.requiresPrivilege();
+    try privilege_test.requiresPrivilege(testing.io);
 
     try privilege_test.withFakeroot(allocator, struct {
         fn testFn(inner_allocator: std.mem.Allocator) !void {
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
 
-            const test_file = try tmp_dir.dir.createFile("test_changes.txt", .{});
-            defer test_file.close();
+            const test_file = try tmp_dir.dir.createFile(testing.io, "test_changes.txt", .{});
+            defer test_file.close(testing.io);
 
-            const abs_path = try tmp_dir.dir.realpathAlloc(inner_allocator, "test_changes.txt");
+            const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_changes.txt", inner_allocator);
 
-            var stdout_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stdout_buffer.deinit(inner_allocator);
-            var stderr_buffer = try std.ArrayList(u8).initCapacity(inner_allocator, 0);
-            defer stderr_buffer.deinit(inner_allocator);
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
 
             const options = ChmodOptions{ .changes_only = true };
             const files = [_][]const u8{abs_path};
 
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
 
             // Should have output when mode changes
-            try testing.expect(stdout_buffer.items.len > 0);
+            try testing.expect(stdout_aw.writer.buffered().len > 0);
 
             // Clear buffer and apply same mode again
-            stdout_buffer.clearRetainingCapacity();
-            stderr_buffer.clearRetainingCapacity();
-            try chmodFiles(inner_allocator, "755", &files, stdout_buffer.writer(inner_allocator), stderr_buffer.writer(inner_allocator), options);
+            stdout_aw.deinit();
+            stdout_aw = .init(inner_allocator);
+            stderr_aw.deinit();
+            stderr_aw = .init(inner_allocator);
+            try chmodFiles(testing.io, inner_allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options);
 
-            try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
+            try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
         }
     }.testFn);
 }
 
 test "quiet flag suppresses error messages" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const nonexistent_files = [_][]const u8{"nonexistent_file.txt"};
     const options = ChmodOptions{ .quiet = true };
 
     // Should return error for nonexistent files but produce no error output due to quiet mode
-    _ = chmodFiles(testing.allocator, "755", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch |err| {
+    _ = chmodFiles(testing.io, testing.allocator, "755", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch |err| {
         try testing.expect(err == ChmodError.FileOperationFailed);
         // Should produce no output due to quiet mode
-        try testing.expectEqual(@as(usize, 0), stdout_buffer.items.len);
-        try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+        try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+        try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
         return;
     };
 
@@ -1307,36 +1372,36 @@ test "hasNonOctalDigits returns false for symbolic modes" {
 }
 
 test "non-octal digit warning is printed to stderr" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
     const options = ChmodOptions{};
 
     // Mode "899" contains non-octal digits; chmodFiles should warn on stderr
-    _ = chmodFiles(testing.allocator, "899", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch {};
+    _ = chmodFiles(testing.io, testing.allocator, "899", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch {};
 
     // Should contain the non-octal warning
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "non-octal digits") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "899") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "non-octal digits") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "899") != null);
 }
 
 test "no non-octal digit warning for valid octal mode" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const nonexistent_files = [_][]const u8{"does_not_exist.txt"};
     const options = ChmodOptions{};
 
     // Mode "755" is valid octal; should not produce a non-octal warning
-    _ = chmodFiles(testing.allocator, "755", &nonexistent_files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch {};
+    _ = chmodFiles(testing.io, testing.allocator, "755", &nonexistent_files, &stdout_aw.writer, &stderr_aw.writer, options) catch {};
 
     // Should NOT contain non-octal warning (may contain other error messages)
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "non-octal digits") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "non-octal digits") == null);
 }
 
 // Tests: -H, -L, -P symlink traversal flags
@@ -1414,53 +1479,53 @@ test "ChmodOptions has no_dereference field" {
 // Tests for new flags
 
 test "chmod --preserve-root blocks recursive on /" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--preserve-root", "-R", "755", "/" };
-    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively on '/'") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangerous to operate recursively on '/'") != null);
 }
 
 test "chmod --preserve-root allows non-recursive on /" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Without -R, --preserve-root should not block
     const args = [_][]const u8{ "--preserve-root", "755", "/" };
-    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should fail with permission error, not preserve-root error
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "dangerous to operate recursively") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "dangerous to operate recursively") == null);
     _ = exit_code;
 }
 
 test "chmod --dereference flag is accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--dereference", "--help" };
-    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 test "chmod --no-preserve-root flag is accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "--no-preserve-root", "--help" };
-    const exit_code = try runChmod(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
@@ -1501,15 +1566,15 @@ test "chmod -N flag is accepted (ACL no-op)" {
 }
 
 test "chmod help text includes new flags" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try printHelp(testing.allocator, stdout_buffer.writer(testing.allocator));
+    try printHelp(testing.allocator, &stdout_aw.writer);
 
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--preserve-root") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--no-preserve-root") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--dereference") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "ACL") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "--preserve-root") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "--no-preserve-root") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "--dereference") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "ACL") != null);
 }
 
 test "chmod ChmodOptions has preserve_root field" {
@@ -1572,13 +1637,13 @@ test "chmod stat AccessDenied produces correct Permission denied message" {
     defer tmp_dir.cleanup();
 
     // Create a subdirectory with a file inside
-    try tmp_dir.dir.makeDir("noaccess");
-    const inner_file = try tmp_dir.dir.createFile("noaccess/target.txt", .{});
-    inner_file.close();
+    try tmp_dir.dir.createDir(testing.io, "noaccess", .default_dir);
+    const inner_file = try tmp_dir.dir.createFile(testing.io, "noaccess/target.txt", .{});
+    inner_file.close(testing.io);
 
     // Get the full path to the file inside
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(dir_path);
     const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/target.txt", .{dir_path});
     defer testing.allocator.free(inner_path);
 
@@ -1591,23 +1656,23 @@ test "chmod stat AccessDenied produces correct Permission denied message" {
     // Ensure we restore permissions for cleanup
     defer _ = std.c.chmod(&noaccess_z, 0o755);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{inner_path};
     const options = ChmodOptions{};
 
     // chmodFiles should return FileOperationFailed since the file is inaccessible
-    _ = chmodFiles(testing.allocator, "755", &files, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), options) catch |err| {
+    _ = chmodFiles(testing.io, testing.allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, options) catch |err| {
         try testing.expect(err == ChmodError.FileOperationFailed);
 
         // BUG: When statFile returns AccessDenied, the code substitutes a zeroed
         // Stat instead of propagating the error. This causes the error to flow
         // through the chmod() syscall path instead, which returns PermissionDenied.
         // posixErrorString maps both AccessDenied and PermissionDenied -> "Permission denied".
-        try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Permission denied") != null);
+        try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Permission denied") != null);
         return;
     };
 
@@ -1623,13 +1688,13 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
     defer tmp_dir.cleanup();
 
     // Create a subdirectory with a file inside
-    try tmp_dir.dir.makeDir("noaccess");
-    const inner_file = try tmp_dir.dir.createFile("noaccess/target.txt", .{});
-    inner_file.close();
+    try tmp_dir.dir.createDir(testing.io, "noaccess", .default_dir);
+    const inner_file = try tmp_dir.dir.createFile(testing.io, "noaccess/target.txt", .{});
+    inner_file.close(testing.io);
 
     // Get the full path to the file inside
-    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const dir_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(dir_path);
     const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/target.txt", .{dir_path});
     defer testing.allocator.free(inner_path);
 
@@ -1642,8 +1707,8 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
     // Ensure we restore permissions for cleanup
     defer _ = std.c.chmod(&noaccess_z, 0o755);
 
-    var output_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer output_buffer.deinit(testing.allocator);
+    var output_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output_aw.deinit();
 
     const mode = Mode.fromOctal(0o755);
     const mode_spec = ModeSpec{ .octal = mode };
@@ -1654,7 +1719,7 @@ test "chmod stat AccessDenied returns AccessDenied not PermissionDenied" {
     // subsequent chmod() syscall also fails, but returns error.PermissionDenied
     // instead of the original error.AccessDenied.
     // This test expects AccessDenied to be propagated directly from stat.
-    const result = applyModeSpecToFile(inner_path, mode_spec, output_buffer.writer(testing.allocator), options);
+    const result = applyModeSpecToFile(inner_path, mode_spec, &output_aw.writer, options);
     try testing.expectError(error.AccessDenied, result);
 }
 
@@ -1691,7 +1756,7 @@ fn setFileModeOctal(path: []const u8, mode_val: u32) !void {
 }
 
 fn getFileMode(path: []const u8) !u32 {
-    const stat = try std.fs.cwd().statFile(path);
+    const stat = try statByPath(path);
     return @as(u32, @intCast(stat.mode & 0o7777));
 }
 
@@ -1702,22 +1767,22 @@ test "behavioral: chmod 755 actually sets mode 0o755" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test755.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test755.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test755.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test755.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     // Set initial mode to 0o644
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "755", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o755), actual_mode);
@@ -1729,21 +1794,21 @@ test "behavioral: chmod u+x from 644 sets mode 0o744" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_uplusx.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_uplusx.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_uplusx.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_uplusx.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "u+x", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "u+x", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o744), actual_mode);
@@ -1755,21 +1820,21 @@ test "behavioral: chmod g+w from 644 sets mode 0o664" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_gplusw.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_gplusw.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_gplusw.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_gplusw.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "g+w", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "g+w", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o664), actual_mode);
@@ -1781,21 +1846,21 @@ test "behavioral: chmod o-r from 644 sets mode 0o640" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_ominusr.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_ominusr.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_ominusr.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_ominusr.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "o-r", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "o-r", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o640), actual_mode);
@@ -1807,21 +1872,21 @@ test "behavioral: chmod a+x from 644 sets mode 0o755" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_aplusx.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_aplusx.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_aplusx.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_aplusx.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "a+x", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "a+x", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o755), actual_mode);
@@ -1833,21 +1898,21 @@ test "behavioral: chmod u=rwx,g=rx,o=r sets mode 0o754" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_complex.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_complex.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_complex.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_complex.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o000);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "u=rwx,g=rx,o=r", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "u=rwx,g=rx,o=r", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o754), actual_mode);
@@ -1859,20 +1924,20 @@ test "behavioral: chmod +t on directory sets sticky bit" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.makeDir("stickydir");
+    try tmp_dir.dir.createDir(testing.io, "stickydir", .default_dir);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("stickydir", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "stickydir", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o755);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "+t", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "+t", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     // Sticky bit (0o1000) should be set, basic perms should be preserved
@@ -1886,21 +1951,21 @@ test "behavioral: chmod 4755 sets setuid bit" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_setuid.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_setuid.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_setuid.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_setuid.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const files = [_][]const u8{abs_path};
-    try chmodFiles(testing.allocator, "4755", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{});
+    try chmodFiles(testing.io, testing.allocator, "4755", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{});
 
     const actual_mode = try getFileMode(abs_path);
     // Setuid bit (0o4000) should be set
@@ -1918,22 +1983,22 @@ test "behavioral: chmod -w via runChmod removes write permission" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_minusw.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_minusw.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_minusw.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_minusw.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // chmod -w file should succeed with exit code 0
     const args = [_][]const u8{ "-w", abs_path };
-    const exit_code = try runChmod(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try runChmod(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should succeed (exit code 0), not fail as "invalid argument"
     try testing.expectEqual(@as(u8, 0), exit_code);
@@ -1954,44 +2019,44 @@ test "chmod: -R -P should not follow symlinks during traversal" {
     defer tmp_dir.cleanup();
 
     // Create target file OUTSIDE the directory tree being chmod'd
-    const target_file = try tmp_dir.dir.createFile("outside_target.txt", .{});
-    target_file.close();
+    const target_file = try tmp_dir.dir.createFile(testing.io, "outside_target.txt", .{});
+    target_file.close(testing.io);
 
     // Create the directory to recurse into
-    try tmp_dir.dir.makeDir("mydir");
-    var mydir = try tmp_dir.dir.openDir("mydir", .{});
-    defer mydir.close();
+    try tmp_dir.dir.createDir(testing.io, "mydir", .default_dir);
+    var mydir = try tmp_dir.dir.openDir(testing.io, "mydir", .{});
+    defer mydir.close(testing.io);
 
     // Create a regular file inside mydir
-    const inner_file = try mydir.createFile("regular.txt", .{});
-    inner_file.close();
+    const inner_file = try mydir.createFile(testing.io, "regular.txt", .{});
+    inner_file.close(testing.io);
 
     // Create a symlink inside mydir pointing to the outside target
-    mydir.symLink("../outside_target.txt", "link_to_outside", .{}) catch |err| switch (err) {
+    mydir.symLink(testing.io, "../outside_target.txt", "link_to_outside", .{}) catch |err| switch (err) {
         error.AccessDenied => return, // symlinks not supported
         else => return,
     };
 
-    var mydir_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const mydir_abs = try tmp_dir.dir.realpath("mydir", &mydir_buf);
-    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const target_abs = try tmp_dir.dir.realpath("outside_target.txt", &target_buf);
+    const mydir_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "mydir", testing.allocator);
+    defer testing.allocator.free(mydir_abs);
+    const target_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "outside_target.txt", testing.allocator);
+    defer testing.allocator.free(target_abs);
 
     // Set known modes: target=0o644, regular=0o644
     try setFileModeOctal(target_abs, 0o644);
 
-    var inner_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const regular_abs = try tmp_dir.dir.realpath("mydir/regular.txt", &inner_buf);
+    const regular_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "mydir/regular.txt", testing.allocator);
+    defer testing.allocator.free(regular_abs);
     try setFileModeOctal(regular_abs, 0o644);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // chmod -R -P 755 mydir — should NOT follow symlinks during traversal
     const files = [_][]const u8{mydir_abs};
-    try chmodFiles(testing.allocator, "755", &files, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), ChmodOptions{
+    try chmodFiles(testing.io, testing.allocator, "755", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{
         .recursive = true,
         .no_traverse_symlinks = true,
     });
@@ -2038,25 +2103,26 @@ test "behavioral: chmod -x via runChmod removes execute permission" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test_minusx.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test_minusx.txt", .{});
+    test_file.close(testing.io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test_minusx.txt", &path_buf);
+    const abs_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test_minusx.txt", testing.allocator);
+    defer testing.allocator.free(abs_path);
 
     try setFileModeOctal(abs_path, 0o755);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-x", abs_path };
     const exit_code = try runChmod(
         testing.allocator,
+        testing.io,
         &args,
-        stdout_buf.writer(testing.allocator),
-        stderr_buf.writer(testing.allocator),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
 
     try testing.expectEqual(@as(u8, 0), exit_code);

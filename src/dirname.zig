@@ -28,7 +28,8 @@ const DirnameArgs = struct {
 };
 
 /// Execute dirname utility with given arguments and writers
-pub fn runDirname(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runDirname(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    _ = io;
     const parsed_args = common.argparse.ArgParser.parse(DirnameArgs, allocator, args) catch |err| {
         switch (err) {
             error.UnknownFlag => {
@@ -94,7 +95,7 @@ fn extractDirname(path: []const u8) []const u8 {
         end -= 1;
     }
 
-    const last_slash = std.mem.lastIndexOfScalar(u8, path[0..end], '/');
+    const last_slash = std.mem.findScalarLast(u8, path[0..end], '/');
 
     if (last_slash == null) {
         return ".";
@@ -131,26 +132,8 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
     );
 }
 
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runDirname(allocator, args[1..], stdout, stderr);
-
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-    std.process.exit(exit_code);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runDirname);
 }
 
 // ============================================================================
@@ -234,106 +217,92 @@ test "dirname: edge cases" {
 }
 
 test "dirname: multiple paths" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "/usr/bin", "file.txt", "dir/subdir/" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("/usr\n.\ndir\n", stdout_buffer.items);
+    try testing.expectEqualStrings("/usr\n.\ndir\n", stdout_aw.writer.buffered());
 }
 
 test "dirname: zero flag" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-z", "/usr/bin", "file.txt", "/" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("/usr\x00.\x00/\x00", stdout_buffer.items);
+    try testing.expectEqualStrings("/usr\x00.\x00/\x00", stdout_aw.writer.buffered());
 }
 
 test "dirname: long zero flag" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--zero", "path/to/file" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("path/to\x00", stdout_buffer.items);
+    try testing.expectEqualStrings("path/to\x00", stdout_aw.writer.buffered());
 }
 
 test "dirname: missing operand error" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const result = try runDirname(allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runDirname(testing.allocator, io, &.{}, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
 test "dirname: help flag" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: dirname") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: dirname") != null);
 }
 
 test "dirname: version flag" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "dirname") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "dirname") != null);
 }
 
 test "dirname: combined flags" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     // Test that -z and paths work together
     const args = [_][]const u8{ "-z", "a/b", "c/d", "e" };
-    const result = try runDirname(allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runDirname(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("a\x00c\x00.\x00", stdout_buffer.items);
+    try testing.expectEqualStrings("a\x00c\x00.\x00", stdout_aw.writer.buffered());
 }

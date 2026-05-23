@@ -60,7 +60,7 @@ const CutArgs = struct {
 /// Returns a sorted, merged array of Range values.
 /// Caller owns the returned slice.
 fn parseRangeList(allocator: Allocator, list_str: []const u8) ![]Range {
-    var ranges = std.ArrayListUnmanaged(Range){};
+    var ranges = std.ArrayListUnmanaged(Range).empty;
     defer ranges.deinit(allocator);
 
     var iter = std.mem.tokenizeAny(u8, list_str, ", ");
@@ -102,7 +102,7 @@ fn parseRangeList(allocator: Allocator, list_str: []const u8) ![]Range {
     }.lessThan);
 
     // Merge overlapping ranges
-    var merged = std.ArrayListUnmanaged(Range){};
+    var merged = std.ArrayListUnmanaged(Range).empty;
     errdefer merged.deinit(allocator);
 
     try merged.append(allocator, ranges.items[0]);
@@ -274,7 +274,7 @@ fn cutFieldsWhitespace(
 }
 
 /// Main entry point for cut utility
-pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runCut(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Parse arguments
     const parsed = common.argparse.ArgParser.parseOrExit(CutArgs, allocator, args, "cut", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
@@ -366,9 +366,10 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     // Process files or stdin
     if (parsed.positionals.len == 0) {
-        const stdin_file = std.fs.File.stdin();
+        const stdin_file = std.Io.File.stdin();
         return processFile(
             allocator,
+            io,
             stdin_file,
             ranges,
             mode,
@@ -387,9 +388,10 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
     var has_error = false;
     for (parsed.positionals) |file_path| {
         if (std.mem.eql(u8, file_path, "-")) {
-            const stdin_file = std.fs.File.stdin();
+            const stdin_file = std.Io.File.stdin();
             const result = processFile(
                 allocator,
+                io,
                 stdin_file,
                 ranges,
                 mode,
@@ -405,15 +407,16 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
             );
             if (result > 0) has_error = true;
         } else {
-            const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+            const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                 common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                 has_error = true;
                 continue;
             };
-            defer file.close();
+            defer file.close(io);
 
             const result = processFile(
                 allocator,
+                io,
                 file,
                 ranges,
                 mode,
@@ -437,7 +440,8 @@ pub fn runCut(allocator: Allocator, args: []const []const u8, stdout_writer: any
 /// Process a single file/stream
 fn processFile(
     allocator: Allocator,
-    file: std.fs.File,
+    io: std.Io,
+    file: std.Io.File,
     ranges: []const Range,
     mode: CutMode,
     delimiter: u8,
@@ -447,21 +451,22 @@ fn processFile(
     no_split: bool,
     whitespace_delim: bool,
     line_terminator: u8,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) u8 {
     var read_buf: [8192]u8 = undefined;
-    var reader = file.reader(&read_buf);
+    var file_reader = file.reader(io, &read_buf);
+    const reader = &file_reader.interface;
 
     // Read line by line using the reader interface
-    var line_buf = std.ArrayListUnmanaged(u8){};
+    var line_buf = std.ArrayListUnmanaged(u8).empty;
     defer line_buf.deinit(allocator);
 
     while (true) {
         line_buf.clearRetainingCapacity();
 
         // Read until line terminator or EOF
-        const eof = readLine(&reader.interface, &line_buf, allocator, line_terminator) catch |err| {
+        const eof = readLine(reader, &line_buf, allocator, line_terminator) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "cut", "read error: {s}", .{common.posixErrorString(err)});
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -561,8 +566,8 @@ fn readLine(
 }
 
 /// Main entry point for the cut command
-pub fn main() !void {
-    common.utilityMain(runCut);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runCut);
 }
 
 /// Print help message
@@ -610,74 +615,81 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "cut --help shows help message" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runCut(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: cut") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: cut") != null);
 }
 
 test "cut --version shows version information" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runCut(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "cut") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "cut") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
 test "cut no mode specified returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "you must specify") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "you must specify") != null);
 }
 
 test "cut multiple modes returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", "1", "-f", "1" };
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "only one type") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "only one type") != null);
 }
 
 test "cut -s without -f returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", "1", "-s" };
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "suppressing") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "suppressing") != null);
 }
 
 test "cut -d without -f returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", "1", "-d", ":" };
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "input delimiter") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "input delimiter") != null);
 }
 
 test "cut unknown flag returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
 }
 
 test "parseRangeList single value" {
@@ -814,188 +826,193 @@ test "isSelected with complement" {
 }
 
 test "cutBytesOrChars single byte" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, false, false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("a", buffer.items);
+    try cutBytesOrChars("abcde", ranges, false, false, &stdout_aw.writer);
+    try testing.expectEqualStrings("a", stdout_aw.writer.buffered());
 }
 
 test "cutBytesOrChars range" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "2-4");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, false, false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("bcd", buffer.items);
+    try cutBytesOrChars("abcde", ranges, false, false, &stdout_aw.writer);
+    try testing.expectEqualStrings("bcd", stdout_aw.writer.buffered());
 }
 
 test "cutBytesOrChars multiple selections" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1,3,5");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, false, false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("ace", buffer.items);
+    try cutBytesOrChars("abcde", ranges, false, false, &stdout_aw.writer);
+    try testing.expectEqualStrings("ace", stdout_aw.writer.buffered());
 }
 
 test "cutBytesOrChars complement" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "2,4");
     defer testing.allocator.free(ranges);
 
-    try cutBytesOrChars("abcde", ranges, true, false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("ace", buffer.items);
+    try cutBytesOrChars("abcde", ranges, true, false, &stdout_aw.writer);
+    try testing.expectEqualStrings("ace", stdout_aw.writer.buffered());
 }
 
 test "cutFields basic" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutFields("one\ttwo\tthree", ranges, false, '\t', "\t", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("one", buffer.items);
+    try cutFields("one\ttwo\tthree", ranges, false, '\t', "\t", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("one", stdout_aw.writer.buffered());
 }
 
 test "cutFields multiple fields" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1,3");
     defer testing.allocator.free(ranges);
 
-    try cutFields("one\ttwo\tthree", ranges, false, '\t', "\t", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("one\tthree", buffer.items);
+    try cutFields("one\ttwo\tthree", ranges, false, '\t', "\t", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("one\tthree", stdout_aw.writer.buffered());
 }
 
 test "cutFields range" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "2-3");
     defer testing.allocator.free(ranges);
 
-    try cutFields("one\ttwo\tthree\tfour", ranges, false, '\t', "\t", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("two\tthree", buffer.items);
+    try cutFields("one\ttwo\tthree\tfour", ranges, false, '\t', "\t", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("two\tthree", stdout_aw.writer.buffered());
 }
 
 test "cutFields custom delimiter" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "2");
     defer testing.allocator.free(ranges);
 
-    try cutFields("one:two:three", ranges, false, ':', ":", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("two", buffer.items);
+    try cutFields("one:two:three", ranges, false, ':', ":", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("two", stdout_aw.writer.buffered());
 }
 
 test "cutFields no delimiter in line prints line" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutFields("no delimiters here", ranges, false, '\t', "\t", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("no delimiters here", buffer.items);
+    try cutFields("no delimiters here", ranges, false, '\t', "\t", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("no delimiters here", stdout_aw.writer.buffered());
 }
 
 test "cutFields no delimiter in line with -s suppresses output" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutFields("no delimiters here", ranges, false, '\t', "\t", true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("", buffer.items);
+    try cutFields("no delimiters here", ranges, false, '\t', "\t", true, &stdout_aw.writer);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "cutFields complement" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "2");
     defer testing.allocator.free(ranges);
 
-    try cutFields("one\ttwo\tthree", ranges, true, '\t', "\t", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("one\tthree", buffer.items);
+    try cutFields("one\ttwo\tthree", ranges, true, '\t', "\t", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("one\tthree", stdout_aw.writer.buffered());
 }
 
 test "cutFields output delimiter" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1,3");
     defer testing.allocator.free(ranges);
 
-    try cutFields("one\ttwo\tthree", ranges, false, '\t', ",", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("one,three", buffer.items);
+    try cutFields("one\ttwo\tthree", ranges, false, '\t', ",", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("one,three", stdout_aw.writer.buffered());
 }
 
 test "cut with file input bytes" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("abcde\nfghij\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "abcde\nfghij\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-b", "1-3", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("abc\nfgh\n", stdout_buffer.items);
+    try testing.expectEqualStrings("abc\nfgh\n", stdout_aw.writer.buffered());
 }
 
 test "cut with file input fields" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("one:two:three\nfour:five:six\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "one:two:three\nfour:five:six\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", "2", "-d", ":", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("two\nfive\n", stdout_buffer.items);
+    try testing.expectEqualStrings("two\nfive\n", stdout_aw.writer.buffered());
 }
 
 test "cut nonexistent file returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", "1", "/nonexistent_test_file" };
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "nonexistent_test_file") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "nonexistent_test_file") != null);
 }
 
 // ============================================================================
@@ -1004,24 +1021,26 @@ test "cut nonexistent file returns error" {
 
 test "cut: -n flag is accepted with -b" {
     // The -n flag should be accepted without error when used with -b.
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("hello\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "hello\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-n", "-b", "1-3", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hel\n", stdout_buffer.items);
+    try testing.expectEqualStrings("hel\n", stdout_aw.writer.buffered());
 }
 
 test "cut: -n -b preserves multi-byte characters" {
@@ -1030,29 +1049,31 @@ test "cut: -n -b preserves multi-byte characters" {
     // With -b1-4 alone, bytes 1-4 are "caf\xc3" which splits the e-acute.
     // With -n -b1-4, the partial multi-byte character at byte 4 should be
     // excluded, producing "caf" (3 bytes).
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
     // "cafe" with e-acute: c(0x63) a(0x61) f(0x66) e-acute(0xC3 0xA9)
-    try test_file.writeAll("caf\xc3\xa9\n");
-    test_file.close();
+    try test_file.writeStreamingAll(io, "caf\xc3\xa9\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-n", "-b", "1-4", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // With -n, partial multi-byte chars should be excluded.
     // Byte 4 is 0xC3 (first byte of 2-byte sequence), byte 5 is 0xA9.
     // Since only byte 4 is selected (not 5), the character is partial
     // and should be excluded entirely, giving "caf".
-    try testing.expectEqualStrings("caf\n", stdout_buffer.items);
+    try testing.expectEqualStrings("caf\n", stdout_aw.writer.buffered());
 }
 
 // ============================================================================
@@ -1060,185 +1081,197 @@ test "cut: -n -b preserves multi-byte characters" {
 // ============================================================================
 
 test "cut: -w splits on whitespace" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("one two three\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "one two three\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-f", "2", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("two\n", stdout_buffer.items);
+    try testing.expectEqualStrings("two\n", stdout_aw.writer.buffered());
 }
 
 test "cut: -w handles multiple consecutive spaces" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("one   two\t\tthree\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "one   two\t\tthree\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-f", "1,3", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("one three\n", stdout_buffer.items);
+    try testing.expectEqualStrings("one three\n", stdout_aw.writer.buffered());
 }
 
 test "cut: -w skips leading whitespace" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("  leading space\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "  leading space\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-f", "1", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("leading\n", stdout_buffer.items);
+    try testing.expectEqualStrings("leading\n", stdout_aw.writer.buffered());
 }
 
 test "cut: -w with no whitespace prints whole line" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("nowhitespace\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "nowhitespace\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-f", "1", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("nowhitespace\n", stdout_buffer.items);
+    try testing.expectEqualStrings("nowhitespace\n", stdout_aw.writer.buffered());
 }
 
 test "cut: -w and -d are mutually exclusive" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-f", "1", "-d", ":" };
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-w and -d") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-w and -d") != null);
 }
 
 test "cut: -w without -f returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-w", "-b", "1" };
-    const result = try runCut(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runCut(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "-w may only be used with -f") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "-w may only be used with -f") != null);
 }
 
 test "cutFieldsWhitespace basic" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "2");
     defer testing.allocator.free(ranges);
 
-    try cutFieldsWhitespace("one two three", ranges, false, " ", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("two", buffer.items);
+    try cutFieldsWhitespace("one two three", ranges, false, " ", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("two", stdout_aw.writer.buffered());
 }
 
 test "cutFieldsWhitespace multiple spaces" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1-2");
     defer testing.allocator.free(ranges);
 
-    try cutFieldsWhitespace("a    b    c", ranges, false, " ", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("a b", buffer.items);
+    try cutFieldsWhitespace("a    b    c", ranges, false, " ", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("a b", stdout_aw.writer.buffered());
 }
 
 test "cutFieldsWhitespace tabs and spaces" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "3");
     defer testing.allocator.free(ranges);
 
-    try cutFieldsWhitespace("x\t y\t z", ranges, false, " ", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("z", buffer.items);
+    try cutFieldsWhitespace("x\t y\t z", ranges, false, " ", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("z", stdout_aw.writer.buffered());
 }
 
 test "cutFieldsWhitespace no whitespace prints line" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutFieldsWhitespace("solid", ranges, false, " ", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("solid", buffer.items);
+    try cutFieldsWhitespace("solid", ranges, false, " ", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("solid", stdout_aw.writer.buffered());
 }
 
 test "cutFieldsWhitespace no whitespace with -s suppresses" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    try cutFieldsWhitespace("solid", ranges, false, " ", true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("", buffer.items);
+    try cutFieldsWhitespace("solid", ranges, false, " ", true, &stdout_aw.writer);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "cut: -n without -b has no effect on field mode" {
     // -n only affects -b mode. When used with -f, it should have no
     // effect and the command should work normally.
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("a,b,c\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "a,b,c\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-n", "-f", "1", "-d", ",", test_path };
-    const result = try runCut(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("a\n", stdout_buffer.items);
+    try testing.expectEqualStrings("a\n", stdout_aw.writer.buffered());
 }
 
 // ============================================================================
@@ -1248,41 +1281,43 @@ test "cut: -n without -b has no effect on field mode" {
 test "cut --version output contains common.name" {
     // The version string must use common.name (not a hardcoded project name).
     // This ensures the output stays consistent if common.name ever changes.
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runCut(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runCut(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, common.name) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.name) != null);
 }
 
 test "cut: processFile reports read errors to stderr" {
     // Create a valid file, then close its handle so reads will fail.
-    // processFile should write a diagnostic message to stderr, but
-    // the bug (line 469: _ = stderr_writer) means stderr stays empty.
+    // processFile should write a diagnostic message to stderr.
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const tmp_file = try tmp_dir.dir.createFile("readable.txt", .{ .read = true });
-    try tmp_file.writeAll("hello\n");
+    const tmp_file = try tmp_dir.dir.createFile(io, "readable.txt", .{});
+    try tmp_file.writeStreamingAll(io, "hello\n");
     // Close the handle to make subsequent reads fail
-    tmp_file.close();
+    tmp_file.close(io);
 
     // Create a File struct with the now-invalid handle
-    const bad_file = std.fs.File{ .handle = tmp_file.handle };
+    const bad_file = std.Io.File{ .handle = tmp_file.handle, .flags = .{ .nonblocking = false } };
 
     const ranges = try parseRangeList(testing.allocator, "1");
     defer testing.allocator.free(ranges);
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const result = processFile(
         testing.allocator,
+        io,
         bad_file,
         ranges,
         .bytes,
@@ -1293,13 +1328,12 @@ test "cut: processFile reports read errors to stderr" {
         false,
         false,
         '\n',
-        stdout_buffer.writer(testing.allocator),
-        stderr_buffer.writer(testing.allocator),
+        &stdout_aw.writer,
+        &stderr_aw.writer,
     );
 
     // Should return non-zero exit code
     try testing.expectEqual(@as(u8, 1), result);
     // Should have written a diagnostic message to stderr
-    // This assertion will FAIL because processFile discards stderr_writer
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }

@@ -54,44 +54,44 @@ const MoveOptions = struct {
     backup: bool = false,
 };
 
-// Test helpers
+// Test helpers — thin wrapper around common.test_dir.TestDir
 
 const TestDir = struct {
-    tmp_dir: testing.TmpDir,
-    allocator: std.mem.Allocator,
+    inner: common.test_dir.TestDir,
 
     pub fn init(allocator: std.mem.Allocator) TestDir {
-        return .{
-            .tmp_dir = testing.tmpDir(.{}),
-            .allocator = allocator,
-        };
+        return .{ .inner = common.test_dir.TestDir.init(allocator) };
     }
 
     pub fn deinit(self: *TestDir) void {
-        self.tmp_dir.cleanup();
+        self.inner.deinit();
     }
 
     pub fn createFile(self: *TestDir, name: []const u8, content: []const u8) !void {
-        const file = try self.tmp_dir.dir.createFile(name, .{});
-        defer file.close();
-        try file.writeAll(content);
+        try self.inner.createFile(name, content, null);
     }
 
     pub fn createUniqueFile(self: *TestDir, base_name: []const u8, content: []const u8) ![]u8 {
-        return try test_utils.createUniqueTestFile(self.tmp_dir.dir, self.allocator, base_name, content);
+        return try test_utils.createUniqueTestFile(testing.io, self.inner.tmp_dir.dir, self.inner.allocator, base_name, content);
     }
 
     pub fn fileExists(self: *TestDir, name: []const u8) bool {
-        self.tmp_dir.dir.access(name, .{}) catch return false;
-        return true;
+        return self.inner.fileExists(name);
     }
 
     pub fn readFile(self: *TestDir, name: []const u8) ![]u8 {
-        return try self.tmp_dir.dir.readFileAlloc(self.allocator, name, 1024 * 1024);
+        return try self.inner.readFileAlloc(name);
     }
 
     pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
-        return try self.tmp_dir.dir.realpathAlloc(self.allocator, name);
+        if (std.mem.eql(u8, name, ".")) {
+            return try self.inner.getBasePath();
+        }
+        return try self.inner.getPath(name);
+    }
+
+    pub fn dir(self: *TestDir) std.Io.Dir {
+        return self.inner.tmp_dir.dir;
     }
 };
 
@@ -124,12 +124,12 @@ test "mv: file rename in same directory" {
     defer testing.allocator.free(new_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, old_path, new_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, old_path, new_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify old file is gone
     try testing.expect(!test_dir.fileExists(old_name));
@@ -151,7 +151,7 @@ test "mv: move to different directory" {
 
     const subdir_name = try test_utils.uniqueTestName(testing.allocator, "subdir");
     defer testing.allocator.free(subdir_name);
-    try test_dir.tmp_dir.dir.makeDir(subdir_name);
+    try test_dir.inner.createDir(subdir_name);
 
     // Get paths
     const source_path = try test_dir.getPath(source_name);
@@ -162,12 +162,12 @@ test "mv: move to different directory" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify original is gone
     try testing.expect(!test_dir.fileExists(source_name));
@@ -175,11 +175,11 @@ test "mv: move to different directory" {
     // Verify file exists in new location
     const moved_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ subdir_name, source_name });
     defer testing.allocator.free(moved_path);
-    const moved_file = try test_dir.tmp_dir.dir.openFile(moved_path, .{});
-    moved_file.close();
+    const moved_file = try test_dir.inner.tmp_dir.dir.openFile(testing.io, moved_path, .{});
+    moved_file.close(testing.io);
 
     // Verify content is preserved
-    const content = try test_dir.tmp_dir.dir.readFileAlloc(testing.allocator, moved_path, 1024);
+    const content = try test_dir.inner.tmp_dir.dir.readFileAlloc(testing.io, moved_path, testing.allocator, .limited(1024));
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Move me!", content);
 }
@@ -189,10 +189,8 @@ test "mv: directory move" {
     defer test_dir.deinit();
 
     // Create source directory with a file inside
-    try test_dir.tmp_dir.dir.makeDir("source_dir");
-    const source_file = try test_dir.tmp_dir.dir.createFile("source_dir/file.txt", .{});
-    try source_file.writeAll("Inside directory");
-    source_file.close();
+    try test_dir.inner.createDir("source_dir");
+    try test_dir.inner.createFile("source_dir/file.txt", "Inside directory", null);
 
     // Get paths
     const source_path = try test_dir.getPath("source_dir");
@@ -203,24 +201,24 @@ test "mv: directory move" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify original directory is gone
-    test_dir.tmp_dir.dir.access("source_dir", .{}) catch |err| {
+    test_dir.inner.tmp_dir.dir.access(testing.io, "source_dir", .{}) catch |err| {
         try testing.expect(err == error.FileNotFound);
     };
 
     // Verify new directory exists with file intact
-    const moved_file = try test_dir.tmp_dir.dir.openFile("dest_dir/file.txt", .{});
-    defer moved_file.close();
+    const moved_file = try test_dir.inner.tmp_dir.dir.openFile(testing.io, "dest_dir/file.txt", .{});
+    defer moved_file.close(testing.io);
 
     // Verify content is preserved
-    const content = try test_dir.tmp_dir.dir.readFileAlloc(testing.allocator, "dest_dir/file.txt", 1024);
+    const content = try test_dir.inner.tmp_dir.dir.readFileAlloc(testing.io, "dest_dir/file.txt", testing.allocator, .limited(1024));
     defer testing.allocator.free(content);
     try testing.expectEqualStrings("Inside directory", content);
 }
@@ -242,12 +240,12 @@ test "mv: force mode overwrites existing file" {
 
     // With force mode, should overwrite without error
     const options = MoveOptions{ .force = true };
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, options, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify source is gone and dest has new content
     try testing.expect(!test_dir.fileExists(source_name));
@@ -277,12 +275,12 @@ test "mv: no-clobber mode preserves existing file" {
 
     // With no-clobber mode, should not overwrite
     const options = MoveOptions{ .no_clobber = true };
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, options, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, options, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify source still exists and dest is unchanged
     try testing.expect(test_dir.fileExists(source_name));
@@ -310,12 +308,12 @@ test "mv: files with spaces in names" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -344,12 +342,12 @@ test "mv: files with unicode characters" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -378,12 +376,12 @@ test "mv: files with special characters" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -412,12 +410,12 @@ test "mv: empty file" {
     defer testing.allocator.free(dest_path);
 
     // Run mv
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Verify move worked
     try testing.expect(!test_dir.fileExists(source_name));
@@ -428,31 +426,31 @@ test "mv: empty file" {
 }
 
 /// Move across filesystems using copy-then-delete
-fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+fn crossFilesystemMove(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     if (options.verbose) {
         try stdout_writer.print("mv: moving '{s}' to '{s}' (cross-filesystem)\n", .{ source, dest });
     }
 
     // Get source stat to determine if it's a directory
-    const source_stat = std.fs.cwd().statFile(source) catch |err| {
+    const source_info = common.file.FileInfo.stat(io, source) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat '{s}': {}", .{ source, err });
         return err;
     };
 
     errdefer {
-        if (source_stat.kind == .directory) {
-            std.fs.cwd().deleteTree(dest) catch {};
+        if (source_info.kind == .directory) {
+            std.Io.Dir.cwd().deleteTree(io, dest) catch {};
         } else {
-            std.fs.cwd().deleteFile(dest) catch {};
+            std.Io.Dir.cwd().deleteFile(io, dest) catch {};
         }
     }
 
-    if (source_stat.kind == .directory) {
+    if (source_info.kind == .directory) {
         // Handle directory recursively
-        try copyDirectoryRecursive(allocator, source, dest, options, stdout_writer, stderr_writer);
+        try copyDirectoryRecursive(allocator, io, source, dest, options, stdout_writer, stderr_writer);
     } else {
         // Handle regular file
-        try copyFile(allocator, source, dest, source_stat, options, stdout_writer, stderr_writer);
+        try copyFileCross(allocator, io, source, dest, source_info, options, stdout_writer, stderr_writer);
     }
 
     // If copy succeeded, remove the source
@@ -460,14 +458,14 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
         try stdout_writer.print("mv: removing source '{s}'\n", .{source});
     }
 
-    if (source_stat.kind == .directory) {
-        std.fs.cwd().deleteTree(source) catch |del_err| {
+    if (source_info.kind == .directory) {
+        std.Io.Dir.cwd().deleteTree(io, source) catch |del_err| {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "failed to remove source directory '{s}': {}", .{ source, del_err });
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "copy completed successfully but source directory remains - please remove manually", .{});
             return del_err;
         };
     } else {
-        std.fs.cwd().deleteFile(source) catch |del_err| {
+        std.Io.Dir.cwd().deleteFile(io, source) catch |del_err| {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "failed to remove source file '{s}': {}", .{ source, del_err });
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "copy completed successfully but source file remains - please remove manually", .{});
             return del_err;
@@ -480,33 +478,38 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, source: []const u8, dest: [
 }
 
 /// Copy a single file across filesystems with attribute preservation
-fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, source_stat: std.fs.File.Stat, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+fn copyFileCross(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, source_info: common.file.FileInfo, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     if (options.verbose) {
         try stdout_writer.print("mv: copying file '{s}' to '{s}'\n", .{ source_path, dest_path });
     }
 
     // Open source file
-    const source_file = std.fs.cwd().openFile(source_path, .{}) catch |err| {
+    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source file '{s}': {}", .{ source_path, err });
         return err;
     };
-    defer source_file.close();
+    defer source_file.close(io);
 
     // Create destination file with same permissions as source
-    const dest_file = std.fs.cwd().createFile(dest_path, .{ .mode = source_stat.mode }) catch |err| {
+    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
+        .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
+    }) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination file '{s}': {}", .{ dest_path, err });
         return err;
     };
-    defer dest_file.close();
+    defer dest_file.close(io);
 
     // Copy file contents
-    common.file_ops.copyFileContents(source_file, dest_file) catch |err| {
+    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "error copying '{s}' to '{s}': {}", .{ source_path, dest_path, err });
         return err;
     };
 
     // Preserve timestamps if possible
-    dest_file.updateTimes(source_stat.atime, source_stat.mtime) catch |err| {
+    dest_file.setTimestamps(io, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
+    }) catch |err| {
         // Non-critical error - log but continue
         if (options.verbose) {
             try stdout_writer.print("mv: warning: could not preserve timestamps for '{s}': {}\n", .{ dest_path, err });
@@ -515,26 +518,26 @@ fn copyFile(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []
 }
 
 /// Recursively copy directory across filesystems
-fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+fn copyDirectoryRecursive(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
     if (options.verbose) {
         try stdout_writer.print("mv: copying directory '{s}' to '{s}'\n", .{ source_path, dest_path });
     }
 
     // Get source directory stat for permissions
-    const source_stat = std.fs.cwd().statFile(source_path) catch |err| {
+    const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat source directory '{s}': {}", .{ source_path, err });
         return err;
     };
 
     // Create destination directory with same permissions
-    std.fs.cwd().makeDir(dest_path) catch |err| switch (err) {
+    std.Io.Dir.cwd().createDir(io, dest_path, std.Io.File.Permissions.fromMode(source_info.mode)) catch |err| switch (err) {
         error.PathAlreadyExists => {
             // Directory already exists, check if it's actually a directory
-            const dest_stat = std.fs.cwd().statFile(dest_path) catch |stat_err| {
+            const dest_info = common.file.FileInfo.stat(io, dest_path) catch |stat_err| {
                 common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat existing destination '{s}': {}", .{ dest_path, stat_err });
                 return stat_err;
             };
-            if (dest_stat.kind != .directory) {
+            if (dest_info.kind != .directory) {
                 common.printErrorWithProgram(allocator, stderr_writer, "mv", "destination '{s}' exists but is not a directory", .{dest_path});
                 return error.NotDir;
             }
@@ -545,29 +548,16 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
         },
     };
 
-    // Set directory permissions
-    var dest_dir = std.fs.cwd().openDir(dest_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open directory '{s}': {}", .{ dest_path, err });
-        return err;
-    };
-    defer dest_dir.close();
-
-    dest_dir.chmod(source_stat.mode) catch |err| {
-        if (options.verbose) {
-            try stdout_writer.print("mv: warning: could not set permissions on '{s}': {}\n", .{ dest_path, err });
-        }
-    };
-
     // Open source directory for iteration
-    var source_dir = std.fs.cwd().openDir(source_path, .{ .iterate = true }) catch |err| {
+    var source_dir = std.Io.Dir.cwd().openDir(io, source_path, .{ .iterate = true }) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source directory '{s}': {}", .{ source_path, err });
         return err;
     };
-    defer source_dir.close();
+    defer source_dir.close(io);
 
     // Iterate through directory entries
     var iterator = source_dir.iterate();
-    while (iterator.next() catch |err| {
+    while (iterator.next(io) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading directory '{s}': {}", .{ source_path, err });
         return err;
     }) |entry| {
@@ -579,24 +569,25 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 
         switch (entry.kind) {
             .file => {
-                const entry_stat = std.fs.cwd().statFile(entry_source) catch |err| {
+                const entry_info = common.file.FileInfo.stat(io, entry_source) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat file '{s}': {}", .{ entry_source, err });
                     return err;
                 };
-                try copyFile(allocator, entry_source, entry_dest, entry_stat, options, stdout_writer, stderr_writer);
+                try copyFileCross(allocator, io, entry_source, entry_dest, entry_info, options, stdout_writer, stderr_writer);
             },
             .directory => {
-                try copyDirectoryRecursive(allocator, entry_source, entry_dest, options, stdout_writer, stderr_writer);
+                try copyDirectoryRecursive(allocator, io, entry_source, entry_dest, options, stdout_writer, stderr_writer);
             },
             .sym_link => {
                 // Copy symlink by reading target and creating new symlink
-                var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const target = std.fs.cwd().readLink(entry_source, &target_buf) catch |err| {
+                var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                const target_len = std.Io.Dir.cwd().readLink(io, entry_source, &target_buf) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot read symlink '{s}': {}", .{ entry_source, err });
                     return err;
                 };
+                const target = target_buf[0..target_len];
 
-                std.fs.cwd().symLink(target, entry_dest, .{}) catch |err| {
+                std.Io.Dir.cwd().symLink(io, target, entry_dest, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create symlink '{s}': {}", .{ entry_dest, err });
                     return err;
                 };
@@ -623,7 +614,7 @@ fn copyDirectoryRecursive(allocator: std.mem.Allocator, source_path: []const u8,
 /// when the kernel returns EINVAL (e.g., moving a directory into its own
 /// subdirectory). This wrapper calls the C rename directly and maps EINVAL
 /// to error.InvalidArgument so callers can handle it gracefully.
-const SafeRenameError = std.posix.RenameError || error{InvalidArgument};
+const SafeRenameError = std.Io.Dir.RenameError || error{ InvalidArgument, CrossDevice, PathAlreadyExists };
 
 fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
     const old_c = try std.posix.toPosixPath(old_path);
@@ -648,7 +639,7 @@ fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
         .EXIST => return error.PathAlreadyExists,
         .NOTEMPTY => return error.PathAlreadyExists,
         .ROFS => return error.ReadOnlyFileSystem,
-        .XDEV => return error.RenameAcrossMountPoints,
+        .XDEV => return error.CrossDevice,
         else => return error.Unexpected,
     }
 }
@@ -656,7 +647,7 @@ fn safeRename(old_path: []const u8, new_path: []const u8) SafeRenameError!void {
 /// Check if path is a directory, respecting the no_follow_symlink option.
 /// When no_follow_symlink is true, a symlink to a directory is NOT treated
 /// as a directory (the symlink itself is treated as a file target).
-fn isDestDirectory(path: []const u8, no_follow_symlink: bool) !bool {
+fn isDestDirectory(io: std.Io, path: []const u8, no_follow_symlink: bool) !bool {
     if (no_follow_symlink) {
         // Use lstat to check without following symlinks
         const info = common.file.FileInfo.lstat(path) catch |err| switch (err) {
@@ -667,26 +658,26 @@ fn isDestDirectory(path: []const u8, no_follow_symlink: bool) !bool {
         if (info.kind == .sym_link) return false;
         return info.kind == .directory;
     }
-    // Default: use statFile which follows symlinks
-    const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+    // Default: use stat which follows symlinks
+    const info = common.file.FileInfo.stat(io, path) catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         else => return err,
     };
-    return stat.kind == .directory;
+    return info.kind == .directory;
 }
 
 /// Move file or directory with atomic rename or cross-filesystem copy
-fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype, hinted_overwrite: *bool) !void {
+fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype, hinted_overwrite: *bool) !void {
     // Check for same file using fstat to compare both inode and device.
     // If source and dest are hardlinks (same inode, different paths),
     // just unlink the source and succeed.
-    if (common.file_ops.isSameFile(source, dest)) {
+    if (common.file_ops.isSameFile(io, source, dest)) {
         if (std.mem.eql(u8, source, dest)) {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
             return error.SameFile;
         }
         // Different names for the same inode (hardlink): remove the source link.
-        std.fs.cwd().deleteFile(source) catch |err| {
+        std.Io.Dir.cwd().deleteFile(io, source) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot remove '{s}': {}", .{ source, err });
             return error.SameFile;
         };
@@ -697,7 +688,7 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
     // Note: This has a small TOCTOU window, but it's the standard approach used by GNU mv
     // The alternative would require filesystem-specific atomic operations not available in POSIX
     if (options.no_clobber) {
-        if (std.fs.cwd().access(dest, .{})) |_| {
+        if (std.Io.Dir.cwd().access(io, dest, .{})) |_| {
             // Destination exists, skip the move
             if (options.verbose) {
                 try stdout_writer.print("mv: not overwriting '{s}' (no-clobber mode)\n", .{dest});
@@ -717,16 +708,16 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
     // Check if destination exists for interactive prompt, overwrite hint, and backup.
     // On Linux, rename() atomically overwrites without returning EEXIST, so we must
     // check before calling rename to give -i a chance to prompt (F36).
-    const dest_exists = if (std.fs.cwd().access(dest, .{})) |_| true else |_| false;
+    const dest_exists = if (std.Io.Dir.cwd().access(io, dest, .{})) |_| true else |_| false;
 
     if (dest_exists and options.interactive) {
         // Only prompt if stdin is a terminal; otherwise default to
         // "no" (skip the move). Matches GNU mv behavior and prevents
         // hangs when stdin is not interactive (pipes, tests, etc.).
-        if (!std.posix.isatty(std.fs.File.stdin().handle)) {
+        if (std.c.isatty(std.Io.File.stdin().handle) == 0) {
             return; // Non-interactive stdin: default to no
         }
-        if (!try common.prompt.promptYesNo(stderr_writer, "mv: overwrite '{s}'? ", .{dest})) {
+        if (!try common.prompt.promptYesNo(io, stderr_writer, "mv: overwrite '{s}'? ", .{dest})) {
             return; // User chose not to overwrite
         }
     }
@@ -754,9 +745,9 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
 
     // Try atomic rename first (using safeRename to handle EINVAL gracefully)
     safeRename(source, dest) catch |err| switch (err) {
-        error.RenameAcrossMountPoints => {
+        error.CrossDevice => {
             // Fall back to copy + remove
-            return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
+            return crossFilesystemMove(allocator, io, source, dest, options, stdout_writer, stderr_writer);
         },
         error.PathAlreadyExists => {
             // Destination exists but rename didn't overwrite (some filesystems)
@@ -766,9 +757,9 @@ fn moveFile(allocator: std.mem.Allocator, source: []const u8, dest: []const u8, 
             }
 
             // Remove destination and retry rename (same-filesystem overwrite)
-            std.fs.cwd().deleteFile(dest) catch {
+            std.Io.Dir.cwd().deleteFile(io, dest) catch {
                 // If delete fails, fall back to cross-filesystem move
-                return crossFilesystemMove(allocator, source, dest, options, stdout_writer, stderr_writer);
+                return crossFilesystemMove(allocator, io, source, dest, options, stdout_writer, stderr_writer);
             };
             safeRename(source, dest) catch |retry_err| {
                 common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, retry_err });
@@ -807,12 +798,12 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Main entry point for mv utility
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, run);
 }
 
 /// Run mv with provided writers for output
-fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const prog_name = "mv";
 
     const parsed_args = common.argparse.ArgParser.parseOrExit(MvArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
@@ -881,7 +872,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
     if (files.len > 2) {
         // Multiple sources - destination must be a directory
         const dest = files[files.len - 1];
-        const dest_is_dir = isDestDirectory(dest, options.no_follow_symlink) catch |err| switch (err) {
+        const dest_is_dir = isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
             error.FileNotFound => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
                 return @intFromEnum(common.ExitCode.general_error);
@@ -895,16 +886,13 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
         }
 
         // Move each source to destination directory
-        // TODO: Consider parallel processing for multiple independent file moves
-        // This could be implemented using a thread pool for better performance
-        // when moving many files, but would require careful error handling
         var exit_code = common.ExitCode.success;
         for (files[0 .. files.len - 1]) |source| {
             const basename = std.fs.path.basename(source);
             const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
+            moveFile(allocator, io, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                 exit_code = common.ExitCode.general_error;
                 continue;
             };
@@ -920,10 +908,10 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
         const dest = files[1];
 
         // Check if destination is a directory (respecting -h flag for symlinks)
-        const dest_is_dir = isDestDirectory(dest, options.no_follow_symlink) catch |err| switch (err) {
+        const dest_is_dir = isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
             error.FileNotFound => {
                 // Destination doesn't exist, proceed with normal rename
-                moveFile(allocator, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
+                moveFile(allocator, io, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                     return @intFromEnum(common.ExitCode.general_error);
                 };
 
@@ -941,7 +929,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
             const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
             defer allocator.free(full_dest);
 
-            moveFile(allocator, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
+            moveFile(allocator, io, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                 return @intFromEnum(common.ExitCode.general_error);
             };
 
@@ -950,7 +938,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
             }
         } else {
             // Destination is a file, proceed with normal move/overwrite logic
-            moveFile(allocator, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
+            moveFile(allocator, io, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
                 return @intFromEnum(common.ExitCode.general_error);
             };
 
@@ -976,14 +964,14 @@ test "mv: force overwrite existing file on same filesystem" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Force overwrite via moveFile (exercises PathAlreadyExists handler)
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{ .force = true }, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Source should be gone, dest should have new content
     try testing.expect(!test_dir.fileExists(source_name));
@@ -997,7 +985,7 @@ test "mv: large file copy preserves content integrity" {
     defer test_dir.deinit();
 
     // Create a file larger than the 64KB copy buffer to exercise
-    // the incremental read loop in crossFilesystemMove/copyFile
+    // the incremental read loop in crossFilesystemMove/copyFileCross
     const large_size = 128 * 1024;
     const content = try testing.allocator.alloc(u8, large_size);
     defer testing.allocator.free(content);
@@ -1009,9 +997,9 @@ test "mv: large file copy preserves content integrity" {
     const source_name = try test_utils.uniqueTestName(testing.allocator, "large_src");
     defer testing.allocator.free(source_name);
     {
-        const file = try test_dir.tmp_dir.dir.createFile(source_name, .{});
-        defer file.close();
-        try file.writeAll(content);
+        const file = try test_dir.inner.tmp_dir.dir.createFile(testing.io, source_name, .{});
+        defer file.close(testing.io);
+        try file.writeStreamingAll(testing.io, content);
     }
 
     const dest_name = try test_utils.uniqueTestName(testing.allocator, "large_dst");
@@ -1024,19 +1012,19 @@ test "mv: large file copy preserves content integrity" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Source should be gone
     try testing.expect(!test_dir.fileExists(source_name));
 
     // Verify content integrity of destination
-    const moved_content = try test_dir.tmp_dir.dir.readFileAlloc(testing.allocator, dest_name, large_size + 1);
+    const moved_content = try test_dir.inner.tmp_dir.dir.readFileAlloc(testing.io, dest_name, testing.allocator, .limited(large_size + 1));
     defer testing.allocator.free(moved_content);
     try testing.expectEqual(large_size, moved_content.len);
     try testing.expectEqualSlices(u8, content, moved_content);
@@ -1056,17 +1044,17 @@ test "mv: overwrite hint printed when destination exists with -f" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{ .force = true }, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Hint should have been shown (force succeeds, hint advises about -i)
     try testing.expect(hinted);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint: use -i") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint: use -i") != null);
 }
 
 test "mv: overwrite hint NOT printed with -i flag" {
@@ -1083,18 +1071,18 @@ test "mv: overwrite hint NOT printed with -i flag" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
     // With interactive flag, the hint should not appear
     // (moveFile will try to prompt and may error on PathAlreadyExists, but hint should not show)
-    moveFile(testing.allocator, source_path, dest_path, .{ .interactive = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted) catch {};
+    moveFile(testing.allocator, testing.io, source_path, dest_path, .{ .interactive = true }, &stdout_aw.writer, &stderr_aw.writer, &hinted) catch {};
 
     try testing.expect(!hinted);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint:") == null);
 }
 
 test "mv: overwrite hint NOT printed with -f and -i flags" {
@@ -1111,17 +1099,17 @@ test "mv: overwrite hint NOT printed with -f and -i flags" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
     // With both force and interactive, -i suppresses the hint
-    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true, .interactive = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{ .force = true, .interactive = true }, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     try testing.expect(!hinted);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint:") == null);
 }
 
 test "mv: overwrite hint NOT printed when destination does not exist" {
@@ -1141,16 +1129,16 @@ test "mv: overwrite hint NOT printed when destination does not exist" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{}, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     try testing.expect(!hinted);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "hint:") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "hint:") == null);
 }
 
 test "mv: -b flag creates backup of destination" {
@@ -1167,13 +1155,13 @@ test "mv: -b flag creates backup of destination" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{ .force = true, .backup = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{ .force = true, .backup = true }, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Destination should have new content
     const content = try test_dir.readFile(dest_name);
@@ -1205,13 +1193,13 @@ test "mv: -b flag does nothing when dest does not exist" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var hinted = false;
-    try moveFile(testing.allocator, source_path, dest_path, .{ .backup = true }, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator), &hinted);
+    try moveFile(testing.allocator, testing.io, source_path, dest_path, .{ .backup = true }, &stdout_aw.writer, &stderr_aw.writer, &hinted);
 
     // Dest should have the content
     try testing.expect(test_dir.fileExists(dest_name));
@@ -1230,24 +1218,24 @@ test "mv: -h flag prevents following symlink to directory" {
     defer test_dir.deinit();
 
     // Create a real directory and a symlink pointing to it
-    try test_dir.tmp_dir.dir.makeDir("real_dir");
-    try test_dir.tmp_dir.dir.symLink("real_dir", "symlink_to_dir", .{ .is_directory = true });
+    try test_dir.inner.createDir("real_dir");
+    try test_dir.inner.tmp_dir.dir.symLink(testing.io, "real_dir", "symlink_to_dir", .{ .is_directory = true });
 
     // Create a source file
     try test_dir.createFile("source.txt", "test content");
 
-    // Get base path and construct symlink path manually (realpathAlloc follows symlinks)
+    // Get base path and construct symlink path manually (getBasePath doesn't follow symlinks)
     const base_path = try test_dir.getPath(".");
     defer testing.allocator.free(base_path);
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/symlink_to_dir", .{base_path});
     defer testing.allocator.free(symlink_path);
 
     // Without -h, isDestDirectory should detect symlink_to_dir as a directory
-    const is_dir_normal = try isDestDirectory(symlink_path, false);
+    const is_dir_normal = try isDestDirectory(testing.io, symlink_path, false);
     try testing.expect(is_dir_normal);
 
     // With -h, isDestDirectory should NOT detect symlink_to_dir as a directory
-    const is_dir_no_follow = try isDestDirectory(symlink_path, true);
+    const is_dir_no_follow = try isDestDirectory(testing.io, symlink_path, true);
     try testing.expect(!is_dir_no_follow);
 }
 
@@ -1256,13 +1244,13 @@ test "mv: -h flag still follows real directories" {
     defer test_dir.deinit();
 
     // Create a real directory
-    try test_dir.tmp_dir.dir.makeDir("real_dir");
+    try test_dir.inner.createDir("real_dir");
 
     const dir_path = try test_dir.getPath("real_dir");
     defer testing.allocator.free(dir_path);
 
     // With -h, a real directory is still treated as a directory
-    const is_dir = try isDestDirectory(dir_path, true);
+    const is_dir = try isDestDirectory(testing.io, dir_path, true);
     try testing.expect(is_dir);
 }
 
@@ -1313,21 +1301,21 @@ test "mv: verbose move prints arrow to stdout" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-v", source_path, dest_path };
-    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verbose arrow message should appear in stdout
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "->") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.written(), "->") != null);
     // Verify source and dest appear in the stdout message
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, source_path) != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, dest_path) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.written(), source_path) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.written(), dest_path) != null);
 }
 
 test "mv: verbose move does not print arrow to stderr" {
@@ -1347,18 +1335,18 @@ test "mv: verbose move does not print arrow to stderr" {
     const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/{s}", .{ base_path, dest_name });
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-v", source_path, dest_path };
-    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // stderr should NOT contain the verbose arrow message
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "->") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "->") == null);
 }
 
 test "mv: moving directory into its own subdirectory returns error not panic" {
@@ -1369,37 +1357,35 @@ test "mv: moving directory into its own subdirectory returns error not panic" {
     defer test_dir.deinit();
 
     // Create parent/child directory structure
-    try test_dir.tmp_dir.dir.makePath("parent/child");
+    try test_dir.inner.tmp_dir.dir.createDirPath(testing.io, "parent/child");
 
     const parent_path = try test_dir.getPath("parent");
     defer testing.allocator.free(parent_path);
     const child_path = try test_dir.getPath("parent/child");
     defer testing.allocator.free(child_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    // Run via runUtility so we get an exit code instead of a crash
+    // Run via run so we get an exit code instead of a crash
     const args = [_][]const u8{ parent_path, child_path };
-    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should exit with error (1), not panic/crash
     try testing.expectEqual(@as(u8, 1), exit_code);
 
     // stderr should contain a clean error message, not a stack trace
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "mv:") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "mv:") != null);
     // Must NOT contain panic indicators
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "panic") == null);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "unreachable") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "panic") == null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "unreachable") == null);
 }
 
 test "mv: -n -f flag combination should let force win (last flag)" {
     // F38: GNU mv uses last-flag-wins semantics.
     // -n -f means force wins: destination should be overwritten.
-    // Our code evaluates no_clobber first regardless of flag order,
-    // so this test should fail until the precedence bug is fixed.
     var test_dir = TestDir.init(testing.allocator);
     defer test_dir.deinit();
 
@@ -1413,14 +1399,14 @@ test "mv: -n -f flag combination should let force win (last flag)" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Simulate -n -f: last flag is force, should overwrite
     const args = [_][]const u8{ "-n", "-f", source_path, dest_path };
-    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
@@ -1450,14 +1436,14 @@ test "mv: -f -n flag combination should let no-clobber win (last flag)" {
     const dest_path = try test_dir.getPath(dest_name);
     defer testing.allocator.free(dest_path);
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Simulate -f -n: last flag is no-clobber, should preserve destination
     const args = [_][]const u8{ "-f", "-n", source_path, dest_path };
-    const exit_code = try run(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 

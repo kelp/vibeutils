@@ -76,7 +76,7 @@ const StatOptions = struct {
 fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: StatOptions, err: ?[]const u8 } {
     var opts = StatOptions{};
     var err_msg: ?[]const u8 = null;
-    var positionals = std.ArrayListUnmanaged([]const u8){};
+    var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
     var i: usize = 0;
 
     while (i < args.len) : (i += 1) {
@@ -197,74 +197,119 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: Stat
 // Low-level stat wrapper
 // ============================================================================
 
-/// Perform stat or lstat on a path, returning the raw C Stat struct
-fn doStat(path: []const u8, follow_symlinks: bool) !c.Stat {
+/// Cross-platform stat result. Populated from linux.statx on Linux,
+/// or c.Stat via fstatat on macOS/BSD.
+const StatResult = struct {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    nlink: u64,
+    uid: u32,
+    gid: u32,
+    rdev: u64,
+    size: i64,
+    blksize: i64,
+    blocks: i64,
+    atim: struct { sec: i64, nsec: i64 },
+    mtim: struct { sec: i64, nsec: i64 },
+    ctim: struct { sec: i64, nsec: i64 },
+    btim: struct { sec: i64, nsec: i64 }, // birth time (0 on Linux)
+};
+
+/// Perform stat or lstat on a path, returning a cross-platform StatResult.
+fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
     var buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     const c_path = buf[0..path.len :0];
 
-    var stat_buf: c.Stat = undefined;
-    const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
-    const result = c.fstatat(std.fs.cwd().fd, c_path, &stat_buf, flags);
-    if (result != 0) {
-        const errno = std.posix.errno(result);
-        return switch (errno) {
-            .ACCES => error.AccessDenied,
-            .NOENT => error.FileNotFound,
-            .NOTDIR => error.NotDir,
-            .NAMETOOLONG => error.NameTooLong,
-            .LOOP => error.SymLinkLoop,
-            else => error.SystemResources,
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        const at_flags: u32 = if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW;
+        var stx: linux.Statx = undefined;
+        const statx_mask: linux.STATX = @bitCast(@as(u32, 0xfff)); // BASIC_STATS | BTIME
+        const rc = linux.statx(c.AT.FDCWD, c_path, at_flags, statx_mask, &stx);
+        switch (linux.errno(rc)) {
+            .SUCCESS => {},
+            .ACCES => return error.AccessDenied,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .NAMETOOLONG => return error.NameTooLong,
+            .LOOP => return error.SymLinkLoop,
+            else => return error.SystemResources,
+        }
+        const dev_id = (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
+        const rdev_id = (@as(u64, stx.rdev_major) << 32) | stx.rdev_minor;
+        return StatResult{
+            .dev = dev_id,
+            .ino = stx.ino,
+            .mode = stx.mode,
+            .nlink = stx.nlink,
+            .uid = stx.uid,
+            .gid = stx.gid,
+            .rdev = rdev_id,
+            .size = @intCast(stx.size),
+            .blksize = @intCast(stx.blksize),
+            .blocks = @intCast(stx.blocks),
+            .atim = .{ .sec = stx.atime.sec, .nsec = @intCast(stx.atime.nsec) },
+            .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
+            .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
+            .btim = .{ .sec = stx.btime.sec, .nsec = @intCast(stx.btime.nsec) },
+        };
+    } else {
+        var stat_buf: c.Stat = undefined;
+        const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
+        const result = c.fstatat(c.AT.FDCWD, c_path, &stat_buf, flags);
+        if (result != 0) {
+            const errno = std.posix.errno(result);
+            return switch (errno) {
+                .ACCES => error.AccessDenied,
+                .NOENT => return error.FileNotFound,
+                .NOTDIR => return error.NotDir,
+                .NAMETOOLONG => return error.NameTooLong,
+                .LOOP => return error.SymLinkLoop,
+                else => return error.SystemResources,
+            };
+        }
+        return StatResult{
+            .dev = @intCast(stat_buf.dev),
+            .ino = @intCast(stat_buf.ino),
+            .mode = @intCast(stat_buf.mode),
+            .nlink = @intCast(stat_buf.nlink),
+            .uid = @intCast(stat_buf.uid),
+            .gid = @intCast(stat_buf.gid),
+            .rdev = @intCast(stat_buf.rdev),
+            .size = @intCast(stat_buf.size),
+            .blksize = @intCast(stat_buf.blksize),
+            .blocks = @intCast(stat_buf.blocks),
+            .atim = .{ .sec = stat_buf.atimespec.sec, .nsec = stat_buf.atimespec.nsec },
+            .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
+            .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
+            .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
         };
     }
-    return stat_buf;
 }
 
 // ============================================================================
 // Time formatting helpers
 // ============================================================================
 
-fn getTimespecSec(stat_buf: c.Stat, comptime which: enum { atime, mtime, ctime, btime }) i64 {
+fn getTimespecSec(stat_buf: StatResult, comptime which: enum { atime, mtime, ctime, btime }) i64 {
     return switch (which) {
-        .atime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.atimespec.sec
-        else
-            stat_buf.atim.sec,
-        .mtime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.mtimespec.sec
-        else
-            stat_buf.mtim.sec,
-        .ctime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.ctimespec.sec
-        else
-            stat_buf.ctim.sec,
-        .btime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.birthtimespec.sec
-        else
-            0,
+        .atime => stat_buf.atim.sec,
+        .mtime => stat_buf.mtim.sec,
+        .ctime => stat_buf.ctim.sec,
+        .btime => stat_buf.btim.sec,
     };
 }
 
-fn getTimespecNsec(stat_buf: c.Stat, comptime which: enum { atime, mtime, ctime, btime }) i64 {
+fn getTimespecNsec(stat_buf: StatResult, comptime which: enum { atime, mtime, ctime, btime }) i64 {
     return switch (which) {
-        .atime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.atimespec.nsec
-        else
-            stat_buf.atim.nsec,
-        .mtime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.mtimespec.nsec
-        else
-            stat_buf.mtim.nsec,
-        .ctime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.ctimespec.nsec
-        else
-            stat_buf.ctim.nsec,
-        .btime => if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
-            stat_buf.birthtimespec.nsec
-        else
-            0,
+        .atime => stat_buf.atim.nsec,
+        .mtime => stat_buf.mtim.nsec,
+        .ctime => stat_buf.ctim.nsec,
+        .btime => stat_buf.btim.nsec,
     };
 }
 
@@ -366,12 +411,12 @@ fn formatPermissions(mode: u32, perm_buf: *[10]u8) []const u8 {
 fn expandFormatDirective(
     allocator: Allocator,
     directive: u8,
-    stat_buf: c.Stat,
+    stat_buf: StatResult,
     path: []const u8,
     follow_symlinks: bool,
     writer: anytype,
 ) !void {
-    const mode: u32 = @intCast(stat_buf.mode);
+    const mode: u32 = stat_buf.mode;
     switch (directive) {
         'a' => {
             // Access rights in octal
@@ -468,11 +513,21 @@ fn expandFormatDirective(
             // Quoted file name with symlink target
             if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
                 var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const target = std.fs.cwd().readLink(path, &link_buf) catch {
+                var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+                if (path.len <= std.fs.max_path_bytes) {
+                    @memcpy(path_zbuf[0..path.len], path);
+                    path_zbuf[path.len] = 0;
+                    const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
+                    const n = c.readlink(path_z, &link_buf, link_buf.len);
+                    if (n > 0) {
+                        const target = link_buf[0..@intCast(n)];
+                        try writer.print("'{s}' -> '{s}'", .{ path, target });
+                    } else {
+                        try writer.print("'{s}'", .{path});
+                    }
+                } else {
                     try writer.print("'{s}'", .{path});
-                    return;
-                };
-                try writer.print("'{s}' -> '{s}'", .{ path, target });
+                }
             } else {
                 try writer.print("'{s}'", .{path});
             }
@@ -612,7 +667,7 @@ fn expandFormatDirective(
 fn processFormatString(
     allocator: Allocator,
     format: []const u8,
-    stat_buf: c.Stat,
+    stat_buf: StatResult,
     path: []const u8,
     follow_symlinks: bool,
     interpret_escapes: bool,
@@ -667,22 +722,32 @@ fn processFormatString(
 
 fn printDefaultFormat(
     allocator: Allocator,
-    stat_buf: c.Stat,
+    stat_buf: StatResult,
     path: []const u8,
     follow_symlinks: bool,
     writer: anytype,
 ) !void {
-    const mode: u32 = @intCast(stat_buf.mode);
+    const mode: u32 = stat_buf.mode;
 
     // Line 1: File name
     try writer.writeAll("  File: ");
     if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
         var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const target = std.fs.cwd().readLink(path, &link_buf) catch {
+        var path_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (path.len <= std.fs.max_path_bytes) {
+            @memcpy(path_buf2[0..path.len], path);
+            path_buf2[path.len] = 0;
+            const path_z: [*:0]const u8 = @ptrCast(&path_buf2);
+            const n = c.readlink(path_z, &link_buf, link_buf.len);
+            if (n > 0) {
+                const target = link_buf[0..@intCast(n)];
+                try writer.print("{s} -> {s}\n", .{ path, target });
+            } else {
+                try writer.print("{s}\n", .{path});
+            }
+        } else {
             try writer.print("{s}\n", .{path});
-            return;
-        };
-        try writer.print("{s} -> {s}\n", .{ path, target });
+        }
     } else {
         try writer.print("{s}\n", .{path});
     }
@@ -805,9 +870,9 @@ fn printDefaultFormat(
 // Terse output format
 // ============================================================================
 
-fn printTerseFormat(stat_buf: c.Stat, path: []const u8, writer: anytype) !void {
-    const mode: u32 = @intCast(stat_buf.mode);
-    const dev: u64 = @intCast(stat_buf.dev);
+fn printTerseFormat(stat_buf: StatResult, path: []const u8, writer: anytype) !void {
+    const mode: u32 = stat_buf.mode;
+    const dev: u64 = stat_buf.dev;
 
     // Device major/minor from rdev
     const rdev_major: u64 = blk: {
@@ -896,18 +961,35 @@ fn fsTypeName(f_type: c_long) []const u8 {
 /// Read mount point and device for a given path from /proc/self/mountinfo (Linux).
 /// Uses longest-prefix matching on mount points.
 fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) struct { mount: []const u8, dev: []const u8 } {
-    const file = std.fs.openFileAbsolute("/proc/self/mountinfo", .{}) catch
+    // Use raw POSIX syscalls to avoid needing std.Io here.
+    const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/self/mountinfo", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0) catch
         return .{ .mount = "?", .dev = "?" };
-    defer file.close();
+    defer _ = std.c.close(fd);
 
     // Resolve the path to an absolute path for matching
-    var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch path;
+    var abs_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+    var path_z_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
+    const abs_path: []const u8 = blk: {
+        if (path.len <= std.fs.max_path_bytes) {
+            @memcpy(path_z_buf2[0..path.len], path);
+            path_z_buf2[path.len] = 0;
+            const path_z: [*:0]const u8 = @ptrCast(&path_z_buf2);
+            if (c.realpath(path_z, &abs_buf)) |resolved| {
+                break :blk std.mem.sliceTo(resolved, 0);
+            }
+        }
+        break :blk path;
+    };
 
     // Read /proc/self/mountinfo into a buffer
     var content_buf: [32768]u8 = undefined;
-    const bytes_read = file.readAll(&content_buf) catch
-        return .{ .mount = "?", .dev = "?" };
+    var total: usize = 0;
+    while (total < content_buf.len) {
+        const n = std.posix.read(fd, content_buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    const bytes_read = total;
     const content = content_buf[0..bytes_read];
 
     var best_mount: []const u8 = "/";
@@ -944,7 +1026,7 @@ fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) s
                 best_mount = mount_buf[0..mount_point.len];
             }
             // Find device name after the " - " separator
-            if (std.mem.indexOf(u8, line, " - ")) |sep_pos| {
+            if (std.mem.find(u8, line, " - ")) |sep_pos| {
                 const after_sep = line[sep_pos + 3 ..];
                 // Format: fstype device options
                 var dev_iter = std.mem.splitScalar(u8, after_sep, ' ');
@@ -1035,7 +1117,8 @@ fn printFileSystemInfo(
 // Main utility function
 // ============================================================================
 
-pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runStat(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    _ = io;
     const parsed = parseArgs(allocator, args);
     const opts = parsed.opts;
     defer allocator.free(opts.positionals);
@@ -1105,8 +1188,8 @@ pub fn runStat(allocator: Allocator, args: []const []const u8, stdout_writer: an
 // Entry point
 // ============================================================================
 
-pub fn main() !void {
-    common.utilityMain(runStat);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runStat);
 }
 
 // ============================================================================
@@ -1171,208 +1254,213 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "stat --help shows usage" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: stat") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--format") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: stat") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "--format") != null);
 }
 
 test "stat -h shows usage" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: stat") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: stat") != null);
 }
 
 test "stat --version shows version" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "stat") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "stat") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
 test "stat -V shows version" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "stat") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "stat") != null);
 }
 
 test "stat missing operand returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
 test "stat unknown flag returns misuse" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
 }
 
 test "stat nonexistent file returns error" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent/file/path"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot stat") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot stat") != null);
 }
 
 test "stat default output on regular file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello world");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello world");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Check key fields in default output
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "File:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Size:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Blocks:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Device:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Inode:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Access:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Modify:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Change:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "regular file") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Size:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Blocks:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Device:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Inode:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Access:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Modify:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Change:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "regular file") != null);
 }
 
 test "stat -c format: file name" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%n", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Output should be the path + newline
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "stat -c format: size" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
 }
 
 test "stat -c format: file type" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.makeDir("subdir");
+    try tmp_dir.dir.createDir(testing.io, "subdir", std.Io.File.Permissions.fromMode(0o755));
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("subdir", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "subdir", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%F", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("directory\n", stdout_buffer.items);
+    try testing.expectEqualStrings("directory\n", stdout_aw.writer.buffered());
 }
 
 test "stat -c format: inode number" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%i", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should be a valid number followed by newline
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     const inode = try std.fmt.parseInt(u64, trimmed, 10);
     try testing.expect(inode > 0);
 }
@@ -1381,20 +1469,21 @@ test "stat -c format: permissions octal" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .mode = 0o644 });
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{ .permissions = @enumFromInt(0o644) });
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%a", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     // Must be 3-4 characters (e.g. "644", "0644")
     try testing.expect(trimmed.len >= 3);
     try testing.expect(trimmed.len <= 4);
@@ -1403,8 +1492,8 @@ test "stat -c format: permissions octal" {
         try testing.expect(ch >= '0' and ch <= '7');
     }
     // Verify the octal value matches actual file permissions
-    const stat_info = try tmp_dir.dir.statFile("test.txt");
-    const actual_mode: u32 = @intCast(stat_info.mode & 0o7777);
+    const stat_info = try tmp_dir.dir.statFile(testing.io, "test.txt", .{});
+    const actual_mode: u32 = @intCast(stat_info.permissions.toMode() & 0o7777);
     const reported_mode = try std.fmt.parseInt(u32, trimmed, 8);
     try testing.expectEqual(actual_mode, reported_mode);
 }
@@ -1413,43 +1502,45 @@ test "stat -c format: permissions human readable" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .mode = 0o644 });
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{ .permissions = @enumFromInt(0o644) });
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%A", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should start with '-' for regular file
-    try testing.expect(stdout_buffer.items.len >= 10);
-    try testing.expectEqual(@as(u8, '-'), stdout_buffer.items[0]);
+    try testing.expect(stdout_aw.writer.buffered().len >= 10);
+    try testing.expectEqual(@as(u8, '-'), stdout_aw.writer.buffered()[0]);
 }
 
 test "stat -c format: user and group IDs" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%u %g", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should be two numbers separated by space
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     var it = std.mem.tokenizeScalar(u8, trimmed, ' ');
     const uid_str = it.next() orelse return error.TestFailed;
     const gid_str = it.next() orelse return error.TestFailed;
@@ -1461,20 +1552,21 @@ test "stat -c format: user and group names" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%U", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     // Verify the reported username matches the current user
     const current_uid = common.user_group.getCurrentUserId();
     const user_info = try common.user_group.getUserById(current_uid, testing.allocator);
@@ -1486,21 +1578,22 @@ test "stat -c format: timestamps" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     // Test epoch seconds format
     const args = [_][]const u8{ "-c", "%X %Y %Z", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     // Output should be three space-separated epoch timestamps
     var it = std.mem.tokenizeScalar(u8, trimmed, ' ');
     const atime_str = it.next() orelse return error.TestFailed;
@@ -1515,8 +1608,8 @@ test "stat -c format: timestamps" {
     try testing.expect(mtime_val > 1577836800);
     try testing.expect(ctime_val > 1577836800);
     // Verify mtime matches the actual file's mtime (stat.mtime is in nanoseconds)
-    const stat_info = try tmp_dir.dir.statFile("test.txt");
-    const actual_mtime: i64 = @intCast(@divTrunc(stat_info.mtime, std.time.ns_per_s));
+    const stat_info = try tmp_dir.dir.statFile(testing.io, "test.txt", .{});
+    const actual_mtime: i64 = @intCast(@divTrunc(stat_info.mtime.nanoseconds, std.time.ns_per_s));
     try testing.expectEqual(actual_mtime, mtime_val);
 }
 
@@ -1524,64 +1617,67 @@ test "stat --printf interprets escapes" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("data");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "data");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--printf=%s\\n", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("4\n", stdout_buffer.items);
+    try testing.expectEqualStrings("4\n", stdout_aw.writer.buffered());
 }
 
 test "stat --format=FMT syntax" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "--format=%s", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
 }
 
 test "stat -t terse output" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-t", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Terse output is one line with space-separated fields
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     try testing.expect(trimmed.len > 0);
     // Should start with the path
     try testing.expect(std.mem.startsWith(u8, trimmed, test_path));
@@ -1591,61 +1687,65 @@ test "stat empty file shows regular empty file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("empty.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "empty.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("empty.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "empty.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%F", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("regular empty file\n", stdout_buffer.items);
+    try testing.expectEqualStrings("regular empty file\n", stdout_aw.writer.buffered());
 }
 
 test "stat directory type" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.makeDir("subdir");
+    try tmp_dir.dir.createDir(testing.io, "subdir", std.Io.File.Permissions.fromMode(0o755));
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("subdir", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "subdir", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%F", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("directory\n", stdout_buffer.items);
+    try testing.expectEqualStrings("directory\n", stdout_aw.writer.buffered());
 }
 
 test "stat symlink without dereference" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("target.txt", .{});
-    try test_file.writeAll("content");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "content");
+    test_file.close(testing.io);
 
-    try tmp_dir.dir.symLink("target.txt", "link.txt", .{});
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link_path = try tmp_dir.dir.realpath("link.txt", &path_buf);
+    const link_path_len = try tmp_dir.dir.realPathFile(testing.io, "link.txt", &path_buf);
+    const link_path = path_buf[0..link_path_len];
 
     // Without -L: should show "symbolic link"
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     // Note: realpath resolves symlinks, so we need to construct the path manually
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(symlink_path);
 
@@ -1654,127 +1754,133 @@ test "stat symlink without dereference" {
     _ = link_path;
 
     const args = [_][]const u8{ "-c", "%F", symlink_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("symbolic link\n", stdout_buffer.items);
+    try testing.expectEqualStrings("symbolic link\n", stdout_aw.writer.buffered());
 }
 
 test "stat symlink with dereference" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("target.txt", .{});
-    try test_file.writeAll("content");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "content");
+    test_file.close(testing.io);
 
-    try tmp_dir.dir.symLink("target.txt", "link.txt", .{});
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(symlink_path);
 
     // With -L: should show "regular file" (follows the link)
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-L", "-c", "%F", symlink_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("regular file\n", stdout_buffer.items);
+    try testing.expectEqualStrings("regular file\n", stdout_aw.writer.buffered());
 }
 
 test "stat multiple files" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file1 = try tmp_dir.dir.createFile("a.txt", .{});
-    try file1.writeAll("aaa");
-    file1.close();
+    const file1 = try tmp_dir.dir.createFile(testing.io, "a.txt", .{});
+    try file1.writeStreamingAll(testing.io, "aaa");
+    file1.close(testing.io);
 
-    const file2 = try tmp_dir.dir.createFile("b.txt", .{});
-    try file2.writeAll("bbbbb");
-    file2.close();
+    const file2 = try tmp_dir.dir.createFile(testing.io, "b.txt", .{});
+    try file2.writeStreamingAll(testing.io, "bbbbb");
+    file2.close(testing.io);
 
     var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
-    const path1 = try tmp_dir.dir.realpath("a.txt", &path_buf1);
+    const path1_len = try tmp_dir.dir.realPathFile(testing.io, "a.txt", &path_buf1);
+    const path1 = path_buf1[0..path1_len];
     var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const path2 = try tmp_dir.dir.realpath("b.txt", &path_buf2);
+    const path2_len = try tmp_dir.dir.realPathFile(testing.io, "b.txt", &path_buf2);
+    const path2 = path_buf2[0..path2_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", path1, path2 };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("3\n5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("3\n5\n", stdout_aw.writer.buffered());
 }
 
 test "stat -f file system info" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should contain file system info
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "File:") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Block") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "File:") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Block") != null);
 }
 
 test "stat -c format: hard links" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%h", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("1\n", stdout_buffer.items);
+    try testing.expectEqualStrings("1\n", stdout_aw.writer.buffered());
 }
 
 test "stat -c format: device number" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%d", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     _ = try std.fmt.parseInt(u64, trimmed, 10);
 }
 
@@ -1782,48 +1888,50 @@ test "stat -c format: multiple directives" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "size=%s type=%F", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("size=5 type=regular file\n", stdout_buffer.items);
+    try testing.expectEqualStrings("size=5 type=regular file\n", stdout_aw.writer.buffered());
 }
 
 test "stat partial failure with multiple files" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("exists.txt", .{});
-    try test_file.writeAll("data");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "exists.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "data");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("exists.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "exists.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", "/nonexistent", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should return error (1) because one file failed
     try testing.expectEqual(@as(u8, 1), result);
     // But should still output the successful file
-    try testing.expectEqualStrings("4\n", stdout_buffer.items);
+    try testing.expectEqualStrings("4\n", stdout_aw.writer.buffered());
     // And report the error
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "cannot stat") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "cannot stat") != null);
 }
 
 test "formatPermissions basic" {
@@ -1890,37 +1998,38 @@ test "stat -- separator" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%s", "--", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("5\n", stdout_aw.writer.buffered());
 }
 
 test "stat nonexistent file error message says No such file" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/no/such/path/at/all"};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
     // Error message should contain the filename
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "/no/such/path/at/all") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "/no/such/path/at/all") != null);
     // Error message should say "No such file or directory" for ENOENT
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
 }
 
 test "stat permission denied error message is not No such file" {
@@ -1931,13 +2040,14 @@ test "stat permission denied error message is not No such file" {
     defer tmp_dir.cleanup();
 
     // Create a subdirectory with a file inside
-    try tmp_dir.dir.makeDir("noaccess");
-    const inner_file = try tmp_dir.dir.createFile("noaccess/secret.txt", .{});
-    inner_file.close();
+    try tmp_dir.dir.createDir(testing.io, "noaccess", std.Io.File.Permissions.fromMode(0o755));
+    const inner_file = try tmp_dir.dir.createFile(testing.io, "noaccess/secret.txt", .{});
+    inner_file.close(testing.io);
 
     // Get the full path to the file inside
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
     const inner_path = try std.fmt.allocPrint(testing.allocator, "{s}/noaccess/secret.txt", .{dir_path});
     defer testing.allocator.free(inner_path);
 
@@ -1950,21 +2060,21 @@ test "stat permission denied error message is not No such file" {
     // Ensure we restore permissions for cleanup
     defer _ = std.c.chmod(&noaccess_z, 0o755);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{inner_path};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should fail
     try testing.expectEqual(@as(u8, 1), result);
     // Error message should contain the filename
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "noaccess/secret.txt") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "noaccess/secret.txt") != null);
     // BUG: The error message should NOT say "No such file or directory"
     // for an AccessDenied error. It should say "Permission denied".
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Permission denied") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Permission denied") != null);
 }
 
 // F15: Default output must not show spurious '+' before numeric fields.
@@ -1974,34 +2084,35 @@ test "stat default output has no spurious plus on numeric fields" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
-    const output = stdout_buffer.items;
+    const output = stdout_aw.writer.buffered();
 
     // Find the "Size:" line and verify no '+' before the number
-    const size_pos = std.mem.indexOf(u8, output, "Size:") orelse
+    const size_pos = std.mem.find(u8, output, "Size:") orelse
         return error.TestExpectedEqual;
     // Extract from "Size:" to end of that line
     const rest = output[size_pos..];
-    const eol = std.mem.indexOf(u8, rest, "\n") orelse rest.len;
+    const eol = std.mem.find(u8, rest, "\n") orelse rest.len;
     const size_line = rest[0..eol];
 
     // GNU stat outputs "  Size: 5         Blocks: 8          IO Block: 4096   regular file"
     // Our implementation incorrectly outputs "  Size: +5        Blocks: +8         IO Block: +4096  regular file"
     // The '+' character should not appear anywhere on this line
-    try testing.expect(std.mem.indexOf(u8, size_line, "+") == null);
+    try testing.expect(std.mem.find(u8, size_line, "+") == null);
 }
 
 // F17: stat -f -c FORMAT should use the format string, not print
@@ -2011,23 +2122,24 @@ test "stat -f -c format string is honored" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-f", "-c", "%n", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // -f -c '%n' should output just the file name, not the full filesystem block
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}\n", .{test_path});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 // F18: Terse output should have 16 space-separated fields matching GNU stat.
@@ -2039,22 +2151,23 @@ test "stat -t terse output has 16 fields like GNU" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-t", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // Count space-separated fields
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     var field_count: usize = 0;
     var in_field = false;
     for (trimmed) |ch| {
@@ -2080,25 +2193,26 @@ test "stat -f produces sane block size on this platform" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
 
-    const output = stdout_buffer.items;
+    const output = stdout_aw.writer.buffered();
 
     // Find "Block size:" line and extract the number
-    const block_pos = std.mem.indexOf(u8, output, "Block size:") orelse
+    const block_pos = std.mem.find(u8, output, "Block size:") orelse
         return error.TestExpectedEqual;
     const after_label = output[block_pos + "Block size:".len ..];
     // Skip leading spaces
@@ -2124,31 +2238,32 @@ test "stat default output Device line uses GNU major,minor format" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // Find the Device line
-    const dev_pos = std.mem.indexOf(u8, stdout_buffer.items, "Device:") orelse
+    const dev_pos = std.mem.find(u8, stdout_aw.writer.buffered(), "Device:") orelse
         return error.TestExpectedEqual;
-    const rest = stdout_buffer.items[dev_pos..];
-    const eol = std.mem.indexOf(u8, rest, "\n") orelse rest.len;
+    const rest = stdout_aw.writer.buffered()[dev_pos..];
+    const eol = std.mem.find(u8, rest, "\n") orelse rest.len;
     const dev_line = rest[0..eol];
 
     // GNU format: "Device: <dec>,<dec>" — no 'h' or 'd' suffix
     // BSD format: "Device: <hex>h/<dec>d" — has letter suffixes
     // Must NOT contain the BSD letter suffixes
-    try testing.expect(std.mem.indexOf(u8, dev_line, "h/") == null);
-    try testing.expect(std.mem.indexOf(u8, dev_line, "d\t") == null);
+    try testing.expect(std.mem.find(u8, dev_line, "h/") == null);
+    try testing.expect(std.mem.find(u8, dev_line, "d\t") == null);
 }
 
 // Audit: %b (blocks allocated) has no unit test.
@@ -2156,21 +2271,22 @@ test "stat -c format: blocks allocated %b" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%b", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     // %b must be a non-negative integer
     const blocks = try std.fmt.parseInt(i64, trimmed, 10);
     try testing.expect(blocks >= 0);
@@ -2185,20 +2301,21 @@ test "stat -c format: group name %G" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%G", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     // Group name should not be empty
     try testing.expect(trimmed.len > 0);
     // Group name should not be purely numeric (that would mean the
@@ -2216,50 +2333,52 @@ test "stat -c format: %N regular file is quoted" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%N", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     const expected = try std.fmt.allocPrint(testing.allocator, "'{s}'\n", .{test_path});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "stat -c format: %N symlink shows arrow" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("target.txt", .{});
-    try test_file.writeAll("content");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "target.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "content");
+    test_file.close(testing.io);
 
-    try tmp_dir.dir.symLink("target.txt", "link.txt", .{});
+    try tmp_dir.dir.symLink(testing.io, "target.txt", "link.txt", .{});
 
     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &dir_path_buf);
+    const dir_path_len = try tmp_dir.dir.realPathFile(testing.io, ".", &dir_path_buf);
+    const dir_path = dir_path_buf[0..dir_path_len];
     const symlink_path = try std.fmt.allocPrint(testing.allocator, "{s}/link.txt", .{dir_path});
     defer testing.allocator.free(symlink_path);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%N", symlink_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // GNU stat -c '%N' on a symlink: 'link' -> 'target'
     const expected = try std.fmt.allocPrint(testing.allocator, "'{s}' -> 'target.txt'\n", .{symlink_path});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 // Audit: %x, %y, %z (human-readable timestamps) have no unit tests.
@@ -2269,28 +2388,29 @@ test "stat -c format: %y mtime human-readable timestamp" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-c", "%y", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    const trimmed = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const trimmed = std.mem.trimEnd(u8, stdout_aw.writer.buffered(), "\n");
     // Must be non-empty
     try testing.expect(trimmed.len > 0);
     // A human-readable timestamp contains dashes and colons
     // An epoch-seconds value would contain only digits
-    try testing.expect(std.mem.indexOf(u8, trimmed, "-") != null);
-    try testing.expect(std.mem.indexOf(u8, trimmed, ":") != null);
+    try testing.expect(std.mem.find(u8, trimmed, "-") != null);
+    try testing.expect(std.mem.find(u8, trimmed, ":") != null);
     // Must contain a dot separating seconds from nanoseconds
-    try testing.expect(std.mem.indexOf(u8, trimmed, ".") != null);
+    try testing.expect(std.mem.find(u8, trimmed, ".") != null);
 }
 
 // Audit: --printf no-trailing-newline not tested. The key behavioral
@@ -2300,21 +2420,22 @@ test "stat --printf does not add trailing newline" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(testing.io, "test.txt", .{});
+    try test_file.writeStreamingAll(testing.io, "hello");
+    test_file.close(testing.io);
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    const test_path_len = try tmp_dir.dir.realPathFile(testing.io, "test.txt", &path_buf);
+    const test_path = path_buf[0..test_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     // --printf=%s without \n should produce "5" with no trailing newline
     const args = [_][]const u8{ "--printf=%s", test_path };
-    const result = try runStat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runStat(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
     // Must be exactly "5" with no newline
-    try testing.expectEqualStrings("5", stdout_buffer.items);
+    try testing.expectEqualStrings("5", stdout_aw.writer.buffered());
 }

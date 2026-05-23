@@ -54,7 +54,7 @@ const SetError = error{
 /// Supports: literal chars, ranges (a-z), POSIX classes ([:alpha:]),
 /// equivalence classes ([=c=]), repetitions ([c*n]), and escape sequences.
 fn parseSet(allocator: Allocator, set_str: []const u8) SetError![]u8 {
-    var result = std.ArrayListUnmanaged(u8){};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
@@ -188,7 +188,7 @@ fn parseCharClass(allocator: Allocator, str: []const u8, i: *usize) SetError![]u
 
 /// Expand a named character class to all matching byte values.
 fn expandClass(allocator: Allocator, class_name: []const u8) SetError![]u8 {
-    var result = std.ArrayListUnmanaged(u8){};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
 
     if (std.mem.eql(u8, class_name, "upper")) {
@@ -316,7 +316,7 @@ fn complementSet(allocator: Allocator, set: []const u8) ![]u8 {
         in_set[b] = true;
     }
 
-    var result = std.ArrayListUnmanaged(u8){};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
 
     var c: u16 = 0;
@@ -361,13 +361,13 @@ fn buildSetMembership(set: []const u8) [256]bool {
 }
 
 /// Main entry point for tr utility
-pub fn main() !void {
-    common.utilityMain(runTr);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runTr);
 }
 
 /// Run the tr utility with given arguments.
 /// Public API that reads from stdin.
-pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runTr(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Parse arguments
     const parsed = common.argparse.ArgParser.parseOrExit(TrArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
@@ -402,8 +402,9 @@ pub fn runTr(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    const stdin_file = std.fs.File.stdin();
-    return runTrWithInput(allocator, parsed, stdin_file, stdout_writer, stderr_writer);
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
+    return runTrWithInput(allocator, parsed, &stdin_reader.interface, stdout_writer, stderr_writer);
 }
 
 /// Scan a raw SET2 string for a fill repeat ([c*] or [c*0]).
@@ -456,14 +457,14 @@ fn findFillChar(set_str: []const u8) ?u8 {
     return null;
 }
 
-/// Internal function for running tr with a specific input file.
+/// Internal function for running tr with a specific input reader.
 /// Allows testing with mock input streams.
 fn runTrWithInput(
     allocator: Allocator,
     args: TrArgs,
-    input_file: std.fs.File,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    reader: *std.Io.Reader,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
     // Check for extra operands
     const max_positionals: usize = if (args.delete and !args.squeeze_repeats) 1 else 2;
@@ -528,26 +529,26 @@ fn runTrWithInput(
     // Choose operation mode
     if (args.delete and args.squeeze_repeats) {
         // Delete SET1, then squeeze SET2
-        return processDeleteSqueeze(input_file, stdout_writer, set1, set2);
+        return processDeleteSqueeze(reader, stdout_writer, set1, set2);
     } else if (args.delete) {
         // Delete SET1
-        return processDelete(input_file, stdout_writer, set1);
+        return processDelete(reader, stdout_writer, set1);
     } else if (args.squeeze_repeats and args.positionals.len < 2) {
         // Squeeze SET1 only (no translation)
-        return processSqueeze(input_file, stdout_writer, set1);
+        return processSqueeze(reader, stdout_writer, set1);
     } else if (args.squeeze_repeats) {
         // Translate SET1->SET2 then squeeze SET2
-        return processTranslateSqueeze(input_file, stdout_writer, set1, set2);
+        return processTranslateSqueeze(reader, stdout_writer, set1, set2);
     } else {
         // Translate SET1->SET2
-        return processTranslate(input_file, stdout_writer, set1, set2);
+        return processTranslate(reader, stdout_writer, set1, set2);
     }
 }
 
 /// Process: translate SET1 characters to SET2 characters.
 fn processTranslate(
-    input_file: std.fs.File,
-    writer: anytype,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     set1: []const u8,
     set2: []const u8,
 ) !u8 {
@@ -555,7 +556,7 @@ fn processTranslate(
     var buffer: [8192]u8 = undefined;
 
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch {
+        const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (bytes_read == 0) break;
@@ -572,8 +573,8 @@ fn processTranslate(
 
 /// Process: translate SET1->SET2 then squeeze repeated SET2 characters.
 fn processTranslateSqueeze(
-    input_file: std.fs.File,
-    writer: anytype,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     set1: []const u8,
     set2: []const u8,
 ) !u8 {
@@ -583,7 +584,7 @@ fn processTranslateSqueeze(
     var last_byte: ?u8 = null;
 
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch {
+        const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (bytes_read == 0) break;
@@ -606,15 +607,15 @@ fn processTranslateSqueeze(
 
 /// Process: delete characters in SET1.
 fn processDelete(
-    input_file: std.fs.File,
-    writer: anytype,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     set1: []const u8,
 ) !u8 {
     const delete_set = buildSetMembership(set1);
     var buffer: [8192]u8 = undefined;
 
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch {
+        const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (bytes_read == 0) break;
@@ -633,8 +634,8 @@ fn processDelete(
 
 /// Process: delete SET1 then squeeze SET2.
 fn processDeleteSqueeze(
-    input_file: std.fs.File,
-    writer: anytype,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     set1: []const u8,
     set2: []const u8,
 ) !u8 {
@@ -644,7 +645,7 @@ fn processDeleteSqueeze(
     var last_byte: ?u8 = null;
 
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch {
+        const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (bytes_read == 0) break;
@@ -670,8 +671,8 @@ fn processDeleteSqueeze(
 
 /// Process: squeeze repeated characters in SET1 (no translation).
 fn processSqueeze(
-    input_file: std.fs.File,
-    writer: anytype,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     set1: []const u8,
 ) !u8 {
     const squeeze_set = buildSetMembership(set1);
@@ -679,7 +680,7 @@ fn processSqueeze(
     var last_byte: ?u8 = null;
 
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch {
+        const bytes_read = reader.readSliceShort(&buffer) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (bytes_read == 0) break;
@@ -699,7 +700,7 @@ fn processSqueeze(
 }
 
 /// Print help message
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: tr [OPTION]... SET1 [SET2]
         \\Translate, squeeze, or delete characters from standard input,
@@ -746,7 +747,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("tr ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -755,82 +756,72 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "tr --help shows help message" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runTr(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTr(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: tr") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: tr") != null);
 }
 
 test "tr --version shows version information" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runTr(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTr(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "tr") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "tr") != null);
 }
 
 test "tr with no arguments returns misuse" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTr(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
 test "tr translate missing SET2 returns misuse" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"abc"};
-    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTr(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
 }
 
 test "tr -u flag is accepted and ignored" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
-
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("hello");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .ignored_u = true,
         .positionals = &.{ "aeiou", "AEIOU" },
     };
 
+    var reader: std.Io.Reader = .fixed("hello");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hEllO", stdout_buffer.items);
+    try testing.expectEqualStrings("hEllO", stdout_aw.writer.buffered());
 }
 
 test "tr unknown flag returns misuse" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runTr(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTr(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
 }
 
@@ -955,131 +946,95 @@ test "tr buildSetMembership" {
 }
 
 test "tr translate with mock input" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create input file
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("hello world");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "aeiou", "AEIOU" },
     };
 
+    var reader: std.Io.Reader = .fixed("hello world");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hEllO wOrld", stdout_buffer.items);
+    try testing.expectEqualStrings("hEllO wOrld", stdout_aw.writer.buffered());
 }
 
 test "tr delete with mock input" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("hello world");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .delete = true,
         .positionals = &.{"aeiou"},
     };
 
+    var reader: std.Io.Reader = .fixed("hello world");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hll wrld", stdout_buffer.items);
+    try testing.expectEqualStrings("hll wrld", stdout_aw.writer.buffered());
 }
 
 test "tr squeeze with mock input" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("aabbccdd");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .squeeze_repeats = true,
         .positionals = &.{"abcd"},
     };
 
+    var reader: std.Io.Reader = .fixed("aabbccdd");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("abcd", stdout_buffer.items);
+    try testing.expectEqualStrings("abcd", stdout_aw.writer.buffered());
 }
 
 test "tr translate and squeeze with mock input" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("aabbbcc");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .squeeze_repeats = true,
         .positionals = &.{ "abc", "xyz" },
     };
 
+    var reader: std.Io.Reader = .fixed("aabbbcc");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("xyz", stdout_buffer.items);
+    try testing.expectEqualStrings("xyz", stdout_aw.writer.buffered());
 }
 
 test "tr delete and squeeze with mock input" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("aabbbXXYcc");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .delete = true,
@@ -1087,29 +1042,22 @@ test "tr delete and squeeze with mock input" {
         .positionals = &.{ "abc", "XY" },
     };
 
+    var reader: std.Io.Reader = .fixed("aabbbXXYcc");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("XY", stdout_buffer.items);
+    try testing.expectEqualStrings("XY", stdout_aw.writer.buffered());
 }
 
 test "tr complement delete with mock input" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("hello123world");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .complement = true,
@@ -1117,255 +1065,195 @@ test "tr complement delete with mock input" {
         .positionals = &.{"0-9"},
     };
 
+    var reader: std.Io.Reader = .fixed("hello123world");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("123", stdout_buffer.items);
+    try testing.expectEqualStrings("123", stdout_aw.writer.buffered());
 }
 
 test "tr case conversion upper to lower" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("HELLO WORLD");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "[:upper:]", "[:lower:]" },
     };
 
+    var reader: std.Io.Reader = .fixed("HELLO WORLD");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello world", stdout_buffer.items);
+    try testing.expectEqualStrings("hello world", stdout_aw.writer.buffered());
 }
 
 test "tr empty input produces empty output" {
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "abc", "xyz" },
     };
 
+    var reader: std.Io.Reader = .fixed("");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", stdout_buffer.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "tr [c*] fill-to-SET1-length translates all chars" {
     // GNU: printf 'abc' | tr 'abc' '[x*]' -> "xxx"
     // [x*] should expand to repeat 'x' to match the length of SET1
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("abc");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "abc", "[x*]" },
     };
 
+    var reader: std.Io.Reader = .fixed("abc");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("xxx", stdout_buffer.items);
+    try testing.expectEqualStrings("xxx", stdout_aw.writer.buffered());
 }
 
 test "tr [c*0] fill-to-SET1-length POSIX synonym" {
     // GNU: printf 'abc' | tr 'abc' '[x*0]' -> "xxx"
     // [x*0] is the POSIX synonym for [x*] (fill to match SET1 length)
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("abc");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "abc", "[x*0]" },
     };
 
+    var reader: std.Io.Reader = .fixed("abc");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("xxx", stdout_buffer.items);
+    try testing.expectEqualStrings("xxx", stdout_aw.writer.buffered());
 }
 
 test "tr [c*] fill with character class in SET1" {
     // GNU: printf 'HELLO' | tr '[:upper:]' '[x*]' -> "xxxxx"
     // [x*] should expand to match the full expanded length of [:upper:] (26 chars)
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("HELLO");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "[:upper:]", "[x*]" },
     };
 
+    var reader: std.Io.Reader = .fixed("HELLO");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("xxxxx", stdout_buffer.items);
+    try testing.expectEqualStrings("xxxxx", stdout_aw.writer.buffered());
 }
 
 test "tr [c*] fill with other chars before repeat in SET2" {
     // GNU: printf 'abcd' | tr 'abcd' 'y[x*]' -> "yxxx"
     // 'y' maps to 'a', then [x*] fills the remaining 3 positions
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("abcd");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "abcd", "y[x*]" },
     };
 
+    var reader: std.Io.Reader = .fixed("abcd");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("yxxx", stdout_buffer.items);
+    try testing.expectEqualStrings("yxxx", stdout_aw.writer.buffered());
 }
 
 test "tr extra operand returns misuse" {
     // GNU: tr a b c -> "tr: extra operand 'c'" on stderr, exit 1
     // Use runTrWithInput to avoid stdin hang (filter utility)
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("x");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "a", "b", "c" },
     };
 
+    var reader: std.Io.Reader = .fixed("x");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
-        stderr_buffer.writer(testing.allocator),
+        &reader,
+        common.null_writer,
+        &stderr_aw.writer,
     );
-    input_file.close();
 
     // Must NOT be 0 — extra operands are an error
     try testing.expect(result != 0);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }
 
 test "tr multiple extra operands returns misuse" {
     // tr a b c d -> should error on 'c' (the first extra operand)
-    var tmp_dir = testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("x");
-    try input_file.seekTo(0);
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const parsed = TrArgs{
         .positionals = &.{ "a", "b", "c", "d" },
     };
 
+    var reader: std.Io.Reader = .fixed("x");
     const result = try runTrWithInput(
         testing.allocator,
         parsed,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
-        stderr_buffer.writer(testing.allocator),
+        &reader,
+        common.null_writer,
+        &stderr_aw.writer,
     );
-    input_file.close();
 
     try testing.expect(result != 0);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "extra operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "extra operand") != null);
 }

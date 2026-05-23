@@ -22,12 +22,17 @@ const TeeArgs = struct {
         .version = .{ .short = 'V', .desc = "Output version information and exit" },
         .append = .{ .short = 'a', .desc = "Append to files instead of overwriting" },
         .ignore_interrupts = .{ .short = 'i', .desc = "Ignore interrupt signals" },
-        .diagnose_errors = .{ .short = 'p', .desc = "Diagnose errors writing to non-pipes" },
+        .diagnose_errors = .{ .short = 'p', .desc = "Diagnose errors writing to non pipes" },
     };
 };
 
-/// Main entry point for tee utility
-pub fn runTee(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+/// Main entry point
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runTee);
+}
+
+/// Public entry point that reads from stdin
+pub fn runTee(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Parse arguments
     const parsed_args = common.argparse.ArgParser.parseOrExit(TeeArgs, allocator, args, "tee", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
@@ -46,47 +51,43 @@ pub fn runTee(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
 
     // Set up signal handling if ignore_interrupts is enabled
     if (parsed_args.ignore_interrupts) {
-        try setupSignalIgnoring();
+        setupSignalIgnoring();
     }
 
-    // Read from stdin and process with tee functionality
-    const stdin_file = std.fs.File.stdin();
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
 
     return runTeeWithInput(
         allocator,
+        io,
         parsed_args,
-        stdin_file,
+        &stdin_reader.interface,
         stdout_writer,
         stderr_writer,
     );
 }
 
-/// Internal function for running tee with a specific input file
-/// This allows for easier testing with mock input streams
+/// Internal function for running tee with a specific input reader.
+/// This allows for easier testing with fixed readers.
 fn runTeeWithInput(
     allocator: std.mem.Allocator,
+    io: std.Io,
     args: TeeArgs,
-    input_file: std.fs.File,
-    stdout_writer: anytype,
-    stderr_writer: anytype,
+    reader: *std.Io.Reader,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
 ) !u8 {
-    // Create multi-writer system using the generic type.
-    // "-" operands are handled inside MultiWriter: they write
-    // to stdout instead of opening a file (GNU tee behavior).
-    const MultiWriter = MultiWriterGeneric(@TypeOf(stdout_writer));
-    var multi_writer = MultiWriter.init(allocator, stdout_writer, stderr_writer, args.positionals, args.append) catch {
-        // Detailed per-file diagnostic already emitted inside init().
-        return @intFromEnum(common.ExitCode.general_error);
-    };
-    defer multi_writer.deinit();
+    // Open all output files
+    var multi = try MultiWriter.init(allocator, io, stderr_writer, args.positionals, args.append);
+    defer multi.deinit(io);
 
     var has_error = false;
     var stdout_broken = false;
     var buffer: [8192]u8 = undefined;
 
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error: {s}", .{common.posixErrorString(err)});
+        const bytes_read = reader.readSliceShort(&buffer) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "read error", .{});
             has_error = true;
             break;
         };
@@ -115,16 +116,13 @@ fn runTeeWithInput(
         }
 
         // Write to each file output
-        for (multi_writer.files, multi_writer.is_stdout, args.positionals) |file, is_dash, name| {
+        for (multi.files, multi.is_stdout, args.positionals) |*file_entry, is_dash, name| {
             if (is_dash) {
                 // "-" operand means another stdout copy
                 if (!stdout_broken) {
                     stdout_writer.writeAll(data) catch |err| {
                         if (!args.diagnose_errors) {
                             has_error = true;
-                            // Don't break here; continue to
-                            // write to remaining files in this
-                            // iteration, then break outer loop
                             stdout_broken = true;
                         } else {
                             stdout_broken = true;
@@ -134,7 +132,7 @@ fn runTeeWithInput(
                     };
                 }
             } else {
-                file.writeAll(data) catch |err| {
+                file_entry.writer.interface.writeAll(data) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, common.posixErrorString(err) });
                     has_error = true;
                 };
@@ -147,27 +145,108 @@ fn runTeeWithInput(
         }
     }
 
-    // Flush stdout
+    // Flush stdout: buffered writes (e.g. to /dev/full) only surface
+    // their underlying error on flush, not on writeAll. GNU tee always
+    // reports a diagnostic on stdout failure, even without -p.
     if (!stdout_broken) {
-        if (comptime std.meta.hasMethod(@TypeOf(stdout_writer), "flush")) {
-            stdout_writer.flush() catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
-                has_error = true;
-            };
-        }
+        stdout_writer.flush() catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "standard output: {s}", .{common.posixErrorString(err)});
+            has_error = true;
+        };
+    }
+
+    // Flush per-file writers for the same reason.
+    for (multi.files, multi.is_stdout, args.positionals) |*file_entry, is_dash, name| {
+        if (is_dash) continue;
+        file_entry.writer.interface.flush() catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ name, common.posixErrorString(err) });
+            has_error = true;
+        };
     }
 
     return @intFromEnum(if (has_error) common.ExitCode.general_error else common.ExitCode.success);
 }
 
-/// Convert Zig error to POSIX-style error message
-/// Main entry point for the tee command
-pub fn main() !void {
-    common.utilityMain(runTee);
-}
+/// Entry for a file opened by tee
+const FileEntry = struct {
+    file: std.Io.File,
+    buf: [8192]u8,
+    writer: std.Io.File.Writer,
+};
+
+/// Manages opened file handles for tee output targets.
+const MultiWriter = struct {
+    allocator: std.mem.Allocator,
+    files: []FileEntry,
+    is_stdout: []bool,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        stderr_writer: *std.Io.Writer,
+        file_names: []const []const u8,
+        append_mode: bool,
+    ) !MultiWriter {
+        var files = try allocator.alloc(FileEntry, file_names.len);
+        errdefer allocator.free(files);
+
+        var is_stdout = try allocator.alloc(bool, file_names.len);
+        errdefer allocator.free(is_stdout);
+
+        var files_opened: usize = 0;
+        errdefer {
+            for (files[0..files_opened], is_stdout[0..files_opened]) |*fe, is_dash| {
+                if (!is_dash) fe.file.close(io);
+            }
+        }
+
+        for (file_names, 0..) |file_name, i| {
+            if (std.mem.eql(u8, file_name, "-")) {
+                is_stdout[i] = true;
+                files[i] = undefined;
+                files_opened += 1;
+                continue;
+            }
+            is_stdout[i] = false;
+            const opened_file = if (append_mode) blk: {
+                // Open with O_WRONLY|O_CREAT|O_APPEND for true append semantics
+                const flags: std.posix.O = .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true };
+                const fd = std.posix.openat(std.posix.AT.FDCWD, file_name, flags, 0o666) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(err) });
+                    return err;
+                };
+                break :blk std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } };
+            } else
+                std.Io.Dir.cwd().createFile(io, file_name, .{ .read = false, .truncate = true }) catch |err| {
+                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(err) });
+                    return err;
+                };
+            files[i].file = opened_file;
+            files[i].writer = opened_file.writerStreaming(io, &files[i].buf);
+            files_opened += 1;
+        }
+
+        return MultiWriter{
+            .allocator = allocator,
+            .files = files,
+            .is_stdout = is_stdout,
+        };
+    }
+
+    pub fn deinit(self: *MultiWriter, io: std.Io) void {
+        for (self.files, self.is_stdout) |*fe, is_dash| {
+            if (!is_dash) {
+                fe.writer.interface.flush() catch {};
+                fe.file.close(io);
+            }
+        }
+        self.allocator.free(self.files);
+        self.allocator.free(self.is_stdout);
+    }
+};
 
 /// Print help message to the specified writer
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: tee [OPTION]... [FILE]...
         \\Copy standard input to each FILE, and also to standard output.
@@ -182,12 +261,12 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Print version information to the specified writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("tee ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Set up signal handling to ignore interrupts when -i flag is used
-fn setupSignalIgnoring() !void {
+fn setupSignalIgnoring() void {
     // On POSIX systems, ignore SIGINT when -i is specified
     if (builtin.os.tag != .windows) {
         const os = std.posix;
@@ -207,338 +286,228 @@ fn setupSignalIgnoring() !void {
     }
 }
 
-/// Manages opened file handles for tee output targets.
-/// "-" operands are marked as stdout aliases; the caller
-/// writes to stdout directly and uses the is_stdout flag
-/// to skip them.
-fn MultiWriterGeneric(comptime StdoutWriter: type) type {
-    return struct {
-        const Self = @This();
-
-        allocator: std.mem.Allocator,
-        files: []std.fs.File,
-        is_stdout: []bool,
-
-        /// Open all output files. "-" entries are flagged as
-        /// stdout aliases (no file is opened for them). On failure,
-        /// emits a GNU-style `tee: <filename>: <error>` diagnostic
-        /// identifying which file failed before returning the error.
-        pub fn init(
-            allocator: std.mem.Allocator,
-            _: StdoutWriter,
-            stderr_writer: anytype,
-            file_names: []const []const u8,
-            append_mode: bool,
-        ) !Self {
-            var files = try allocator.alloc(std.fs.File, file_names.len);
-            errdefer allocator.free(files);
-
-            var is_stdout = try allocator.alloc(bool, file_names.len);
-            errdefer allocator.free(is_stdout);
-
-            var files_opened: usize = 0;
-            errdefer {
-                for (files[0..files_opened], is_stdout[0..files_opened]) |file, is_dash| {
-                    if (!is_dash) file.close();
-                }
-            }
-
-            for (file_names, 0..) |file_name, i| {
-                if (std.mem.eql(u8, file_name, "-")) {
-                    is_stdout[i] = true;
-                    files[i] = undefined;
-                    files_opened += 1;
-                    continue;
-                }
-                is_stdout[i] = false;
-                if (append_mode) {
-                    files[i] = std.fs.cwd().openFile(file_name, .{ .mode = .write_only }) catch |open_err| switch (open_err) {
-                        error.FileNotFound => std.fs.cwd().createFile(file_name, .{ .read = false }) catch |create_err| {
-                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(create_err) });
-                            return create_err;
-                        },
-                        else => {
-                            common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(open_err) });
-                            return open_err;
-                        },
-                    };
-                    files[i].seekFromEnd(0) catch {};
-                } else {
-                    files[i] = std.fs.cwd().createFile(file_name, .{ .read = false, .truncate = true }) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(err) });
-                        return err;
-                    };
-                }
-                files_opened += 1;
-            }
-
-            return Self{
-                .allocator = allocator,
-                .files = files,
-                .is_stdout = is_stdout,
-            };
-        }
-
-        /// Close all opened file handles.
-        pub fn deinit(self: *Self) void {
-            for (self.files, self.is_stdout) |file, is_dash| {
-                if (!is_dash) file.close();
-            }
-            self.allocator.free(self.files);
-            self.allocator.free(self.is_stdout);
-        }
-    };
-}
-
 // ============================================================================
 //                                   TESTS
 // ============================================================================
 
 test "tee --help shows help message" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runTee(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTee(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: tee") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: tee") != null);
 }
 
 test "tee --version shows version information" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runTee(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTee(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "tee") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "tee") != null);
 }
 
 test "tee with unknown flag should return error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runTee(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTee(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
 }
 
 test "tee copies input to stdout and files" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Create an input file to simulate stdin
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("hello tee\n");
-    try input_file.seekTo(0);
-
-    // Get real path for output file
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
-    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
+    const output_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
     defer testing.allocator.free(output_path);
+    const out_file_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{output_path});
+    defer testing.allocator.free(out_file_path);
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed_args = TeeArgs{
-        .positionals = &.{output_path},
+        .positionals = &.{out_file_path},
     };
 
+    var reader: std.Io.Reader = .fixed("hello tee\n");
     const result = try runTeeWithInput(
         testing.allocator,
+        io,
         parsed_args,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-
-    // Verify stdout received the data
-    try testing.expectEqualStrings("hello tee\n", stdout_buffer.items);
+    try testing.expectEqualStrings("hello tee\n", stdout_aw.writer.buffered());
 
     // Verify the output file received the data
-    const file_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const file_content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .limited(4096));
     defer testing.allocator.free(file_content);
     try testing.expectEqualStrings("hello tee\n", file_content);
 }
 
 test "tee -a appends to existing files" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create output file with existing content
     {
-        const existing = try tmp_dir.dir.createFile("output.txt", .{});
-        try existing.writeAll("existing\n");
-        existing.close();
+        const existing = try tmp_dir.dir.createFile(io, "output.txt", .{});
+        try existing.writeStreamingAll(io, "existing\n");
+        existing.close(io);
     }
 
-    // Create input file
-    const input_file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try input_file.writeAll("appended\n");
-    try input_file.seekTo(0);
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
     defer testing.allocator.free(output_path);
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed_args = TeeArgs{
         .append = true,
         .positionals = &.{output_path},
     };
 
+    var reader: std.Io.Reader = .fixed("appended\n");
     const result = try runTeeWithInput(
         testing.allocator,
+        io,
         parsed_args,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
-    input_file.close();
 
     try testing.expectEqual(@as(u8, 0), result);
-
-    // Verify stdout received the new data
-    try testing.expectEqualStrings("appended\n", stdout_buffer.items);
+    try testing.expectEqualStrings("appended\n", stdout_aw.writer.buffered());
 
     // Verify output file has both existing and appended content
-    const file_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const file_content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .limited(4096));
     defer testing.allocator.free(file_content);
     try testing.expectEqualStrings("existing\nappended\n", file_content);
 }
 
 test "tee dash operand writes stdout twice" {
     // GNU behavior: echo hi | tee - outputs "hi" twice.
-    // The normal tee stdout produces one copy, and the "-"
-    // operand should produce a second copy to stdout.
-    const input_file = try createTempInput("hello\n");
-    defer input_file.close();
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed_args = TeeArgs{
         .positionals = &.{"-"},
     };
 
+    var reader: std.Io.Reader = .fixed("hello\n");
     const result = try runTeeWithInput(
         testing.allocator,
+        io,
         parsed_args,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
 
     try testing.expectEqual(@as(u8, 0), result);
-    // Expect "hello\n" twice: once from normal stdout,
-    // once from the "-" operand.
-    try testing.expectEqualStrings("hello\nhello\n", stdout_buffer.items);
+    // Expect "hello\n" twice: once from normal stdout, once from the "-" operand.
+    try testing.expectEqualStrings("hello\nhello\n", stdout_aw.writer.buffered());
 }
 
 test "tee two dash operands writes stdout three times" {
-    // echo hi | tee - - should output "hi" three times:
-    // once from normal stdout, once per "-" operand.
-    const input_file = try createTempInput("hello\n");
-    defer input_file.close();
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    // echo hi | tee - - should output "hi" three times
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed_args = TeeArgs{
         .positionals = &.{ "-", "-" },
     };
 
+    var reader: std.Io.Reader = .fixed("hello\n");
     const result = try runTeeWithInput(
         testing.allocator,
+        io,
         parsed_args,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
 
     try testing.expectEqual(@as(u8, 0), result);
     // Three copies: normal stdout + two "-" operands.
-    try testing.expectEqualStrings("hello\nhello\nhello\n", stdout_buffer.items);
+    try testing.expectEqualStrings("hello\nhello\nhello\n", stdout_aw.writer.buffered());
 }
 
 test "tee dash with file writes stdout twice and to file" {
-    // echo hi | tee file.txt - should output "hi" twice
-    // to stdout AND write to file.txt.
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const input_file = try createTempInput("hello\n");
-    defer input_file.close();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    const tmp_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_path);
     const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.txt", .{tmp_path});
     defer testing.allocator.free(output_path);
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed_args = TeeArgs{
         .positionals = &.{ output_path, "-" },
     };
 
+    var reader: std.Io.Reader = .fixed("hello\n");
     const result = try runTeeWithInput(
         testing.allocator,
+        io,
         parsed_args,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
 
     try testing.expectEqual(@as(u8, 0), result);
 
     // Stdout should have two copies: normal + "-" operand.
-    try testing.expectEqualStrings("hello\nhello\n", stdout_buffer.items);
+    try testing.expectEqualStrings("hello\nhello\n", stdout_aw.writer.buffered());
 
     // File should have exactly one copy.
-    const file_content = try tmp_dir.dir.readFileAlloc(testing.allocator, "output.txt", 4096);
+    const file_content = try tmp_dir.dir.readFileAlloc(io, "output.txt", testing.allocator, .limited(4096));
     defer testing.allocator.free(file_content);
     try testing.expectEqualStrings("hello\n", file_content);
 }
 
 test "tee with no files copies stdin to stdout only" {
-    const input_file = try createTempInput("piped data\n");
-    defer input_file.close();
-
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const parsed_args = TeeArgs{};
 
+    var reader: std.Io.Reader = .fixed("piped data\n");
     const result = try runTeeWithInput(
         testing.allocator,
+        io,
         parsed_args,
-        input_file,
-        stdout_buffer.writer(testing.allocator),
+        &reader,
+        &stdout_aw.writer,
         common.null_writer,
     );
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("piped data\n", stdout_buffer.items);
-}
-
-/// Helper to create a temporary file with given content, seeked
-/// back to the start so it can be used as simulated stdin.
-fn createTempInput(content: []const u8) !std.fs.File {
-    var tmp_dir = testing.tmpDir(.{});
-    // We intentionally do NOT defer cleanup here — the
-    // caller closes the file, and the OS reclaims the
-    // anonymous tmpDir on process exit.
-    const file = try tmp_dir.dir.createFile("input.txt", .{ .read = true });
-    try file.writeAll(content);
-    try file.seekTo(0);
-    return file;
+    try testing.expectEqualStrings("piped data\n", stdout_aw.writer.buffered());
 }

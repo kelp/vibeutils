@@ -72,12 +72,12 @@ const TailOptions = struct {
 };
 
 /// Print version information to the specified writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("tail ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Print usage information to the specified writer
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: tail [OPTION]... [FILE]...
         \\Print the last 10 lines of each FILE to standard output.
@@ -143,7 +143,7 @@ fn isObsoleteNumArg(arg: []const u8) bool {
 }
 
 /// Main entry point for tail utility with stdout and stderr writer parameters
-pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runTail(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const expanded_args = try expandObsoleteArgs(allocator, args);
     defer allocator.free(expanded_args);
 
@@ -228,7 +228,7 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
     // Process files
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
-        try processStdin(allocator, stdout_writer, options);
+        try processStdin(allocator, io, stdout_writer, options);
     } else {
         // Process each file
         var had_error = false;
@@ -240,10 +240,10 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     if (i > 0) try stdout_writer.writeAll("\n");
                     try stdout_writer.writeAll("==> standard input <==\n");
                 }
-                try processStdin(allocator, stdout_writer, options);
+                try processStdin(allocator, io, stdout_writer, options);
             } else {
                 // Open and process regular file
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     // -F (follow with retry) tolerates missing files
                     if (parsed_args.follow_retry and err == error.FileNotFound) {
                         continue;
@@ -252,13 +252,13 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
                     had_error = true;
                     continue;
                 };
-                defer file.close();
+                defer file.close(io);
 
                 if (should_show_headers) {
                     if (i > 0) try stdout_writer.writeAll("\n");
                     try stdout_writer.print("==> {s} <==\n", .{file_path});
                 }
-                try processFile(allocator, file, stdout_writer, options);
+                try processFile(allocator, io, file, stdout_writer, options);
             }
         }
         if (had_error and !options.follow) return @intFromEnum(common.ExitCode.general_error);
@@ -279,12 +279,13 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
             }
             if (real_file_count > 1) {
                 common.printErrorWithProgram(allocator, stderr_writer, "tail", "warning: following only '{s}'; multiple-file follow not yet supported", .{last_file_path.?});
-                flushWriter(stderr_writer);
+                stdout_writer.flush() catch {};
+                stderr_writer.flush() catch {};
             }
             if (last_file_path) |path| {
                 // Flush initial output before entering the follow loop
-                flushWriter(stdout_writer);
-                followFile(allocator, path, stdout_writer, stderr_writer, options) catch |err| {
+                stdout_writer.flush() catch {};
+                followFile(allocator, io, path, stdout_writer, stderr_writer, options) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -296,8 +297,8 @@ pub fn runTail(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 }
 
 /// Main entry point for the tail utility
-pub fn main() !void {
-    common.utilityMain(runTail);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runTail);
 }
 
 /// Parse numeric argument with optional suffix (K, M, G, etc.)
@@ -372,55 +373,45 @@ fn parseSuffixedNumber(arg: []const u8) !u64 {
 
 /// Convert system error to user-friendly error message
 /// Process stdin with given options
-fn processStdin(allocator: std.mem.Allocator, stdout_writer: anytype, options: TailOptions) !void {
+fn processStdin(allocator: std.mem.Allocator, io: std.Io, stdout_writer: *std.Io.Writer, options: TailOptions) !void {
     var stdin_buffer: [8192]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
     const stdin = &stdin_reader.interface;
 
     if (options.byte_count) |byte_count| {
-        try processInputByBytes(allocator, stdin, stdout_writer, byte_count, null, options.from_beginning_bytes);
+        try processInputByBytes(allocator, io, stdin, stdout_writer, byte_count, null, options.from_beginning_bytes);
     } else {
         try processInputByLines(allocator, stdin, stdout_writer, options.line_count, options.zero_terminated, options.from_beginning, options.reverse);
     }
 }
 
 /// Process a file with given options
-fn processFile(allocator: std.mem.Allocator, file: std.fs.File, stdout_writer: anytype, options: TailOptions) !void {
+fn processFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File, stdout_writer: *std.Io.Writer, options: TailOptions) !void {
     if (options.byte_count) |byte_count| {
         var file_buffer: [8192]u8 = undefined;
-        var file_reader = file.reader(&file_buffer);
+        var file_reader = file.reader(io, &file_buffer);
         const file_interface = &file_reader.interface;
-        try processInputByBytes(allocator, file_interface, stdout_writer, byte_count, file, options.from_beginning_bytes);
+        try processInputByBytes(allocator, io, file_interface, stdout_writer, byte_count, file, options.from_beginning_bytes);
     } else {
-        try processInputByLinesFromFile(allocator, file, stdout_writer, options.line_count, options.zero_terminated, options.from_beginning, options.reverse);
-    }
-}
-
-/// Flush a writer if it supports the flush method.
-/// Uses comptime checks to handle both buffered writers (production)
-/// and non-buffered writers (tests) transparently.
-fn flushWriter(writer: anytype) void {
-    const WriterType = @TypeOf(writer);
-    const ActualType = if (@typeInfo(WriterType) == .pointer) std.meta.Child(WriterType) else WriterType;
-    if (comptime @hasDecl(ActualType, "flush")) {
-        writer.flush() catch {};
+        try processInputByLinesFromFile(allocator, io, file, stdout_writer, options.line_count, options.zero_terminated, options.from_beginning, options.reverse);
     }
 }
 
 /// Read new data from file starting at last_pos, write to stdout.
 /// Returns the new file position after reading.
-fn readNewData(file: std.fs.File, last_pos: u64, stdout_writer: anytype) !u64 {
-    const new_end = try file.getEndPos();
+fn readNewData(io: std.Io, file: std.Io.File, last_pos: u64, stdout_writer: *std.Io.Writer) !u64 {
+    const new_end = try file.length(io);
     if (new_end > last_pos) {
-        try file.seekTo(last_pos);
         var buf: [BUFFER_SIZE]u8 = undefined;
+        var file_reader = file.reader(io, &buf);
+        try file_reader.seekTo(last_pos);
         while (true) {
-            const n = try file.read(&buf);
+            const n = try file_reader.interface.readSliceShort(&buf);
             if (n == 0) break;
             try stdout_writer.writeAll(buf[0..n]);
         }
-        const pos = try file.getEndPos();
-        flushWriter(stdout_writer);
+        const pos = try file.length(io);
+        stdout_writer.flush() catch {};
         return pos;
     }
     return last_pos;
@@ -428,47 +419,45 @@ fn readNewData(file: std.fs.File, last_pos: u64, stdout_writer: anytype) !u64 {
 
 /// Get the inode number for a file at the given path.
 /// Used by follow mode to detect file rotation.
-fn getInode(path: []const u8) !u64 {
-    const stat = try std.fs.cwd().statFile(path);
+fn getInode(io: std.Io, path: []const u8) !u64 {
+    const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
     return stat.inode;
 }
 
 /// Follow a file for new content, using OS-native file watching.
 /// Uses kqueue on macOS/BSD and inotify on Linux.
 /// This function runs an infinite loop and only returns on error.
-fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: anytype, stderr_writer: anytype, options: TailOptions) !void {
+fn followFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: TailOptions) !void {
     var waited_for_file = false;
-    var file = std.fs.cwd().openFile(path, .{}) catch |err| blk: {
+    var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| blk: {
         if (options.follow_retry and err == error.FileNotFound) {
             // -F: wait for file to appear
             common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: No such file or directory; waiting for it to appear", .{path});
-            flushWriter(stderr_writer);
+            stderr_writer.flush() catch {};
             waited_for_file = true;
             while (true) {
-                std.Thread.sleep(std.time.ns_per_s);
-                break :blk std.fs.cwd().openFile(path, .{}) catch continue;
+                io.sleep(std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)), .awake) catch {};
+                break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch continue;
             }
         } else {
             return err;
         }
     };
-    errdefer file.close();
+    errdefer file.close(io);
     // If we waited for the file to appear, read from the start
     // (processFile never ran). Otherwise resume from end.
-    var last_pos: u64 = if (waited_for_file) 0 else try file.getEndPos();
-    var last_inode = try getInode(path);
+    var last_pos: u64 = if (waited_for_file) 0 else try file.length(io);
+    var last_inode = try getInode(io, path);
 
     if (comptime builtin.os.tag == .linux) {
-        const inotify_fd = try std.posix.inotify_init1(std.os.linux.IN.CLOEXEC);
-        defer std.posix.close(inotify_fd);
-        var wd = try std.posix.inotify_add_watch(
-            inotify_fd,
-            path,
-            std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF,
-        );
+        const inotify_fd = try inotifyInit1(std.os.linux.IN.CLOEXEC);
+        defer closeFd(inotify_fd);
+        const path_z = try std.mem.Allocator.dupeZ(allocator, u8, path);
+        defer allocator.free(path_z);
+        var wd = try inotifyAddWatch(inotify_fd, path_z, std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF);
 
         // Read any data written before the watch was registered
-        last_pos = try readNewData(file, last_pos, stdout_writer);
+        last_pos = try readNewData(io, file, last_pos, stdout_writer);
 
         while (true) {
             // Block until inotify event
@@ -478,14 +467,14 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
 
             // Check for file rotation (-F)
             if (options.follow_retry) {
-                const new_inode = getInode(path) catch |err| blk: {
+                const new_inode = getInode(io, path) catch |err| blk: {
                     if (err == error.FileNotFound) {
                         // File is gone — wait for it to reappear
                         common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has become inaccessible; waiting for it to reappear", .{path});
-                        flushWriter(stderr_writer);
+                        stderr_writer.flush() catch {};
                         while (true) {
-                            std.Thread.sleep(std.time.ns_per_s);
-                            if (getInode(path)) |inode| {
+                            io.sleep(std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)), .awake) catch {};
+                            if (getInode(io, path)) |inode| {
                                 break :blk inode;
                             } else |_| {}
                         }
@@ -494,37 +483,33 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
                     }
                 };
                 if (new_inode != last_inode) {
-                    const new_file = try std.fs.cwd().openFile(path, .{});
-                    std.posix.inotify_rm_watch(inotify_fd, wd);
-                    file.close();
+                    const new_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+                    inotifyRmWatch(inotify_fd, wd);
+                    file.close(io);
                     file = new_file;
                     last_inode = new_inode;
                     last_pos = 0;
-                    wd = try std.posix.inotify_add_watch(
-                        inotify_fd,
-                        path,
-                        std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF,
-                    );
+                    wd = try inotifyAddWatch(inotify_fd, path_z, std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF);
                     common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has been replaced; following new file", .{path});
-                    flushWriter(stderr_writer);
+                    stderr_writer.flush() catch {};
                     // Fall through to read any data already in the new file
                 }
             }
 
             // Check for truncation
-            const new_end = try file.getEndPos();
+            const new_end = try file.length(io);
             if (new_end < last_pos) {
                 common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file truncated", .{path});
-                flushWriter(stderr_writer);
+                stderr_writer.flush() catch {};
                 last_pos = 0;
             }
 
-            last_pos = try readNewData(file, last_pos, stdout_writer);
+            last_pos = try readNewData(io, file, last_pos, stdout_writer);
         }
     } else {
         // macOS/BSD: kqueue
-        const kq = try std.posix.kqueue();
-        defer std.posix.close(kq);
+        const kq = try kqueueCreate();
+        defer closeFd(kq);
 
         var changelist = [1]std.c.Kevent{.{
             .ident = @as(usize, @intCast(file.handle)),
@@ -535,27 +520,27 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
             .udata = 0,
         }};
         // Register the watch
-        _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+        _ = try keventCall(kq, &changelist, &.{}, null);
 
         // Read any data written before the watch was registered
-        last_pos = try readNewData(file, last_pos, stdout_writer);
+        last_pos = try readNewData(io, file, last_pos, stdout_writer);
 
         while (true) {
             // Wait for events (blocks)
             var eventlist: [1]std.c.Kevent = undefined;
-            const nevents = try std.posix.kevent(kq, &.{}, &eventlist, null);
+            const nevents = try keventCall(kq, &.{}, &eventlist, null);
             if (nevents == 0) continue;
 
             // Check for file rotation (-F)
             if (options.follow_retry) {
-                const new_inode = getInode(path) catch |err| blk: {
+                const new_inode = getInode(io, path) catch |err| blk: {
                     if (err == error.FileNotFound) {
                         // File is gone — wait for it to reappear
                         common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has become inaccessible; waiting for it to reappear", .{path});
-                        flushWriter(stderr_writer);
+                        stderr_writer.flush() catch {};
                         while (true) {
-                            std.Thread.sleep(std.time.ns_per_s);
-                            if (getInode(path)) |inode| {
+                            io.sleep(std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)), .awake) catch {};
+                            if (getInode(io, path)) |inode| {
                                 break :blk inode;
                             } else |_| {}
                         }
@@ -564,70 +549,123 @@ fn followFile(allocator: std.mem.Allocator, path: []const u8, stdout_writer: any
                     }
                 };
                 if (new_inode != last_inode) {
-                    const new_file = try std.fs.cwd().openFile(path, .{});
-                    file.close();
+                    const new_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+                    file.close(io);
                     file = new_file;
                     last_inode = new_inode;
                     last_pos = 0;
                     // Register kqueue watch on new fd
                     changelist[0].ident = @as(usize, @intCast(file.handle));
-                    _ = try std.posix.kevent(kq, &changelist, &.{}, null);
+                    _ = try keventCall(kq, &changelist, &.{}, null);
                     common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has been replaced; following new file", .{path});
-                    flushWriter(stderr_writer);
+                    stderr_writer.flush() catch {};
                     // Fall through to read any data already in the new file
                 }
             }
 
             // Check for truncation
-            const new_end = try file.getEndPos();
+            const new_end = try file.length(io);
             if (new_end < last_pos) {
                 common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file truncated", .{path});
-                flushWriter(stderr_writer);
+                stderr_writer.flush() catch {};
                 last_pos = 0;
             }
 
-            last_pos = try readNewData(file, last_pos, stdout_writer);
+            last_pos = try readNewData(io, file, last_pos, stdout_writer);
         }
     }
 }
 
+/// Close a raw file descriptor using OS-native close syscall.
+fn closeFd(fd: std.c.fd_t) void {
+    if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.syscall1(.close, @as(usize, @bitCast(@as(isize, fd))));
+    } else {
+        _ = std.c.close(fd);
+    }
+}
+
+/// Linux-only: initialize an inotify instance.
+fn inotifyInit1(flags: u32) !std.c.fd_t {
+    const rc = std.os.linux.inotify_init1(flags);
+    return switch (std.os.linux.errno(rc)) {
+        .SUCCESS => @as(std.c.fd_t, @intCast(rc)),
+        .MFILE => error.ProcessFdQuotaExceeded,
+        .NFILE => error.SystemFdQuotaExceeded,
+        .NOMEM => error.SystemResources,
+        else => error.Unexpected,
+    };
+}
+
+/// Linux-only: add a watch to an inotify instance.
+fn inotifyAddWatch(inotify_fd: std.c.fd_t, path_z: [*:0]const u8, mask: u32) !i32 {
+    const rc = std.os.linux.inotify_add_watch(inotify_fd, path_z, mask);
+    return switch (std.os.linux.errno(rc)) {
+        .SUCCESS => @as(i32, @intCast(rc)),
+        .ACCES => error.AccessDenied,
+        .NOENT => error.FileNotFound,
+        .NOMEM => error.SystemResources,
+        else => error.Unexpected,
+    };
+}
+
+/// Linux-only: remove a watch from an inotify instance.
+fn inotifyRmWatch(inotify_fd: std.c.fd_t, wd: i32) void {
+    _ = std.os.linux.inotify_rm_watch(inotify_fd, wd);
+}
+
+/// macOS/BSD-only: create a kqueue descriptor.
+fn kqueueCreate() !std.c.fd_t {
+    const kq = std.c.kqueue();
+    if (kq == -1) return error.SystemResources;
+    return kq;
+}
+
+/// macOS/BSD-only: call kevent with error handling.
+fn keventCall(kq: std.c.fd_t, changelist: []const std.c.Kevent, eventlist: []std.c.Kevent, timeout: ?*const std.c.timespec) !usize {
+    const n = std.c.kevent(kq, changelist.ptr, @intCast(changelist.len), eventlist.ptr, @intCast(eventlist.len), if (timeout) |t| t else null);
+    if (n < 0) return error.EventFdNotSupported;
+    return @intCast(n);
+}
+
 /// Process input by byte count
-fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64, file: ?std.fs.File, from_beginning: bool) !void {
+fn processInputByBytes(allocator: std.mem.Allocator, io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer, byte_count: u64, file: ?std.Io.File, from_beginning: bool) !void {
     if (from_beginning) {
-        return processInputByBytesFromBeginning(reader, writer, byte_count, file);
+        return processInputByBytesFromBeginning(io, reader, writer, byte_count, file);
     }
 
     if (byte_count == 0) return; // Output nothing for 0 bytes
 
     // If we have a file, try to seek to optimize reading
     if (file) |f| {
-        const file_size = f.getEndPos() catch {
+        const file_size = f.length(io) catch {
             // Fall back to reading everything if we can't get file size
             return processInputByBytesNoSeek(allocator, reader, writer, byte_count);
         };
 
+        var buffer: [BUFFER_SIZE]u8 = undefined;
+        var file_reader = f.reader(io, &buffer);
+
         if (byte_count >= file_size) {
             // Read entire file byte-for-byte without modifying content
-            try f.seekTo(0);
+            try file_reader.seekTo(0);
 
-            var buffer: [BUFFER_SIZE]u8 = undefined;
             while (true) {
-                const bytes_read = try f.read(&buffer);
+                const bytes_read = try file_reader.interface.readSliceShort(&buffer);
                 if (bytes_read == 0) break; // EOF
                 try writer.writeAll(buffer[0..bytes_read]);
             }
         } else {
             // Seek to the position we want to start reading from
             const start_pos = file_size - byte_count;
-            try f.seekTo(start_pos);
+            try file_reader.seekTo(start_pos);
 
             // Read directly from file using simple read() calls to avoid reader buffer issues
             var bytes_remaining = byte_count;
-            var buffer: [BUFFER_SIZE]u8 = undefined;
 
             while (bytes_remaining > 0) {
                 const bytes_to_read = @min(buffer.len, @as(usize, @intCast(bytes_remaining)));
-                const bytes_read = try f.read(buffer[0..bytes_to_read]);
+                const bytes_read = try file_reader.interface.readSliceShort(buffer[0..bytes_to_read]);
                 if (bytes_read == 0) break; // EOF
 
                 try writer.writeAll(buffer[0..bytes_read]);
@@ -641,23 +679,24 @@ fn processInputByBytes(allocator: std.mem.Allocator, reader: anytype, writer: an
 }
 
 /// Process input by bytes from beginning: skip first (byte_count - 1) bytes, output the rest
-fn processInputByBytesFromBeginning(reader: anytype, writer: anytype, byte_count: u64, file: ?std.fs.File) !void {
+fn processInputByBytesFromBeginning(io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer, byte_count: u64, file: ?std.Io.File) !void {
     // -c +N means output starting from byte N (1-indexed)
     // So skip the first (N-1) bytes
     const skip = if (byte_count > 0) byte_count - 1 else 0;
 
     if (file) |f| {
         // For seekable files, just seek past the skip bytes
-        const file_size = f.getEndPos() catch {
+        const file_size = f.length(io) catch {
             return processInputByBytesFromBeginningStream(reader, writer, skip);
         };
 
         if (skip >= file_size) return; // Nothing to output
 
-        try f.seekTo(skip);
         var buffer: [BUFFER_SIZE]u8 = undefined;
+        var file_reader = f.reader(io, &buffer);
+        try file_reader.seekTo(skip);
         while (true) {
-            const bytes_read = try f.read(&buffer);
+            const bytes_read = try file_reader.interface.readSliceShort(&buffer);
             if (bytes_read == 0) break;
             try writer.writeAll(buffer[0..bytes_read]);
         }
@@ -667,7 +706,7 @@ fn processInputByBytesFromBeginning(reader: anytype, writer: anytype, byte_count
 }
 
 /// Process stream input by bytes from beginning (non-seekable)
-fn processInputByBytesFromBeginningStream(reader: anytype, writer: anytype, skip: u64) !void {
+fn processInputByBytesFromBeginningStream(reader: *std.Io.Reader, writer: *std.Io.Writer, skip: u64) !void {
     var skipped: u64 = 0;
 
     while (true) {
@@ -694,7 +733,7 @@ fn processInputByBytesFromBeginningStream(reader: anytype, writer: anytype, skip
 const MAX_CIRCULAR_BUFFER: usize = 64 * 1024 * 1024; // 64 MB
 
 /// Process input by bytes without seeking (for stdin/pipes) using circular buffer
-fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64) !void {
+fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, byte_count: u64) !void {
     // When byte_count is larger than MAX_CIRCULAR_BUFFER, pre-allocating the
     // full amount would OOM for huge values (e.g. 10 GB).  Instead, collect
     // the actual input into a dynamic list (which grows only as data arrives)
@@ -742,7 +781,7 @@ fn processInputByBytesNoSeek(allocator: std.mem.Allocator, reader: anytype, writ
 /// MAX_CIRCULAR_BUFFER.  Reads all input into a growable list (allocating
 /// only what the input actually contains) then outputs the trailing
 /// byte_count bytes.
-fn processInputByBytesNoSeekDynamic(allocator: std.mem.Allocator, reader: anytype, writer: anytype, byte_count: u64) !void {
+fn processInputByBytesNoSeekDynamic(allocator: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, byte_count: u64) !void {
     var data = try std.ArrayList(u8).initCapacity(allocator, 0);
     defer data.deinit(allocator);
 
@@ -811,7 +850,7 @@ const LineBuffer = struct {
         }
     }
 
-    fn writeAllLines(self: *LineBuffer, writer: anytype) !void {
+    fn writeAllLines(self: *LineBuffer, writer: *std.Io.Writer) !void {
         if (!self.is_full) {
             // Buffer not full, output all lines in order
             for (self.lines[0..self.next_index]) |line| {
@@ -826,7 +865,7 @@ const LineBuffer = struct {
         }
     }
 
-    fn writeAllLinesReversed(self: *LineBuffer, writer: anytype, delimiter: u8) !void {
+    fn writeAllLinesReversed(self: *LineBuffer, writer: *std.Io.Writer, delimiter: u8) !void {
         if (!self.is_full) {
             // Buffer not full, output lines in reverse order
             var i = self.next_index;
@@ -865,7 +904,7 @@ const LineBuffer = struct {
 /// Process input by line count using file handle when available.
 /// Streams the file in chunks instead of reading it all into memory.
 /// When line_count is null (used with -r), all lines are collected.
-fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, writer: anytype, line_count: ?u64, zero_terminated: bool, from_beginning: bool, reverse: bool) !void {
+fn processInputByLinesFromFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File, writer: *std.Io.Writer, line_count: ?u64, zero_terminated: bool, from_beginning: bool, reverse: bool) !void {
     if (line_count) |lc| {
         if (lc == 0 and !from_beginning) return;
     }
@@ -882,16 +921,20 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
         if (skip_count == 0) {
             // +1 means output everything from the start
             while (true) {
-                const n = try file.read(&read_buf);
-                if (n == 0) return;
+                const n = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+                    error.EndOfStream => return,
+                    else => return err,
+                };
                 try writer.writeAll(read_buf[0..n]);
             }
         }
 
         var lines_seen: usize = 0;
         while (true) {
-            const bytes_read = try file.read(&read_buf);
-            if (bytes_read == 0) return; // EOF before we finished skipping
+            const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+                error.EndOfStream => return, // EOF before we finished skipping
+                else => return err,
+            };
 
             for (read_buf[0..bytes_read], 0..) |byte, pos| {
                 if (byte == delimiter) {
@@ -901,8 +944,10 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
                         try writer.writeAll(read_buf[pos + 1 .. bytes_read]);
                         // Then stream remaining file content directly
                         while (true) {
-                            const n = try file.read(&read_buf);
-                            if (n == 0) return;
+                            const n = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+                                error.EndOfStream => return,
+                                else => return err,
+                            };
                             try writer.writeAll(read_buf[0..n]);
                         }
                     }
@@ -913,19 +958,21 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
 
     // When line_count is null (reverse all), collect into a dynamic list
     if (line_count == null) {
-        var lines = std.ArrayListUnmanaged([]u8){};
+        var lines: std.ArrayListUnmanaged([]u8) = .empty;
         defer {
             for (lines.items) |line| allocator.free(line);
             lines.deinit(allocator);
         }
 
         var read_buf: [8192]u8 = undefined;
-        var partial = std.ArrayListUnmanaged(u8){};
+        var partial: std.ArrayListUnmanaged(u8) = .empty;
         defer partial.deinit(allocator);
 
         while (true) {
-            const bytes_read = try file.read(&read_buf);
-            if (bytes_read == 0) break;
+            const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
 
             var chunk_start: usize = 0;
             for (read_buf[0..bytes_read], 0..) |byte, pos| {
@@ -977,12 +1024,14 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
 
     // Stream file in chunks and extract lines
     var read_buf: [8192]u8 = undefined;
-    var partial = std.ArrayListUnmanaged(u8){};
+    var partial: std.ArrayListUnmanaged(u8) = .empty;
     defer partial.deinit(allocator);
 
     while (true) {
-        const bytes_read = try file.read(&read_buf);
-        if (bytes_read == 0) break; // EOF
+        const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
 
         var chunk_start: usize = 0;
         for (read_buf[0..bytes_read], 0..) |byte, pos| {
@@ -1020,7 +1069,7 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, file: std.fs.File, 
 }
 
 /// Process input by line count (fallback for non-file inputs like stdin)
-fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: anytype, line_count: ?u64, zero_terminated: bool, from_beginning: bool, reverse: bool) !void {
+fn processInputByLines(allocator: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, line_count: ?u64, zero_terminated: bool, from_beginning: bool, reverse: bool) !void {
     if (line_count) |lc| {
         if (lc == 0 and !from_beginning) return; // Output nothing for 0 lines
     }
@@ -1063,7 +1112,7 @@ fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: an
 
     // When line_count is null (reverse all), collect into a dynamic list
     if (line_count == null) {
-        var lines = std.ArrayListUnmanaged([]u8){};
+        var lines: std.ArrayListUnmanaged([]u8) = .empty;
         defer {
             for (lines.items) |line| allocator.free(line);
             lines.deinit(allocator);
@@ -1132,148 +1181,158 @@ fn processInputByLines(allocator: std.mem.Allocator, reader: anytype, writer: an
 // ========== TESTS ==========
 
 test "tail outputs default 10 lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create test file with 15 lines
     const content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), .{});
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, .{});
 
-    try testing.expectEqualStrings("line6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n", buffer.items);
+    try testing.expectEqualStrings("line6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n", aw.writer.buffered());
 }
 
 test "tail with -n 5 outputs last 5 lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 5 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("line3\nline4\nline5\nline6\nline7\n", buffer.items);
+    try testing.expectEqualStrings("line3\nline4\nline5\nline6\nline7\n", aw.writer.buffered());
 }
 
 test "tail with -n 0 outputs nothing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 0 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail with -c 10 outputs last 10 bytes" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "abcdefghijklmnopqrstuvwxyz";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 10 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("qrstuvwxyz", buffer.items);
+    try testing.expectEqualStrings("qrstuvwxyz", aw.writer.buffered());
 }
 
 test "tail with -c 0 outputs nothing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "some content here";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 0 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail handles line count larger than file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 100 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("line1\nline2\nline3\n", buffer.items);
+    try testing.expectEqualStrings("line1\nline2\nline3\n", aw.writer.buffered());
 }
 
 test "tail handles byte count larger than file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "small";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 100 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("small", buffer.items);
+    try testing.expectEqualStrings("small", aw.writer.buffered());
 }
 
 test "tail handles empty file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "empty.txt", "");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "empty.txt", "");
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try testTailFile(tmp_dir.dir, "empty.txt", buffer.writer(testing.allocator), .{});
+    try testTailFile(io, tmp_dir.dir, "empty.txt", &aw.writer, .{});
 
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail handles file with no final newline" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3"; // no final newline
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 2 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("line2\nline3", buffer.items);
+    try testing.expectEqualStrings("line2\nline3", aw.writer.buffered());
 }
 
 test "tail handles very long lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1285,79 +1344,82 @@ test "tail handles very long lines" {
     const content = try std.fmt.allocPrint(testing.allocator, "short1\n{s}\nshort2\n", .{long_line});
     defer testing.allocator.free(content);
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 2 };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
     const expected = try std.fmt.allocPrint(testing.allocator, "{s}\nshort2\n", .{long_line});
     defer testing.allocator.free(expected);
-    try testing.expectEqualStrings(expected, buffer.items);
+    try testing.expectEqualStrings(expected, aw.writer.buffered());
 }
 
 test "tail with multiple files shows headers by default" {
     const args = [_][]const u8{ "file1.txt", "file2.txt" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, common.null_writer);
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 1), result); // Should fail with general error due to missing files
 }
 
 test "tail with -q suppresses headers for multiple files" {
     const args = [_][]const u8{ "-q", "file1.txt", "file2.txt" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, common.null_writer);
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 1), result); // Should fail with general error due to missing files
 }
 
 test "tail with -v always shows headers" {
     const args = [_][]const u8{ "-v", "file1.txt" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, common.null_writer);
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 1), result); // Should fail with general error due to missing file
 }
 
 test "tail handles non-existent file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    const result = testTailFile(tmp_dir.dir, "nonexistent.txt", buffer.writer(testing.allocator), .{});
+    const result = testTailFile(io, tmp_dir.dir, "nonexistent.txt", &aw.writer, .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "tail with -z handles zero-terminated lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\x00line2\x00line3\x00";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 2, .zero_terminated = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("line2\x00line3\x00", buffer.items);
+    try testing.expectEqualStrings("line2\x00line3\x00", aw.writer.buffered());
 }
 
 test "tail with binary file in byte mode" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const binary_content = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE, 0xFD, 0xFC };
-    try common.test_utils.createTestFile(tmp_dir.dir, "binary.txt", &binary_content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "binary.txt", &binary_content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .byte_count = 4 };
-    try testTailFile(tmp_dir.dir, "binary.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "binary.txt", &aw.writer, options);
 
     const expected = [_]u8{ 0xFF, 0xFE, 0xFD, 0xFC };
-    try testing.expectEqualSlices(u8, &expected, buffer.items);
+    try testing.expectEqualSlices(u8, &expected, aw.writer.buffered());
 }
 
 test "parseNumericArg with valid numbers" {
@@ -1380,74 +1442,78 @@ test "parseNumericArg with plus prefix" {
 }
 
 test "tail -n +1 outputs entire file (from-beginning)" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 1, .from_beginning = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
     // +1 means skip 0 lines, output everything
-    try testing.expectEqualStrings("line1\nline2\nline3\nline4\nline5\n", buffer.items);
+    try testing.expectEqualStrings("line1\nline2\nline3\nline4\nline5\n", aw.writer.buffered());
 }
 
 test "tail -n +3 skips first 2 lines (from-beginning)" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 3, .from_beginning = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
     // +3 means skip first 2 lines, output from line 3 onward
-    try testing.expectEqualStrings("line3\nline4\nline5\n", buffer.items);
+    try testing.expectEqualStrings("line3\nline4\nline5\n", aw.writer.buffered());
 }
 
 test "tail -n +NUM larger than file outputs nothing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 100, .from_beginning = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
     // +100 on a 2-line file: skip 99 lines, nothing left
-    try testing.expectEqualStrings("", buffer.items);
+    try testing.expectEqualStrings("", aw.writer.buffered());
 }
 
 test "tail -n +NUM detected via runTail arg parsing" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     // Get the real path for the file
-    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(path);
 
     const args = [_][]const u8{ "-n", "+3", path };
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("line3\nline4\nline5\n", buffer.items);
+    try testing.expectEqualStrings("line3\nline4\nline5\n", aw.writer.buffered());
 }
 
 test "parseNumericArg with invalid input" {
@@ -1475,63 +1541,64 @@ test "tail shouldShowHeaders logic" {
 }
 
 test "tail help output" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, testing.io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: tail") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage: tail") != null);
 }
 
 test "tail version output" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, testing.io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "tail (vibeutils)") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "tail (vibeutils)") != null);
 }
 
 test "tail with invalid line count" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-n", "invalid" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid number of lines") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid number of lines") != null);
 }
 
 test "tail with invalid byte count" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "xyz" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid number of bytes") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid number of bytes") != null);
 }
 
 test "tail with obsolete -NUM syntax" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-2", file_path };
-    const exit_code = try runTail(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runTail(testing.allocator, io, &args, &aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expectEqualStrings("Line 4\nLine 5\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 4\nLine 5\n", aw.writer.buffered());
 }
 
 test "tail: -f flag is parsed" {
@@ -1553,13 +1620,13 @@ test "tail: -F flag is parsed" {
 }
 
 test "tail: -f with nonexistent file gives error" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", "/tmp/vibeutils_test_nonexistent_file_xyzzy" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
 }
 
 test "tail: -F skips nonexistent files in initial processing" {
@@ -1578,16 +1645,16 @@ test "tail: -F skips nonexistent files in initial processing" {
 }
 
 test "tail: help output mentions -f and -F flags" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, testing.io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Help text should document the -f (follow) flag
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "-f") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "-f") != null);
     // Help text should document the -F (follow-retry) flag
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "-F") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "-F") != null);
 }
 
 test "tail: -b flag is parsed" {
@@ -1600,6 +1667,7 @@ test "tail: -b flag is parsed" {
 }
 
 test "tail: -b 2 shows last 1024 bytes" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1607,25 +1675,26 @@ test "tail: -b 2 shows last 1024 bytes" {
     var content: [2048]u8 = undefined;
     @memset(content[0..1024], 'A');
     @memset(content[1024..2048], 'B');
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", &content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", &content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-b", "2", file_path };
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqual(@as(usize, 1024), buffer.items.len);
+    try testing.expectEqual(@as(usize, 1024), aw.writer.buffered().len);
     // Last 1024 bytes should all be 'B'
-    for (buffer.items) |byte| {
+    for (aw.writer.buffered()) |byte| {
         try testing.expectEqual(@as(u8, 'B'), byte);
     }
 }
 
 test "tail: -b +2 shows from byte 512 onwards" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
@@ -1634,46 +1703,48 @@ test "tail: -b +2 shows from byte 512 onwards" {
     @memset(content[0..512], 'A');
     @memset(content[512..1024], 'B');
     @memset(content[1024..1536], 'C');
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", &content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", &content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // -b +2 means starting from block 2 (byte 512), output the rest
     const args = [_][]const u8{ "-b", "+2", file_path };
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Should output from byte 512 onwards (1024 bytes: 512 B's + 512 C's)
-    try testing.expectEqual(@as(usize, 1024), buffer.items.len);
-    for (buffer.items[0..512]) |byte| {
+    const out = aw.writer.buffered();
+    try testing.expectEqual(@as(usize, 1024), out.len);
+    for (out[0..512]) |byte| {
         try testing.expectEqual(@as(u8, 'B'), byte);
     }
-    for (buffer.items[512..1024]) |byte| {
+    for (out[512..1024]) |byte| {
         try testing.expectEqual(@as(u8, 'C'), byte);
     }
 }
 
 test "tail: -b with file shorter than block count shows everything" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "short file content";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     // -b 10 = 5120 bytes, much larger than the file
     const args = [_][]const u8{ "-b", "10", file_path };
-    const result = try runTail(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTail(testing.allocator, io, &args, &aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("short file content", buffer.items);
+    try testing.expectEqualStrings("short file content", aw.writer.buffered());
 }
 
 test "tail: -r flag is parsed" {
@@ -1685,91 +1756,96 @@ test "tail: -r flag is parsed" {
 }
 
 test "tail: -r reverses all lines of a file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = null, .reverse = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("line5\nline4\nline3\nline2\nline1\n", buffer.items);
+    try testing.expectEqualStrings("line5\nline4\nline3\nline2\nline1\n", aw.writer.buffered());
 }
 
 test "tail: -r -n 3 reverses last 3 lines" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "line1\nline2\nline3\nline4\nline5\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = 3, .reverse = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("line5\nline4\nline3\n", buffer.items);
+    try testing.expectEqualStrings("line5\nline4\nline3\n", aw.writer.buffered());
 }
 
 test "tail: -r on single-line file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const content = "only line\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", content);
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", content);
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     const options = TailOptions{ .line_count = null, .reverse = true };
-    try testTailFile(tmp_dir.dir, "test.txt", buffer.writer(testing.allocator), options);
+    try testTailFile(io, tmp_dir.dir, "test.txt", &aw.writer, options);
 
-    try testing.expectEqualStrings("only line\n", buffer.items);
+    try testing.expectEqualStrings("only line\n", aw.writer.buffered());
 }
 
 test "tail: -f and -r are mutually exclusive" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "content\n");
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "test.txt", "content\n");
 
     // Build an absolute path for the test file
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const abs_path = path_buf[0..abs_path_len];
 
     const args = [_][]const u8{ "-f", "-r", abs_path };
-    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTail(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.misuse)), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "option used in invalid context") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "option used in invalid context") != null);
 }
 
 test "tail: -f with nonexistent file returns error" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-f", "/nonexistent/path/file.txt" };
-    const result = try runTail(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTail(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), result);
 }
 
 /// Test helper for processing a file from a directory
-fn testTailFile(dir: std.fs.Dir, filename: []const u8, writer: anytype, options: TailOptions) !void {
-    const file = try dir.openFile(filename, .{});
-    defer file.close();
+fn testTailFile(io: std.Io, dir: std.Io.Dir, filename: []const u8, writer: *std.Io.Writer, options: TailOptions) !void {
+    const file = try dir.openFile(io, filename, .{});
+    defer file.close(io);
     if (options.byte_count) |byte_count| {
         var file_buffer: [8192]u8 = undefined;
-        var file_reader = file.reader(&file_buffer);
+        var file_reader = file.reader(io, &file_buffer);
         const file_interface = &file_reader.interface;
-        try processInputByBytes(testing.allocator, file_interface, writer, byte_count, file, options.from_beginning_bytes);
+        try processInputByBytes(testing.allocator, io, file_interface, writer, byte_count, file, options.from_beginning_bytes);
     } else {
         const line_count = if (options.line_count) |lc| @as(?u64, lc) else if (options.reverse) null else @as(?u64, 10);
-        try processInputByLinesFromFile(testing.allocator, file, writer, line_count, options.zero_terminated, options.from_beginning, options.reverse);
+        try processInputByLinesFromFile(testing.allocator, io, file, writer, line_count, options.zero_terminated, options.from_beginning, options.reverse);
     }
 }

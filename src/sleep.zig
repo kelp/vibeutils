@@ -57,7 +57,7 @@ fn findBadToken(args: []const []const u8) ?[]const u8 {
 }
 
 /// Print help message
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: sleep NUMBER[SUFFIX]...
         \\  or:  sleep OPTION
@@ -79,11 +79,17 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("sleep ({s}) {s}\n", .{ common.name, common.version });
 }
 
-fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runSleep(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     const parsed_args = common.argparse.ArgParser.parseOrExit(SleepArgs, allocator, args, "sleep", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
@@ -135,15 +141,16 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
 
     // Sleep for the specified duration
     if (total_nanos > 0) {
-        std.Thread.sleep(total_nanos);
+        const duration = std.Io.Duration.fromNanoseconds(@intCast(total_nanos));
+        std.Io.sleep(io, duration, .awake) catch {};
     }
 
     return @intFromEnum(common.ExitCode.success);
 }
 
 /// Standard main function
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runSleep);
 }
 
 // ============================================================================
@@ -251,102 +258,110 @@ test "parseTotalTime - invalid arguments" {
 }
 
 test "runSleep - help option" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const result = try run(testing.allocator, &.{"--help"}, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runSleep(testing.allocator, io, &.{"--help"}, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: sleep NUMBER[SUFFIX]") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: sleep NUMBER[SUFFIX]") != null);
 }
 
 test "runSleep - version option" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const result = try run(testing.allocator, &.{"--version"}, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runSleep(testing.allocator, io, &.{"--version"}, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "sleep (vibeutils)") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "sleep (vibeutils)") != null);
 }
 
 test "runSleep - missing arguments" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const result = try run(testing.allocator, &.{}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runSleep(testing.allocator, io, &.{}, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
 test "runSleep - invalid time format" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const result = try run(testing.allocator, &.{"invalid"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runSleep(testing.allocator, io, &.{"invalid"}, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval") != null);
 }
 
 test "runSleep - negative time (with separator)" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const result = try run(testing.allocator, &.{ "--", "-1" }, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runSleep(testing.allocator, io, &.{ "--", "-1" }, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid time interval") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid time interval") != null);
 }
 
 test "runSleep - negative flag treated as unknown argument" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const result = try run(testing.allocator, &.{"-1"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runSleep(testing.allocator, io, &.{"-1"}, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
 }
 
 test "runSleep - zero seconds (should succeed immediately)" {
-    const result = try run(testing.allocator, &.{"0"}, common.null_writer, common.null_writer);
+    const io = testing.io;
+    const result = try runSleep(testing.allocator, io, &.{"0"}, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runSleep - very small sleep time" {
     // This should complete quickly - testing that small sleep times work
-    const start_time = std.time.milliTimestamp();
-    const result = try run(testing.allocator, &.{"0.001"}, common.null_writer, common.null_writer);
-    const end_time = std.time.milliTimestamp();
+    const io = testing.io;
+    const start_ts = std.Io.Timestamp.now(io, .awake);
+    const result = try runSleep(testing.allocator, io, &.{"0.001"}, common.null_writer, common.null_writer);
+    const end_ts = std.Io.Timestamp.now(io, .awake);
+    const elapsed_ms = start_ts.durationTo(end_ts).toMilliseconds();
 
     try testing.expectEqual(@as(u8, 0), result);
     // Should complete in reasonable time (less than 100ms for a 1ms sleep)
-    try testing.expect(end_time - start_time < 100);
+    try testing.expect(elapsed_ms < 100);
 }
 
 test "runSleep - multiple time arguments" {
     // Test that multiple arguments are accepted and processed
     // We use very small times to keep tests fast
-    const result = try run(testing.allocator, &.{ "0.001", "0.001s" }, common.null_writer, common.null_writer);
+    const io = testing.io;
+    const result = try runSleep(testing.allocator, io, &.{ "0.001", "0.001s" }, common.null_writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runSleep - zero sleep with captured output" {
-    // Safety-net test: exercises runSleep with both writers captured,
-    // verifying allocator correctness through the full argparse path.
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
-
-    const result = try run(testing.allocator, &.{"0"}, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runSleep(testing.allocator, io, &.{"0"}, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqual(@as(usize, 0), stdout_buf.items.len);
-    try testing.expectEqual(@as(usize, 0), stderr_buf.items.len);
+    try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 test "TimeUnit.toNanos - verify unit conversions" {
@@ -361,29 +376,23 @@ test "TimeUnit.toNanos - verify unit conversions" {
 // ============================================================================
 
 test "parseTimeString accepts 'inf' (GNU compatible)" {
-    // GNU sleep accepts 'inf' to mean sleep forever.
-    // vibeutils currently rejects 'inf' as InvalidTimeFormat.
-    // Expected: parseTimeString("inf") should succeed and return maxInt(u64).
     const result = try time.parseTimeString("inf");
     try testing.expectEqual(std.math.maxInt(u64), result);
 }
 
 test "parseTimeString accepts 'infinity' (GNU compatible)" {
-    // GNU sleep accepts 'infinity' to mean sleep forever.
-    // vibeutils currently rejects 'infinity' as InvalidTimeFormat.
     const result = try time.parseTimeString("infinity");
     try testing.expectEqual(std.math.maxInt(u64), result);
 }
 
 test "runSleep error message includes the invalid token" {
-    // GNU sleep: "sleep: invalid time interval 'xyz'"
-    // vibeutils currently says: "sleep: invalid time interval" (no token).
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const result = try run(testing.allocator, &.{"xyz"}, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runSleep(testing.allocator, io, &.{"xyz"}, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
     // The error message should include the invalid token 'xyz'
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "'xyz'") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "'xyz'") != null);
 }

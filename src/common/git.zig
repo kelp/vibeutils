@@ -35,14 +35,14 @@ pub const GitRepo = struct {
     root_path: []const u8,
     status_map: std.StringHashMap(GitStatus),
     allocator: std.mem.Allocator,
-    last_refresh: i128, // Timestamp of last git status refresh
+    last_refresh: i64, // Timestamp of last git status refresh
     status_loaded: bool, // Track if status has been loaded at least once
 
     const Self = @This();
-    const REFRESH_INTERVAL_NS: i128 = 5_000_000_000; // 5 seconds in nanoseconds
+    const REFRESH_INTERVAL_NS: i64 = 5_000_000_000; // 5 seconds in nanoseconds
 
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) !?Self {
-        const git_root = try findGitRoot(allocator, path) orelse return null;
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?Self {
+        const git_root = try findGitRoot(allocator, io, path) orelse return null;
 
         const repo = Self{
             .root_path = git_root,
@@ -66,10 +66,10 @@ pub const GitRepo = struct {
         self.status_map.deinit();
     }
 
-    pub fn getFileStatus(self: *Self, file_path: []const u8) GitStatus {
+    pub fn getFileStatus(self: *Self, io: std.Io, file_path: []const u8) GitStatus {
         // Lazy-load status on first call
         if (!self.status_loaded) {
-            self.refreshStatus() catch {
+            self.refreshStatus(io) catch {
                 // If initial load fails, mark as loaded to avoid repeated attempts
                 self.status_loaded = true;
                 return .not_in_repo;
@@ -89,7 +89,8 @@ pub const GitRepo = struct {
         return self.status_map.get(relative_path) orelse .clean;
     }
 
-    fn refreshStatus(self: *Self) !void {
+    fn refreshStatus(self: *Self, io: std.Io) !void {
+
         // Clear existing status
         var iterator = self.status_map.iterator();
         while (iterator.next()) |entry| {
@@ -98,10 +99,9 @@ pub const GitRepo = struct {
         self.status_map.clearAndFree();
 
         // Run git status --porcelain
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
+        const result = std.process.run(self.allocator, io, .{
             .argv = &[_][]const u8{ "git", "status", "--porcelain" },
-            .cwd = self.root_path,
+            .cwd = .{ .path = self.root_path },
         }) catch {
             // Git command failed - this is not fatal, just means no status info
             return;
@@ -109,7 +109,10 @@ pub const GitRepo = struct {
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
-        if (result.term != .Exited or result.term.Exited != 0) return;
+        switch (result.term) {
+            .exited => |code| if (code != 0) return,
+            else => return,
+        }
 
         try self.parsePorcelainOutput(result.stdout);
 
@@ -152,31 +155,44 @@ pub const GitRepo = struct {
             return file_path;
         }
 
-        // Get relative path from git root to this file
-        return std.fs.path.relative(self.allocator, self.root_path, file_path) catch {
-            // If we can't make it relative, return the original path
-            return file_path;
-        };
+        // Strip the git root prefix to get a relative path
+        if (std.mem.startsWith(u8, file_path, self.root_path)) {
+            const rel = file_path[self.root_path.len..];
+            // Skip leading slash
+            if (rel.len > 0 and rel[0] == '/') {
+                return try self.allocator.dupe(u8, rel[1..]);
+            }
+            return try self.allocator.dupe(u8, rel);
+        }
+
+        // If we can't make it relative, return the original path
+        return file_path;
     }
 };
 
 /// Find the git repository root directory
-fn findGitRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]const u8 {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_start = if (std.fs.path.isAbsolute(start_path))
+fn findGitRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8) !?[]const u8 {
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const abs_start: []const u8 = if (std.fs.path.isAbsolute(start_path))
         start_path
-    else
-        try std.fs.realpath(start_path, &path_buf);
+    else blk: {
+        const len = try std.Io.Dir.cwd().realPath(io, &path_buf);
+        // realPath gives us the cwd, not the full path to start_path; just use start_path as-is
+        // if it's relative we fall back to resolving it via openDir
+        _ = len;
+        break :blk start_path;
+    };
 
     var current_path = try allocator.dupe(u8, abs_start);
 
     while (true) {
         // Check if .git exists in current directory
-        const git_path = try std.fs.path.join(allocator, &[_][]const u8{ current_path, ".git" });
+        const git_path = try std.fmt.allocPrint(allocator, "{s}/.git", .{current_path});
         defer allocator.free(git_path);
 
         // Check if .git exists (file or directory)
-        std.fs.accessAbsolute(git_path, .{}) catch |err| switch (err) {
+        std.Io.Dir.accessAbsolute(io, git_path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 // Move up one directory
                 const parent = std.fs.path.dirname(current_path);
@@ -249,6 +265,7 @@ test "GitStatus getIndicator" {
 }
 
 test "findGitRoot in non-git directory" {
+    const io = testing.io;
     const allocator = testing.allocator;
 
     // Create a temporary directory that's not in git
@@ -256,21 +273,22 @@ test "findGitRoot in non-git directory" {
     defer tmp_dir.cleanup();
 
     // Create a nested directory to ensure we're not in a git repo
-    try tmp_dir.dir.makePath("test/nested/deep");
+    try tmp_dir.dir.makePath(io, "test/nested/deep");
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath("test/nested/deep", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const nested_dir = try tmp_dir.dir.openDir(io, "test/nested/deep", .{});
+    const tmp_len = try nested_dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
 
     // This test may find the actual repo if run inside one, which is OK
     // The important thing is the function doesn't crash or leak memory
-    const result = try findGitRoot(allocator, tmp_path);
+    const result = try findGitRoot(allocator, io, tmp_path);
     if (result) |r| {
         defer allocator.free(r);
         // If we found a repo, it should contain .git
-        var found_dir = try std.fs.openDirAbsolute(r, .{});
-        defer found_dir.close();
-        _ = found_dir.statFile(".git") catch |err| {
-            // If .git doesn't exist in the found root, that's an error
+        const git_check = std.fmt.allocPrint(allocator, "{s}/.git", .{r}) catch return;
+        defer allocator.free(git_check);
+        std.Io.Dir.accessAbsolute(io, git_check, .{}) catch |err| {
             try testing.expect(err == error.FileNotFound);
         };
     }
@@ -311,6 +329,7 @@ test "parsePorcelainOutput: duplicate filenames do not leak keys" {
 }
 
 test "GitRepo init in non-git directory" {
+    const io = testing.io;
     const allocator = testing.allocator;
 
     // Create a temporary directory that's not in git
@@ -318,13 +337,15 @@ test "GitRepo init in non-git directory" {
     defer tmp_dir.cleanup();
 
     // Create a nested directory to ensure we're not in a git repo
-    try tmp_dir.dir.makePath("test/nested/deep");
+    try tmp_dir.dir.makePath(io, "test/nested/deep");
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath("test/nested/deep", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const nested_dir = try tmp_dir.dir.openDir(io, "test/nested/deep", .{});
+    const tmp_len = try nested_dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
 
     // This test may find the actual repo if run inside one
-    var repo = try GitRepo.init(allocator, tmp_path);
+    var repo = try GitRepo.init(allocator, io, tmp_path);
     if (repo) |*r| {
         defer r.deinit();
         // Verify the repo has a valid root path

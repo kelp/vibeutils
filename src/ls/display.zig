@@ -12,7 +12,7 @@ pub fn initStyle(allocator: std.mem.Allocator, writer: anytype, color_mode: Colo
     if (color_mode == .never) {
         style.color_mode = .none;
     } else if (color_mode == .always) {
-        if (std.posix.getenv("NO_COLOR") != null) {
+        if (common.env.getEnv("NO_COLOR") != null) {
             // NO_COLOR takes precedence per no-color.org standard
             style.color_mode = .none;
         } else if (style.color_mode == .none) {
@@ -20,7 +20,7 @@ pub fn initStyle(allocator: std.mem.Allocator, writer: anytype, color_mode: Colo
         }
     }
     // For .auto, disable colors when stdout is not a TTY
-    if (color_mode == .auto and !std.posix.isatty(std.fs.File.stdout().handle)) {
+    if (color_mode == .auto and std.c.isatty(std.Io.File.stdout().handle) == 0) {
         style.color_mode = .none;
     }
     return style;
@@ -36,8 +36,8 @@ pub fn isExecutable(entry: Entry) bool {
 }
 
 /// Get color for a file kind (without needing an Entry)
-pub fn getColorForKind(kind: std.fs.File.Kind) common.style.Style(std.fs.File.Writer).Color {
-    const Color = common.style.Style(std.fs.File.Writer).Color;
+pub fn getColorForKind(kind: std.Io.File.Kind) common.style.Style(*std.Io.Writer).Color {
+    const Color = common.style.Style(*std.Io.Writer).Color;
     return switch (kind) {
         .directory => Color.bright_blue,
         .sym_link => Color.bright_cyan,
@@ -50,8 +50,8 @@ pub fn getColorForKind(kind: std.fs.File.Kind) common.style.Style(std.fs.File.Wr
 }
 
 /// Get appropriate color for file type
-pub fn getFileColor(entry: Entry) common.style.Style(std.fs.File.Writer).Color {
-    const Color = common.style.Style(std.fs.File.Writer).Color;
+pub fn getFileColor(entry: Entry) common.style.Style(*std.Io.Writer).Color {
+    const Color = common.style.Style(*std.Io.Writer).Color;
     return switch (entry.kind) {
         .directory => Color.bright_blue,
         .sym_link => Color.bright_cyan,
@@ -76,13 +76,13 @@ const GitStatusColorInfo = struct {
     g: u8,
     b: u8,
     c256: u8,
-    basic: common.style.Style(std.fs.File.Writer).Color,
+    basic: common.style.Style(*std.Io.Writer).Color,
 };
 
 /// Get color info for git status across all color modes.
 /// Returns null for statuses that should not be colored (.clean, .not_in_repo).
 fn getGitStatusColorInfo(git_status: common.git.GitStatus) ?GitStatusColorInfo {
-    const Color = common.style.Style(std.fs.File.Writer).Color;
+    const Color = common.style.Style(*std.Io.Writer).Color;
     return switch (git_status) {
         .untracked => .{ .r = 220, .g = 90, .b = 80, .c256 = 167, .basic = Color.red },
         .modified => .{ .r = 220, .g = 190, .b = 80, .c256 = 179, .basic = Color.yellow },
@@ -251,11 +251,11 @@ pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: Ls
     // Apply -b: C-style escape sequences for non-printable characters
     // Apply -q: replace non-printable characters with '?'
     if (options.escape_non_printable) {
-        var name_buf: [std.fs.max_path_bytes * 4]u8 = undefined;
+        var name_buf: [std.Io.Dir.max_path_bytes * 4]u8 = undefined;
         const display_name = escapeName(entry.name, &name_buf);
         try writer.print("{s}", .{display_name});
     } else if (options.non_printable_as_question) {
-        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const display_name = sanitizeName(entry.name, &name_buf);
         try writer.print("{s}", .{display_name});
     } else {
@@ -427,33 +427,33 @@ test "display - initStyle color=always with NO_COLOR must not emit ANSI codes" {
     // regardless of any other flag. --color=always must NOT override NO_COLOR.
 
     // Save original env state
-    const saved_term = std.posix.getenv("TERM");
-    const saved_no_color = std.posix.getenv("NO_COLOR");
+    const saved_term = common.env.getEnv("TERM");
+    const saved_no_color = common.env.getEnv("NO_COLOR");
 
     // Set up: capable terminal BUT NO_COLOR is set
     _ = setenv("TERM", "xterm-256color", 1);
     _ = setenv("NO_COLOR", "1", 1);
     defer {
         if (saved_term) |v| {
-            _ = setenv("TERM", v.ptr, 1);
+            _ = setenv("TERM", @ptrCast(v), 1);
         } else {
             _ = unsetenv("TERM");
         }
         if (saved_no_color) |v| {
-            _ = setenv("NO_COLOR", v.ptr, 1);
+            _ = setenv("NO_COLOR", @ptrCast(v), 1);
         } else {
             _ = unsetenv("NO_COLOR");
         }
     }
 
-    var output_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer output_buf.deinit(testing.allocator);
+    var output_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output_aw.deinit();
 
-    const style = try initStyle(testing.allocator, output_buf.writer(testing.allocator), .always);
+    const style = try initStyle(testing.allocator, &output_aw.writer, .always);
 
     // With NO_COLOR set, color_mode must be .none even when --color=always
     try testing.expectEqual(
-        common.style.Style(std.ArrayList(u8).Writer).ColorMode.none,
+        common.style.Style(*std.Io.Writer).ColorMode.none,
         style.color_mode,
     );
 }
@@ -462,29 +462,29 @@ test "display - initStyle color=always without NO_COLOR produces colors" {
     // Complementary test: --color=always without NO_COLOR should enable colors.
 
     // Save original env state
-    const saved_term = std.posix.getenv("TERM");
-    const saved_no_color = std.posix.getenv("NO_COLOR");
+    const saved_term = common.env.getEnv("TERM");
+    const saved_no_color = common.env.getEnv("NO_COLOR");
 
     // Set up: capable terminal, NO_COLOR unset
     _ = setenv("TERM", "xterm-256color", 1);
     _ = unsetenv("NO_COLOR");
     defer {
         if (saved_term) |v| {
-            _ = setenv("TERM", v.ptr, 1);
+            _ = setenv("TERM", @ptrCast(v), 1);
         } else {
             _ = unsetenv("TERM");
         }
         if (saved_no_color) |v| {
-            _ = setenv("NO_COLOR", v.ptr, 1);
+            _ = setenv("NO_COLOR", @ptrCast(v), 1);
         } else {
             _ = unsetenv("NO_COLOR");
         }
     }
 
-    var output_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer output_buf.deinit(testing.allocator);
+    var output_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output_aw.deinit();
 
-    const style = try initStyle(testing.allocator, output_buf.writer(testing.allocator), .always);
+    const style = try initStyle(testing.allocator, &output_aw.writer, .always);
 
     // Without NO_COLOR, --color=always should enable colors (at least basic)
     try testing.expect(style.color_mode != .none);

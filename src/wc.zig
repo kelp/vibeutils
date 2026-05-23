@@ -115,12 +115,12 @@ fn applyWcColumnColor(style_inst: anytype, column: WcColumn) !void {
 }
 
 /// Main entry point
-pub fn main() !void {
-    common.utilityMain(runWc);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runWc);
 }
 
 /// Run the wc utility with given arguments
-pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runWc(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Parse arguments
     const options = common.argparse.ArgParser.parseOrExit(WcOptions, allocator, args, "wc", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(options.positionals);
@@ -174,7 +174,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
     if (options.positionals.len == 0) {
         // Read from stdin
         var stdin_buffer: [8192]u8 = undefined;
-        var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
         const stats = try countReader(&stdin_reader.interface, opts);
         try printStats(stdout_writer, stats, null, opts, style_inst);
     } else {
@@ -183,13 +183,13 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
             if (std.mem.eql(u8, file_path, "-")) {
                 // Stdin
                 var stdin_buffer: [8192]u8 = undefined;
-                var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+                var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
                 const stats = try countReader(&stdin_reader.interface, opts);
                 try printStats(stdout_writer, stats, file_path, opts, style_inst);
                 addStats(&total_stats, stats);
             } else {
                 // Check if it's a directory first
-                const stat = std.fs.cwd().statFile(file_path) catch |err| {
+                const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue;
@@ -202,15 +202,15 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
                 }
 
                 // Regular file
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue;
                 };
-                defer file.close();
+                defer file.close(io);
 
                 var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.reader(&file_buffer);
+                var file_reader = file.readerStreaming(io, &file_buffer);
                 const stats = countReader(&file_reader.interface, opts) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "wc", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
@@ -234,7 +234,7 @@ pub fn runWc(allocator: Allocator, args: []const []const u8, stdout_writer: anyt
 /// Streams data in 8192-byte chunks to avoid loading entire file into memory
 /// POSIX: lines are counted as the number of newline characters (\n)
 /// A file without a final newline has 0 lines (even if it has content)
-fn countReader(reader: anytype, options: WcOptions) !FileStats {
+fn countReader(reader: *std.Io.Reader, options: WcOptions) !FileStats {
     var stats = FileStats{};
     var in_word = false;
     var current_line_length: u64 = 0;
@@ -355,7 +355,7 @@ fn addStats(total: *FileStats, stats: FileStats) void {
 }
 
 /// Print statistics for a file
-fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options: WcOptions, style_inst: anytype) !void {
+fn printStats(writer: *std.Io.Writer, stats: FileStats, filename: ?[]const u8, options: WcOptions, style_inst: anytype) !void {
     // Print counts in GNU column order: lines words chars bytes max_line_length filename
     // When both -c and -m are given, both columns appear (chars before bytes).
     if (options.lines) {
@@ -397,7 +397,7 @@ fn printStats(writer: anytype, stats: FileStats, filename: ?[]const u8, options:
 }
 
 /// Print help message
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: wc [OPTION]... [FILE]...
         \\Print newline, word, and byte counts for each FILE, and a total line if
@@ -422,107 +422,110 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("wc (vibeutils) {s}\n", .{common.version});
 }
 
 // ========== TESTS ==========
 
 test "wc counts lines correctly" {
-    // Create a test file
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("line1\nline2\nline3\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
+    test_file.close(io);
 
-    // Open and count
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .lines = true });
     try testing.expectEqual(@as(u64, 3), stats.lines);
 }
 
 test "wc counts words correctly" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello world\nthis is a test\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "hello world\nthis is a test\n");
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .words = true });
     try testing.expectEqual(@as(u64, 6), stats.words);
 }
 
 test "wc counts bytes correctly" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("12345\n67890\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "12345\n67890\n");
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .bytes = true });
     try testing.expectEqual(@as(u64, 12), stats.bytes);
 }
 
 test "wc counts UTF-8 characters correctly" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("hello 世界\n"); // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "hello \xe4\xb8\x96\xe7\x95\x8c\n"); // 5 ASCII + 1 space + 2 CJK + 1 newline = 9 chars, 13 bytes
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .chars = true });
     try testing.expectEqual(@as(u64, 9), stats.chars);
     try testing.expectEqual(@as(u64, 13), stats.bytes);
 }
 
 test "wc finds maximum line length" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("short\nthis is a longer line\nmedium\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "short\nthis is a longer line\nmedium\n");
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .max_line_length = true });
     try testing.expectEqual(@as(u64, 21), stats.max_line_length); // "this is a longer line" = 21 chars
 }
 
 test "wc handles empty input" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{});
     try testing.expectEqual(@as(u64, 0), stats.lines);
     try testing.expectEqual(@as(u64, 0), stats.words);
@@ -530,50 +533,53 @@ test "wc handles empty input" {
 }
 
 test "wc handles input without final newline" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("line1\nline2");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "line1\nline2");
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .lines = true });
     try testing.expectEqual(@as(u64, 1), stats.lines); // POSIX: 1 newline = 1 line
 }
 
 test "wc counts multiple whitespace correctly" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("word1   word2\t\tword3\n\n  word4");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "word1   word2\t\tword3\n\n  word4");
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{ .words = true, .lines = true });
     try testing.expectEqual(@as(u64, 4), stats.words);
     try testing.expectEqual(@as(u64, 2), stats.lines); // POSIX: 2 newlines = 2 lines
 }
 
 test "wc handles all counts together" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("Hello world\nThis is test\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "Hello world\nThis is test\n");
+    test_file.close(io);
 
-    const file = try tmp_dir.dir.openFile("test.txt", .{});
-    defer file.close();
+    const file = try tmp_dir.dir.openFile(io, "test.txt", .{});
+    defer file.close(io);
     var file_buffer: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buffer);
+    var file_reader = file.readerStreaming(io, &file_buffer);
     const stats = try countReader(&file_reader.interface, .{
         .lines = true,
         .words = true,
@@ -600,8 +606,9 @@ test "wc addStats combines statistics correctly" {
 }
 
 test "wc output formatting" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const stats = FileStats{
         .lines = 10,
@@ -612,132 +619,135 @@ test "wc output formatting" {
     };
 
     // Create a no-op style (color_mode = .none)
-    var style_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer style_buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const test_style = TestStyle{ .color_mode = .none, .writer = style_buffer.writer(testing.allocator) };
+    var style_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer style_aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const test_style = TestStyle{ .color_mode = .none, .writer = &style_aw.writer };
 
-    try printStats(buffer.writer(testing.allocator), stats, "test.txt", .{
+    try printStats(&stdout_aw.writer, stats, "test.txt", .{
         .lines = true,
         .words = true,
         .bytes = true,
     }, test_style);
 
-    try testing.expectEqualStrings("      10      50     250 test.txt\n", buffer.items);
+    try testing.expectEqualStrings("      10      50     250 test.txt\n", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "wc runWc with default options" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    // Create a test file
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{});
-    try test_file.writeAll("line1\nline2\nline3\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
+    test_file.close(io);
 
-    // Create path to the test file
-    const test_filename = "test.txt";
-    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath(test_filename, &path_buffer);
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buffer);
+    const test_path = path_buffer[0..path_len];
 
     const args = &[_][]const u8{test_path};
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Default shows lines, words, bytes
     const expected_prefix = "       3       3      18 ";
-    try testing.expect(std.mem.startsWith(u8, stdout_buffer.items, expected_prefix));
+    try testing.expect(std.mem.startsWith(u8, stdout_aw.writer.buffered(), expected_prefix));
 }
 
 test "wc with multiple files shows total" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file1 = try tmp_dir.dir.createFile("a.txt", .{});
-    try file1.writeAll("one two\n");
-    file1.close();
+    const file1 = try tmp_dir.dir.createFile(io, "a.txt", .{});
+    try file1.writeStreamingAll(io, "one two\n");
+    file1.close(io);
 
-    const file2 = try tmp_dir.dir.createFile("b.txt", .{});
-    try file2.writeAll("three four five\n");
-    file2.close();
+    const file2 = try tmp_dir.dir.createFile(io, "b.txt", .{});
+    try file2.writeStreamingAll(io, "three four five\n");
+    file2.close(io);
 
-    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
-    const path1 = try tmp_dir.dir.realpath("a.txt", &path_buf1);
-    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const path2 = try tmp_dir.dir.realpath("b.txt", &path_buf2);
+    var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path1_len = try tmp_dir.dir.realPathFile(io, "a.txt", &path_buf1);
+    const path1 = path_buf1[0..path1_len];
+    var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path2_len = try tmp_dir.dir.realPathFile(io, "b.txt", &path_buf2);
+    const path2 = path_buf2[0..path2_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{ path1, path2 };
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Should contain "total" line for multiple files
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "total") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "total") != null);
 
     // Total should be 2 lines, 5 words, 24 bytes
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "       2       5      24 total") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "       2       5      24 total") != null);
 }
 
 test "wc --help shows usage" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: wc") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--bytes") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: wc") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "--bytes") != null);
 }
 
 test "wc --version shows version" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"--version"};
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "wc") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "wc") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
 test "wc reports error for directory" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try tmp_dir.dir.makeDir("subdir");
+    try tmp_dir.dir.createDir(io, "subdir", .default_dir);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath("subdir", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path_len = try tmp_dir.dir.realPathFile(io, "subdir", &path_buf);
+    const dir_path = path_buf[0..dir_path_len];
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{dir_path};
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "Is a directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "Is a directory") != null);
 }
 
 // ========== COLOR TESTS ==========
-
-// C library functions for environment manipulation in tests
-extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
-extern fn unsetenv(name: [*:0]const u8) c_int;
 
 test "resolveConfig defaults: color off in test (no TTY)" {
     const config = try resolveConfig(testing.allocator, .{});
@@ -761,108 +771,110 @@ test "resolveConfig --color=invalid returns error" {
 }
 
 test "applyWcColumnColor truecolor: lines" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyWcColumnColor(s, .lines);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;100;200;210m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;100;200;210m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor truecolor: words" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyWcColumnColor(s, .words);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor truecolor: bytes_chars" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyWcColumnColor(s, .bytes_chars);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;210;195;100m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;210;195;100m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor truecolor: max_line_length" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyWcColumnColor(s, .max_line_length);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;180;140;200m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;180;140;200m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor basic: lines uses cyan" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyWcColumnColor(s, .lines);
-    try testing.expectEqualSlices(u8, "\x1b[36m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[36m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor basic: words uses green" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyWcColumnColor(s, .words);
-    try testing.expectEqualSlices(u8, "\x1b[32m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[32m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor basic: bytes_chars uses yellow" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyWcColumnColor(s, .bytes_chars);
-    try testing.expectEqualSlices(u8, "\x1b[33m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[33m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor basic: max_line_length uses magenta" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyWcColumnColor(s, .max_line_length);
-    try testing.expectEqualSlices(u8, "\x1b[35m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[35m", aw.writer.buffered());
 }
 
 test "applyWcColumnColor none: no output" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    const s = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    const s = TestStyle{ .color_mode = .none, .writer = &aw.writer };
     try applyWcColumnColor(s, .lines);
-    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }
 
 test "wc --libxo prints error and exits with code 1" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{ "--libxo=xml", "-l" };
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "libxo output is not supported") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "libxo output is not supported") != null);
 }
 
 test "wc --color=invalid exits with code 2" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{"--color=invalid"};
-    const exit_code = try runWc(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runWc(testing.allocator, io, args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid argument") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid argument") != null);
 }

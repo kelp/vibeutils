@@ -132,86 +132,32 @@ const LsArgs = struct {
     };
 };
 
-/// Main entry point for the ls command
-/// Parses arguments and delegates to runLs
-pub fn main() !void {
-    // Use Arena allocator for better resource management in CLI tools
-    // Keep GPA only for debug builds to detect memory leaks
-    if (std.debug.runtime_safety) {
-        // Debug build: use GPA to detect memory leaks
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
-        return mainWithAllocator(allocator);
-    } else {
-        // Release build: use Arena allocator for better performance
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-        return mainWithAllocator(allocator);
-    }
+/// CLI entry point — delegates to utilityMain for arena, arg, writer setup.
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runLs);
 }
 
-/// Main implementation that accepts an allocator
-fn mainWithAllocator(allocator: std.mem.Allocator) !void {
-
-    // Parse arguments using new parser
-    const args = common.argparse.ArgParser.parseProcess(LsArgs, allocator) catch |err| {
-        // Use specific error information instead of generic "invalid argument"
-        var stderr_buffer: [8192]u8 = undefined;
-        var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-        const stderr = &stderr_writer.interface;
-        common.fatalWithWriter(stderr, "argument parsing failed: {s}", .{common.posixErrorString(err)});
+/// Core ls run function matching the utilityMain contract.
+/// Parses args internally, performs ls work, returns exit code.
+pub fn runLs(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) !u8 {
+    const parsed = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
+        common.printErrorWithProgram(allocator, stderr, "ls", "argument parsing failed: {s}", .{common.posixErrorString(err)});
+        return @intFromEnum(common.ExitCode.misuse);
     };
-    defer allocator.free(args.positionals);
+    defer allocator.free(parsed.positionals);
 
-    // Create stdout and stderr writers and pass them through
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runLs(allocator, args, stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-
-    if (exit_code != 0) {
-        std.process.exit(exit_code);
-    }
+    return lsMain(io, stdout, stderr, parsed, allocator);
 }
 
-/// Wrapper function for consistent fuzz testing interface
-pub fn runUtility(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    // Parse arguments using new parser (same as mainWithAllocator)
-    const parsed_args = common.argparse.ArgParser.parse(LsArgs, allocator, args) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "argument parsing failed: {s}", .{common.posixErrorString(err)});
-        return 1;
-    };
-    defer allocator.free(parsed_args.positionals);
-
-    // Call the main ls implementation which returns an exit code
-    return runLs(allocator, parsed_args, stdout_writer, stderr_writer) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "ls", "execution failed: {s}", .{common.posixErrorString(err)});
-        return 1;
-    };
-}
-
-/// Core ls functionality that accepts separate stdout and stderr writers
-/// This allows for testing and different output targets
+/// Core ls functionality.
 /// Returns exit code: 0 for success, 2 for serious errors (e.g. nonexistent path)
-pub fn runLs(allocator: std.mem.Allocator, args: LsArgs, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    return try lsMain(stdout_writer, stderr_writer, args, allocator);
-}
-
-/// Core ls functionality that accepts a writer parameter
-/// This allows for testing and different output targets
-/// Returns exit code: 0 for success, 2 for serious errors
-fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.mem.Allocator) !u8 {
+fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, args: LsArgs, allocator: std.mem.Allocator) !u8 {
     // Handle help
     if (args.help) {
         try printHelp(allocator, writer);
@@ -234,11 +180,8 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     const display_config = common.display_config.DisplayConfig.resolve(allocator);
 
     // Map resolved display config to ls-specific color/icon modes.
-    // DisplayConfig already handled VIBEUTILS_STYLE, individual env
-    // vars, NO_COLOR, and TTY detection.
     var color_mode: ColorMode = if (display_config.color == .on) .always else .never;
     var icon_mode: common.icons.IconMode = blk: {
-        // LS_ICONS env var can override if set
         const env_mode = common.icons.getIconModeFromEnv(allocator);
         if (env_mode != .auto) break :blk env_mode;
         break :blk if (display_config.icons == .on) .always else .never;
@@ -247,7 +190,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     // Explicit CLI flags override everything
     if (args.color) |color_arg| {
         const parsed = types.parseColorMode(color_arg) catch {
-            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
+            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
         };
         color_mode = parsed;
     }
@@ -257,7 +200,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     }
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
+            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
         };
     }
 
@@ -266,16 +209,15 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
             !std.mem.eql(u8, git_arg, "auto") and
             !std.mem.eql(u8, git_arg, "never"))
         {
-            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--git'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{git_arg});
+            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--git'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{git_arg});
         }
     }
 
     // Parse time style
-    // Default to traditional format; -h implies relative unless explicit --time-style
     var time_style = TimeStyle.default;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            common.fatalWithWriter(stderr_writer, "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'default'\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
+            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'default'\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
         };
     } else if (args.human_readable) {
         time_style = .relative;
@@ -287,12 +229,9 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     }
 
     // Detect terminal status for icons and colors
-    const stdout_file = std.fs.File.stdout();
-    const is_terminal = stdout_file.isTty();
+    const is_terminal = std.c.isatty(std.Io.File.stdout().handle) != 0;
 
     // Create options struct by consolidating all parsed arguments
-    // -g and -o imply long format
-    // -f implies -a (show all entries)
     const options = LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
@@ -317,7 +256,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         .comma_format = args.comma_format,
         .icon_mode = icon_mode,
         .time_style = time_style,
-        .show_git_status = resolveGitMode(args.git, display_config),
+        .show_git_status = resolveGitMode(io, args.git, display_config),
         .is_terminal = is_terminal,
         .no_sort = args.no_sort or args.unsorted,
         .show_blocks = args.show_blocks,
@@ -341,8 +280,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
     // Initialize GitContext once if git status is requested
     var git_context: ?types.GitContext = null;
     if (options.show_git_status) {
-        git_context = types.GitContext.init(allocator, ".");
-        // Report any git initialization issues only when git features were explicitly requested
+        git_context = types.GitContext.init(allocator, io, ".");
         if (git_context) |*ctx| {
             ctx.reportInitializationIssues(allocator, stderr_writer, "ls", options.show_git_status);
         }
@@ -355,10 +293,10 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
 
     if (paths.len == 0) {
         // No paths specified, list current directory
-        try listDirectory(".", writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
+        try listDirectory(io, ".", writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
     } else if (paths.len == 1) {
         // Single path: no headers needed
-        listDirectory(paths[0], writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+        listDirectory(io, paths[0], writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
             had_error = true;
         };
     } else {
@@ -366,26 +304,19 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         // 1. List file operands first (no headers).
         // 2. List directory operands with "dir:" headers.
         var file_count: usize = 0;
-        var dir_count: usize = 0;
 
         for (paths) |path| {
-            const stat = common.file.FileInfo.stat(path) catch {
-                // Errors are handled later during listDirectory
-                dir_count += 1; // count as dir so it gets its own section
-                continue;
-            };
-            if (stat.kind == .directory) {
-                dir_count += 1;
-            } else {
+            const stat = common.file.FileInfo.stat(io, path) catch continue;
+            if (stat.kind != .directory) {
                 file_count += 1;
             }
         }
 
         // First pass: list file operands (no headers)
         for (paths) |path| {
-            const stat = common.file.FileInfo.stat(path) catch continue;
+            const stat = common.file.FileInfo.stat(io, path) catch continue;
             if (stat.kind != .directory) {
-                listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+                listDirectory(io, path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
                     had_error = true;
                 };
             }
@@ -395,7 +326,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
         var dir_idx: usize = 0;
         for (paths) |path| {
             const is_dir = blk: {
-                const stat = common.file.FileInfo.stat(path) catch break :blk true;
+                const stat = common.file.FileInfo.stat(io, path) catch break :blk true;
                 break :blk stat.kind == .directory;
             };
             if (!is_dir) continue;
@@ -403,7 +334,7 @@ fn lsMain(writer: anytype, stderr_writer: anytype, args: LsArgs, allocator: std.
             // Blank line separator between sections
             if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
             try writer.print("{s}:\n", .{path});
-            listDirectory(path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+            listDirectory(io, path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
                 had_error = true;
             };
             dir_idx += 1;
@@ -539,10 +470,9 @@ fn printIconTest(writer: anytype) !void {
     try writer.writeAll("  3. Restart your terminal\n");
 }
 
-/// Convert a Zig error to a POSIX-style error string.
-/// List a directory or file, handling both files and directories appropriately
-/// Errors are printed but don't stop execution except for BrokenPipe
-fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
+/// List a directory or file, handling both files and directories appropriately.
+/// Errors are printed but don't stop execution except for BrokenPipe.
+fn listDirectory(io: std.Io, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, git_context: ?*types.GitContext) anyerror!void {
     // Initialize style based on color mode
     const style = display.initStyle(allocator, writer, options.color_mode) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "ls", "failed to initialize styling: {s}", .{common.posixErrorString(err)});
@@ -550,7 +480,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
     };
 
     // Get stat info to determine if it's a file or directory
-    const stat = common.file.FileInfo.stat(path) catch |err| {
+    const stat = common.file.FileInfo.stat(io, path) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
         return err;
     };
@@ -566,7 +496,7 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
 
         // Get Git status for the file if requested
         if (options.show_git_status and git_context != null) {
-            entry.git_status = git_context.?.getFileStatus(entry.name) orelse .not_in_repo;
+            entry.git_status = git_context.?.getFileStatus(io, entry.name) orelse .not_in_repo;
         }
 
         if (options.long_format) {
@@ -595,28 +525,26 @@ fn listDirectory(path: []const u8, writer: anytype, stderr_writer: anytype, opti
         return;
     }
 
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "ls", "{s}: {s}", .{ path, common.posixErrorString(err) });
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     // Call the shared implementation
-    try listDirectoryImpl(dir, path, writer, stderr_writer, options, allocator, style, git_context);
+    try listDirectoryImpl(io, dir, path, writer, stderr_writer, options, allocator, style, git_context);
 }
 
 /// Set up visited filesystem ID tracking for secure cycle detection in recursive mode
-fn listDirectoryImpl(dir: std.fs.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*types.GitContext) anyerror!void {
-    // For recursive listing with symlinks, we need to track visited (device, inode) pairs for security
+fn listDirectoryImpl(io: std.Io, dir: std.Io.Dir, path: []const u8, writer: anytype, stderr_writer: anytype, options: LsOptions, allocator: std.mem.Allocator, style: anytype, git_context: ?*types.GitContext) anyerror!void {
     var visited_fs_ids = common.directory.FileSystemIdSet.initContext(allocator, common.directory.FileSystemId.Context{});
     defer visited_fs_ids.deinit();
 
-    try core.listDirectoryImplWithVisited(dir, path, writer, stderr_writer, options, allocator, style, &visited_fs_ids, git_context);
+    try core.listDirectoryImplWithVisited(io, dir, path, writer, stderr_writer, options, allocator, style, &visited_fs_ids, git_context);
 }
 
 /// Determine whether to show git status indicators.
-/// Priority: explicit --git=WHEN > DisplayConfig > auto-detect .git dir
-fn resolveGitMode(git_arg: ?[]const u8, disp: common.display_config.DisplayConfig) bool {
+fn resolveGitMode(io: std.Io, git_arg: ?[]const u8, disp: common.display_config.DisplayConfig) bool {
     if (git_arg) |value| {
         if (std.mem.eql(u8, value, "always")) return true;
         if (std.mem.eql(u8, value, "never")) return false;
@@ -628,20 +556,19 @@ fn resolveGitMode(git_arg: ?[]const u8, disp: common.display_config.DisplayConfi
     if (disp.icons == .off) return false;
 
     // Auto-detect: enable if we're inside a git repo
-    return isInGitRepo();
+    return isInGitRepo(io);
 }
 
 /// Check if the current directory is inside a git repository
 /// by walking up looking for a .git directory or file.
-fn isInGitRepo() bool {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const cwd = std.process.getCwd(&buf) catch return false;
-    var path: []const u8 = cwd;
+fn isInGitRepo(io: std.Io) bool {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cwd_len = std.process.currentPath(io, &buf) catch return false;
+    var path: []const u8 = buf[0..cwd_len];
     while (true) {
-        // Check for .git (directory or file for worktrees)
-        var dir = std.fs.openDirAbsolute(path, .{}) catch return false;
-        defer dir.close();
-        if (dir.statFile(".git")) |_| {
+        var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+        defer dir.close(io);
+        if (dir.statFile(io, ".git", .{})) |_| {
             return true;
         } else |_| {}
 
@@ -670,61 +597,57 @@ test {
 
 // Test the refactored lsMain function with writer parameter
 test "lsMain help works with different writers" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = LsArgs{
         .help = true,
         .positionals = &.{},
     };
 
-    _ = try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
+    _ = try lsMain(testing.io, &stdout_aw.writer, &stderr_aw.writer, args, testing.allocator);
 
     // Should contain help text
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--help") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: ls") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "--help") != null);
     // stderr should be empty for help
-    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 test "lsMain version works with different writers" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = LsArgs{
         .version = true,
         .positionals = &.{},
     };
 
-    _ = try lsMain(stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator), args, testing.allocator);
+    _ = try lsMain(testing.io, &stdout_aw.writer, &stderr_aw.writer, args, testing.allocator);
 
     // Should contain version info
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "ls (") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "ls (") != null);
     // stderr should be empty for version
-    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 test "runLs function works with separate writers" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const args = LsArgs{
-        .help = true,
-        .positionals = &.{},
-    };
-
-    _ = try runLs(testing.allocator, args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const args = [_][]const u8{"--help"};
+    _ = try runLs(testing.allocator, testing.io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should contain help text in stdout
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: ls") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: ls") != null);
     // stderr should be empty for help
-    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 // C library functions for environment manipulation in tests
@@ -734,35 +657,30 @@ extern fn unsetenv(name: [*:0]const u8) c_int;
 test "initStyle with auto color mode disables colors when stdout is not a TTY" {
     // When --color=auto is passed and stdout is not a TTY (as in tests and
     // pipes), the style's color_mode must be .none so ANSI codes don't leak.
-    // This test exercises the production code path through display.initStyle.
-
-    // Save original env state and ensure TERM is set so ColorMode.detect()
-    // returns a non-.none value.  Without this, detect() may return .none
-    // if TERM happens to be unset, masking the bug.
-    const saved_term = std.posix.getenv("TERM");
-    const saved_no_color = std.posix.getenv("NO_COLOR");
+    const saved_term = common.env.getEnv("TERM");
+    const saved_no_color = common.env.getEnv("NO_COLOR");
     _ = setenv("TERM", "xterm-256color", 1);
     _ = unsetenv("NO_COLOR");
     defer {
         if (saved_term) |v| {
-            _ = setenv("TERM", v.ptr, 1);
+            _ = setenv("TERM", @ptrCast(v), 1);
         } else {
             _ = unsetenv("TERM");
         }
         if (saved_no_color) |v| {
-            _ = setenv("NO_COLOR", v.ptr, 1);
+            _ = setenv("NO_COLOR", @ptrCast(v), 1);
         }
     }
 
-    var buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const style = try display.initStyle(testing.allocator, buf.writer(testing.allocator), .auto);
+    const style = try display.initStyle(testing.allocator, &stdout_aw.writer, .auto);
 
-    // In a test runner, stdout is never a TTY.  Correct behavior: .auto
+    // In a test runner, stdout is never a TTY. Correct behavior: .auto
     // should resolve to .none so no escape codes are emitted.
     try testing.expectEqual(
-        common.style.Style(std.ArrayList(u8).Writer).ColorMode.none,
+        common.style.Style(*std.Io.Writer).ColorMode.none,
         style.color_mode,
     );
 }

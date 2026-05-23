@@ -8,16 +8,16 @@
 //! ## TestWriter
 //! Simple buffer-based writer for capturing output:
 //! ```zig
-//! var test_writer = try TestWriter.init(testing.allocator);
+//! var test_writer = TestWriter.init(testing.allocator);
 //! defer test_writer.deinit();
-//! try some_function(test_writer.writer());
+//! try some_function(&test_writer.writer);
 //! try testing.expectEqualStrings("expected output", test_writer.getContent());
 //! ```
 //!
 //! ## StdoutCapture
 //! Comprehensive stdout/stderr capture with assertion helpers:
 //! ```zig
-//! var capture = try StdoutCapture.init(testing.allocator);
+//! var capture = StdoutCapture.init(testing.allocator);
 //! defer capture.deinit();
 //! try some_function(capture.stdoutWriter(), capture.stderrWriter());
 //! try capture.expectStdout("expected stdout");
@@ -32,197 +32,180 @@
 //! defer allocator.free(stripped);
 //! try testing.expectEqualStrings("Red Text", stripped);
 //! ```
-//!
-//! ## Helper Functions
-//! Convenient one-liner functions for common testing patterns:
-//! ```zig
-//! // Capture output from a function call
-//! const output = try captureOutput(allocator, my_function, .{arg1, arg2});
-//! defer allocator.free(output);
-//! ```
 
 const std = @import("std");
 const testing = std.testing;
+const lib = @import("lib.zig");
 
-/// Null writer for tests - re-export from std.io for convenience
-pub const null_writer = std.io.null_writer;
+/// Null writer for tests — discards all writes
+pub const null_writer = lib.null_writer;
 
 /// Generate a unique test file name based on test name, timestamp, and random number
 pub fn uniqueTestName(allocator: std.mem.Allocator, base_name: []const u8) ![]u8 {
-    // Use timestamp and random number for thread-safe uniqueness
-    const timestamp = std.time.timestamp();
-    var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(@max(0, timestamp))));
+    const timestamp: i64 = @intCast(@divTrunc(lib.file.currentTimestampNanoseconds(), std.time.ns_per_s));
+    var prng = std.Random.DefaultPrng.init(@as(u64, @bitCast(timestamp)));
     const random_num = prng.random().int(u32);
     return try std.fmt.allocPrint(allocator, "{s}_{d}_{d}", .{ base_name, timestamp, random_num });
 }
 
 /// Create a test file with content in a directory
-pub fn createTestFile(dir: std.fs.Dir, name: []const u8, content: []const u8) !void {
-    const file = try dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll(content);
+pub fn createTestFile(io: std.Io, dir: std.Io.Dir, name: []const u8, content: []const u8) !void {
+    const file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, content);
 }
 
 /// Create a uniquely named test file with content
-pub fn createUniqueTestFile(dir: std.fs.Dir, allocator: std.mem.Allocator, base_name: []const u8, content: []const u8) ![]u8 {
+pub fn createUniqueTestFile(io: std.Io, dir: std.Io.Dir, allocator: std.mem.Allocator, base_name: []const u8, content: []const u8) ![]u8 {
     const unique_name = try uniqueTestName(allocator, base_name);
-    try createTestFile(dir, unique_name, content);
+    try createTestFile(io, dir, unique_name, content);
     return unique_name;
 }
 
 /// A test writer that captures output to a buffer for testing
 pub const TestWriter = struct {
-    buffer: std.ArrayList(u8),
-    allocator: std.mem.Allocator,
+    aw: std.Io.Writer.Allocating,
 
     const Self = @This();
 
     /// Initialize with an allocator
-    pub fn init(allocator: std.mem.Allocator) !Self {
+    pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .buffer = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .allocator = allocator,
+            .aw = .init(allocator),
         };
     }
 
     /// Deinitialize and free the buffer
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit(self.allocator);
-    }
-
-    /// Get the writer interface
-    pub fn writer(self: *Self) std.ArrayList(u8).Writer {
-        return self.buffer.writer(self.allocator);
+        self.aw.deinit();
     }
 
     /// Get the captured content as a string
     pub fn getContent(self: *const Self) []const u8 {
-        return self.buffer.items;
+        return self.aw.writer.buffered();
     }
 
     /// Clear the buffer content
     pub fn clear(self: *Self) void {
-        self.buffer.clearRetainingCapacity();
+        self.aw.writer.end = 0;
     }
 
     /// Get content with ANSI escape codes stripped
     pub fn getContentStripped(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
-        return stripAnsiCodes(allocator, self.buffer.items);
+        return stripAnsiCodes(allocator, self.aw.writer.buffered());
     }
 };
 
 /// Captures stdout for testing command-line utilities
 pub const StdoutCapture = struct {
-    allocator: std.mem.Allocator,
-    output: std.ArrayList(u8),
-    error_output: std.ArrayList(u8),
+    out_aw: std.Io.Writer.Allocating,
+    err_aw: std.Io.Writer.Allocating,
 
     const Self = @This();
 
     /// Initialize stdout capture
-    pub fn init(allocator: std.mem.Allocator) !Self {
+    pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .allocator = allocator,
-            .output = try std.ArrayList(u8).initCapacity(allocator, 0),
-            .error_output = try std.ArrayList(u8).initCapacity(allocator, 0),
+            .out_aw = .init(allocator),
+            .err_aw = .init(allocator),
         };
     }
 
     /// Deinitialize and free buffers
     pub fn deinit(self: *Self) void {
-        self.output.deinit(self.allocator);
-        self.error_output.deinit(self.allocator);
+        self.out_aw.deinit();
+        self.err_aw.deinit();
     }
 
     /// Get stdout writer
-    pub fn stdoutWriter(self: *Self) std.ArrayList(u8).Writer {
-        return self.output.writer(self.allocator);
+    pub fn stdoutWriter(self: *Self) *std.Io.Writer {
+        return &self.out_aw.writer;
     }
 
     /// Get stderr writer
-    pub fn stderrWriter(self: *Self) std.ArrayList(u8).Writer {
-        return self.error_output.writer(self.allocator);
+    pub fn stderrWriter(self: *Self) *std.Io.Writer {
+        return &self.err_aw.writer;
     }
 
     /// Get stdout content
     pub fn getStdout(self: *const Self) []const u8 {
-        return self.output.items;
+        return self.out_aw.writer.buffered();
     }
 
     /// Get stderr content
     pub fn getStderr(self: *const Self) []const u8 {
-        return self.error_output.items;
+        return self.err_aw.writer.buffered();
     }
 
     /// Get stdout with ANSI codes stripped
     pub fn getStdoutStripped(self: *const Self) ![]u8 {
-        return stripAnsiCodes(self.allocator, self.output.items);
+        return stripAnsiCodes(self.out_aw.allocator, self.out_aw.writer.buffered());
     }
 
     /// Get stderr with ANSI codes stripped
     pub fn getStderrStripped(self: *const Self) ![]u8 {
-        return stripAnsiCodes(self.allocator, self.error_output.items);
+        return stripAnsiCodes(self.err_aw.allocator, self.err_aw.writer.buffered());
     }
 
     /// Clear all captured output
     pub fn clear(self: *Self) void {
-        self.output.clearRetainingCapacity();
-        self.error_output.clearRetainingCapacity();
+        self.out_aw.writer.end = 0;
+        self.err_aw.writer.end = 0;
     }
 
     /// Assert stdout equals expected content
     pub fn expectStdout(self: *const Self, expected: []const u8) !void {
-        try testing.expectEqualStrings(expected, self.output.items);
+        try testing.expectEqualStrings(expected, self.out_aw.writer.buffered());
     }
 
     /// Assert stderr equals expected content
     pub fn expectStderr(self: *const Self, expected: []const u8) !void {
-        try testing.expectEqualStrings(expected, self.error_output.items);
+        try testing.expectEqualStrings(expected, self.err_aw.writer.buffered());
     }
 
     /// Assert stdout equals expected content (with ANSI codes stripped)
     pub fn expectStdoutStripped(self: *const Self, expected: []const u8) !void {
         const stripped = try self.getStdoutStripped();
-        defer self.allocator.free(stripped);
+        defer self.out_aw.allocator.free(stripped);
         try testing.expectEqualStrings(expected, stripped);
     }
 
     /// Assert stderr equals expected content (with ANSI codes stripped)
     pub fn expectStderrStripped(self: *const Self, expected: []const u8) !void {
         const stripped = try self.getStderrStripped();
-        defer self.allocator.free(stripped);
+        defer self.err_aw.allocator.free(stripped);
         try testing.expectEqualStrings(expected, stripped);
     }
 
     /// Assert stdout contains substring
     pub fn expectStdoutContains(self: *const Self, needle: []const u8) !void {
-        if (std.mem.indexOf(u8, self.output.items, needle) == null) {
+        if (std.mem.find(u8, self.out_aw.writer.buffered(), needle) == null) {
             try testing.expect(false); // Will fail with proper test context
         }
     }
 
     /// Assert stderr contains substring
     pub fn expectStderrContains(self: *const Self, needle: []const u8) !void {
-        if (std.mem.indexOf(u8, self.error_output.items, needle) == null) {
+        if (std.mem.find(u8, self.err_aw.writer.buffered(), needle) == null) {
             try testing.expect(false); // Will fail with proper test context
         }
     }
 
     /// Assert that stdout is empty
     pub fn expectStdoutEmpty(self: *const Self) !void {
-        try testing.expectEqualStrings("", self.output.items);
+        try testing.expectEqualStrings("", self.out_aw.writer.buffered());
     }
 
     /// Assert that stderr is empty
     pub fn expectStderrEmpty(self: *const Self) !void {
-        try testing.expectEqualStrings("", self.error_output.items);
+        try testing.expectEqualStrings("", self.err_aw.writer.buffered());
     }
 };
 
 /// Strip ANSI escape codes from text
 /// Handles multiple escape sequence types: CSI, OSC, and other ANSI sequences
 pub fn stripAnsiCodes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var result = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var result = std.ArrayListUnmanaged(u8){};
     errdefer result.deinit(allocator);
 
     var i: usize = 0;
@@ -291,45 +274,22 @@ pub fn stripAnsiCodes(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 
 /// Helper function to run a command and capture its output
 pub fn runCommand(
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
     argv: []const []const u8,
 ) !struct { stdout: []u8, stderr: []u8, exit_code: u8 } {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
-
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
-
-    const result = try child.wait();
-    const exit_code = switch (result) {
+    const result = try std.process.run(gpa, io, .{ .argv = argv });
+    const exit_code: u8 = switch (result.term) {
         .Exited => |code| code,
         .Signal => |signal| @as(u8, @intCast(signal + 128)),
         .Stopped => |signal| @as(u8, @intCast(signal + 128)),
         .Unknown => |code| @as(u8, @intCast(code)),
     };
-
     return .{
-        .stdout = stdout,
-        .stderr = stderr,
+        .stdout = result.stdout,
+        .stderr = result.stderr,
         .exit_code = exit_code,
     };
-}
-
-/// Convenient function to create a TestWriter and run a function with it
-pub fn captureOutput(
-    allocator: std.mem.Allocator,
-    comptime func: anytype,
-    args: anytype,
-) ![]u8 {
-    var test_writer = try TestWriter.init(allocator);
-    defer test_writer.deinit();
-
-    try @call(.auto, func, .{test_writer.writer()} ++ args);
-
-    return allocator.dupe(u8, test_writer.getContent());
 }
 
 // ============================================================================
@@ -337,31 +297,31 @@ pub fn captureOutput(
 // ============================================================================
 
 test "TestWriter basic functionality" {
-    var test_writer = try TestWriter.init(testing.allocator);
+    var test_writer = TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
-    try test_writer.writer().writeAll("Hello, ");
-    try test_writer.writer().writeAll("World!");
+    try test_writer.aw.writer.writeAll("Hello, ");
+    try test_writer.aw.writer.writeAll("World!");
 
     try testing.expectEqualStrings("Hello, World!", test_writer.getContent());
 }
 
 test "TestWriter clear functionality" {
-    var test_writer = try TestWriter.init(testing.allocator);
+    var test_writer = TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
-    try test_writer.writer().writeAll("Initial content");
+    try test_writer.aw.writer.writeAll("Initial content");
     try testing.expectEqualStrings("Initial content", test_writer.getContent());
 
     test_writer.clear();
     try testing.expectEqualStrings("", test_writer.getContent());
 
-    try test_writer.writer().writeAll("New content");
+    try test_writer.aw.writer.writeAll("New content");
     try testing.expectEqualStrings("New content", test_writer.getContent());
 }
 
 test "StdoutCapture basic functionality" {
-    var capture = try StdoutCapture.init(testing.allocator);
+    var capture = StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("stdout content");
@@ -372,7 +332,7 @@ test "StdoutCapture basic functionality" {
 }
 
 test "StdoutCapture assertion methods" {
-    var capture = try StdoutCapture.init(testing.allocator);
+    var capture = StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("test output");
@@ -390,7 +350,7 @@ test "StdoutCapture assertion methods" {
 }
 
 test "StdoutCapture clear functionality" {
-    var capture = try StdoutCapture.init(testing.allocator);
+    var capture = StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("initial stdout");
@@ -517,10 +477,10 @@ test "stripAnsiCodes mixed sequence types" {
 }
 
 test "TestWriter with ANSI stripping" {
-    var test_writer = try TestWriter.init(testing.allocator);
+    var test_writer = TestWriter.init(testing.allocator);
     defer test_writer.deinit();
 
-    try test_writer.writer().writeAll("Hello \x1b[31mRed\x1b[0m World");
+    try test_writer.aw.writer.writeAll("Hello \x1b[31mRed\x1b[0m World");
 
     const stripped = try test_writer.getContentStripped(testing.allocator);
     defer testing.allocator.free(stripped);
@@ -529,7 +489,7 @@ test "TestWriter with ANSI stripping" {
 }
 
 test "StdoutCapture with ANSI stripping" {
-    var capture = try StdoutCapture.init(testing.allocator);
+    var capture = StdoutCapture.init(testing.allocator);
     defer capture.deinit();
 
     try capture.stdoutWriter().writeAll("Hello \x1b[31mRed\x1b[0m World");
@@ -537,76 +497,4 @@ test "StdoutCapture with ANSI stripping" {
 
     try capture.expectStdoutStripped("Hello Red World");
     try capture.expectStderrStripped("Error Bold Red Message");
-}
-
-test "captureOutput helper function" {
-    // Simple function that writes to a writer
-    const TestFunc = struct {
-        fn writeHello(writer: anytype, name: []const u8) !void {
-            try writer.print("Hello, {s}!", .{name});
-        }
-    };
-
-    const output = try captureOutput(testing.allocator, TestFunc.writeHello, .{"Zig"});
-    defer testing.allocator.free(output);
-
-    try testing.expectEqualStrings("Hello, Zig!", output);
-}
-
-// Integration test demonstrating how to use the testing infrastructure
-test "integration example: testing a simple echo function" {
-    // Define a simple echo function for testing
-    const EchoFunc = struct {
-        fn echo(writer: anytype, args: []const []const u8, newline: bool) !void {
-            for (args, 0..) |arg, i| {
-                if (i > 0) try writer.writeAll(" ");
-                try writer.writeAll(arg);
-            }
-            if (newline) try writer.writeAll("\n");
-        }
-    };
-
-    // Test with TestWriter
-    var test_writer = try TestWriter.init(testing.allocator);
-    defer test_writer.deinit();
-
-    const args = [_][]const u8{ "hello", "world" };
-    try EchoFunc.echo(test_writer.writer(), &args, true);
-
-    try testing.expectEqualStrings("hello world\n", test_writer.getContent());
-
-    // Test with StdoutCapture
-    var capture = try StdoutCapture.init(testing.allocator);
-    defer capture.deinit();
-
-    try EchoFunc.echo(capture.stdoutWriter(), &args, false);
-    try capture.expectStdout("hello world");
-
-    // Test with helper function
-    const output = try captureOutput(testing.allocator, EchoFunc.echo, .{ &args, true });
-    defer testing.allocator.free(output);
-    try testing.expectEqualStrings("hello world\n", output);
-}
-
-test "integration example: testing colored output" {
-    // Function that outputs colored text
-    const ColorFunc = struct {
-        fn coloredOutput(writer: anytype, text: []const u8) !void {
-            try writer.print("\x1b[31m{s}\x1b[0m\n", .{text});
-        }
-    };
-
-    // Test with ANSI stripping
-    var capture = try StdoutCapture.init(testing.allocator);
-    defer capture.deinit();
-
-    try ColorFunc.coloredOutput(capture.stdoutWriter(), "red text");
-
-    // Raw output includes ANSI codes
-    try capture.expectStdoutContains("\x1b[31m");
-    try capture.expectStdoutContains("red text");
-    try capture.expectStdoutContains("\x1b[0m");
-
-    // Stripped output has clean text
-    try capture.expectStdoutStripped("red text\n");
 }

@@ -2,7 +2,6 @@
 const std = @import("std");
 const common = @import("common");
 const testing = std.testing;
-const fs = std.fs;
 const c = std.c;
 
 /// Command-line arguments for the touch utility.
@@ -42,12 +41,12 @@ const TouchArgs = struct {
 };
 
 /// Main entry point for the touch utility.
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, run);
 }
 
 /// Main implementation that accepts writers for output.
-fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const prog_name = "touch";
 
     const parsed_args = common.argparse.ArgParser.parseOrExit(TouchArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
@@ -100,7 +99,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
     // Process files - continue even if one fails (GNU touch behavior)
     var has_error = false;
     for (files) |file_path| {
-        touchFile(file_path, options, allocator) catch |err| {
+        touchFile(file_path, options, allocator, io) catch |err| {
             // Map specific errors to user-friendly messages
             switch (err) {
                 error.InvalidTimestamp => {
@@ -134,7 +133,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
 }
 
 /// Prints the help message using the provided writer.
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: touch [OPTION]... FILE...
         \\Update the access and modification times of each FILE to the current time.
@@ -172,13 +171,13 @@ const TouchOptions = struct {
 };
 
 /// Touches a single file with the specified options.
-fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator) !void {
+fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocator, io: std.Io) !void {
     // Get the timestamps to use
     var times: [2]c.timespec = undefined;
 
     if (options.reference_file) |ref_path| {
         // Use timestamps from reference file
-        const ref_info = try common.file.FileInfo.stat(ref_path);
+        const ref_info = try common.file.FileInfo.stat(io, ref_path);
         times[0] = nsToTimespec(ref_info.atime);
         times[1] = nsToTimespec(ref_info.mtime);
     } else if (options.date_str) |date| {
@@ -192,11 +191,11 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
         times[0] = parsed_time;
         times[1] = parsed_time;
     } else {
-        // Use current time with nanosecond precision
-        const now_ns = std.time.nanoTimestamp();
-        const now = nsToTimespec(now_ns);
-        times[0] = now;
-        times[1] = now;
+        // Use current time with nanosecond precision via clock_gettime
+        var ts: c.timespec = undefined;
+        _ = c.clock_gettime(.REALTIME, &ts);
+        times[0] = ts;
+        times[1] = ts;
     }
 
     // Handle --time argument
@@ -208,18 +207,18 @@ fn touchFile(path: []const u8, options: TouchOptions, allocator: std.mem.Allocat
             std.mem.eql(u8, time_type, "use"))
         {
             // Same as -a
-            return touchFileWithTimes(path, options, times, true, false, allocator);
+            return touchFileWithTimes(path, options, times, true, false, allocator, io);
         } else if (std.mem.eql(u8, time_type, "modify") or
             std.mem.eql(u8, time_type, "mtime"))
         {
             // Same as -m
-            return touchFileWithTimes(path, options, times, false, true, allocator);
+            return touchFileWithTimes(path, options, times, false, true, allocator, io);
         } else {
             return error.InvalidTimeType;
         }
     }
 
-    return touchFileWithTimes(path, options, times, options.access_only, options.modify_only, allocator);
+    return touchFileWithTimes(path, options, times, options.access_only, options.modify_only, allocator, io);
 }
 
 /// Touches a file with specific timestamps.
@@ -230,9 +229,10 @@ fn touchFileWithTimes(
     access_only: bool,
     modify_only: bool,
     allocator: std.mem.Allocator,
+    io: std.Io,
 ) !void {
     // Try to update the file times first
-    updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator) catch |err| {
+    updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator, io) catch |err| {
         if (err == error.FileNotFound) {
             // File doesn't exist
             if (options.no_create) {
@@ -240,17 +240,17 @@ fn touchFileWithTimes(
                 return;
             }
             // Create the file atomically
-            createFileAtomic(path) catch |create_err| {
+            createFileAtomic(path, io) catch |create_err| {
                 // If creation fails due to race condition, try updating times anyway
                 if (create_err == error.PathAlreadyExists) {
-                    try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator);
+                    try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator, io);
                     return;
                 }
                 return create_err;
             };
 
             // Now update times on the newly created file
-            try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator);
+            try updateFileTimes(path, times, access_only, modify_only, options.no_dereference, allocator, io);
         } else {
             // Some other error occurred
             return err;
@@ -266,12 +266,13 @@ fn updateFileTimes(
     modify_only: bool,
     no_dereference: bool,
     allocator: std.mem.Allocator,
+    io: std.Io,
 ) !void {
     var actual_times: [2]c.timespec = times;
 
     // If only updating one time, preserve the other
     if (access_only or modify_only) {
-        const info = try common.file.FileInfo.stat(path);
+        const info = try common.file.FileInfo.stat(io, path);
         if (access_only) {
             // preserve modification time
             actual_times[1] = nsToTimespec(info.mtime);
@@ -323,7 +324,7 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
     var second: u32 = 0;
 
     // Find the dot position for seconds
-    const dot_pos = std.mem.indexOfScalar(u8, stamp, '.');
+    const dot_pos = std.mem.findScalar(u8, stamp, '.');
     const main_part = if (dot_pos) |pos| stamp[0..pos] else stamp;
 
     // Parse seconds if present
@@ -357,9 +358,11 @@ fn parseTimestamp(stamp: []const u8) !c.timespec {
             minute = try std.fmt.parseInt(u32, main_part[8..10], 10);
         },
         8 => {
-            // MMDDhhmm - use current year
-            const now = std.time.timestamp();
-            const epoch_seconds = @as(u64, @intCast(now));
+            // MMDDhhmm - use current year via clock_gettime
+            var ts: c.timespec = undefined;
+            _ = c.clock_gettime(.REALTIME, &ts);
+            const now_ns: i128 = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+            const epoch_seconds = @as(u64, @intCast(@divFloor(now_ns, std.time.ns_per_s)));
             const epoch_day = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_seconds) };
             const year_day = epoch_day.getEpochDay().calculateYearDay();
             year = @intCast(year_day.year);
@@ -486,12 +489,12 @@ fn parseIso8601(date_str: []const u8) !c.timespec {
 }
 
 /// Creates a file atomically to avoid race conditions.
-fn createFileAtomic(path: []const u8) !void {
-    const file = try fs.cwd().createFile(path, .{
+fn createFileAtomic(path: []const u8, io: std.Io) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{
         .exclusive = true, // Fail if file already exists
         .truncate = false, // Don't truncate if it somehow exists
     });
-    file.close();
+    file.close(io);
 }
 
 /// Days in each month (non-leap year).
@@ -535,7 +538,7 @@ fn getDaysInMonth(year: u32, month: u32) u32 {
 }
 
 /// Handles errors by printing appropriate error messages.
-fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: anytype) void {
+fn handleError(allocator: std.mem.Allocator, prog_name: []const u8, path: []const u8, err: anyerror, stderr_writer: *std.Io.Writer) void {
     // GNU touch format: "touch: cannot touch 'filename': Error message"
     switch (err) {
         error.FileNotFound => common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot touch '{s}': No such file or directory", .{path}),
@@ -568,149 +571,161 @@ fn expectTimestampsEqual(expected: i128, actual: i128) !void {
 }
 
 test "touch creates new file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/new_file.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
     const options = TouchOptions{};
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify file exists
-    const file = try tmp_dir.dir.openFile("new_file.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.openFile(io, "new_file.txt", .{});
+    file.close(io);
 }
 
 test "touch updates existing file timestamp" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file
-    const file = try tmp_dir.dir.createFile("existing.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "existing.txt", .{});
+    file.close(io);
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/existing.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    const stat_before = try common.file.FileInfo.stat(test_file);
+    const stat_before = try common.file.FileInfo.stat(testing.io, test_file);
 
     // Wait a bit to ensure timestamp difference
-    std.Thread.sleep(1_000_000_000); // 1 second
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
 
     // Touch the file
     const options = TouchOptions{};
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify timestamps were updated
-    const stat_after = try common.file.FileInfo.stat(test_file);
+    const stat_after = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat_after.mtime > stat_before.mtime);
 }
 
 test "touch -c does not create file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/no_create.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
     const options = TouchOptions{ .no_create = true };
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify file does not exist
-    const result = tmp_dir.dir.openFile("no_create.txt", .{});
+    const result = tmp_dir.dir.openFile(io, "no_create.txt", .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "touch -a updates only access time" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file
-    const file = try tmp_dir.dir.createFile("access_only.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "access_only.txt", .{});
+    file.close(io);
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/access_only.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
     // Get initial timestamps
-    const stat_before = try common.file.FileInfo.stat(test_file);
+    const stat_before = try common.file.FileInfo.stat(testing.io, test_file);
 
     // Wait to ensure timestamp difference
-    std.Thread.sleep(1_000_000_000); // 1 second
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
 
     // Touch with -a
     const options = TouchOptions{ .access_only = true };
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify only access time was updated
-    const stat_after = try common.file.FileInfo.stat(test_file);
+    const stat_after = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat_after.atime > stat_before.atime);
     try expectTimestampsEqual(stat_before.mtime, stat_after.mtime);
 }
 
 test "touch -m updates only modification time" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file
-    const file = try tmp_dir.dir.createFile("modify_only.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "modify_only.txt", .{});
+    file.close(io);
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/modify_only.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
     // Get initial timestamps
-    const stat_before = try common.file.FileInfo.stat(test_file);
+    const stat_before = try common.file.FileInfo.stat(testing.io, test_file);
 
     // Wait to ensure timestamp difference
-    std.Thread.sleep(1_000_000_000); // 1 second
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
 
     // Touch with -m
     const options = TouchOptions{ .modify_only = true };
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify only modification time was updated
-    const stat_after = try common.file.FileInfo.stat(test_file);
+    const stat_after = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat_after.mtime > stat_before.mtime);
     try expectTimestampsEqual(stat_before.atime, stat_after.atime);
 }
 
 test "touch -r uses reference file times" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create reference file
-    const ref_file = try tmp_dir.dir.createFile("reference.txt", .{});
-    ref_file.close();
+    const ref_file = try tmp_dir.dir.createFile(io, "reference.txt", .{});
+    ref_file.close(io);
 
     // Create target file
-    const target_file = try tmp_dir.dir.createFile("target.txt", .{});
-    target_file.close();
+    const target_file = try tmp_dir.dir.createFile(io, "target.txt", .{});
+    target_file.close(io);
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const ref_path = try std.fmt.allocPrint(testing.allocator, "{s}/reference.txt", .{tmp_path});
     defer testing.allocator.free(ref_path);
@@ -718,15 +733,15 @@ test "touch -r uses reference file times" {
     defer testing.allocator.free(target_path);
 
     // Wait to ensure different timestamps
-    std.Thread.sleep(1_000_000_000); // 1 second
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
 
     // Touch target with reference
     const options = TouchOptions{ .reference_file = ref_path };
-    try touchFile(target_path, options, testing.allocator);
+    try touchFile(target_path, options, testing.allocator, testing.io);
 
     // Verify target has same times as reference
-    const ref_stat = try common.file.FileInfo.stat(ref_path);
-    const target_stat = try common.file.FileInfo.stat(target_path);
+    const ref_stat = try common.file.FileInfo.stat(testing.io, ref_path);
+    const target_stat = try common.file.FileInfo.stat(testing.io, target_path);
 
     // Allow small difference due to nanosecond precision
     // Some file systems may not support full nanosecond precision
@@ -763,62 +778,68 @@ test "parseTimestamp with invalid format" {
 }
 
 test "touch --time=access updates only access time" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("time_access.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "time_access.txt", .{});
+    file.close(io);
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/time_access.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    const stat_before = try common.file.FileInfo.stat(test_file);
-    std.Thread.sleep(1_000_000_000); // 1 second
+    const stat_before = try common.file.FileInfo.stat(testing.io, test_file);
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
 
     const options = TouchOptions{ .time_arg = "access" };
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
-    const stat_after = try common.file.FileInfo.stat(test_file);
+    const stat_after = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat_after.atime > stat_before.atime);
     try expectTimestampsEqual(stat_before.mtime, stat_after.mtime);
 }
 
 test "touch --time=modify updates only modification time" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("time_modify.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "time_modify.txt", .{});
+    file.close(io);
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/time_modify.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    const stat_before = try common.file.FileInfo.stat(test_file);
-    std.Thread.sleep(1_000_000_000); // 1 second
+    const stat_before = try common.file.FileInfo.stat(testing.io, test_file);
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 0 }, null);
 
     const options = TouchOptions{ .time_arg = "modify" };
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
-    const stat_after = try common.file.FileInfo.stat(test_file);
+    const stat_after = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat_after.mtime > stat_before.mtime);
     try expectTimestampsEqual(stat_before.atime, stat_after.atime);
 }
 
 test "touch multiple files" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const file1 = try std.fmt.allocPrint(testing.allocator, "{s}/file1.txt", .{tmp_path});
     defer testing.allocator.free(file1);
@@ -826,170 +847,184 @@ test "touch multiple files" {
     defer testing.allocator.free(file2);
 
     const options = TouchOptions{};
-    try touchFile(file1, options, testing.allocator);
-    try touchFile(file2, options, testing.allocator);
+    try touchFile(file1, options, testing.allocator, testing.io);
+    try touchFile(file2, options, testing.allocator, testing.io);
 
     // Verify both files exist
-    const f1 = try tmp_dir.dir.openFile("file1.txt", .{});
-    f1.close();
-    const f2 = try tmp_dir.dir.openFile("file2.txt", .{});
-    f2.close();
+    const f1 = try tmp_dir.dir.openFile(io, "file1.txt", .{});
+    f1.close(io);
+    const f2 = try tmp_dir.dir.openFile(io, "file2.txt", .{});
+    f2.close(io);
 }
 
 test "touch with -t timestamp" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Get real path for the temporary directory
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/timestamp.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
     // Use a specific timestamp
     const options = TouchOptions{ .timestamp_str = "202312311359.00" };
-    try touchFile(test_file, options, testing.allocator);
+    try touchFile(test_file, options, testing.allocator, testing.io);
 
     // Verify file was created
-    const file = try tmp_dir.dir.openFile("timestamp.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.openFile(io, "timestamp.txt", .{});
+    file.close(io);
 
     // We can't easily verify the exact timestamp without a proper date library,
     // but the file should exist and have been touched
-    const stat = try common.file.FileInfo.stat(test_file);
+    const stat = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat.mtime > 0);
 }
 
 // ==================== -A (adjust time - silent no-op on Linux) tests ====================
 
 test "touch: -A flag is accepted as silent no-op" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_test.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -A is a macOS-only feature; on Linux it should be a silent no-op exiting 0
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 // ==================== -d (date string) tests ====================
 
 test "touch: -d flag is parsed by argparser" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/parse_test.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // -d should be accepted without error
     const args = [_][]const u8{ "-d", "2024-01-15", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 test "touch: -d with ISO date sets timestamp" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/dated.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "2024-01-15", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-01-15 00:00:00 UTC
-    const stat = try common.file.FileInfo.stat(test_file);
+    const stat = try common.file.FileInfo.stat(testing.io, test_file);
     // 2024-01-15 00:00:00 UTC = 1705276800 seconds since epoch
     const expected_ns: i128 = 1705276800 * std.time.ns_per_s;
     try testing.expectEqual(expected_ns, stat.mtime);
 }
 
 test "touch: -d with date and time sets timestamp" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/datetime.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "2024-01-15T10:30:00", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-01-15 10:30:00 UTC
-    const stat = try common.file.FileInfo.stat(test_file);
+    const stat = try common.file.FileInfo.stat(testing.io, test_file);
     // 2024-01-15 10:30:00 UTC = 1705314600 seconds since epoch
     const expected_ns: i128 = 1705314600 * std.time.ns_per_s;
     try testing.expectEqual(expected_ns, stat.mtime);
 }
 
 test "touch: -d with invalid date gives error" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/invalid_date.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "not-a-date", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     // Should return error exit code for invalid date
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
 
 test "touch: -d with space-separated datetime" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/space_datetime.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Space-separated date and time (ISO 8601 allows space instead of T)
     const args = [_][]const u8{ "-d", "2024-06-15 14:30:00", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify the modification time is 2024-06-15 14:30:00 UTC
-    const stat = try common.file.FileInfo.stat(test_file);
+    const stat = try common.file.FileInfo.stat(testing.io, test_file);
     // 2024-06-15 14:30:00 UTC = 1718461800 seconds since epoch
     const expected_ns: i128 = 1718461800 * std.time.ns_per_s;
     try testing.expectEqual(expected_ns, stat.mtime);
@@ -998,44 +1033,48 @@ test "touch: -d with space-separated datetime" {
 // ==================== -A (adjust) is a silent no-op on Linux ====================
 
 test "touch: -A flag with non-zero value exits zero" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_nonzero.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
 
     // -A is a silent no-op on Linux; should succeed
     try testing.expectEqual(@as(u8, 0), exit_code);
 }
 
 test "touch: -A flag produces no stderr output" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_msg.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-A", "01", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
     // Silent no-op should produce no stderr
-    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.written().len);
 }
 
 // ==================== F53: -d timezone handling ====================
@@ -1070,79 +1109,85 @@ test "touch: parseIso8601 half-hour timezone offset +05:30" {
 }
 
 test "touch: -d with Z suffix sets correct UTC timestamp on file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/utc_z.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-d", "2024-01-15T00:00:00Z", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Verify mtime is 2024-01-15 00:00:00 UTC = 1705276800
-    const stat = try common.file.FileInfo.stat(test_file);
+    const stat = try common.file.FileInfo.stat(testing.io, test_file);
     const expected_ns: i128 = 1705276800 * std.time.ns_per_s;
     try testing.expectEqual(expected_ns, stat.mtime);
 }
 
 test "touch: -d with +05:00 offset sets correct UTC timestamp on file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/tz_plus5.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // midnight at +05:00 = 2024-01-14T19:00:00 UTC = epoch 1705258800
     const args = [_][]const u8{ "-d", "2024-01-15T00:00:00+05:00", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const stat = try common.file.FileInfo.stat(test_file);
+    const stat = try common.file.FileInfo.stat(testing.io, test_file);
     const expected_ns: i128 = 1705258800 * std.time.ns_per_s;
     try testing.expectEqual(expected_ns, stat.mtime);
 }
 
 test "touch: -A flag still touches file timestamps (adjustment ignored)" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Create a file first so it has known timestamps
-    const file = try tmp_dir.dir.createFile("adjust_nomod.txt", .{});
-    file.close();
+    const file = try tmp_dir.dir.createFile(io, "adjust_nomod.txt", .{});
+    file.close(io);
 
-    var path_buf: [fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp_dir.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..n];
 
     const test_file = try std.fmt.allocPrint(testing.allocator, "{s}/adjust_nomod.txt", .{tmp_path});
     defer testing.allocator.free(test_file);
 
     // Record timestamps before the -A invocation
-    const stat_before = try common.file.FileInfo.stat(test_file);
+    const stat_before = try common.file.FileInfo.stat(testing.io, test_file);
 
     // Wait to ensure the modification is detectable
-    std.Thread.sleep(1_100_000_000); // 1.1 seconds
+    _ = c.nanosleep(&.{ .sec = 1, .nsec = 100_000_000 }, null);
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-A", "0130", test_file };
-    const exit_code = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // -A adjustment is ignored but touch still updates timestamps to now
-    const stat_after = try common.file.FileInfo.stat(test_file);
+    const stat_after = try common.file.FileInfo.stat(testing.io, test_file);
     try testing.expect(stat_after.mtime != stat_before.mtime);
 }

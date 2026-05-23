@@ -122,8 +122,8 @@ fn parseVersionFromContent(allocator: std.mem.Allocator, zon_content: []const u8
 /// Parse version from build.zig.zon safely
 /// Returns a string that must be freed by the caller using the same allocator
 /// Caller owns the returned memory
-pub fn parseVersion(allocator: std.mem.Allocator) ![]const u8 {
-    const zon_content = std.fs.cwd().readFileAlloc(allocator, "build.zig.zon", 4096) catch |err| switch (err) {
+pub fn parseVersion(io: std.Io, allocator: std.mem.Allocator) ![]const u8 {
+    const zon_content = std.Io.Dir.cwd().readFileAlloc(io, "build.zig.zon", allocator, .limited(4096)) catch |err| switch (err) {
         error.FileNotFound => return error.BuildZonFileNotFound,
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.BuildZonReadFailed,
@@ -135,10 +135,10 @@ pub fn parseVersion(allocator: std.mem.Allocator) ![]const u8 {
 
 /// Validate that all utility source files exist and are accessible
 /// Returns an error if any utility source file is missing or inaccessible
-pub fn validateUtilities() !void {
+pub fn validateUtilities(io: std.Io) !void {
     for (utilities) |util| {
         const path = util.path;
-        std.fs.cwd().access(path, .{}) catch |err| switch (err) {
+        std.Io.Dir.cwd().access(io, path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.err("Utility source file not found: {s}", .{path});
                 return error.UtilitySourceNotFound;
@@ -206,7 +206,7 @@ test "parseVersion - empty content" {
 test "validateUtilities - all utilities exist" {
     // This test assumes the utilities exist in the actual project structure
     // In a real project, this would pass when run from the project root
-    const result = validateUtilities();
+    const result = validateUtilities(std.testing.io);
 
     // The test might fail if run from a different directory, but that's expected
     // This test is more for ensuring the function doesn't crash
@@ -220,7 +220,7 @@ test "validateUtilities - handles missing files gracefully" {
 
     // We can't easily test this without changing directories, so we'll just
     // ensure the function can be called without crashing
-    const result = validateUtilities();
+    const result = validateUtilities(std.testing.io);
 
     // If we're in the project directory, it should succeed
     // If not, it should fail with UtilitySourceNotFound

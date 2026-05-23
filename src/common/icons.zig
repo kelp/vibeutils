@@ -922,12 +922,13 @@ pub fn getIcon(theme: *const IconTheme, name: []const u8, is_dir: bool, is_link:
 
 /// Get icon mode from environment variable, with fallback
 pub fn getIconModeFromEnv(allocator: std.mem.Allocator) IconMode {
-    if (std.process.getEnvVarOwned(allocator, "LS_ICONS")) |val| {
-        defer allocator.free(val);
+    _ = allocator;
+    const env = @import("env.zig");
+    if (env.getEnv("LS_ICONS")) |val| {
         if (std.mem.eql(u8, val, "always")) return .always;
         if (std.mem.eql(u8, val, "never")) return .never;
         if (std.mem.eql(u8, val, "auto")) return .auto;
-    } else |_| {}
+    }
 
     return .auto; // Default to auto mode
 }
@@ -947,13 +948,13 @@ pub const IconColorInfo = struct {
     g: u8,
     b: u8,
     c256: u8,
-    basic: @import("style.zig").Style(std.fs.File.Writer).Color,
+    basic: @import("style.zig").Style(*std.Io.Writer).Color,
 };
 
 /// Map icon glyph to its brand color across all terminal color modes.
 pub fn getIconColorInfo(icon: []const u8) ?IconColorInfo {
     const theme = IconTheme{};
-    const Color = @import("style.zig").Style(std.fs.File.Writer).Color;
+    const Color = @import("style.zig").Style(*std.Io.Writer).Color;
     const eql = std.mem.eql;
 
     // Programming languages — researched brand colors
@@ -1242,7 +1243,7 @@ test "get icon for new file types" {
 
 test "getIconColorInfo brand colors" {
     const theme = IconTheme{};
-    const Color = @import("style.zig").Style(std.fs.File.Writer).Color;
+    const Color = @import("style.zig").Style(*std.Io.Writer).Color;
 
     // Zig icon returns yellow/orange brand color
     const zig_color = getIconColorInfo(theme.zig).?;

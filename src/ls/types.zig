@@ -66,7 +66,7 @@ pub const LsOptions = struct {
 /// Represents a directory entry with metadata
 pub const Entry = struct {
     name: []const u8,
-    kind: std.fs.File.Kind,
+    kind: std.Io.File.Kind,
     stat: ?common.file.FileInfo = null,
     symlink_target: ?[]const u8 = null,
     git_status: common.git.GitStatus = .not_in_repo,
@@ -213,8 +213,8 @@ pub const GitContext = struct {
     init_error: ?GitInitError = null,
 
     /// Initialize GitContext for the given path
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) GitContext {
-        const repo = common.git.GitRepo.init(allocator, path) catch |err| {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8) GitContext {
+        const repo = common.git.GitRepo.init(allocator, io, path) catch |err| {
             const git_error = mapGitError(err);
             return GitContext{
                 .repo = null,
@@ -237,9 +237,9 @@ pub const GitContext = struct {
     }
 
     /// Get git status for a specific file
-    pub fn getFileStatus(self: *GitContext, filename: []const u8) ?common.git.GitStatus {
+    pub fn getFileStatus(self: *GitContext, io: std.Io, filename: []const u8) ?common.git.GitStatus {
         if (self.repo) |*repo| {
-            return repo.getFileStatus(filename);
+            return repo.getFileStatus(io, filename);
         }
         return null;
     }

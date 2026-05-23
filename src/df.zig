@@ -132,7 +132,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
     var opts = DfOptions{};
     opts.display = common.display_config.DisplayConfig.resolve(allocator);
     var err_msg: ?[]const u8 = null;
-    var positionals = std.ArrayListUnmanaged([]const u8){};
+    var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
     var i: usize = 0;
 
     while (i < args.len) : (i += 1) {
@@ -357,11 +357,11 @@ fn parseBlockSize(s: []const u8) ?u64 {
 // Filesystem enumeration (platform-specific)
 // ============================================================================
 
-fn getMountedFilesystems(allocator: Allocator) ![]FsInfo {
+fn getMountedFilesystems(io: std.Io, allocator: Allocator) ![]FsInfo {
     if (comptime is_darwin) {
         return getMountedFilesystemsDarwin(allocator);
     } else if (comptime is_linux) {
-        return getMountedFilesystemsLinux(allocator);
+        return getMountedFilesystemsLinux(io, allocator);
     } else {
         @compileError("df: unsupported platform");
     }
@@ -382,7 +382,7 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
     if (actual < 0) return error.SystemResources;
 
     const actual_count: usize = @intCast(actual);
-    var result = std.ArrayListUnmanaged(FsInfo){};
+    var result: std.ArrayListUnmanaged(FsInfo) = .empty;
 
     for (buf[0..actual_count]) |*fs| {
         // Dupe strings so they outlive the getfsstat buffer
@@ -408,19 +408,19 @@ fn getMountedFilesystemsDarwin(allocator: Allocator) ![]FsInfo {
     return result.toOwnedSlice(allocator);
 }
 
-fn getFilesystemForPath(allocator: Allocator, path: []const u8) !FsInfo {
+fn getFilesystemForPath(io: std.Io, allocator: Allocator, path: []const u8) !FsInfo {
     if (comptime is_darwin) {
         return getFilesystemForPathDarwin(allocator, path);
     } else if (comptime is_linux) {
-        return getFilesystemForPathLinux(allocator, path);
+        return getFilesystemForPathLinux(io, allocator, path);
     } else {
         @compileError("df: unsupported platform");
     }
 }
 
 fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
-    var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-    if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+    var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
@@ -428,7 +428,7 @@ fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
     var sfs: StatFs = undefined;
     const ret = darwin_c.statfs(c_path, &sfs);
     if (ret != 0) {
-        return switch (std.posix.errno(ret)) {
+        return switch (std.c.errno(ret)) {
             .ACCES => error.AccessDenied,
             .NOENT => error.FileNotFound,
             .NOTDIR => error.NotDir,
@@ -476,17 +476,13 @@ fn extractCString(buf: []const u8) []const u8 {
 // Linux filesystem enumeration
 // ============================================================================
 
-fn getMountedFilesystemsLinux(allocator: Allocator) ![]FsInfo {
-    const file = std.fs.cwd().openFile("/proc/mounts", .{}) catch {
+fn getMountedFilesystemsLinux(io: std.Io, allocator: Allocator) ![]FsInfo {
+    var buf: [32768]u8 = undefined;
+    const content = std.Io.Dir.cwd().readFile(io, "/proc/mounts", &buf) catch {
         return error.SystemResources;
     };
-    defer file.close();
 
-    var buf: [32768]u8 = undefined;
-    const bytes_read = file.readAll(&buf) catch return error.SystemResources;
-    const content = buf[0..bytes_read];
-
-    var result = std.ArrayListUnmanaged(FsInfo){};
+    var result: std.ArrayListUnmanaged(FsInfo) = .empty;
 
     // /proc/mounts format: device mountpoint fstype options dump pass
     var line_iter = std.mem.splitScalar(u8, content, '\n');
@@ -499,8 +495,8 @@ fn getMountedFilesystemsLinux(allocator: Allocator) ![]FsInfo {
         const fstype_raw = iter.next() orelse continue;
 
         // statvfs the mount point
-        var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-        if (mount_point_raw.len > std.fs.max_path_bytes) continue;
+        var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+        if (mount_point_raw.len > std.Io.Dir.max_path_bytes) continue;
         @memcpy(path_buf[0..mount_point_raw.len], mount_point_raw);
         path_buf[mount_point_raw.len] = 0;
         const c_path = path_buf[0..mount_point_raw.len :0];
@@ -531,9 +527,9 @@ fn getMountedFilesystemsLinux(allocator: Allocator) ![]FsInfo {
     return result.toOwnedSlice(allocator);
 }
 
-fn getFilesystemForPathLinux(allocator: Allocator, path: []const u8) !FsInfo {
-    var path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
-    if (path.len > std.fs.max_path_bytes) return error.NameTooLong;
+fn getFilesystemForPathLinux(io: std.Io, allocator: Allocator, path: []const u8) !FsInfo {
+    var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
     @memcpy(path_buf[0..path.len], path);
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
@@ -551,7 +547,8 @@ fn getFilesystemForPathLinux(allocator: Allocator, path: []const u8) !FsInfo {
     var best_fstype: []const u8 = "unknown";
     var best_len: usize = 0;
 
-    const file = std.fs.cwd().openFile("/proc/mounts", .{}) catch {
+    var mounts_buf: [32768]u8 = undefined;
+    const content = std.Io.Dir.cwd().readFile(io, "/proc/mounts", &mounts_buf) catch {
         // Can't read mounts, return with what we have from statvfs
         return FsInfo{
             .source = try allocator.dupe(u8, "unknown"),
@@ -567,11 +564,6 @@ fn getFilesystemForPathLinux(allocator: Allocator, path: []const u8) !FsInfo {
             .flags = 0,
         };
     };
-    defer file.close();
-
-    var buf: [32768]u8 = undefined;
-    const bytes_read = file.readAll(&buf) catch 0;
-    const content = buf[0..bytes_read];
 
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |line| {
@@ -748,7 +740,7 @@ fn isCloudFs(source: []const u8, fstype: []const u8) bool {
 /// Returns the input unchanged if no partition suffix is found.
 fn extractDevicePrefix(source: []const u8) []const u8 {
     // Look for pattern like "diskNsM" and strip the "sM" part
-    if (std.mem.indexOf(u8, source, "disk")) |disk_start| {
+    if (std.mem.find(u8, source, "disk")) |disk_start| {
         var i = disk_start + 4; // skip "disk"
         // Skip disk number digits
         while (i < source.len and source[i] >= '0' and source[i] <= '9') : (i += 1) {}
@@ -773,7 +765,7 @@ fn groupDarwinVolumes(allocator: Allocator, filesystems: []const FsInfo) ![]FsIn
         groups.deinit(allocator);
     }
 
-    var result = std.ArrayListUnmanaged(FsInfo){};
+    var result: std.ArrayListUnmanaged(FsInfo) = .empty;
     errdefer result.deinit(allocator);
 
     for (filesystems) |fs| {
@@ -997,7 +989,7 @@ fn smartFormatSource(buf: []u8, source: []const u8, max_width: usize) []const u8
     if (effective_max <= 1) return source[source.len - effective_max ..];
 
     // Time Machine: extract device from "prefix@/dev/..."
-    if (std.mem.indexOf(u8, source, "@/dev/")) |at_pos| {
+    if (std.mem.find(u8, source, "@/dev/")) |at_pos| {
         const device = source[at_pos + 1 ..]; // "/dev/..."
         if (device.len <= effective_max) return device;
     }
@@ -1080,7 +1072,7 @@ fn capWidthsToTerminal(allocator: Allocator, widths: *ColumnWidths, opts: DfOpti
     if (opts.portability) return;
 
     // Only cap when stdout is a real terminal
-    if (!std.fs.File.stdout().isTty()) return;
+    if (std.c.isatty(std.Io.File.stdout().handle) == 0) return;
 
     const term_width: usize = @intCast(common.terminal.getWidth(allocator) catch 80);
 
@@ -1104,7 +1096,7 @@ fn capWidthsToTerminal(allocator: Allocator, widths: *ColumnWidths, opts: DfOpti
 }
 
 /// Write a string right-padded to the given width.
-fn padRight(writer: anytype, str: []const u8, width: usize) !void {
+fn padRight(writer: *std.Io.Writer, str: []const u8, width: usize) !void {
     try writer.writeAll(str);
     const display_w = common.unicode.displayWidth(str);
     if (display_w < width) {
@@ -1113,7 +1105,7 @@ fn padRight(writer: anytype, str: []const u8, width: usize) !void {
 }
 
 /// Write a string left-padded (right-aligned) to the given width.
-fn padLeft(writer: anytype, str: []const u8, width: usize) !void {
+fn padLeft(writer: *std.Io.Writer, str: []const u8, width: usize) !void {
     const display_w = common.unicode.displayWidth(str);
     if (display_w < width) {
         for (0..width - display_w) |_| try writer.writeAll(" ");
@@ -1167,7 +1159,7 @@ fn usageGradientRgb(pct: u8) Rgb {
 /// Write a colored usage bar directly to the writer.
 /// Each filled block gets individually colored via gradient.
 /// Empty blocks are dim gray.
-fn writeColoredUsageBar(writer: anytype, s: anytype, percent: u8) !void {
+fn writeColoredUsageBar(writer: *std.Io.Writer, s: anytype, percent: u8) !void {
     const bar_width: u8 = 10;
     const filled: u8 = @intCast(@divTrunc(@as(u16, percent) * bar_width + 99, 100));
     const empty: u8 = bar_width - filled;
@@ -1320,7 +1312,7 @@ fn applyTypeColor(s: anytype) !void {
 // Output formatting
 // ============================================================================
 
-fn printHeader(stdout: anytype, opts: DfOptions) !void {
+fn printHeader(stdout: *std.Io.Writer, opts: DfOptions) !void {
     if (opts.inodes) {
         if (opts.print_type) {
             try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
@@ -1409,7 +1401,7 @@ fn printHeader(stdout: anytype, opts: DfOptions) !void {
     }
 }
 
-fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions, color_mode_int: u8) !void {
+fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, color_mode_int: u8) !void {
     if (opts.inodes) {
         var pct_buf: [16]u8 = undefined;
         const pct = formatPercent(&pct_buf, fs.used_inodes, fs.total_inodes);
@@ -1505,7 +1497,7 @@ fn printFsRow(stdout: anytype, fs: FsInfo, opts: DfOptions, color_mode_int: u8) 
     }
 }
 
-fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, color_mode_int: u8) !void {
+fn printTotal(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions, color_mode_int: u8) !void {
     if (opts.inodes) {
         var sum_total: u64 = 0;
         var sum_used: u64 = 0;
@@ -1646,7 +1638,7 @@ fn printTotal(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, col
 // Dynamic-width output formatting
 // ============================================================================
 
-fn printHeaderDynamic(stdout: anytype, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
+fn printHeaderDynamic(stdout: *std.Io.Writer, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
     var size_label_buf: [32]u8 = undefined;
     const size_label: []const u8 = blk: {
         if (opts.human_readable or opts.si) break :blk "Size";
@@ -1698,7 +1690,7 @@ fn printHeaderDynamic(stdout: anytype, opts: DfOptions, widths: ColumnWidths, s:
     try stdout.writeAll("\n");
 }
 
-fn printFsRowDynamic(stdout: anytype, fs: FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
+fn printFsRowDynamic(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
     const fs_class = classifyFs(fs.source, fs.fstype, fs.mount_point);
 
     var total_buf: [32]u8 = undefined;
@@ -1810,7 +1802,7 @@ fn printFsRowDynamic(stdout: anytype, fs: FsInfo, opts: DfOptions, widths: Colum
     try stdout.writeAll("\n");
 }
 
-fn printTotalDynamic(stdout: anytype, filesystems: []const FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
+fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions, widths: ColumnWidths, s: anytype) !void {
     // Sum bytes across all filesystems
     var sum_total_bytes: u64 = 0;
     var sum_used_bytes: u64 = 0;
@@ -1926,7 +1918,7 @@ fn printTotalDynamic(stdout: anytype, filesystems: []const FsInfo, opts: DfOptio
 // Main logic
 // ============================================================================
 
-pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, stderr: anytype) anyerror!u8 {
+pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
     const parsed = parseArgs(allocator, args);
     const opts = parsed.opts;
 
@@ -1964,7 +1956,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     // Collect visible filesystems into a list for two-pass rendering.
     // owns_fs_strings tracks whether visible owns the FsInfo string
     // allocations (positional path) or they're owned by all_fs_storage.
-    var visible = std.ArrayListUnmanaged(FsInfo){};
+    var visible: std.ArrayListUnmanaged(FsInfo) = .empty;
     defer visible.deinit(allocator);
     var owns_fs_strings = false;
 
@@ -1987,7 +1979,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     if (opts.positionals.len > 0) {
         owns_fs_strings = true;
         for (opts.positionals) |path| {
-            const fs = getFilesystemForPath(allocator, path) catch {
+            const fs = getFilesystemForPath(io, allocator, path) catch {
                 common.printErrorWithProgram(allocator, stderr, prog_name, "cannot access '{s}': No such file or directory", .{path});
                 exit_code = @intFromEnum(common.ExitCode.general_error);
                 continue;
@@ -1999,7 +1991,7 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
             }
         }
     } else {
-        const all_fs = getMountedFilesystems(allocator) catch {
+        const all_fs = getMountedFilesystems(io, allocator) catch {
             common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read table of mounted file systems", .{});
             return @intFromEnum(common.ExitCode.general_error);
         };
@@ -2061,15 +2053,15 @@ pub fn runDf(allocator: Allocator, args: []const []const u8, stdout: anytype, st
     return exit_code;
 }
 
-pub fn main() !void {
-    common.utilityMain(runDf);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runDf);
 }
 
 // ============================================================================
 // Help and version
 // ============================================================================
 
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: df [OPTION]... [FILE]...
         \\Show information about the file system on which each FILE resides,
@@ -2115,7 +2107,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
     );
 }
 
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("df ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -2498,115 +2490,124 @@ test "shouldIncludeFs - local only" {
 }
 
 test "runDf - help flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Usage: df") != null);
-    try testing.expectEqualStrings("", stderr_buf.items);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: df") != null);
+    try testing.expectEqualStrings("", stderr_aw.writer.buffered());
 }
 
 test "runDf - version flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "df") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "df") != null);
 }
 
 test "runDf - unknown flag returns misuse" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--invalid"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "df:") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "df:") != null);
 }
 
 test "runDf - nonexistent path returns error" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent/path/that/does/not/exist"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buf.items, "df:") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "df:") != null);
 }
 
 test "runDf - no args shows filesystems" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Should have a header line
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Filesystem") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Mounted on") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Filesystem") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Mounted on") != null);
 }
 
 test "runDf - specific path" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Filesystem") != null);
-    try testing.expect(stdout_buf.items.len > 50); // Has meaningful output
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Filesystem") != null);
+    try testing.expect(stdout_aw.writer.buffered().len > 50); // Has meaningful output
 }
 
 test "runDf - human readable flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-h", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Size") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Size") != null);
 }
 
 test "runDf - print type flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-T", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Type") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Type") != null);
 }
 
 test "runDf - inodes flag" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-i", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "Inodes") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Inodes") != null);
 }
 
 test "formatSize - 1K-blocks" {
@@ -2707,66 +2708,66 @@ test "formatUsageBar - 1 percent" {
 }
 
 test "applyUsageColor - truecolor green" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyUsageColor(s, 50);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;115;195;120m", aw.writer.buffered());
 }
 
 test "applyUsageColor - truecolor yellow" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyUsageColor(s, 75);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;210;185;90m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;210;185;90m", aw.writer.buffered());
 }
 
 test "applyUsageColor - truecolor red" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .truecolor, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .truecolor, .writer = &aw.writer };
     try applyUsageColor(s, 95);
-    try testing.expectEqualSlices(u8, "\x1b[38;2;210;95;90m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[38;2;210;95;90m", aw.writer.buffered());
 }
 
 test "applyUsageColor - basic green" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyUsageColor(s, 30);
-    try testing.expectEqualSlices(u8, "\x1b[32m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[32m", aw.writer.buffered());
 }
 
 test "applyUsageColor - basic yellow" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyUsageColor(s, 80);
-    try testing.expectEqualSlices(u8, "\x1b[33m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[33m", aw.writer.buffered());
 }
 
 test "applyUsageColor - basic red" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .basic, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .basic, .writer = &aw.writer };
     try applyUsageColor(s, 90);
-    try testing.expectEqualSlices(u8, "\x1b[31m", buffer.items);
+    try testing.expectEqualSlices(u8, "\x1b[31m", aw.writer.buffered());
 }
 
 test "applyUsageColor - none writes nothing" {
-    const TestStyle = common.style.Style(std.ArrayList(u8).Writer);
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const s = TestStyle{ .color_mode = .none, .writer = buffer.writer(testing.allocator) };
+    const TestStyle = common.style.Style(*std.Io.Writer);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    const s = TestStyle{ .color_mode = .none, .writer = &aw.writer };
     try applyUsageColor(s, 50);
-    try testing.expectEqual(@as(usize, 0), buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), aw.writer.buffered().len);
 }
 
 test "truncatePath - short unchanged" {
@@ -2871,122 +2872,125 @@ test "groupDarwinVolumes - mixed devices" {
 }
 
 test "printFsRow - plain mode has no ANSI" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
+    try printFsRow(&aw.writer, fs, opts, 0);
     // No ANSI escape sequences in plain mode
-    try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") == null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b[") == null);
 }
 
 test "printFsRow - color mode applies ANSI" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .off;
     // Use basic color mode (1) so ANSI codes are emitted
-    try printFsRow(buf.writer(testing.allocator), fs, opts, 1);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") != null);
+    try printFsRow(&aw.writer, fs, opts, 1);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b[") != null);
     // No bar in color mode
-    try testing.expect(std.mem.indexOf(u8, buf.items, "[") == null or
-        std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") == null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "[") == null or
+        std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") == null);
 }
 
 test "printFsRow - full mode includes bar" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     const fs = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .on;
-    try printFsRow(buf.writer(testing.allocator), fs, opts, 0);
+    try printFsRow(&aw.writer, fs, opts, 0);
     // Full mode with color_mode_int=0 (none) still shows the bar
-    try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
-        std.mem.indexOf(u8, buf.items, "\xe2\x96\x91") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") != null or
+        std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x91") != null);
 }
 
 test "printHeader - full mode shows Usage column" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .on;
-    try printHeader(buf.writer(testing.allocator), opts);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") != null);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "Size") != null);
+    try printHeader(&aw.writer, opts);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Size") != null);
 }
 
 test "printHeader - plain mode no Usage column" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     var opts = DfOptions{};
     opts.display.icons = .off;
-    try printHeader(buf.writer(testing.allocator), opts);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") == null);
+    try printHeader(&aw.writer, opts);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage") == null);
 }
 
 test "printHeader - color mode no Usage column" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     var opts = DfOptions{};
     opts.display.icons = .off;
-    try printHeader(buf.writer(testing.allocator), opts);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "Usage") == null);
+    try printHeader(&aw.writer, opts);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Usage") == null);
 }
 
 test "printTotal - plain mode has no ANSI" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     const fs2 = makeFsInfo("/dev/disk2s1", "/home", 2000, 4096);
     const items = [_]FsInfo{ fs1, fs2 };
     var opts = DfOptions{};
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printTotal(buf.writer(testing.allocator), &items, opts, 0);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "\x1b[") == null);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "total") != null);
+    try printTotal(&aw.writer, &items, opts, 0);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\x1b[") == null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "total") != null);
 }
 
 test "printTotal - full mode includes bar" {
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     const fs1 = makeFsInfo("/dev/disk1s1", "/", 1000, 4096);
     const items = [_]FsInfo{fs1};
     var opts = DfOptions{};
     opts.display.color = .on;
     opts.display.icons = .on;
-    try printTotal(buf.writer(testing.allocator), &items, opts, 0);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "\xe2\x96\x88") != null or
-        std.mem.indexOf(u8, buf.items, "\xe2\x96\x91") != null);
+    try printTotal(&aw.writer, &items, opts, 0);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x88") != null or
+        std.mem.find(u8, aw.writer.buffered(), "\xe2\x96\x91") != null);
 }
 
 test "runDf - help mentions VIBEUTILS_STYLE" {
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "VIBEUTILS_STYLE") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "VIBEUTILS_STYLE") != null);
 }
 
 // C library functions for environment manipulation in tests
 extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 extern fn unsetenv(name: [*:0]const u8) c_int;
+extern fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 
 test "runDf - non-tty output should not contain ANSI escapes" {
+    const io = testing.io;
     // Save original environment values
-    const orig_term = std.posix.getenv("TERM");
-    const orig_no_color = std.posix.getenv("NO_COLOR");
-    const orig_style = std.posix.getenv("VIBEUTILS_STYLE");
+    const orig_term = if (getenv("TERM")) |p| std.mem.span(p) else null;
+    const orig_no_color = if (getenv("NO_COLOR")) |p| std.mem.span(p) else null;
+    const orig_style = if (getenv("VIBEUTILS_STYLE")) |p| std.mem.span(p) else null;
 
     // Set TERM so ColorMode.detect returns a non-none color mode.
     // Remove NO_COLOR and VIBEUTILS_STYLE so they don't suppress colors.
@@ -3013,22 +3017,22 @@ test "runDf - non-tty output should not contain ANSI escapes" {
         }
     }
 
-    var stdout_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buf.deinit(testing.allocator);
-    var stderr_buf = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buf.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    // Run df on "/" which always exists. The output goes to an ArrayList
-    // buffer, not a terminal. No ANSI escapes should appear because
+    // Run df on "/" which always exists. The output goes to an Allocating
+    // writer, not a terminal. No ANSI escapes should appear because
     // the output destination is not a tty.
     const args = [_][]const u8{"/"};
-    const result = try runDf(testing.allocator, &args, stdout_buf.writer(testing.allocator), stderr_buf.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
 
     // The isTty() gate on color_mode_int ensures ANSI codes do not
     // leak into non-tty output even when TERM indicates color support.
-    try testing.expect(stdout_buf.items.len > 0);
-    try testing.expect(std.mem.indexOf(u8, stdout_buf.items, "\x1b[") == null);
+    try testing.expect(stdout_aw.writer.buffered().len > 0);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "\x1b[") == null);
 }
 
 // ============================================================================
@@ -3135,19 +3139,17 @@ test "computeColumnWidths - minimum widths" {
 }
 
 test "padLeft - basic" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const writer = buffer.writer(testing.allocator);
-    try padLeft(writer, "hi", 5);
-    try testing.expectEqualStrings("   hi", buffer.items);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try padLeft(&aw.writer, "hi", 5);
+    try testing.expectEqualStrings("   hi", aw.writer.buffered());
 }
 
 test "padRight - basic" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
-    const writer = buffer.writer(testing.allocator);
-    try padRight(writer, "hi", 5);
-    try testing.expectEqualStrings("hi   ", buffer.items);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    try padRight(&aw.writer, "hi", 5);
+    try testing.expectEqualStrings("hi   ", aw.writer.buffered());
 }
 
 test "getFsIcon - returns correct icons" {
@@ -3199,13 +3201,14 @@ test "parseArgs - n combined with other flags" {
 
 test "runDf - n flag accepted" {
     if (comptime is_linux) return error.SkipZigTest;
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-n"};
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
@@ -3366,90 +3369,97 @@ test "formatSize - 1M blocks" {
 }
 
 test "runDf - b flag accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-b", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "512B-blocks") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "512B-blocks") != null);
 }
 
 test "runDf - c flag shows total" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-c", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "total") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "total") != null);
 }
 
 test "runDf - g flag accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-g", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1G-blocks") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "1G-blocks") != null);
 }
 
 test "runDf - m flag accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-m", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1M-blocks") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "1M-blocks") != null);
 }
 
 test "runDf - Y flag accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-Y"};
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runDf - comma flag accepted" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-,", "-k", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "runDf - help mentions new flags" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-b") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-g") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-m") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-Y") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-,") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "-I") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-b") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-g") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-m") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-Y") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-,") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "-I") != null);
 }
 
 // ============================================================================
@@ -3478,13 +3488,14 @@ test "runDf - I flag without argument succeeds on macOS" {
     // df with no paths. We pass two paths so even if the first
     // is consumed, the second keeps df from hanging.
     if (comptime !is_darwin) return error.SkipZigTest;
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-I", "/", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     // With the bug: -I eats first "/", second "/" is used as path → exit 0
     // When fixed: -I is boolean, both "/" are paths → exit 0
     // Either way it won't hang. The real check: output should show
@@ -3502,46 +3513,47 @@ test "runDf - I flag without argument succeeds on macOS" {
 test "printHeader - POSIX mode uses 1024-blocks not 1K-blocks" {
     // POSIX (df -P) requires the header column to read "1024-blocks",
     // not "1K-blocks". See IEEE Std 1003.1-2017 df specification.
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     var opts = DfOptions{};
     opts.portability = true;
     opts.human_readable = false;
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printHeader(buf.writer(testing.allocator), opts);
+    try printHeader(&aw.writer, opts);
     // POSIX mandates "1024-blocks"
-    try testing.expect(std.mem.indexOf(u8, buf.items, "1024-blocks") != null);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "1024-blocks") != null);
 }
 
 test "printHeader - POSIX mode uses Capacity not Use%" {
     // POSIX requires the percentage column to be labeled "Capacity",
     // not "Use%". See IEEE Std 1003.1-2017 df specification.
-    var buf = std.ArrayListUnmanaged(u8){};
-    defer buf.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
     var opts = DfOptions{};
     opts.portability = true;
     opts.human_readable = false;
     opts.display.color = .off;
     opts.display.icons = .off;
-    try printHeader(buf.writer(testing.allocator), opts);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "Capacity") != null);
+    try printHeader(&aw.writer, opts);
+    try testing.expect(std.mem.find(u8, aw.writer.buffered(), "Capacity") != null);
 }
 
 test "runDf - P flag output has POSIX-compliant headers" {
     // Full integration: df -P / should produce POSIX headers.
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-P", "/" };
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 0), result);
     // POSIX requires "1024-blocks", not "1K-blocks"
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "1024-blocks") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "1024-blocks") != null);
     // POSIX requires "Capacity", not "Use%"
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Capacity") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Capacity") != null);
 }
 
 // ============================================================================
@@ -3564,12 +3576,13 @@ test "runDf - n flag returns misuse on Linux" {
     // On Linux, -n is not a valid GNU df flag and should exit with
     // misuse (exit code 2).
     if (comptime !is_linux) return error.SkipZigTest;
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-n"};
-    const result = try runDf(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const result = try runDf(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
 }

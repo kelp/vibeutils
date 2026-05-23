@@ -23,14 +23,27 @@ pub const FileSystemId = struct {
     /// Create a FileSystemId from a directory using fstat() on its file descriptor.
     /// This gets the real device ID from the underlying filesystem, which allows
     /// basic detection of filesystem boundaries for cycle prevention.
-    pub fn fromDir(dir: std.fs.Dir) !FileSystemId {
-        // Use fstat() on the directory's file descriptor to get real device ID
-        const stat_info = try std.posix.fstat(dir.fd);
-
-        return FileSystemId{
-            .device = @intCast(stat_info.dev),
-            .inode = stat_info.ino,
-        };
+    pub fn fromDir(dir: std.Io.Dir) !FileSystemId {
+        const fd = dir.handle;
+        if (@import("builtin").os.tag == .linux) {
+            // On Linux, std.c.fstat is void; use statx via the Linux syscall.
+            const linux = std.os.linux;
+            var sx: linux.Statx = undefined;
+            const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, linux.STATX.BASIC_STATS, &sx);
+            if (linux.errno(rc) != .SUCCESS) return error.SystemResources;
+            return FileSystemId{
+                .device = (@as(u64, sx.dev_major) << 8) | @as(u64, sx.dev_minor),
+                .inode = sx.ino,
+            };
+        } else {
+            // macOS and other platforms support std.c.fstat.
+            var stat_info: std.c.Stat = undefined;
+            if (std.c.fstat(fd, &stat_info) != 0) return error.SystemResources;
+            return FileSystemId{
+                .device = @intCast(stat_info.dev),
+                .inode = stat_info.ino,
+            };
+        }
     }
 
     /// Context for HashMap usage with FileSystemId keys
@@ -108,7 +121,7 @@ pub const CycleDetector = struct {
     ///
     /// Note: This is not fully atomic - there's still a window between stat()
     /// and directory traversal where the filesystem can change.
-    pub fn checkAndMarkVisited(self: *CycleDetector, dir: std.fs.Dir) !bool {
+    pub fn checkAndMarkVisited(self: *CycleDetector, dir: std.Io.Dir) !bool {
         const fs_id = try FileSystemId.fromDir(dir);
 
         // Check-and-set: if already present, it's a potential cycle
@@ -141,7 +154,7 @@ pub fn collectSubdirectories(
                 continue;
             }
 
-            const full_path = try std.fs.path.join(allocator, &[_][]const u8{ base_path, entry.name });
+            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, entry.name });
             errdefer allocator.free(full_path);
             try subdirs.append(allocator, SubdirEntry{ .name = entry.name, .path = full_path });
         }

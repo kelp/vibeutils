@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Infrastructure
+- **Migrate to Zig 0.16.0.** All 47 utilities and the shared
+  common library are ported off 0.15.x's pre-Writergate APIs.
+  `main` now receives `std.process.Init`; every utility runs
+  through `common.utilityMain` with the new `runFn` signature
+  (`*std.Io.Writer` for stdout/stderr, explicit `io: std.Io`).
+  Toolchain pins (gale, flake, CI) and `build.zig.zon`'s
+  `minimum_zig_version` all bumped to `0.16.0`. Build infra
+  ported off `linkLibC()` and `addRemoveDirTree`. Fixed two
+  regressions during integration testing: `head` now streams
+  lines longer than its 8 KB read buffer instead of erroring
+  with `StreamTooLong`; `mktemp` passes explicit `0o600`
+  permissions since 0.16's default is `0o666`.
 ### Bug Fixes
 - **ls: memory leak in git status integration.** When
   `git status --porcelain` reported the same filename twice

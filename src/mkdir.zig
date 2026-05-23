@@ -25,8 +25,8 @@ const MkdirArgs = struct {
 
 /// Options controlling directory creation behavior
 const MkdirOptions = struct {
-    /// File mode for created directories
-    mode: ?std.fs.File.Mode = null,
+    /// File mode for created directories (POSIX mode_t)
+    mode: ?std.posix.mode_t = null,
 
     /// Create parent directories as needed
     parents: bool = false,
@@ -36,12 +36,18 @@ const MkdirOptions = struct {
 };
 
 /// Main entry point for mkdir command
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, run);
 }
 
 /// Run mkdir with provided writers for output
-fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     const prog_name = "mkdir";
 
     const parsed_args = common.argparse.ArgParser.parseOrExit(MkdirArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
@@ -83,7 +89,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
     // Process directories - continue processing even if some fail
     var exit_code = common.ExitCode.success;
     for (dirs) |dir_path| {
-        createDirectory(dir_path, options, prog_name, stdout_writer, stderr_writer, allocator) catch {
+        createDirectory(io, dir_path, options, prog_name, stdout_writer, stderr_writer, allocator) catch {
             // Mark overall failure but continue with remaining directories
             exit_code = common.ExitCode.general_error;
             continue;
@@ -94,7 +100,7 @@ fn run(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: an
 }
 
 /// Print help message to provided writer
-fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
+fn printHelp(allocator: std.mem.Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: mkdir [OPTION]... DIRECTORY...
         \\Create the DIRECTORY(ies), if they do not already exist.
@@ -114,12 +120,13 @@ fn printHelp(allocator: std.mem.Allocator, writer: anytype) !void {
 }
 
 /// Print version information to provided writer
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("mkdir ({s}) {s}\n", .{ common.name, common.version });
 }
 
 /// Set directory permissions. No-op with warning on Windows.
-fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const u8, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+fn setDirectoryMode(io: std.Io, path: []const u8, mode: std.posix.mode_t, prog_name: []const u8, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
+    _ = io;
     if (builtin.os.tag == .windows) {
         // Print warning on Windows
         common.printWarningWithProgram(allocator, stderr_writer, prog_name, "mode flag (-m) is not supported on Windows", .{});
@@ -134,7 +141,7 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
 
     const result = std.c.chmod(&path_z, mode);
     if (result != 0) {
-        const err = std.posix.errno(result); // Pass the result to errno
+        const err = std.posix.errno(result);
         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot set mode on '{s}': {s}", .{ path, @tagName(err) });
         return error.ChmodFailed;
     }
@@ -142,26 +149,13 @@ fn setDirectoryMode(path: []const u8, mode: std.fs.File.Mode, prog_name: []const
 
 /// Parse octal or symbolic mode string (e.g. "755" or "u=rwx,go=rx") into
 /// a file mode value suitable for chmod(2).
-///
-/// Symbolic modes start from 0o777 (S_IRWXUGO), matching GNU mkdir. See
-/// GNU coreutils `src/mkdir.c`, which passes `S_IRWXUGO` to `mode_adjust`
-/// rather than the umask-adjusted default. GNU's `usage()` explicitly
-/// notes: "set file mode (as in chmod), not a=rwx - umask".
-///
-/// Explicit-who clauses (u=rwx, go-w, etc.) ignore umask entirely. Umask
-/// only affects clauses with no explicit who-specifier (=rw, +x, -w),
-/// per POSIX §4.7. The shared parser handles this via ModeContext.umask.
-///
-/// `is_directory = true` enables `X` (conditional execute) to always
-/// expand to `x` for directory targets.
-/// Read and restore the process umask (POSIX has no non-destructive getter).
 fn getUmask() u32 {
     const m = std.c.umask(0);
     _ = std.c.umask(m);
     return @intCast(m);
 }
 
-fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
+fn parseMode(mode_str: []const u8) !std.posix.mode_t {
     if (mode_str.len == 0) {
         return error.InvalidMode;
     }
@@ -192,20 +186,19 @@ fn parseMode(mode_str: []const u8) !std.fs.File.Mode {
     return @intCast(parsed.toOctal());
 }
 
-/// Convert system error to user-friendly POSIX-style message
 /// Create directory with specified options
-fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+fn createDirectory(io: std.Io, path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
     if (options.parents) {
-        try createPathComponents(path, options, prog_name, stdout_writer, stderr_writer, allocator);
+        try createPathComponents(io, path, options, prog_name, stdout_writer, stderr_writer, allocator);
     } else {
-        std.fs.cwd().makeDir(path) catch |err| {
+        std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ path, common.posixErrorString(err) });
             return err;
         };
 
         // Set mode if specified
         if (options.mode) |mode| {
-            try setDirectoryMode(path, mode, prog_name, stderr_writer, allocator);
+            try setDirectoryMode(io, path, mode, prog_name, stderr_writer, allocator);
         }
 
         if (options.verbose) {
@@ -216,7 +209,7 @@ fn createDirectory(path: []const u8, options: MkdirOptions, prog_name: []const u
 
 /// Create path components one at a time, supporting -v per directory
 /// and -m on the leaf directory only (GNU behavior).
-fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: anytype, stderr_writer: anytype, allocator: std.mem.Allocator) !void {
+fn createPathComponents(io: std.Io, path: []const u8, options: MkdirOptions, prog_name: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, allocator: std.mem.Allocator) !void {
     // Handle absolute paths - start with "/"
     const is_absolute = path.len > 0 and path[0] == '/';
 
@@ -231,7 +224,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
     var iter = std.mem.splitScalar(u8, path, '/');
 
     // Build up the cumulative path
-    var cumulative = std.ArrayListUnmanaged(u8){};
+    var cumulative: std.ArrayListUnmanaged(u8) = .empty;
     defer cumulative.deinit(allocator);
 
     if (is_absolute) {
@@ -258,7 +251,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         const current_path = cumulative.items;
 
         // Try to create this component
-        std.fs.cwd().makeDir(current_path) catch |err| switch (err) {
+        std.Io.Dir.cwd().createDir(io, current_path, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => continue, // -p: silently skip existing
             else => {
                 common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot create directory '{s}': {s}", .{ current_path, common.posixErrorString(err) });
@@ -270,7 +263,7 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
         // GNU behavior: -m mode applies to the leaf directory only
         if (is_leaf) {
             if (options.mode) |mode| {
-                try setDirectoryMode(current_path, mode, prog_name, stderr_writer, allocator);
+                try setDirectoryMode(io, current_path, mode, prog_name, stderr_writer, allocator);
             }
         }
 
@@ -286,196 +279,192 @@ fn createPathComponents(path: []const u8, options: MkdirOptions, prog_name: []co
 // ============================================================================
 
 test "mkdir creates single directory" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteDir("test_dir") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteDir(io, "test_dir") catch {};
 
     const args = [_][]const u8{"test_dir"};
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
     // Verify directory was created
-    var test_dir = std.fs.cwd().openDir("test_dir", .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    var test_dir = try std.Io.Dir.cwd().openDir(io, "test_dir", .{});
+    test_dir.close(io);
 }
 
 test "mkdir with parents flag creates directory tree" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_parent") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_parent") catch {};
 
     const args = [_][]const u8{ "-p", "test_parent/test_child" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
     // Verify directories were created
-    var parent_dir = std.fs.cwd().openDir("test_parent", .{}) catch |err| {
-        return err;
-    };
-    defer parent_dir.close();
+    var parent_dir = try std.Io.Dir.cwd().openDir(io, "test_parent", .{});
+    defer parent_dir.close(io);
 
-    var child_dir = parent_dir.openDir("test_child", .{}) catch |err| {
-        return err;
-    };
-    child_dir.close();
+    var child_dir = try parent_dir.openDir(io, "test_child", .{});
+    child_dir.close(io);
 }
 
 test "mkdir with verbose flag prints creation messages" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteDir("test_verbose") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteDir(io, "test_verbose") catch {};
 
     const args = [_][]const u8{ "-v", "test_verbose" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mkdir: created directory 'test_verbose'") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mkdir: created directory 'test_verbose'") != null);
 }
 
 test "mkdir with mode flag sets permissions" {
     if (builtin.os.tag == .windows) {
         return;
     }
-
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteDir("test_mode") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteDir(io, "test_mode") catch {};
 
     const args = [_][]const u8{ "-m", "755", "test_mode" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
     // Verify directory exists and has correct permissions
-    const stat = try std.fs.cwd().statFile("test_mode");
-    const mode = stat.mode & 0o777;
-    try testing.expectEqual(@as(u32, 0o755), mode);
+    const stat = try std.Io.Dir.cwd().statFile(io, "test_mode", .{});
+    const mode = stat.permissions.toMode() & 0o777;
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), mode);
 }
 
 test "mkdir fails for existing directory without parents flag" {
+    const io = testing.io;
     // Create directory first
-    try std.fs.cwd().makeDir("test_existing");
-    defer std.fs.cwd().deleteDir("test_existing") catch {};
+    try std.Io.Dir.cwd().createDir(io, "test_existing", .default_dir);
+    defer std.Io.Dir.cwd().deleteDir(io, "test_existing") catch {};
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"test_existing"};
-    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "File exists") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "File exists") != null);
 }
 
 test "mkdir with parents flag succeeds for existing directory" {
+    const io = testing.io;
     // Create directory first
-    try std.fs.cwd().makeDir("test_existing_p");
-    defer std.fs.cwd().deleteDir("test_existing_p") catch {};
+    try std.Io.Dir.cwd().createDir(io, "test_existing_p", .default_dir);
+    defer std.Io.Dir.cwd().deleteDir(io, "test_existing_p") catch {};
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-p", "test_existing_p" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 }
 
 test "mkdir fails with missing operand" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{};
-    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "missing operand") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing operand") != null);
 }
 
 test "mkdir shows help with -h flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-h"};
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: mkdir") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Create the DIRECTORY") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: mkdir") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Create the DIRECTORY") != null);
 }
 
 test "mkdir shows version with -V flag" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"-V"};
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mkdir (vibeutils)") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mkdir (vibeutils)") != null);
 }
 
 test "mkdir handles invalid mode" {
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{ "-m", "999", "test_invalid" };
-    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "invalid mode") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "invalid mode") != null);
 }
 
 test "mkdir combines parents and verbose flags" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_combo") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_combo") catch {};
 
     const args = [_][]const u8{ "-pv", "test_combo/sub/deep" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "created directory") != null);
 }
 
 test "mkdir handles multiple directories" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteDir("test_multi1") catch {};
-    defer std.fs.cwd().deleteDir("test_multi2") catch {};
-    defer std.fs.cwd().deleteDir("test_multi3") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteDir(io, "test_multi1") catch {};
+    defer std.Io.Dir.cwd().deleteDir(io, "test_multi2") catch {};
+    defer std.Io.Dir.cwd().deleteDir(io, "test_multi3") catch {};
 
     const args = [_][]const u8{ "test_multi1", "test_multi2", "test_multi3" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify all directories were created
-    var dir1 = std.fs.cwd().openDir("test_multi1", .{}) catch |err| {
-        return err;
-    };
-    dir1.close();
-
-    var dir2 = std.fs.cwd().openDir("test_multi2", .{}) catch |err| {
-        return err;
-    };
-    dir2.close();
-
-    var dir3 = std.fs.cwd().openDir("test_multi3", .{}) catch |err| {
-        return err;
-    };
-    dir3.close();
+    var dir1 = try std.Io.Dir.cwd().openDir(io, "test_multi1", .{});
+    dir1.close(io);
+    var dir2 = try std.Io.Dir.cwd().openDir(io, "test_multi2", .{});
+    dir2.close(io);
+    var dir3 = try std.Io.Dir.cwd().openDir(io, "test_multi3", .{});
+    dir3.close(io);
 }
 
 test "parseMode handles valid octal modes" {
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("755"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o644), try parseMode("644"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("777"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o000), try parseMode("000"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), try parseMode("755"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), try parseMode("644"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), try parseMode("777"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o000), try parseMode("000"));
 }
 
 test "parseMode rejects invalid modes" {
@@ -490,223 +479,202 @@ test "parseMode handles symbolic modes" {
     const saved = std.c.umask(0o022);
     defer _ = std.c.umask(saved);
 
-    // Explicit who-specifiers: umask-independent. Verified against GNU
-    // coreutils 9.5 on Linux.
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("u=rwx,go=rx"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a=rwx"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a+rx"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("u=rwx"));
-    // The regression case: was 0o000 under the broken "start from 0" parser.
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("go-w"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o577), try parseMode("u=rx"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o757), try parseMode("g=rx"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o754), try parseMode("u=rwx,g=rx,o=r"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o777), try parseMode("a+X"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), try parseMode("u=rwx,go=rx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), try parseMode("a=rwx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), try parseMode("a+rx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), try parseMode("u=rwx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), try parseMode("go-w"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o577), try parseMode("u=rx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o757), try parseMode("g=rx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o754), try parseMode("u=rwx,g=rx,o=r"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o777), try parseMode("a+X"));
 
-    // Implicit who: umask 022 masks g-write and o-write.
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o644), try parseMode("=rw"));
-    try testing.expectEqual(@as(std.fs.File.Mode, 0o755), try parseMode("=rwx"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o644), try parseMode("=rw"));
+    try testing.expectEqual(@as(std.posix.mode_t, 0o755), try parseMode("=rwx"));
 }
 
 test "mkdir handles paths with double slashes" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_slashes") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_slashes") catch {};
 
     const args = [_][]const u8{ "-p", "test_slashes//sub//deep" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify directory was created
-    var test_dir = std.fs.cwd().openDir("test_slashes/sub/deep", .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    var test_dir = try std.Io.Dir.cwd().openDir(io, "test_slashes/sub/deep", .{});
+    test_dir.close(io);
 }
 
 test "mkdir handles paths with dot components" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_dots") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_dots") catch {};
 
     const args = [_][]const u8{ "-p", "test_dots/../test_dots/./sub" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify directory was created (note: filesystem normalizes the path)
-    var test_dir = std.fs.cwd().openDir("test_dots/sub", .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    var test_dir = try std.Io.Dir.cwd().openDir(io, "test_dots/sub", .{});
+    test_dir.close(io);
 }
 
 test "mkdir verbose with parents shows directory creation" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_verbose_parents") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_verbose_parents") catch {};
 
     const args = [_][]const u8{ "-pv", "test_verbose_parents/new_child" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "created directory") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "created directory") != null);
 }
 
 test "mkdir with mode applies to all created directories with -p" {
     if (builtin.os.tag == .windows) {
-        // Skip on Windows - mode setting not supported
         return;
     }
-
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_mode_parents") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_mode_parents") catch {};
 
     const args = [_][]const u8{ "-pm", "755", "test_mode_parents/sub/deep" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify all directories were created (mode testing would require platform-specific code)
-    var test_dir = std.fs.cwd().openDir("test_mode_parents/sub/deep", .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    var test_dir = try std.Io.Dir.cwd().openDir(io, "test_mode_parents/sub/deep", .{});
+    test_dir.close(io);
 }
 
 test "mkdir -pv prints each intermediate directory" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_pv_each") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_pv_each") catch {};
 
     const args = [_][]const u8{ "-pv", "test_pv_each/a/b" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Should have verbose output for each created directory
-    const output = stdout_buffer.items;
-    try testing.expect(std.mem.indexOf(u8, output, "test_pv_each'") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "test_pv_each/a'") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "test_pv_each/a/b'") != null);
+    const output = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, output, "test_pv_each'") != null);
+    try testing.expect(std.mem.find(u8, output, "test_pv_each/a'") != null);
+    try testing.expect(std.mem.find(u8, output, "test_pv_each/a/b'") != null);
 }
 
 test "mkdir -pm sets mode on leaf only (GNU behavior)" {
     if (builtin.os.tag == .windows) return;
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_pm_mode") catch {};
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_pm_mode") catch {};
 
     const args = [_][]const u8{ "-pm", "700", "test_pm_mode/sub/deep" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify mode on the leaf directory
-    const stat = try std.fs.cwd().statFile("test_pm_mode/sub/deep");
-    const mode = stat.mode & 0o777;
-    try testing.expectEqual(@as(u32, 0o700), mode);
+    const stat = try std.Io.Dir.cwd().statFile(io, "test_pm_mode/sub/deep", .{});
+    const mode = stat.permissions.toMode() & 0o777;
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), mode);
 
-    // Intermediate directory should NOT have mode 700 (GNU behavior)
-    const stat_mid = try std.fs.cwd().statFile("test_pm_mode/sub");
-    const mode_mid = stat_mid.mode & 0o777;
+    const stat_mid = try std.Io.Dir.cwd().statFile(io, "test_pm_mode/sub", .{});
+    const mode_mid = stat_mid.permissions.toMode() & 0o777;
     try testing.expect(mode_mid != 0o700);
 }
 
 test "mkdir -pm applies mode to leaf only, not parents (GNU behavior)" {
     if (builtin.os.tag == .windows) return;
+    const io = testing.io;
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_pm_all_levels") catch {};
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_pm_all_levels") catch {};
 
     const args = [_][]const u8{ "-pm", "700", "test_pm_all_levels/mid/leaf" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // First parent should NOT have mode 700 (GNU: intermediates get default)
-    const stat_root = try std.fs.cwd().statFile("test_pm_all_levels");
-    const mode_root = stat_root.mode & 0o777;
+    const stat_root = try std.Io.Dir.cwd().statFile(io, "test_pm_all_levels", .{});
+    const mode_root = stat_root.permissions.toMode() & 0o777;
     try testing.expect(mode_root != 0o700);
 
-    // Middle intermediate should NOT have mode 700
-    const stat_mid = try std.fs.cwd().statFile("test_pm_all_levels/mid");
-    const mode_mid = stat_mid.mode & 0o777;
+    const stat_mid = try std.Io.Dir.cwd().statFile(io, "test_pm_all_levels/mid", .{});
+    const mode_mid = stat_mid.permissions.toMode() & 0o777;
     try testing.expect(mode_mid != 0o700);
 
-    // Leaf directory should have mode 700
-    const stat_leaf = try std.fs.cwd().statFile("test_pm_all_levels/mid/leaf");
-    const mode_leaf = stat_leaf.mode & 0o777;
-    try testing.expectEqual(@as(u32, 0o700), mode_leaf);
+    const stat_leaf = try std.Io.Dir.cwd().statFile(io, "test_pm_all_levels/mid/leaf", .{});
+    const mode_leaf = stat_leaf.permissions.toMode() & 0o777;
+    try testing.expectEqual(@as(std.posix.mode_t, 0o700), mode_leaf);
 }
 
 test "mkdir -p handles absolute-like paths" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    // Create a temp dir and use it as base for an absolute-ish path
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
-    defer testing.allocator.free(tmp_path);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmp_len = try tmp.dir.realPathFile(io, ".", &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
 
     const deep_path = try std.fmt.allocPrint(testing.allocator, "{s}/abs_test/sub/dir", .{tmp_path});
     defer testing.allocator.free(deep_path);
 
     const args = [_][]const u8{ "-p", deep_path };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify the directory was created
-    var test_dir = std.fs.cwd().openDir(deep_path, .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    var test_dir = try std.Io.Dir.cwd().openDir(io, deep_path, .{});
+    test_dir.close(io);
 }
 
 test "mkdir -p with trailing slashes" {
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    defer std.fs.cwd().deleteTree("test_trailing") catch {};
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    defer std.Io.Dir.cwd().deleteTree(io, "test_trailing") catch {};
 
     const args = [_][]const u8{ "-p", "test_trailing/sub/" };
-    const result = try run(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try run(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), result);
 
-    // Verify directory was created
-    var test_dir = std.fs.cwd().openDir("test_trailing/sub", .{}) catch |err| {
-        return err;
-    };
-    test_dir.close();
+    var test_dir = try std.Io.Dir.cwd().openDir(io, "test_trailing/sub", .{});
+    test_dir.close(io);
 }
 
 test "mkdir error for existing directory uses POSIX-style message" {
+    const io = testing.io;
     // Create directory first
-    try std.fs.cwd().makeDir("test_posix_err");
-    defer std.fs.cwd().deleteDir("test_posix_err") catch {};
+    try std.Io.Dir.cwd().createDir(io, "test_posix_err", .default_dir);
+    defer std.Io.Dir.cwd().deleteDir(io, "test_posix_err") catch {};
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"test_posix_err"};
-    const result = try run(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try run(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
 
-    // Should fail with non-zero exit code
     try testing.expectEqual(@as(u8, 1), result);
 
-    const stderr_output = stderr_buffer.items;
+    const stderr_output = stderr_aw.writer.buffered();
 
-    // Error message should use POSIX-style "File exists" not Zig-style "PathAlreadyExists"
-    try testing.expect(std.mem.indexOf(u8, stderr_output, "File exists") != null);
-    try testing.expect(std.mem.indexOf(u8, stderr_output, "PathAlreadyExists") == null);
-
-    // Should follow project error format: "mkdir: cannot create directory 'test_posix_err': File exists"
-    try testing.expect(std.mem.indexOf(u8, stderr_output, "cannot create directory 'test_posix_err'") != null);
+    try testing.expect(std.mem.find(u8, stderr_output, "File exists") != null);
+    try testing.expect(std.mem.find(u8, stderr_output, "PathAlreadyExists") == null);
+    try testing.expect(std.mem.find(u8, stderr_output, "cannot create directory 'test_posix_err'") != null);
 }

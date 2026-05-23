@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const env = @import("env.zig");
 
 /// Terminal dimension types
 const Dimension = enum {
@@ -18,14 +19,14 @@ fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16
     }
 
     // Unix-like systems: try ioctl first
-    if (std.posix.isatty(std.fs.File.stdout().handle)) {
-        var ws: std.posix.winsize = undefined;
+    if (std.c.isatty(std.Io.File.stdout().handle) != 0) {
+        var ws: std.c.winsize = undefined;
 
         // Use the appropriate ioctl based on the OS
         const result = switch (builtin.os.tag) {
-            .linux => std.os.linux.ioctl(std.fs.File.stdout().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
-            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.fs.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
-            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.fs.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
+            .linux => std.os.linux.ioctl(std.Io.File.stdout().handle, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)),
+            .macos, .ios, .tvos, .watchos => std.c.ioctl(std.Io.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
+            .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(std.Io.File.stdout().handle, std.c.T.IOCGWINSZ, &ws),
             else => @as(usize, 1), // Force fallback for unknown systems
         };
 
@@ -37,7 +38,8 @@ fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16
         }
     }
 
-    // Fallback: check environment variables
+    // Fallback: check environment variables via env.getEnv (works without libc)
+    _ = allocator;
     const env_var = switch (dimension) {
         .width => "COLUMNS",
         .height => "LINES",
@@ -47,10 +49,9 @@ fn getTerminalDimension(allocator: std.mem.Allocator, dimension: Dimension) !u16
         .height => @import("constants.zig").DEFAULT_TERMINAL_HEIGHT,
     };
 
-    if (std.process.getEnvVarOwned(allocator, env_var)) |env_value| {
-        defer allocator.free(env_value);
+    if (env.getEnv(env_var)) |env_value| {
         return std.fmt.parseInt(u16, env_value, 10) catch default_value;
-    } else |_| {}
+    }
 
     // Default fallback
     return default_value;

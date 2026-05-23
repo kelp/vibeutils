@@ -1,5 +1,6 @@
 const std = @import("std");
 const display_config = @import("display_config.zig");
+const env = @import("env.zig");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
@@ -47,13 +48,12 @@ pub fn printColorized(
 ///
 /// Inspects LC_ALL, LC_CTYPE, and LANG in priority order. Returns
 /// true if any contains "UTF-8" or "utf8" (case-insensitive).
-pub fn hasUnicodeSupport(allocator: Allocator) bool {
+pub fn hasUnicodeSupport(_: Allocator) bool {
     const vars = [_][]const u8{ "LC_ALL", "LC_CTYPE", "LANG" };
     for (vars) |name| {
-        if (std.process.getEnvVarOwned(allocator, name)) |val| {
-            defer allocator.free(val);
+        if (env.getEnv(name)) |val| {
             if (containsUtf8(val)) return true;
-        } else |_| {}
+        }
     }
     return false;
 }
@@ -119,7 +119,7 @@ pub fn colorizeHelp(writer: anytype, help_text: []const u8, help_style: anytype)
 
 /// Classify and colorize a single line (without trailing newline).
 fn colorizeLine(writer: anytype, line: []const u8, use_glyphs: bool) !void {
-    const trimmed = std.mem.trimLeft(u8, line, " ");
+    const trimmed = std.mem.trimStart(u8, line, " ");
     const indent_len = line.len - trimmed.len;
 
     // Empty or whitespace-only line
@@ -503,149 +503,149 @@ test "plain mode passthrough" {
         \\  --help     display this help and exit
         \\
     ;
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, false);
-    try testing.expectEqualStrings(text, buffer.items);
+    try colorizeHelp(&aw.writer, text, false);
+    try testing.expectEqualStrings(text, aw.writer.buffered());
 }
 
 test "usage line colorization" {
     const text = "Usage: echo [OPTION]... [STRING]...\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, true);
+    const result = aw.writer.buffered();
 
     // "Usage:" label should be bold green
-    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ esc_green ++ "Usage:" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_bold ++ esc_green ++ "Usage:" ++ esc_reset) != null);
     // Utility name "echo" should be bold
-    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ "echo" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_bold ++ "echo" ++ esc_reset) != null);
     // [OPTION]... should be yellow (uppercase placeholder)
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "[OPTION]..." ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "[OPTION]..." ++ esc_reset) != null);
     // [STRING]... should be yellow
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "[STRING]..." ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "[STRING]..." ++ esc_reset) != null);
 }
 
 test "usage line with glyphs" {
     const text = "Usage: echo [OPTION]...\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = aw.writer.buffered();
 
     // Should contain the usage glyph
-    try testing.expect(std.mem.indexOf(u8, result, glyph_usage) != null);
+    try testing.expect(std.mem.find(u8, result, glyph_usage) != null);
 }
 
 test "section header bold with color" {
     const text = "Options:\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    try testing.expectEqualStrings(esc_bold ++ esc_bright_blue ++ "Options:" ++ esc_reset ++ "\n", buffer.items);
+    try colorizeHelp(&aw.writer, text, true);
+    try testing.expectEqualStrings(esc_bold ++ esc_bright_blue ++ "Options:" ++ esc_reset ++ "\n", aw.writer.buffered());
 }
 
 test "section header with glyphs" {
     const text = "Options:\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = aw.writer.buffered();
 
     // Should contain the options glyph
-    try testing.expect(std.mem.indexOf(u8, result, glyph_options) != null);
+    try testing.expect(std.mem.find(u8, result, glyph_options) != null);
     // Should still be bold + bright blue
-    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ esc_bright_blue) != null);
+    try testing.expect(std.mem.find(u8, result, esc_bold ++ esc_bright_blue) != null);
 }
 
 test "examples header gets glyph" {
     const text = "Examples:\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = aw.writer.buffered();
 
-    try testing.expect(std.mem.indexOf(u8, result, glyph_examples) != null);
+    try testing.expect(std.mem.find(u8, result, glyph_examples) != null);
 }
 
 test "unknown section header gets no glyph" {
     const text = "Notes:\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = true });
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, HelpStyle{ .use_color = true, .use_glyphs = true });
+    const result = aw.writer.buffered();
 
     // Should not contain any of the known glyphs
-    try testing.expect(std.mem.indexOf(u8, result, glyph_options) == null);
-    try testing.expect(std.mem.indexOf(u8, result, glyph_examples) == null);
-    try testing.expect(std.mem.indexOf(u8, result, glyph_flag) == null);
+    try testing.expect(std.mem.find(u8, result, glyph_options) == null);
+    try testing.expect(std.mem.find(u8, result, glyph_examples) == null);
+    try testing.expect(std.mem.find(u8, result, glyph_flag) == null);
     // But should still be bold + bright blue
-    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ esc_bright_blue) != null);
+    try testing.expect(std.mem.find(u8, result, esc_bold ++ esc_bright_blue) != null);
 }
 
 test "flag line colorization" {
     const text = "  -n, --number    number all output lines\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, true);
+    const result = aw.writer.buffered();
 
     // Flags should be cyan
-    try testing.expect(std.mem.indexOf(u8, result, esc_cyan ++ "-n" ++ esc_reset) != null);
-    try testing.expect(std.mem.indexOf(u8, result, esc_cyan ++ "--number" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_cyan ++ "-n" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_cyan ++ "--number" ++ esc_reset) != null);
     // Description text should be dim
-    try testing.expect(std.mem.indexOf(u8, result, esc_dim) != null);
-    try testing.expect(std.mem.indexOf(u8, result, "number all output lines") != null);
+    try testing.expect(std.mem.find(u8, result, esc_dim) != null);
+    try testing.expect(std.mem.find(u8, result, "number all output lines") != null);
 }
 
 test "flag line with equals value" {
     const text = "  --color=WHEN    colorize the output\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, true);
+    const result = aw.writer.buffered();
 
     // --color= should be cyan
-    try testing.expect(std.mem.indexOf(u8, result, esc_cyan ++ "--color=" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_cyan ++ "--color=" ++ esc_reset) != null);
     // WHEN should be yellow
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "WHEN" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "WHEN" ++ esc_reset) != null);
 }
 
 test "continuation lines dim with uppercase highlight" {
     const text = "                  LEVEL is one of: none, noxfer, progress\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
+    try colorizeHelp(&aw.writer, text, true);
 
     // Continuation/description lines should have dim text with UPPERCASE
     // placeholders highlighted in yellow
-    const result = buffer.items;
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "LEVEL" ++ esc_reset) != null);
-    try testing.expect(std.mem.indexOf(u8, result, esc_dim) != null);
+    const result = aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "LEVEL" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_dim) != null);
 }
 
 test "dd-style operand line" {
     const text = "  if=FILE         read from FILE instead of stdin\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, true);
+    const result = aw.writer.buffered();
 
     // if= should be cyan
-    try testing.expect(std.mem.indexOf(u8, result, esc_cyan ++ "if=" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_cyan ++ "if=" ++ esc_reset) != null);
     // FILE (value) should be yellow
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "FILE" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "FILE" ++ esc_reset) != null);
 }
 
 test "roundtrip with real echo help text" {
@@ -670,17 +670,17 @@ test "roundtrip with real echo help text" {
         \\
     ;
 
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
     // Should not crash with color enabled
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    try testing.expect(buffer.items.len > 0);
+    try colorizeHelp(&aw.writer, text, true);
+    try testing.expect(aw.writer.buffered().len > 0);
 
     // Should not crash with color disabled
-    buffer.clearRetainingCapacity();
-    try colorizeHelp(buffer.writer(testing.allocator), text, false);
-    try testing.expectEqualStrings(text, buffer.items);
+    aw.writer.end = 0;
+    try colorizeHelp(&aw.writer, text, false);
+    try testing.expectEqualStrings(text, aw.writer.buffered());
 }
 
 test "isUppercasePlaceholder" {
@@ -716,29 +716,29 @@ test "isUppercasePlaceholder" {
 
 test "or: usage line" {
     const text = "   or: cp [OPTION]... SOURCE... DIRECTORY\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, true);
+    const result = aw.writer.buffered();
 
     // Utility name "cp" should be bold
-    try testing.expect(std.mem.indexOf(u8, result, esc_bold ++ "cp" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_bold ++ "cp" ++ esc_reset) != null);
     // [OPTION]... should be yellow
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "[OPTION]..." ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "[OPTION]..." ++ esc_reset) != null);
     // SOURCE... should be yellow
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "SOURCE..." ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "SOURCE..." ++ esc_reset) != null);
     // DIRECTORY should be yellow
-    try testing.expect(std.mem.indexOf(u8, result, esc_yellow ++ "DIRECTORY" ++ esc_reset) != null);
+    try testing.expect(std.mem.find(u8, result, esc_yellow ++ "DIRECTORY" ++ esc_reset) != null);
 }
 
 test "text without trailing newline" {
     const text = "Some line without newline";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, false);
-    try testing.expectEqualStrings(text, buffer.items);
+    try colorizeHelp(&aw.writer, text, false);
+    try testing.expectEqualStrings(text, aw.writer.buffered());
 }
 
 test "containsUtf8 detection" {
@@ -753,36 +753,36 @@ test "containsUtf8 detection" {
 
 test "default line gets dim treatment" {
     const text = "Some descriptive text line.\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, true);
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, true);
+    const result = aw.writer.buffered();
 
     // Default lines should be dim
-    try testing.expect(std.mem.indexOf(u8, result, esc_dim) != null);
-    try testing.expect(std.mem.indexOf(u8, result, "Some descriptive text line.") != null);
+    try testing.expect(std.mem.find(u8, result, esc_dim) != null);
+    try testing.expect(std.mem.find(u8, result, "Some descriptive text line.") != null);
 }
 
 test "HelpStyle struct with color only" {
     const text = "Options:\n  -v, --verbose    be verbose\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = true, .use_glyphs = false });
-    const result = buffer.items;
+    try colorizeHelp(&aw.writer, text, HelpStyle{ .use_color = true, .use_glyphs = false });
+    const result = aw.writer.buffered();
 
     // Section header should have color
-    try testing.expect(std.mem.indexOf(u8, result, esc_bold) != null);
+    try testing.expect(std.mem.find(u8, result, esc_bold) != null);
     // No glyphs
-    try testing.expect(std.mem.indexOf(u8, result, glyph_options) == null);
+    try testing.expect(std.mem.find(u8, result, glyph_options) == null);
 }
 
 test "HelpStyle no color passthrough" {
     const text = "Options:\n  -v    be verbose\n";
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    var aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
 
-    try colorizeHelp(buffer.writer(testing.allocator), text, HelpStyle{ .use_color = false, .use_glyphs = false });
-    try testing.expectEqualStrings(text, buffer.items);
+    try colorizeHelp(&aw.writer, text, HelpStyle{ .use_color = false, .use_glyphs = false });
+    try testing.expectEqualStrings(text, aw.writer.buffered());
 }

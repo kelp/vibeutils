@@ -17,7 +17,8 @@ const testing = std.testing;
 /// including -z, -foo, --unknown, is printed as a positional argument.
 /// Once a non-flag argument is encountered, all remaining arguments
 /// (including ones that look like flags) are treated as positional.
-pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runEcho(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    _ = io;
     _ = stderr_writer;
     var suppress_newline = false;
     var interpret_escapes = false;
@@ -79,30 +80,8 @@ pub fn runEcho(allocator: std.mem.Allocator, args: []const []const u8, stdout_wr
 }
 
 /// CLI entry point — parses process arguments and sets up I/O buffers.
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runEcho(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-    std.process.exit(exit_code);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runEcho);
 }
 
 /// Print help message to the specified writer
@@ -284,227 +263,249 @@ fn writeWithEscapes(s: []const u8, writer: anytype) !bool {
 }
 
 test "echo outputs single argument" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{"hello"};
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\n", buffer.items);
+    try testing.expectEqualStrings("hello\n", buffer.writer.buffered());
 }
 
 test "echo outputs multiple arguments with spaces" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "hello", "world" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello world\n", buffer.items);
+    try testing.expectEqualStrings("hello world\n", buffer.writer.buffered());
 }
 
 test "echo -n suppresses newline" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-n", "hello" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello", buffer.items);
+    try testing.expectEqualStrings("hello", buffer.writer.buffered());
 }
 
 test "echo handles empty input" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{};
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\n", buffer.items);
+    try testing.expectEqualStrings("\n", buffer.writer.buffered());
 }
 
 test "echo with -n and multiple arguments" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-n", "hello", "world", "test" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello world test", buffer.items);
+    try testing.expectEqualStrings("hello world test", buffer.writer.buffered());
 }
 
 test "echo preserves empty strings" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "hello", "", "world" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello  world\n", buffer.items);
+    try testing.expectEqualStrings("hello  world\n", buffer.writer.buffered());
 }
 
 test "echo handles special characters" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "hello\tworld", "test\nline" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\tworld test\nline\n", buffer.items);
+    try testing.expectEqualStrings("hello\tworld test\nline\n", buffer.writer.buffered());
 }
 
 test "echo -e interprets escape sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\nworld\n", buffer.items);
+    try testing.expectEqualStrings("hello\nworld\n", buffer.writer.buffered());
 }
 
 test "echo -e handles multiple escape sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\t\\tindented\\nline\\ttwo\\\\backslash" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\t\tindented\nline\ttwo\\backslash\n", buffer.items);
+    try testing.expectEqualStrings("\t\tindented\nline\ttwo\\backslash\n", buffer.writer.buffered());
 }
 
 test "echo -e with octal sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\101\\040\\102" }; // A B in octal
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A B\n", buffer.items);
+    try testing.expectEqualStrings("A B\n", buffer.writer.buffered());
 }
 
 test "echo -e with hex sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\x41\\x20\\x42" }; // A B in hex
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A B\n", buffer.items);
+    try testing.expectEqualStrings("A B\n", buffer.writer.buffered());
 }
 
 test "echo -e with incomplete hex sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // \x4 = 0x04 (1 hex digit), \x = literal, \xZ = literal
     const args = [_][]const u8{ "-e", "\\x4\\x\\xZ" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\x04\\x\\xZ\n", buffer.items);
+    try testing.expectEqualStrings("\x04\\x\\xZ\n", buffer.writer.buffered());
 }
 
 test "echo -e with valid hex at end of string" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // Test valid hex sequence at the end of string (boundary condition)
     const args = [_][]const u8{ "-e", "test\\x41" }; // should produce "testA"
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("testA\n", buffer.items);
+    try testing.expectEqualStrings("testA\n", buffer.writer.buffered());
 }
 
 test "echo -en combines flags" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-en", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\nworld", buffer.items);
+    try testing.expectEqualStrings("hello\nworld", buffer.writer.buffered());
 }
 
 test "echo -ne combines flags (different order)" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-ne", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\nworld", buffer.items);
+    try testing.expectEqualStrings("hello\nworld", buffer.writer.buffered());
 }
 
 test "echo -E disables escape sequences" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-E", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\\nworld\n", buffer.items);
+    try testing.expectEqualStrings("hello\\nworld\n", buffer.writer.buffered());
 }
 
 test "echo -E overrides previous -e" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "-E", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\\nworld\n", buffer.items);
+    try testing.expectEqualStrings("hello\\nworld\n", buffer.writer.buffered());
 }
 
 test "echo -e overrides previous -E" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-E", "-e", "hello\\nworld" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("hello\nworld\n", buffer.items);
+    try testing.expectEqualStrings("hello\nworld\n", buffer.writer.buffered());
 }
 
 test "echo -e with \\c stops all remaining arguments" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // Test that \c stops processing ALL remaining arguments, not just current one
     const args = [_][]const u8{ "-e", "start", "middle\\c", "should", "not", "appear" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("start middle", buffer.items);
+    try testing.expectEqualStrings("start middle", buffer.writer.buffered());
 }
 
 test "echo -e with \\c at start of argument stops all" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // Test that \c at start of argument stops everything
     const args = [_][]const u8{ "-e", "start", "\\cfollowed", "by", "more" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("start ", buffer.items);
+    try testing.expectEqualStrings("start ", buffer.writer.buffered());
 }
 
 test "echo treats lone dash as positional argument" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{"-"};
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("-\n", buffer.items);
+    try testing.expectEqualStrings("-\n", buffer.writer.buffered());
 }
 
 test "echo -n with lone dash and text" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-n", "-", "hello" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("- hello", buffer.items);
+    try testing.expectEqualStrings("- hello", buffer.writer.buffered());
 }
 
 // Tests for \0NNN octal introducer bug:
@@ -512,88 +513,96 @@ test "echo -n with lone dash and text" {
 // distinct from \NNN where the first digit is part of the value.
 
 test "echo -e backslash-zero-NNN: \\0077 produces ? (octal 077 = 63)" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // \0077: \0 is introducer, 077 is the value = 63 = '?'
     const args = [_][]const u8{ "-e", "\\0077" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("?\n", buffer.items);
+    try testing.expectEqualStrings("?\n", buffer.writer.buffered());
 }
 
 test "echo -e backslash-zero-NNN: \\0101 produces A (octal 101 = 65)" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // \0101: \0 is introducer, 101 is the value = 65 = 'A'
     const args = [_][]const u8{ "-e", "\\0101" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A\n", buffer.items);
+    try testing.expectEqualStrings("A\n", buffer.writer.buffered());
 }
 
 test "echo -e backslash-zero alone: \\0 produces NUL" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // \0 alone = NUL byte
     const args = [_][]const u8{ "-e", "\\0" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\x00\n", buffer.items);
+    try testing.expectEqualStrings("\x00\n", buffer.writer.buffered());
 }
 
 test "echo -e backslash-zero-zero: \\00 produces NUL" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // \00 = NUL byte (introducer \0, value 0)
     const args = [_][]const u8{ "-e", "\\00" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\x00\n", buffer.items);
+    try testing.expectEqualStrings("\x00\n", buffer.writer.buffered());
 }
 
 test "echo -e backslash-NNN without zero prefix: \\077 produces ?" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     // \077: no introducer, 077 is the value = 63 = '?'
     const args = [_][]const u8{ "-e", "\\077" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("?\n", buffer.items);
+    try testing.expectEqualStrings("?\n", buffer.writer.buffered());
 }
 
 test "echo help text documents \\x as accepting 1 or 2 hex digits" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // The help text should indicate that \x accepts 1 or 2 hex digits,
     // not imply exactly 2 with "HH". Currently says "byte with hex value HH".
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "1 to 2") != null);
+    try testing.expect(std.mem.find(u8, buffer.writer.buffered(), "1 to 2") != null);
 }
 
 test "echo -e hex escape with 2 digits: \\x41 produces A" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\x41" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("A\n", buffer.items);
+    try testing.expectEqualStrings("A\n", buffer.writer.buffered());
 }
 
 test "echo -e hex escape with 1 digit: \\x9 produces byte 0x09" {
-    var buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var buffer: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer.deinit();
 
     const args = [_][]const u8{ "-e", "\\x9" };
-    const result = try runEcho(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runEcho(testing.allocator, io, &args, &buffer.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\x09\n", buffer.items);
+    try testing.expectEqualStrings("\x09\n", buffer.writer.buffered());
 }

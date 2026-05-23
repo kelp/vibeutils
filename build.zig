@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     const strip = b.option(bool, "strip", "Omit debug symbols") orelse false;
 
     // Validate utilities exist before building
-    utils.validateUtilities() catch |err| {
+    utils.validateUtilities(b.graph.io) catch |err| {
         std.log.err("Utility validation failed: {}", .{err});
         return; // Abort build configuration
     };
@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     // Build options with version from build.zig.zon using safe parser
     const build_options = b.addOptions();
 
-    const version = utils.parseVersion(b.allocator) catch |err| {
+    const version = utils.parseVersion(b.graph.io, b.allocator) catch |err| {
         std.log.err("Failed to parse version from build.zig.zon: {}", .{err});
         std.log.err("Ensure build.zig.zon exists and contains a valid .version field", .{});
         return; // Abort build configuration
@@ -81,6 +81,7 @@ fn buildUtility(
             .target = target,
             .optimize = optimize,
             .strip = if (strip) true else null,
+            .link_libc = if (util.needs_libc) true else null,
         }),
     });
 
@@ -88,14 +89,9 @@ fn buildUtility(
     exe.root_module.addImport("common", common);
     exe.root_module.addImport("build_options", build_options_module);
 
-    // Metadata-driven library linking
-    if (util.needs_libc) {
-        exe.linkLibC();
-    }
-
     // Add C source files if specified
     for (util.c_sources) |c_src| {
-        exe.addCSourceFile(.{ .file = b.path(c_src) });
+        exe.root_module.addCSourceFile(.{ .file = b.path(c_src) });
     }
 
     b.installArtifact(exe);
@@ -130,20 +126,16 @@ fn buildTests(
                 .root_source_file = b.path(util.path),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = if (util.needs_libc) true else null,
             }),
         });
 
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("build_options", build_options_module);
 
-        // Metadata-driven library linking for tests
-        if (util.needs_libc) {
-            util_tests.linkLibC();
-        }
-
         // Add C source files if specified
         for (util.c_sources) |c_src| {
-            util_tests.addCSourceFile(.{ .file = b.path(c_src) });
+            util_tests.root_module.addCSourceFile(.{ .file = b.path(c_src) });
         }
 
         const run_util_tests = b.addRunArtifact(util_tests);
@@ -177,6 +169,7 @@ fn buildTests(
                 .root_source_file = b.path(util.path),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = if (util.needs_libc) true else null,
             }),
             .filters = &.{"privileged:"}, // Only run tests starting with "privileged:"
             .name = b.fmt("{s}_privileged_test", .{util.name}), // Unique name to avoid conflicts
@@ -185,13 +178,9 @@ fn buildTests(
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("build_options", build_options_module);
 
-        if (util.needs_libc) {
-            util_tests.linkLibC();
-        }
-
         // Add C source files if specified
         for (util.c_sources) |c_src| {
-            util_tests.addCSourceFile(.{ .file = b.path(c_src) });
+            util_tests.root_module.addCSourceFile(.{ .file = b.path(c_src) });
         }
 
         // WORKAROUND: The --listen=- flag breaks under fakeroot
@@ -312,13 +301,9 @@ fn addFormatSteps(b: *std.Build) void {
 fn addCleanStep(b: *std.Build) void {
     const clean_step = b.step("clean", "Remove build artifacts");
 
-    // Remove zig-cache directory
-    const rm_cache = b.addRemoveDirTree(b.path("zig-cache"));
-    clean_step.dependOn(&rm_cache.step);
-
-    // Remove zig-out directory
-    const rm_out = b.addRemoveDirTree(b.path("zig-out"));
-    clean_step.dependOn(&rm_out.step);
+    // 0.16 removed addRemoveDirTree; shell out instead.
+    const rm = b.addSystemCommand(&.{ "rm", "-rf", ".zig-cache", "zig-cache", "zig-out" });
+    clean_step.dependOn(&rm.step);
 }
 
 /// Add CI validation step
@@ -374,6 +359,7 @@ fn addDocsStep(
                 .root_source_file = b.path(util.path),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = if (util.needs_libc) true else null,
             }),
         });
 
@@ -381,13 +367,9 @@ fn addDocsStep(
         util_exe.root_module.addImport("common", common);
         util_exe.root_module.addImport("build_options", build_options_module);
 
-        if (util.needs_libc) {
-            util_exe.linkLibC();
-        }
-
         // Add C source files if specified
         for (util.c_sources) |c_src| {
-            util_exe.addCSourceFile(.{ .file = b.path(c_src) });
+            util_exe.root_module.addCSourceFile(.{ .file = b.path(c_src) });
         }
 
         // Get the emitted docs for this utility
@@ -422,6 +404,7 @@ fn addCoverageStep(
                 .root_source_file = b.path(util.path),
                 .target = target,
                 .optimize = .Debug,
+                .link_libc = if (util.needs_libc) true else null,
             }),
             .use_llvm = true,
             .name = b.fmt("{s}_test", .{util.name}),
@@ -430,12 +413,8 @@ fn addCoverageStep(
         util_tests.root_module.addImport("common", common);
         util_tests.root_module.addImport("build_options", build_options_module);
 
-        if (util.needs_libc) {
-            util_tests.linkLibC();
-        }
-
         for (util.c_sources) |c_src| {
-            util_tests.addCSourceFile(.{ .file = b.path(c_src) });
+            util_tests.root_module.addCSourceFile(.{ .file = b.path(c_src) });
         }
 
         // Install binary to zig-out/bin/tests/ without running

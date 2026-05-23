@@ -35,12 +35,12 @@ const TacArgs = struct {
 };
 
 /// Main entry point
-pub fn main() !void {
-    common.utilityMain(runTac);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, runTac);
 }
 
 /// Public API that reads from stdin when no files given
-pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runTac(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Parse arguments
     const parsed = common.argparse.ArgParser.parseOrExit(TacArgs, allocator, args, "tac", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
@@ -65,18 +65,18 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
 
     if (files.len == 0) {
         // Read from stdin
-        const stdin_file = std.fs.File.stdin();
-        return runTacOnInput(allocator, stdin_file, separator, parsed.before, stdout_writer, stderr_writer);
+        const stdin_file = std.Io.File.stdin();
+        return runTacOnInput(allocator, io, stdin_file, separator, parsed.before, stdout_writer, stderr_writer);
     }
 
     var has_error = false;
     for (files) |file_path| {
         if (std.mem.eql(u8, file_path, "-")) {
-            const stdin_file = std.fs.File.stdin();
-            const rc = try runTacOnInput(allocator, stdin_file, separator, parsed.before, stdout_writer, stderr_writer);
+            const stdin_file = std.Io.File.stdin();
+            const rc = try runTacOnInput(allocator, io, stdin_file, separator, parsed.before, stdout_writer, stderr_writer);
             if (rc != 0) has_error = true;
         } else {
-            const rc = try runTacOnFile(allocator, file_path, separator, parsed.before, stdout_writer, stderr_writer);
+            const rc = try runTacOnFile(allocator, io, file_path, separator, parsed.before, stdout_writer, stderr_writer);
             if (rc != 0) has_error = true;
         }
     }
@@ -85,31 +85,34 @@ pub fn runTac(allocator: Allocator, args: []const []const u8, stdout_writer: any
 }
 
 /// Process a named file
-fn runTacOnFile(allocator: Allocator, file_path: []const u8, separator: []const u8, before: bool, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+fn runTacOnFile(allocator: Allocator, io: std.Io, file_path: []const u8, separator: []const u8, before: bool, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "tac", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
         return @intFromEnum(common.ExitCode.general_error);
     };
-    defer file.close();
+    defer file.close(io);
 
-    return runTacOnInput(allocator, file, separator, before, stdout_writer, stderr_writer);
+    return runTacOnInput(allocator, io, file, separator, before, stdout_writer, stderr_writer);
 }
 
 /// Core implementation: read all input, split by separator, output in reverse
-fn runTacOnInput(allocator: Allocator, input_file: std.fs.File, separator: []const u8, before: bool, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn runTacOnInput(allocator: Allocator, io: std.Io, input_file: std.Io.File, separator: []const u8, before: bool, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     _ = stderr_writer;
 
     // Read all input into memory
-    var content = std.ArrayListUnmanaged(u8){};
+    var content: std.ArrayListUnmanaged(u8) = .empty;
     defer content.deinit(allocator);
 
-    var buffer: [8192]u8 = undefined;
+    var read_buf: [8192]u8 = undefined;
+    var file_reader = input_file.readerStreaming(io, &read_buf);
+    const reader = &file_reader.interface;
     while (true) {
-        const bytes_read = input_file.read(&buffer) catch {
+        var chunk: [4096]u8 = undefined;
+        const bytes_read = reader.readSliceShort(&chunk) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         if (bytes_read == 0) break;
-        try content.appendSlice(allocator, buffer[0..bytes_read]);
+        try content.appendSlice(allocator, chunk[0..bytes_read]);
     }
 
     if (content.items.len == 0) {
@@ -130,8 +133,8 @@ fn runTacOnInput(allocator: Allocator, input_file: std.fs.File, separator: []con
 }
 
 /// Reverse records delimited by a single byte
-fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, before: bool, writer: anytype) !void {
-    var records = std.ArrayListUnmanaged([]const u8){};
+fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, before: bool, writer: *std.Io.Writer) !void {
+    var records: std.ArrayListUnmanaged([]const u8) = .empty;
     defer records.deinit(allocator);
 
     if (before) {
@@ -173,8 +176,8 @@ fn reverseByByteSeparator(allocator: Allocator, data: []const u8, sep: u8, befor
 }
 
 /// Reverse records delimited by a multi-byte string
-fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const u8, before: bool, writer: anytype) !void {
-    var records = std.ArrayListUnmanaged([]const u8){};
+fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const u8, before: bool, writer: *std.Io.Writer) !void {
+    var records: std.ArrayListUnmanaged([]const u8) = .empty;
     defer records.deinit(allocator);
 
     if (before) {
@@ -219,7 +222,7 @@ fn reverseByStringSeparator(allocator: Allocator, data: []const u8, sep: []const
 
 /// Write records in reverse order. Records are already correctly formed
 /// (with trailing separators in default mode, or leading separators in -b mode).
-fn writeRecordsReversed(records: []const []const u8, writer: anytype) !void {
+fn writeRecordsReversed(records: []const []const u8, writer: *std.Io.Writer) !void {
     if (records.len == 0) return;
 
     var i: usize = records.len;
@@ -230,7 +233,7 @@ fn writeRecordsReversed(records: []const []const u8, writer: anytype) !void {
 }
 
 /// Print help message
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: tac [OPTION]... [FILE]...
         \\Write each FILE to standard output, last line first.
@@ -247,7 +250,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("tac ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -256,163 +259,179 @@ fn printVersion(writer: anytype) !void {
 // ============================================================================
 
 test "tac --help shows help message" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--help"};
-    const result = try runTac(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "Usage: tac") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "Usage: tac") != null);
 }
 
 test "tac --version shows version information" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{"--version"};
-    const result = try runTac(testing.allocator, &args, buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, "tac") != null);
-    try testing.expect(std.mem.indexOf(u8, buffer.items, common.version) != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "tac") != null);
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), common.version) != null);
 }
 
 test "tac with unknown flag returns misuse" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"--unknown-flag"};
-    const result = try runTac(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "unrecognized option") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unrecognized option") != null);
 }
 
 test "tac -r returns error (unsupported)" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"-r"};
-    const result = try runTac(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 2), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "not supported") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "not supported") != null);
 }
 
 test "tac reverses lines of a file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("line1\nline2\nline3\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("line3\nline2\nline1\n", stdout_buffer.items);
+    try testing.expectEqualStrings("line3\nline2\nline1\n", stdout_aw.writer.buffered());
 }
 
 test "tac reverses lines without trailing newline" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("line1\nline2\nline3");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "line1\nline2\nline3");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("line3line2\nline1\n", stdout_buffer.items);
+    try testing.expectEqualStrings("line3line2\nline1\n", stdout_aw.writer.buffered());
 }
 
 test "tac handles single line" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("only line\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "only line\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("only line\n", stdout_buffer.items);
+    try testing.expectEqualStrings("only line\n", stdout_aw.writer.buffered());
 }
 
 test "tac handles empty file" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{test_path};
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("", stdout_buffer.items);
+    try testing.expectEqualStrings("", stdout_aw.writer.buffered());
 }
 
 test "tac with custom separator" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("a:b:c:");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "a:b:c:");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", ":", test_path };
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("c:b:a:", stdout_buffer.items);
+    try testing.expectEqualStrings("c:b:a:", stdout_aw.writer.buffered());
 }
 
 test "tac with multi-byte separator" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("one<>two<>three<>");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "one<>two<>three<>");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "<>", test_path };
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("three<>two<>one<>", stdout_buffer.items);
+    try testing.expectEqualStrings("three<>two<>one<>", stdout_aw.writer.buffered());
 }
 
 test "tac with --before flag" {
@@ -420,76 +439,86 @@ test "tac with --before flag" {
     // With -b, records are delimited by a preceding separator:
     //   "line1", "\nline2", "\nline3", "\n" (empty trailing)
     // Reversed: "\n", "\nline3", "\nline2", "line1"
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("line1\nline2\nline3\n");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "line1\nline2\nline3\n");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-b", test_path };
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("\n\nline3\nline2line1", stdout_buffer.items);
+    try testing.expectEqualStrings("\n\nline3\nline2line1", stdout_aw.writer.buffered());
 }
 
 test "tac with multiple files" {
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file1 = try tmp_dir.dir.createFile("a.txt", .{ .read = true });
-    try file1.writeAll("a1\na2\n");
-    file1.close();
+    const file1 = try tmp_dir.dir.createFile(io, "a.txt", .{});
+    try file1.writeStreamingAll(io, "a1\na2\n");
+    file1.close(io);
 
-    const file2 = try tmp_dir.dir.createFile("b.txt", .{ .read = true });
-    try file2.writeAll("b1\nb2\n");
-    file2.close();
+    const file2 = try tmp_dir.dir.createFile(io, "b.txt", .{});
+    try file2.writeStreamingAll(io, "b1\nb2\n");
+    file2.close(io);
 
-    var path_buf1: [std.fs.max_path_bytes]u8 = undefined;
-    const path1 = try tmp_dir.dir.realpath("a.txt", &path_buf1);
-    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const path2 = try tmp_dir.dir.realpath("b.txt", &path_buf2);
+    var path_buf1: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path1_len = try tmp_dir.dir.realPathFile(io, "a.txt", &path_buf1);
+    const path1 = path_buf1[0..path1_len];
+    var path_buf2: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path2_len = try tmp_dir.dir.realPathFile(io, "b.txt", &path_buf2);
+    const path2 = path_buf2[0..path2_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ path1, path2 };
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
     // Each file is reversed independently
-    try testing.expectEqualStrings("a2\na1\nb2\nb1\n", stdout_buffer.items);
+    try testing.expectEqualStrings("a2\na1\nb2\nb1\n", stdout_aw.writer.buffered());
 }
 
 test "tac with nonexistent file returns error" {
-    var stderr_buffer = std.ArrayListUnmanaged(u8){};
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = [_][]const u8{"/nonexistent/file.txt"};
-    const result = try runTac(testing.allocator, &args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const result = try runTac(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
     try testing.expectEqual(@as(u8, 1), result);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "No such file or directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "No such file or directory") != null);
 }
 
 test "tac reverseByByteSeparator basic" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByByteSeparator(testing.allocator, "a\nb\nc\n", '\n', false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("c\nb\na\n", buffer.items);
+    try reverseByByteSeparator(testing.allocator, "a\nb\nc\n", '\n', false, &stdout_aw.writer);
+    try testing.expectEqualStrings("c\nb\na\n", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac reverseByByteSeparator no trailing separator" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByByteSeparator(testing.allocator, "a\nb\nc", '\n', false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("cb\na\n", buffer.items);
+    try reverseByByteSeparator(testing.allocator, "a\nb\nc", '\n', false, &stdout_aw.writer);
+    try testing.expectEqualStrings("cb\na\n", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac reverseByByteSeparator with before" {
@@ -497,19 +526,23 @@ test "tac reverseByByteSeparator with before" {
     // With -b, records are delimited by a *preceding* separator:
     //   "a", "\nb", "\nc", "\n" (empty trailing)
     // Reversed: "\n", "\nc", "\nb", "a" → "\n\nc\nba"
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByByteSeparator(testing.allocator, "a\nb\nc\n", '\n', true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("\n\nc\nba", buffer.items);
+    try reverseByByteSeparator(testing.allocator, "a\nb\nc\n", '\n', true, &stdout_aw.writer);
+    try testing.expectEqualStrings("\n\nc\nba", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac reverseByStringSeparator basic" {
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByStringSeparator(testing.allocator, "x<>y<>z<>", "<>", false, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("z<>y<>x<>", buffer.items);
+    try reverseByStringSeparator(testing.allocator, "x<>y<>z<>", "<>", false, &stdout_aw.writer);
+    try testing.expectEqualStrings("z<>y<>x<>", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac reverseByStringSeparator with before" {
@@ -517,11 +550,13 @@ test "tac reverseByStringSeparator with before" {
     // With -b, records are delimited by a preceding separator:
     //   "a", "<>b", "<>c", "<>" (empty trailing)
     // Reversed: "<>", "<>c", "<>b", "a" → "<><>c<>ba"
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByStringSeparator(testing.allocator, "a<>b<>c<>", "<>", true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("<><>c<>ba", buffer.items);
+    try reverseByStringSeparator(testing.allocator, "a<>b<>c<>", "<>", true, &stdout_aw.writer);
+    try testing.expectEqualStrings("<><>c<>ba", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac -b with single-byte custom separator" {
@@ -529,72 +564,81 @@ test "tac -b with single-byte custom separator" {
     // With -b, records delimited by preceding separator:
     //   "a", ":b", ":c", ":" (empty trailing)
     // Reversed: ":", ":c", ":b", "a" → "::c:ba"
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("a:b:c:");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "a:b:c:");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", ":", "-b", test_path };
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("::c:ba", stdout_buffer.items);
+    try testing.expectEqualStrings("::c:ba", stdout_aw.writer.buffered());
 }
 
 test "tac -b with multi-byte separator" {
     // GNU: printf 'a<>b<>c<>' | tac -s '<>' -b → "<><>c<>ba"
     // This tests the full runTac path with multi-byte separator + before flag.
-    // Bug F57: reverseByStringSeparator passes sep_byte=0, so -b is inert.
+    const io = testing.io;
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const test_file = try tmp_dir.dir.createFile("test.txt", .{ .read = true });
-    try test_file.writeAll("a<>b<>c<>");
-    test_file.close();
+    const test_file = try tmp_dir.dir.createFile(io, "test.txt", .{});
+    try test_file.writeStreamingAll(io, "a<>b<>c<>");
+    test_file.close(io);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const test_path = try tmp_dir.dir.realpath("test.txt", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(io, "test.txt", &path_buf);
+    const test_path = path_buf[0..path_len];
 
-    var stdout_buffer = std.ArrayListUnmanaged(u8){};
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = [_][]const u8{ "-s", "<>", "-b", test_path };
-    const result = try runTac(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const result = try runTac(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
     try testing.expectEqual(@as(u8, 0), result);
-    try testing.expectEqualStrings("<><>c<>ba", stdout_buffer.items);
+    try testing.expectEqualStrings("<><>c<>ba", stdout_aw.writer.buffered());
 }
 
 test "tac -b with single-byte separator no trailing separator" {
     // GNU: printf 'a:b:c' | tac -s: -b → ":c:ba"
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByByteSeparator(testing.allocator, "a:b:c", ':', true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings(":c:ba", buffer.items);
+    try reverseByByteSeparator(testing.allocator, "a:b:c", ':', true, &stdout_aw.writer);
+    try testing.expectEqualStrings(":c:ba", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac -b with multi-byte separator no trailing separator" {
     // GNU: printf 'a<>b<>c' | tac -s '<>' -b | od -c shows: "<>c<>ba"
     // Records: "a", "<>b", "<>c" (no trailing) → reversed: "<>c", "<>b", "a" → "<>c<>ba"
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByStringSeparator(testing.allocator, "a<>b<>c", "<>", true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("<>c<>ba", buffer.items);
+    try reverseByStringSeparator(testing.allocator, "a<>b<>c", "<>", true, &stdout_aw.writer);
+    try testing.expectEqualStrings("<>c<>ba", stdout_aw.writer.buffered());
+    _ = io;
 }
 
 test "tac reverseByByteSeparator with before single-byte custom sep" {
     // GNU: printf 'a:b:c:' | tac -s: -b → "::c:ba"
-    var buffer = std.ArrayListUnmanaged(u8){};
-    defer buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    try reverseByByteSeparator(testing.allocator, "a:b:c:", ':', true, buffer.writer(testing.allocator));
-    try testing.expectEqualStrings("::c:ba", buffer.items);
+    try reverseByByteSeparator(testing.allocator, "a:b:c:", ':', true, &stdout_aw.writer);
+    try testing.expectEqualStrings("::c:ba", stdout_aw.writer.buffered());
+    _ = io;
 }

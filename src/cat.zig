@@ -66,7 +66,7 @@ fn resolveFlagCombinations(parsed_args: CatArgs) CatOptions {
     };
 }
 
-pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+pub fn runCat(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     // Parse arguments using new parser
     const parsed_args = common.argparse.ArgParser.parse(CatArgs, allocator, args) catch |err| {
         switch (err) {
@@ -103,7 +103,7 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     const options = resolveFlagCombinations(parsed_args);
 
     var stdin_buffer: [8192]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
     const stdin = &stdin_reader.interface;
 
     var line_state = LineNumberState{};
@@ -127,15 +127,15 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
                 };
             } else {
                 // Open and process regular file
-                const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                     continue; // Continue to next file
                 };
-                defer file.close();
+                defer file.close(io);
 
                 var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.reader(&file_buffer);
+                var file_reader = file.reader(io, &file_buffer);
                 processInput(&file_reader.interface, stdout_writer, options, &line_state) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "cat", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
@@ -147,30 +147,8 @@ pub fn runCat(allocator: std.mem.Allocator, args: []const []const u8, stdout_wri
     return if (has_error) @intFromEnum(common.ExitCode.general_error) else @intFromEnum(common.ExitCode.success);
 }
 
-/// Process files or stdin with the specified formatting options
-pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-
-    // Parse process arguments
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    // Set up buffered writers for stdout and stderr
-    var stdout_buffer: [8192]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writerStreaming(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-    var stderr_buffer: [8192]u8 = undefined;
-    var stderr_writer = std.fs.File.stderr().writerStreaming(&stderr_buffer);
-    const stderr = &stderr_writer.interface;
-
-    const exit_code = try runCat(allocator, args[1..], stdout, stderr);
-
-    // Flush buffers before exit
-    stdout.flush() catch {};
-    stderr.flush() catch {};
-    std.process.exit(exit_code);
+pub fn main(init: std.process.Init) !void {
+    common.utilityMain(init, runCat);
 }
 
 /// Print usage information to the specified writer
@@ -381,254 +359,267 @@ test "cat reads single file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Hello, world!\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Hello, world!\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Hello, world!\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Hello, world!\n", stdout_aw.writer.buffered());
 }
 
 test "cat concatenates multiple files" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "file1.txt", "First file\n");
-    try common.test_utils.createTestFile(tmp_dir.dir, "file2.txt", "Second file\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "file1.txt", "First file\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "file2.txt", "Second file\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const path1 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file1.txt");
+    const path1 = try tmp_dir.dir.realPathFileAlloc(testing.io, "file1.txt", testing.allocator);
     defer testing.allocator.free(path1);
-    const path2 = try tmp_dir.dir.realpathAlloc(testing.allocator, "file2.txt");
+    const path2 = try tmp_dir.dir.realPathFileAlloc(testing.io, "file2.txt", testing.allocator);
     defer testing.allocator.free(path2);
 
     const args = [_][]const u8{ path1, path2 };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("First file\nSecond file\n", stdout_buffer.items);
+    try testing.expectEqualStrings("First file\nSecond file\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -n numbers all lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\nLine 3\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("     1\tLine 1\n     2\tLine 2\n     3\tLine 3\n", stdout_buffer.items);
+    try testing.expectEqualStrings("     1\tLine 1\n     2\tLine 2\n     3\tLine 3\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -b numbers non-blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\n\nLine 3\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-b", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("     1\tLine 1\n\n     2\tLine 3\n", stdout_buffer.items);
+    try testing.expectEqualStrings("     1\tLine 1\n\n     2\tLine 3\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -s squeezes blank lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\n\n\n\nLine 2\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-s", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line 1\n\nLine 2\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1\n\nLine 2\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -E shows ends" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line 1$\nLine 2$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1$\nLine 2$\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -T shows tabs" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "col1\tcol2\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "col1\tcol2\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-T", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("col1^Icol2\n", stdout_buffer.items);
+    try testing.expectEqualStrings("col1^Icol2\n", stdout_aw.writer.buffered());
 }
 
 test "cat handles non-existent file" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
-    const tmp_base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_base_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_base_path);
     const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/nonexistent.txt", .{tmp_base_path});
     defer testing.allocator.free(nonexistent_path);
 
     const args = [_][]const u8{nonexistent_path};
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "cat with -A shows all (equivalent to -vET)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\t\nLine 2\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\t\nLine 2\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-A", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line 1^I$\nLine 2$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1^I$\nLine 2$\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -e shows ends and non-printing (equivalent to -vE)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line 1\nLine 2\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-e", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line 1$\nLine 2$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line 1$\nLine 2$\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -t shows tabs and non-printing (equivalent to -vT)" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Line\twith\ttabs\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-t", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Line^Iwith^Itabs\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Line^Iwith^Itabs\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -l flag is ignored" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Test content\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Test content\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-l", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // -l should be ignored, so output should be normal
-    try testing.expectEqualStrings("Test content\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Test content\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -u flag is ignored" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Test content\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Test content\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-u", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // -u should be ignored, so output should be normal
-    try testing.expectEqualStrings("Test content\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Test content\n", stdout_aw.writer.buffered());
 }
 
 test "cat with -A and control characters" {
@@ -636,19 +627,20 @@ test "cat with -A and control characters" {
     defer tmp_dir.cleanup();
 
     // Create file with control character (^A = \x01)
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", "Test\x01\tEnd\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", "Test\x01\tEnd\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-A", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("Test^A^IEnd$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Test^A^IEnd$\n", stdout_aw.writer.buffered());
 }
 
 test "cat handles very long lines without truncation" {
@@ -657,19 +649,20 @@ test "cat handles very long lines without truncation" {
 
     // Create a line longer than the 8192-byte read buffer
     const long_line = "A" ** 8192 ++ "\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", long_line);
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", long_line);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{file_path};
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings(long_line, stdout_buffer.items);
+    try testing.expectEqualStrings(long_line, stdout_aw.writer.buffered());
 }
 
 test "cat with -n handles very long lines correctly" {
@@ -678,22 +671,23 @@ test "cat with -n handles very long lines correctly" {
 
     // Create a line longer than the 8192-byte read buffer
     const long_line = "A" ** 8192 ++ "\n";
-    try common.test_utils.createTestFile(tmp_dir.dir, "test.txt", long_line);
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "test.txt", long_line);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "test.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-n", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
 
     // Verify line number appears only once at the beginning
     const expected = "     1\t" ++ "A" ** 8192 ++ "\n";
-    try testing.expectEqualStrings(expected, stdout_buffer.items);
+    try testing.expectEqualStrings(expected, stdout_aw.writer.buffered());
 }
 
 test "cat continues processing files after error" {
@@ -701,36 +695,37 @@ test "cat continues processing files after error" {
     defer tmp_dir.cleanup();
 
     // Create one good file
-    try common.test_utils.createTestFile(tmp_dir.dir, "good.txt", "Good content\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "good.txt", "Good content\n");
 
     // Get absolute paths for the test
-    const good_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "good.txt");
+    const good_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "good.txt", testing.allocator);
     defer testing.allocator.free(good_path);
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     // Create a non-existent file path in the temp directory
-    const tmp_base_path = try tmp_dir.dir.realpathAlloc(testing.allocator, ".");
+    const tmp_base_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
     defer testing.allocator.free(tmp_base_path);
     const nonexistent_path = try std.fmt.allocPrint(testing.allocator, "{s}/definitely-nonexistent-file.txt", .{tmp_base_path});
     defer testing.allocator.free(nonexistent_path);
 
     // Test with non-existent file followed by good file
     const args = [_][]const u8{ nonexistent_path, good_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), stderr_buffer.writer(testing.allocator));
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, &stderr_aw.writer);
 
     // Should return error exit code due to nonexistent file
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.general_error)), exit_code);
 
     // But should have processed the good file
-    try testing.expectEqualStrings("Good content\n", stdout_buffer.items);
+    try testing.expectEqualStrings("Good content\n", stdout_aw.writer.buffered());
 
     // And should have error message for bad file
-    try testing.expect(stderr_buffer.items.len > 0);
+    try testing.expect(stderr_aw.writer.buffered().len > 0);
 }
 
 test "cat -E renders trailing CR as ^M$ on CRLF lines" {
@@ -742,20 +737,21 @@ test "cat -E renders trailing CR as ^M$ on CRLF lines" {
     defer tmp_dir.cleanup();
 
     // File content: "test\r\n" (CRLF line ending)
-    try common.test_utils.createTestFile(tmp_dir.dir, "crlf.txt", "test\r\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "crlf.txt", "test\r\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "crlf.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "crlf.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // Expected: "test^M$\n" — the \r is shown as ^M before the $ end marker
-    try testing.expectEqualStrings("test^M$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("test^M$\n", stdout_aw.writer.buffered());
 }
 
 test "cat -E preserves mid-line CR as raw byte" {
@@ -765,20 +761,21 @@ test "cat -E preserves mid-line CR as raw byte" {
     defer tmp_dir.cleanup();
 
     // File content: "ab\rcd\n" — \r is mid-line, not before \n
-    try common.test_utils.createTestFile(tmp_dir.dir, "midcr.txt", "ab\rcd\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "midcr.txt", "ab\rcd\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "midcr.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "midcr.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
     // Mid-line \r stays as raw \r, only the $ end marker is added
-    try testing.expectEqualStrings("ab\rcd$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("ab\rcd$\n", stdout_aw.writer.buffered());
 }
 
 test "cat -E with multiple CRLF lines" {
@@ -786,17 +783,18 @@ test "cat -E with multiple CRLF lines" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    try common.test_utils.createTestFile(tmp_dir.dir, "multi.txt", "line1\r\nline2\r\nline3\n");
+    try common.test_utils.createTestFile(testing.io, tmp_dir.dir, "multi.txt", "line1\r\nline2\r\nline3\n");
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    const io = testing.io;
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
-    const file_path = try tmp_dir.dir.realpathAlloc(testing.allocator, "multi.txt");
+    const file_path = try tmp_dir.dir.realPathFileAlloc(testing.io, "multi.txt", testing.allocator);
     defer testing.allocator.free(file_path);
 
     const args = [_][]const u8{ "-E", file_path };
-    const exit_code = try runCat(testing.allocator, &args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try runCat(testing.allocator, io, &args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, @intFromEnum(common.ExitCode.success)), exit_code);
-    try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_buffer.items);
+    try testing.expectEqualStrings("line1^M$\nline2^M$\nline3$\n", stdout_aw.writer.buffered());
 }

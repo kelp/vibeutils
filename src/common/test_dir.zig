@@ -50,46 +50,57 @@ pub const TestDir = struct {
 
     /// Get the absolute path of a file in the temp directory
     pub fn getPath(self: *TestDir, name: []const u8) ![]u8 {
-        return try self.tmp_dir.dir.realpathAlloc(self.allocator, name);
+        const io = testing.io;
+        // realPathFileAlloc returns [:0]u8 (sentinel-terminated); dupe strips the
+        // sentinel so callers can free via allocator.free([]u8) without size mismatch.
+        const sentinel_path = try self.tmp_dir.dir.realPathFileAlloc(io, name, self.allocator);
+        defer self.allocator.free(sentinel_path);
+        return try self.allocator.dupe(u8, sentinel_path[0..sentinel_path.len]);
     }
 
     /// Get the absolute path of the temp directory itself
     pub fn getBasePath(self: *TestDir) ![]u8 {
-        return try self.tmp_dir.dir.realpathAlloc(self.allocator, ".");
+        const io = testing.io;
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const len = try self.tmp_dir.dir.realPath(io, &buf);
+        return try self.allocator.dupe(u8, buf[0..len]);
     }
 
     /// Create a file with specified content and optional mode
-    pub fn createFile(self: *TestDir, name: []const u8, content: []const u8, mode: ?std.fs.File.Mode) !void {
-        const file_options = if (mode) |m| std.fs.File.CreateFlags{ .mode = m } else std.fs.File.CreateFlags{};
-        const file = try self.tmp_dir.dir.createFile(name, file_options);
-        defer file.close();
-        try file.writeAll(content);
+    pub fn createFile(self: *TestDir, name: []const u8, content: []const u8, mode: ?std.posix.mode_t) !void {
+        const io = testing.io;
+        const file_options: std.Io.Dir.CreateFileOptions = if (mode) |m|
+            .{ .permissions = std.Io.File.Permissions.fromMode(m) }
+        else
+            .{};
+        const file = try self.tmp_dir.dir.createFile(io, name, file_options);
+        defer file.close(io);
+        try file.writeStreamingAll(io, content);
     }
 
     /// Create a directory
     pub fn createDir(self: *TestDir, name: []const u8) !void {
-        try self.tmp_dir.dir.makeDir(name);
+        const io = testing.io;
+        try self.tmp_dir.dir.createDir(io, name, .default_dir);
     }
 
     /// Create a symbolic link
     pub fn createSymlink(self: *TestDir, target: []const u8, link_name: []const u8) !void {
-        try self.tmp_dir.dir.symLink(target, link_name, .{});
+        const io = testing.io;
+        try self.tmp_dir.dir.symLink(io, target, link_name, .{});
     }
 
     /// Check if a file exists
     pub fn fileExists(self: *TestDir, name: []const u8) bool {
-        self.tmp_dir.dir.access(name, .{}) catch return false;
+        const io = testing.io;
+        self.tmp_dir.dir.access(io, name, .{}) catch return false;
         return true;
     }
 
     /// Read entire file contents into allocated memory
     pub fn readFileAlloc(self: *TestDir, name: []const u8) ![]u8 {
-        const file = try self.tmp_dir.dir.openFile(name, .{});
-        defer file.close();
-        const file_size = try file.getEndPos();
-        const contents = try self.allocator.alloc(u8, file_size);
-        _ = try file.readAll(contents);
-        return contents;
+        const io = testing.io;
+        return self.tmp_dir.dir.readFileAlloc(io, name, self.allocator, .unlimited);
     }
 
     /// Verify file content matches expected content
@@ -101,8 +112,9 @@ pub const TestDir = struct {
 
     /// Check if a path is a symbolic link
     pub fn isSymlink(self: *TestDir, name: []const u8) !bool {
-        var test_buf: [1]u8 = undefined;
-        _ = self.tmp_dir.dir.readLink(name, &test_buf) catch |err| switch (err) {
+        const io = testing.io;
+        var test_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        _ = self.tmp_dir.dir.readLink(io, name, &test_buf) catch |err| switch (err) {
             error.NotLink => return false,
             else => return err,
         };
@@ -111,14 +123,16 @@ pub const TestDir = struct {
 
     /// Get the target of a symbolic link
     pub fn getSymlinkTarget(self: *TestDir, name: []const u8) ![]u8 {
-        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const target = try self.tmp_dir.dir.readLink(name, &target_buf);
-        return try self.allocator.dupe(u8, target);
+        const io = testing.io;
+        var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const len = try self.tmp_dir.dir.readLink(io, name, &target_buf);
+        return try self.allocator.dupe(u8, target_buf[0..len]);
     }
 
     /// Get file statistics
-    pub fn getFileStat(self: *TestDir, name: []const u8) !std.fs.File.Stat {
-        return try self.tmp_dir.dir.statFile(name);
+    pub fn getFileStat(self: *TestDir, name: []const u8) !std.Io.File.Stat {
+        const io = testing.io;
+        return try self.tmp_dir.dir.statFile(io, name, .{});
     }
 };
 
@@ -141,7 +155,7 @@ test "TestDir: directory operations" {
     try testing.expect(test_dir.fileExists("test_dir"));
 
     const stat = try test_dir.getFileStat("test_dir");
-    try testing.expectEqual(std.fs.File.Kind.directory, stat.kind);
+    try testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
 }
 
 test "TestDir: symbolic link operations" {

@@ -68,12 +68,12 @@ const MktempArgs = struct {
 };
 
 /// Main entry point
-pub fn main() !void {
-    common.utilityMain(run);
+pub fn main(init: std.process.Init) noreturn {
+    common.utilityMain(init, run);
 }
 
 /// Run the mktemp utility with given arguments
-fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const parsed = common.argparse.ArgParser.parseOrExit(MktempArgs, allocator, args, prog_name, stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed.positionals);
 
@@ -100,7 +100,7 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
 
     // Validate explicit --suffix does not contain path separator
     const explicit_suffix = parsed.suffix orelse "";
-    if (std.mem.indexOfScalar(u8, explicit_suffix, '/') != null) {
+    if (std.mem.findScalar(u8, explicit_suffix, '/') != null) {
         if (!parsed.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid suffix '{s}': contains directory separator", .{explicit_suffix});
         }
@@ -121,7 +121,7 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
     const total_suffix_len = xs.implicit_suffix_len + explicit_suffix.len;
 
     // With -t, the template must not contain a directory separator.
-    if (parsed.t and std.mem.indexOfScalar(u8, raw_template, '/') != null) {
+    if (parsed.t and std.mem.findScalar(u8, raw_template, '/') != null) {
         if (!parsed.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid template, '{s}', contains directory separator", .{raw_template});
         }
@@ -181,7 +181,7 @@ fn run(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, s
 
     // Generate the temporary file or directory
     // total_suffix_len covers both implicit (chars after X's) and explicit --suffix
-    const result_path = generateTemp(allocator, full_template, xs.x_count, total_suffix_len, parsed.directory, parsed.@"dry-run") catch {
+    const result_path = generateTemp(allocator, io, full_template, xs.x_count, total_suffix_len, parsed.directory, parsed.@"dry-run") catch {
         if (!parsed.quiet) {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to create {s} via template '{s}'", .{
                 if (parsed.directory) "directory" else "file",
@@ -259,7 +259,7 @@ fn resolveForcedTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8) ![]const u
     if (tmpdir_arg) |dir| {
         return try allocator.dupe(u8, dir);
     }
-    if (std.posix.getenv("TMPDIR")) |env_val| {
+    if (common.env.getEnv("TMPDIR")) |env_val| {
         return try allocator.dupe(u8, env_val);
     }
     return try allocator.dupe(u8, "/tmp");
@@ -268,7 +268,7 @@ fn resolveForcedTmpdir(allocator: Allocator, tmpdir_arg: ?[]const u8) ![]const u
 /// Generate a temporary file or directory with a unique name
 /// Tries up to 100 times with different random suffixes
 /// suffix_len indicates how many bytes at the end are the suffix (after the X's)
-fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suffix_len: usize, is_dir: bool, dry_run: bool) ![]const u8 {
+fn generateTemp(allocator: Allocator, io: std.Io, template: []const u8, x_count: usize, suffix_len: usize, is_dir: bool, dry_run: bool) ![]const u8 {
     const max_attempts = 100;
     // Layout: [prefix][XXXXXX][suffix]
     const x_end = template.len - suffix_len;
@@ -283,7 +283,7 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
         @memcpy(candidate[0..x_start], template[0..x_start]);
 
         // Fill X positions with random alphanumeric characters
-        fillRandom(candidate[x_start..x_end]);
+        fillRandom(io, candidate[x_start..x_end]);
 
         // Copy suffix (after the X's)
         if (suffix_len > 0) {
@@ -295,27 +295,23 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
         }
 
         if (is_dir) {
-            // Try to create directory
-            std.fs.cwd().makeDir(candidate) catch |err| {
+            // Try to create directory exclusively with mode 0o700
+            std.Io.Dir.cwd().createDir(io, candidate, std.Io.File.Permissions.fromMode(0o700)) catch |err| {
                 allocator.free(candidate);
                 switch (err) {
                     error.PathAlreadyExists => continue,
                     else => return err,
                 }
             };
-            // Set directory permissions to 0o700 for security
-            if (builtin.os.tag != .windows) {
-                const path_z = std.posix.toPosixPath(candidate) catch {
-                    return candidate;
-                };
-                _ = std.c.chmod(&path_z, 0o700);
-            }
             return candidate;
         } else {
-            // Try to create file atomically with mode 0o600
-            const file = std.fs.cwd().createFile(candidate, .{
+            // Try to create file atomically with exclusive flag.
+            // POSIX requires mktemp to create files with mode 0600 so the
+            // tmp file is not world-readable; the 0.16 default is 0o666.
+            const file = std.Io.Dir.cwd().createFile(io, candidate, .{
                 .exclusive = true,
-                .mode = 0o600,
+                .truncate = false,
+                .permissions = std.Io.File.Permissions.fromMode(0o600),
             }) catch |err| {
                 allocator.free(candidate);
                 switch (err) {
@@ -323,7 +319,7 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
                     else => return err,
                 }
             };
-            file.close();
+            file.close(io);
             return candidate;
         }
     }
@@ -332,24 +328,13 @@ fn generateTemp(allocator: Allocator, template: []const u8, x_count: usize, suff
 }
 
 /// Fill a buffer with random alphanumeric characters
-fn fillRandom(buf: []u8) void {
+fn fillRandom(io: std.Io, buf: []u8) void {
+    var raw: [256]u8 = undefined;
     var offset: usize = 0;
     while (offset < buf.len) {
-        var chunk: [256]u8 = undefined;
-        const n = @min(buf.len - offset, chunk.len);
-        std.posix.getrandom(chunk[0..n]) catch {
-            // Fallback: use timestamp-based PRNG if getrandom fails.
-            // Fill the entire remaining buffer, not just this chunk.
-            var prng = std.Random.DefaultPrng.init(
-                @as(u64, @intCast(@max(0, std.time.timestamp()))),
-            );
-            const rng = prng.random();
-            for (buf[offset..]) |*b| {
-                b.* = alphanumeric[rng.intRangeAtMost(u8, 0, alphanumeric.len - 1)];
-            }
-            return;
-        };
-        for (chunk[0..n], buf[offset..][0..n]) |byte, *b| {
+        const n = @min(buf.len - offset, raw.len);
+        io.random(raw[0..n]);
+        for (raw[0..n], buf[offset..][0..n]) |byte, *b| {
             b.* = alphanumeric[byte % alphanumeric.len];
         }
         offset += n;
@@ -357,7 +342,7 @@ fn fillRandom(buf: []u8) void {
 }
 
 /// Print help message
-fn printHelp(allocator: Allocator, writer: anytype) !void {
+fn printHelp(allocator: Allocator, writer: *std.Io.Writer) !void {
     try common.help.printColorized(allocator, writer,
         \\Usage: mktemp [OPTION]... [TEMPLATE]
         \\Create a temporary file or directory, safely, and print its name.
@@ -377,7 +362,7 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
 }
 
 /// Print version information
-fn printVersion(writer: anytype) !void {
+fn printVersion(writer: *std.Io.Writer) !void {
     try writer.print("mktemp ({s}) {s}\n", .{ common.name, common.version });
 }
 
@@ -401,191 +386,209 @@ test "mktemp findTemplateXs" {
 }
 
 test "mktemp fillRandom produces alphanumeric characters" {
+    const io = testing.io;
     var buf: [20]u8 = undefined;
-    fillRandom(&buf);
+    fillRandom(io, &buf);
     for (buf) |c| {
-        try testing.expect(std.mem.indexOfScalar(u8, alphanumeric, c) != null);
+        try testing.expect(std.mem.findScalar(u8, alphanumeric, c) != null);
     }
 }
 
 test "mktemp fillRandom produces different results" {
+    const io = testing.io;
     var buf1: [10]u8 = undefined;
     var buf2: [10]u8 = undefined;
-    fillRandom(&buf1);
-    fillRandom(&buf2);
+    fillRandom(io, &buf1);
+    fillRandom(io, &buf2);
     // Verify both contain valid alphanumeric characters
     for (buf1) |c| {
-        try testing.expect(std.mem.indexOfScalar(u8, alphanumeric, c) != null);
+        try testing.expect(std.mem.findScalar(u8, alphanumeric, c) != null);
     }
     for (buf2) |c| {
-        try testing.expect(std.mem.indexOfScalar(u8, alphanumeric, c) != null);
+        try testing.expect(std.mem.findScalar(u8, alphanumeric, c) != null);
     }
 }
 
 test "mktemp --help shows usage" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"--help"};
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "Usage: mktemp") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "--directory") != null);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "Usage: mktemp") != null);
+    try testing.expect(std.mem.find(u8, out, "--directory") != null);
 }
 
 test "mktemp --version shows version" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"--version"};
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, "mktemp") != null);
-    try testing.expect(std.mem.indexOf(u8, stdout_buffer.items, common.version) != null);
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "mktemp") != null);
+    try testing.expect(std.mem.find(u8, out, common.version) != null);
 }
 
 test "mktemp too few Xs in template" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{"tmp.XX"};
-    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "too few X's") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "too few X's") != null);
 }
 
 test "mktemp too many templates" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{ "tmp.XXX", "tmp2.XXX" };
-    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "too many templates") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "too many templates") != null);
 }
 
 test "mktemp creates file with default template" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{};
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
     // Output should be a path ending with newline
-    try testing.expect(stdout_buffer.items.len > 0);
-    try testing.expect(stdout_buffer.items[stdout_buffer.items.len - 1] == '\n');
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(out.len > 0);
+    try testing.expect(out[out.len - 1] == '\n');
 
     // Clean up the created file
-    const path = std.mem.trimRight(u8, stdout_buffer.items, "\n");
-    std.fs.cwd().deleteFile(path) catch {};
+    const path = std.mem.trimEnd(u8, out, "\n");
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
 test "mktemp creates directory with -d flag" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"-d"};
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const path = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const out = stdout_aw.writer.buffered();
+    const path = std.mem.trimEnd(u8, out, "\n");
 
     // Verify it's a directory
-    const stat = try std.fs.cwd().statFile(path);
-    try testing.expect(stat.kind == .directory);
+    const stat_result = try std.Io.Dir.cwd().statFile(io, path, .{});
+    try testing.expect(stat_result.kind == .directory);
 
     // Clean up
-    std.fs.cwd().deleteDir(path) catch {};
+    std.Io.Dir.cwd().deleteDir(io, path) catch {};
 }
 
 test "mktemp dry-run does not create file" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"-u"};
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const path = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const out = stdout_aw.writer.buffered();
+    const path = std.mem.trimEnd(u8, out, "\n");
 
     // File should not exist
-    const result = std.fs.cwd().access(path, .{});
+    const result = std.Io.Dir.cwd().access(io, path, .{});
     try testing.expectError(error.FileNotFound, result);
 }
 
 test "mktemp with custom template" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{"myapp.XXXXXX"};
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const path = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const out = stdout_aw.writer.buffered();
+    const path = std.mem.trimEnd(u8, out, "\n");
     const basename = std.fs.path.basename(path);
 
     // Should start with "myapp."
     try testing.expect(std.mem.startsWith(u8, basename, "myapp."));
 
     // Clean up
-    std.fs.cwd().deleteFile(path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
 test "mktemp with --suffix" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     const args = &[_][]const u8{ "--suffix=.txt", "tmpXXXXXX" };
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const path = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const out = stdout_aw.writer.buffered();
+    const path = std.mem.trimEnd(u8, out, "\n");
 
     // Should end with .txt suffix
     try testing.expect(std.mem.endsWith(u8, path, ".txt"));
@@ -595,88 +598,95 @@ test "mktemp with --suffix" {
     try testing.expect(std.mem.startsWith(u8, basename, "tmp"));
 
     // Clean up
-    std.fs.cwd().deleteFile(path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
 test "mktemp suffix with slash is rejected" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{ "--suffix=/bad", "tmpXXXXXX" };
-    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
-    try testing.expect(std.mem.indexOf(u8, stderr_buffer.items, "contains directory separator") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "contains directory separator") != null);
 }
 
 test "mktemp with -p flag" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stdout_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stdout_buffer.deinit(testing.allocator);
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
 
     // Use a known temp directory
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const dir_path = try tmp_dir.dir.realpath(".", &path_buf);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPath(io, &path_buf);
+    const dir_path = path_buf[0..path_len];
 
     const args = &[_][]const u8{ "-p", dir_path };
-    const exit_code = try run(allocator, args, stdout_buffer.writer(testing.allocator), common.null_writer);
+    const exit_code = try run(allocator, io, args, &stdout_aw.writer, common.null_writer);
 
     try testing.expectEqual(@as(u8, 0), exit_code);
 
-    const result_path = std.mem.trimRight(u8, stdout_buffer.items, "\n");
+    const out = stdout_aw.writer.buffered();
+    const result_path = std.mem.trimEnd(u8, out, "\n");
 
     // Result should be within the specified directory
     try testing.expect(std.mem.startsWith(u8, result_path, dir_path));
 
     // Clean up
-    std.fs.cwd().deleteFile(result_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, result_path) catch {};
 }
 
 test "mktemp quiet mode suppresses errors" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{ "-q", "tmp.XX" };
-    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 1), exit_code);
     // Quiet mode: no error messages on stderr
-    try testing.expectEqual(@as(usize, 0), stderr_buffer.items.len);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
 }
 
 test "mktemp invalid option" {
+    const io = testing.io;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_buffer = try std.ArrayList(u8).initCapacity(testing.allocator, 0);
-    defer stderr_buffer.deinit(testing.allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
 
     const args = &[_][]const u8{"--invalid"};
-    const exit_code = try run(allocator, args, common.null_writer, stderr_buffer.writer(testing.allocator));
+    const exit_code = try run(allocator, io, args, common.null_writer, &stderr_aw.writer);
 
     try testing.expectEqual(@as(u8, 2), exit_code);
 }
 
 test "mktemp generateTemp creates unique names" {
+    const io = testing.io;
     // Generate two temps and verify they differ (dry-run mode)
-    const path1 = try generateTemp(testing.allocator, "/tmp/test.XXXXXX", 6, 0, false, true);
+    const path1 = try generateTemp(testing.allocator, io, "/tmp/test.XXXXXX", 6, 0, false, true);
     defer testing.allocator.free(path1);
-    const path2 = try generateTemp(testing.allocator, "/tmp/test.XXXXXX", 6, 0, false, true);
+    const path2 = try generateTemp(testing.allocator, io, "/tmp/test.XXXXXX", 6, 0, false, true);
     defer testing.allocator.free(path2);
 
     // Both should start with /tmp/test.
@@ -689,20 +699,14 @@ test "mktemp generateTemp creates unique names" {
 }
 
 test "fillRandom fills all positions including >256" {
+    const io = testing.io;
     // Regression: the old fillRandom used a fixed 256-byte buffer and
     // silently left positions beyond 256 unwritten (undefined memory).
     var buf: [512]u8 = undefined;
     @memset(&buf, 'X');
-    fillRandom(&buf);
+    fillRandom(io, &buf);
     for (buf, 0..) |b, i| {
-        var found = false;
-        for (alphanumeric) |c| {
-            if (b == c) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
+        if (std.mem.findScalar(u8, alphanumeric, b) == null) {
             std.debug.print("fillRandom: non-alphanumeric byte 0x{x:0>2} at position {}\n", .{ b, i });
             return error.TestUnexpectedResult;
         }
