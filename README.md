@@ -72,6 +72,31 @@ conflicts with system utilities. To use without prefix:
 export PATH="$(brew --prefix)/opt/vibeutils/libexec/vibebin:$PATH"
 ```
 
+### Gale (Linux/macOS)
+
+[Gale](https://github.com/kelp/gale) is a per-project
+package manager; vibeutils ships as a recipe in the
+[kelp/gale-recipes](https://github.com/kelp/gale-recipes)
+repo.
+
+```bash
+# Add the recipe repo (once)
+gale repo add https://github.com/kelp/gale-recipes
+
+# Install globally
+gale install -g vibeutils
+```
+
+Or pin it in a project's `gale.toml` and let direnv
+activate the environment on `cd`:
+
+```toml
+[packages]
+vibeutils = "0.9.3"
+```
+
+Gale installs use the original names (no prefix).
+
 ### Nix
 
 ```bash
@@ -114,7 +139,7 @@ environments are isolated.
 
 ### Build from source
 
-Requirements: Zig 0.15.2 or later
+Requirements: Zig 0.16.0 or later
 
 ```bash
 git clone https://github.com/kelp/vibeutils.git
