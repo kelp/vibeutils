@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
     addCIValidateStep(b, ci);
     addDocsStep(b, target, optimize, common, build_options_module);
     addCoverageStep(b, target, common, build_options_module);
+    addFuzzer(b, target, optimize);
 }
 
 /// Build a single utility with proper error handling
@@ -288,12 +289,12 @@ fn buildIntegrationTests(
 fn addFormatSteps(b: *std.Build) void {
     // Format step - formats all source files
     const fmt_step = b.step("fmt", "Format all source files");
-    const fmt_cmd = b.addSystemCommand(&.{ "zig", "fmt", "src/", "build.zig", "build/" });
+    const fmt_cmd = b.addSystemCommand(&.{ "zig", "fmt", "src/", "build.zig", "build/", "tools/" });
     fmt_step.dependOn(&fmt_cmd.step);
 
     // Format check step - checks if files are properly formatted
     const fmt_check_step = b.step("fmt-check", "Check if source files are properly formatted");
-    const fmt_check_cmd = b.addSystemCommand(&.{ "zig", "fmt", "--check", "src/", "build.zig", "build/" });
+    const fmt_check_cmd = b.addSystemCommand(&.{ "zig", "fmt", "--check", "src/", "build.zig", "build/", "tools/" });
     fmt_check_step.dependOn(&fmt_check_cmd.step);
 }
 
@@ -440,4 +441,45 @@ fn addCoverageStep(
         .dest_dir = .{ .override = .{ .custom = "bin/tests" } },
     });
     coverage_step.dependOn(&install_common.step);
+}
+
+/// Build the homegrown fuzzer and wire one `fuzz-<util>` step per utility.
+/// The fuzzer is std-only and intentionally does not import `common`.
+fn addFuzzer(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
+    const fuzz_exe = b.addExecutable(.{
+        .name = "fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    // Intentionally not installed: the fuzzer is a dev tool, not a user
+    // utility. Installing it would land it in zig-out/bin/ where the
+    // integration test runner would mistake it for a coreutil to test.
+    // b.addRunArtifact below builds it from cache without installing.
+
+    for (utils.utilities) |util| {
+        const run_cmd = b.addRunArtifact(fuzz_exe);
+        run_cmd.step.dependOn(b.getInstallStep());
+
+        const bin_path = b.getInstallPath(.prefix, b.fmt("bin/{s}", .{util.name}));
+        run_cmd.addArg(bin_path);
+        run_cmd.addArg("--corpus");
+        run_cmd.addArg(b.fmt("tests/fuzz/{s}/corpus", .{util.name}));
+        run_cmd.addArg("--crashes");
+        run_cmd.addArg(b.fmt("tests/fuzz/{s}/crashes", .{util.name}));
+
+        if (b.args) |a| run_cmd.addArgs(a);
+
+        const fuzz_step = b.step(
+            b.fmt("fuzz-{s}", .{util.name}),
+            b.fmt("Fuzz {s}", .{util.name}),
+        );
+        fuzz_step.dependOn(&run_cmd.step);
+    }
 }

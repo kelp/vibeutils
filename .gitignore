@@ -43,6 +43,7 @@ tests/integration/.tmp/
 # Fuzzing artifacts
 *_fuzz_*
 fuzz_*.log
+tests/fuzz/*/crashes/
 
 # Benchmark outputs
 benchmark_results.txt

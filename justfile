@@ -268,15 +268,9 @@ test-integration-validate: build
 
 # --- Fuzzing ---
 
-# Fuzz a specific utility (Linux only)
-fuzz util:
-    #!/usr/bin/env bash
-    set -eu
-    if [ "$(uname -s)" != "Linux" ]; then
-        echo "Linux required. Use docker target."
-        exit 1
-    fi
-    zig build fuzz-{{util}}
+# Fuzz a specific utility
+fuzz util +args='':
+    zig build fuzz-{{util}} -- {{args}}
 
 # --- Benchmarks ---
 
