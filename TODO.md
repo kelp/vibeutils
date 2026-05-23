@@ -222,11 +222,9 @@ For each utility:
 - [x] Test: Icon mapping for common file types
 - [x] Test: Git status integration (modified/new files)
 - [x] Test: Smart date formatting ("2 hours ago")
-- [ ] Test: Parallel stat() for performance (deferred - see Future Optimizations)
 - [x] Implement: Optional icon system
 - [x] Implement: Git repository detection
 - [x] Implement: Human-friendly date formatting
-- [ ] Implement: Parallel I/O for large directories (deferred - see Future Optimizations)
 
 ##### ls - Features We're NOT Implementing
 - SELinux context (-Z, --context) - Too Linux-specific
@@ -607,14 +605,11 @@ For each utility:
 - [x] Test: Wide format (-w) for better readability
 - [ ] Test: Color-coded memory usage levels (green/yellow/red)
 - [x] Test: Cross-platform support (Linux /proc/meminfo, macOS vm_stat)
-- [ ] Test: Memory pressure indicators and warnings
-- [ ] Test: Unicode glyphs and progress bars for visual appeal
 - [x] Implement: Linux memory parsing (/proc/meminfo)
 - [x] Implement: macOS memory info via syscalls (host_statistics64)
 - [x] Implement: Human-readable size formatting
 - [ ] Implement: Color-coded output with terminal detection
-- [ ] Implement: Progress bar visualization for memory usage
-- [ ] Implement: Modern glyphs and icons for memory types
+- [ ] Implement: Inline usage bar (parallels df's --bar)
 - [x] Implement: Continuous monitoring with refresh
 - [x] Man page: Write concise man page with examples
 
@@ -1105,7 +1100,6 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] **Cachix binary cache**: Explicit push via `nix build --print-out-paths | cachix push`
 - [x] **Weekly flake update**: CI updates flake.lock and pushes fresh builds to Cachix
 - [ ] Add install targets for man pages
-- [ ] Add benchmarking infrastructure (see Benchmarking System section)
 
 ### Documentation
 - [x] Man page style guide (OpenBSD-inspired):
@@ -1120,9 +1114,6 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] Design philosophy document
 - [x] Zig patterns reference (ZIG_PATTERNS.md)
 - [x] Standard library summary (STD_LIBRARY_SUMMARY.md)
-- [ ] Man page generation/installation system
-- [ ] Example usage for each utility
-- [ ] Performance comparison with GNU coreutils
 
 ## Modern Enhancements
 
@@ -1134,42 +1125,6 @@ Implemented idiomatic Zig writer pattern to enable comprehensive testing of stdo
 - [x] Colored help output with syntax highlighting
 - [x] Nerd Font glyphs in help and ls
 - [ ] LS_COLORS parsing and theming
-- [ ] Accessibility modes
-- [ ] User-configurable color themes
-
-### Performance
-- [ ] Parallel processing where applicable
-- [ ] Memory-mapped I/O
-- [ ] SIMD optimizations
-- [ ] Async I/O for large operations
-
-### Output Formats
-- [ ] JSON output mode
-- [ ] CSV output mode
-- [ ] Null-separated output
-- [ ] Progress bars for long operations
-
-## Future Optimizations (Post-Implementation)
-
-### Parallel Filesystem Operations Framework
-- [ ] **Research Phase**: Study io_uring, kqueue, and thread pool alternatives
-- [ ] **Architecture Design**: Cross-platform abstraction for parallel filesystem operations  
-- [ ] **Core Interface**: Generic `ParallelFs.batchOperation()` supporting multiple operation types
-- [ ] **Linux Implementation**: io_uring-based parallel operations (statx, openat, read, etc.)
-- [ ] **BSD/macOS Implementation**: kqueue-based async or thread pool fallback
-- [ ] **High-Level Operations**: 
-  - `statMany()` - Parallel file stat operations
-  - `openMany()` - Parallel file opening  
-  - `readDirMany()` - Parallel directory reading
-  - `readMany()` - Parallel file reading
-- [ ] **Utility Integration**: Roll out to du, find, grep, cp, wc, and other I/O-heavy utilities
-- [ ] **Performance Benchmarking**: Measure improvements on large filesystems
-- [ ] **Error Handling**: Robust cross-platform error recovery and resource cleanup
-
-**Complexity**: High (🔥🔥🔥) - Cross-platform async I/O, resource management, testing
-**Impact**: Massive performance gains for `du`, `find`, `grep` on large directories
-**Timeline**: 2-3 weeks implementation, significant maintenance overhead
-**Decision**: Implement after core utilities are complete to avoid scope creep
 
 ## Privileged Testing Strategy
 
@@ -1221,7 +1176,8 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 #### 2. GitHub Actions Workflow ✓
 - [x] Linux: Test with fakeroot (automated privilege simulation)
 - [x] macOS: Native testing with privilege simulation support
-- [x] BSD: Set up VM-based testing with vmactions
+- [ ] BSD: Set up VM-based testing with vmactions (not implemented;
+      no BSD workflow in `.github/workflows/`)
 - [x] Add privileged test matrix to CI pipeline
 - [x] Cross-platform CI/CD with Ubuntu and macOS runners
 - [x] Coverage reporting with Codecov integration
@@ -1231,7 +1187,9 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 #### 3. Test Categories
 - [x] **Permission Simulation**: Test actual permission changes (infrastructure ready)
 - [x] **Error Paths**: Test permission-denied handling
-- [ ] **Integration Tests**: Real operations in permitted locations
+- [x] **Integration Tests**: Real operations in permitted locations
+      (`tests/privilege_integration/file_ops_test.zig`,
+      `workflow_test.zig`)
 - [x] **Mock Tests**: Unit tests with injected syscalls (via requiresPrivilege)
 
 #### 4. justfile Targets ✓
@@ -1249,95 +1207,6 @@ Comprehensive cross-platform testing for commands that require elevated privileg
 - [x] All privilege-related tests pass on Linux with fakeroot (infrastructure ready)
 - [x] Core functionality works without privileges
 - [x] Clear test output indicating skipped privileged tests
-- [ ] CI passes on all 5 target platforms
-
-## Benchmarking System
-
-### Overview
-Comprehensive performance tracking system to monitor improvements and regressions across all utilities.
-
-### Infrastructure Components
-
-#### 1. Benchmark Framework
-- [ ] Add zBench dependency for Zig-native benchmarking
-- [ ] Create benchmark directory structure (micro/utilities/comparative/scenarios)
-- [ ] Implement BenchmarkResult and BenchmarkContext structs
-- [ ] Add memory tracking allocator for detailed analysis
-- [ ] Create benchmark runner with statistical analysis
-
-#### 2. Benchmark Types
-
-##### Micro-benchmarks (Function Level)
-- [ ] Terminal style detection and color output
-- [ ] Argument parsing performance
-- [ ] File stat operations
-- [ ] Directory traversal algorithms
-- [ ] String formatting and allocation patterns
-
-##### Utility Benchmarks (Command Level)
-- [ ] Standard scenarios for each utility:
-  - Empty inputs (baseline overhead)
-  - Small inputs (typical usage)
-  - Large inputs (stress testing)
-  - Edge cases (pathological inputs)
-- [ ] Memory usage profiling
-- [ ] Syscall counting and analysis
-
-##### Comparative Benchmarks
-- [ ] Hyperfine integration for vibeutils vs GNU coreutils
-- [ ] Automated comparison scripts
-- [ ] Performance ratio tracking
-
-##### Real-world Scenarios
-- [ ] Large file processing (1GB, 10GB files)
-- [ ] Many files handling (10k, 100k files)
-- [ ] Deep directory trees (1000+ levels)
-- [ ] Parallel operation benefits
-
-#### 3. Metrics Collection
-- [ ] Execution time (wall clock, CPU time)
-- [ ] Memory usage (allocated, peak, leaked)
-- [ ] System metrics (syscalls, cache misses, I/O operations)
-- [ ] CPU metrics (instructions, cycles, branch predictions)
-
-#### 4. CI/CD Integration
-- [ ] GitHub Actions workflow for automated benchmarking
-- [ ] Benchmark on: PRs, main commits, weekly schedule
-- [ ] Performance regression detection (>10% threshold)
-- [ ] Benchmark result storage in git branch
-- [ ] GitHub Pages dashboard for visualization
-
-#### 5. Build System Integration
-- [ ] Add `zig build bench` target
-- [ ] justfile targets:
-  - `just benchmark` - Run all benchmarks
-  - `just bench-micro` - Micro-benchmarks only
-  - `just bench-utilities` - Utility benchmarks only
-  - `just bench-compare` - GNU comparison
-  - `just bench-report` - Generate HTML report
-
-#### 6. Reporting and Visualization
-- [ ] JSON output format for automation
-- [ ] Historical trend graphs
-- [ ] Regression alerts on PRs
-- [ ] Performance comparison matrix
-- [ ] Memory usage evolution charts
-
-### Implementation Timeline
-- **Week 1-2**: Infrastructure setup, zBench integration
-- **Week 3-4**: Micro-benchmarks for common library
-- **Week 5-6**: Utility benchmarks (echo, cat, ls)
-- **Week 7-8**: Remaining utilities and comparative benchmarks
-- **Week 9-10**: CI/CD integration and dashboard
-- **Week 11-12**: Documentation and optimization based on findings
-
-### Success Metrics
-- [ ] All utilities benchmarked with 3+ scenarios each
-- [ ] Performance within 10% of GNU coreutils
-- [ ] Memory usage equal or better than GNU
-- [ ] <5% false positive rate for regression detection
-- [ ] 6+ months of historical data tracked
-
 ## CI/CD Infrastructure (Implemented) ✓
 
 ### GitHub Actions Workflows
@@ -1401,7 +1270,11 @@ full design.
 - [x] NO_COLOR still respected
 - [x] Integrated in ls, grep, du, and help output
 - [x] `--color=auto` checks isatty(stdout) in ls
-- [ ] `df`, `du`, `ls -l`: human-readable by default
+- [x] `df`: human-readable by default (`df.zig:88`)
+- [ ] `du`: human-readable by default (currently `du.zig:33`
+      defaults `human_readable = false`)
+- [ ] `ls -l`: human-readable by default (currently
+      `ls/main.zig:27` defaults `human_readable = false`)
 - [ ] Explicit flags always override
 
 ### 3a. Command Linter Warnings ✓
@@ -1445,18 +1318,8 @@ full design.
 - [ ] Only when stderr is a TTY
 
 ### 7. Smarter Error Messages
-- [ ] File not found with fuzzy "did you mean?" suggestion
-- [ ] Permission denied with hint
+- [ ] Permission denied with actionable hint
 - [ ] Directory not empty with `rm -r` suggestion
-- [ ] Start with `rm`, `cp`, `cat`
-
-### 8. `diff` Utility
-- [ ] Myers diff algorithm implementation
-- [ ] Unified diff as default format
-- [ ] Colored output (red/green/cyan)
-- [ ] Flags: `-u`, `-c`, `-y`, `-r`, `-q`
-- [ ] `--color=auto/always/never`
-- [ ] Man page
 
 ## Testing Improvements (Post-Issue #5 Analysis)
 
@@ -1480,20 +1343,7 @@ that would have caught it — and similar bugs — earlier.
 - [ ] Utility-agnostic: same I/O contract tests run
       against every binary
 
-### 3. Cross-Platform Behavioral Comparison Tests
-- [ ] Run identical operations on macOS and Linux
-- [ ] Diff results between platforms
-- [ ] Flag divergences as test failures (the divergence
-      itself is the signal)
-
-### 4. Real-World Pipeline Tests
-- [ ] Log accumulation: repeated `>> logfile` appends
-- [ ] Pipeline composition: `cat | sort | uniq >> output`
-- [ ] Interleaved stdout/stderr with redirects
-- [ ] Simulate actual usage patterns that exercise
-      binaries in realistic scenarios
-
-### 5. Adopt Shared TestDir Across All Utilities
+### 3. Adopt Shared TestDir Across All Utilities
 - [ ] Replace ad-hoc `testing.tmpDir(.{})` usage with
       shared `common.test_dir.TestDir` in all utility tests
 - [ ] Ensure all tests use absolute paths (no fchdir)
@@ -1504,16 +1354,21 @@ that would have caught it — and similar bugs — earlier.
 - [ ] Consolidate mv.zig's local TestDir into the shared
       one
 
-### 6. Fix LLVM Backend Test Failures
-- [ ] cp overwrite hint test fails under `.use_llvm = true`
+### 4. Fix LLVM Backend Test Failures ✓
+- [x] cp overwrite hint test fails under `.use_llvm = true`
       but passes with self-hosted backend
-- [ ] mv overwrite hint test has the same issue
-- [ ] Root cause: likely Style/writer generic instantiation
+- [x] mv overwrite hint test has the same issue
+- [x] Root cause: likely Style/writer generic instantiation
       differs between backends
-- [ ] Blocking accurate coverage numbers (2 of 49 binaries
+- [x] Blocking accurate coverage numbers (2 of 49 binaries
       fail)
 
-### 7. main() Function Coverage
+Resolved during the Zig 0.16 migration. `build.zig:409, 434`
+still set `use_llvm = true` and `zig build test` is fully
+green, including `cp.zig:1181-1276` and `mv.zig:1033+`
+overwrite-hint tests.
+
+### 5. main() Function Coverage
 - [ ] Test the writer setup code path in main(), not just
       runUtil() with test-provided writers
 - [ ] Integration tests that exercise the compiled binary's
@@ -1552,9 +1407,7 @@ that would have caught it — and similar bugs — earlier.
 
 ## Success Criteria
 - [ ] All utilities pass GNU coreutils test suite
-- [ ] Performance within 10% of GNU implementation
 - [ ] 90%+ test coverage
 - [ ] Clean static analysis reports
-- [ ] Comprehensive benchmarking system
 - [x] Privileged operations tested (Linux, macOS)
 - [x] CI/CD pipeline operational
