@@ -469,6 +469,8 @@ fn addFuzzer(
 
         const bin_path = b.getInstallPath(.prefix, b.fmt("bin/{s}", .{util.name}));
         run_cmd.addArg(bin_path);
+        run_cmd.addArg("--util");
+        run_cmd.addArg(util.name);
         run_cmd.addArg("--corpus");
         run_cmd.addArg(b.fmt("tests/fuzz/{s}/corpus", .{util.name}));
         run_cmd.addArg("--crashes");

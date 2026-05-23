@@ -1,20 +1,23 @@
-//! v1 mutational stdin fuzzer for vibeutils.
+//! Mutational fuzzer for vibeutils.
 //!
-//! Spawns a target utility, writes mutated bytes to its stdin, and
-//! classifies the result. Crashes are saved to a per-utility directory
-//! keyed by SHA-256 of the offending input so a flaky run can be
-//! reproduced via `<util> < crashes/<hash>.bin`.
+//! Spawns a target utility, feeds it mutated bytes via one of three
+//! harness modes (stdin, argv, file_arg), and classifies the result.
+//! Crashes are saved to a per-utility directory keyed by SHA-256 of
+//! the offending input so a flaky run can be reproduced.
 //!
 //! Single-file, std-only, no `common` import on purpose: the fuzzer is
 //! a dev tool that must keep working when the rest of the tree is
-//! broken.
+//! broken. Imports its sibling tools/harness.zig and tools/fuzz_targets.zig.
 
 const std = @import("std");
+const harness = @import("harness.zig");
+const fuzz_targets = @import("fuzz_targets.zig");
 
 const Allocator = std.mem.Allocator;
 
 const Options = struct {
     target: []const u8,
+    util: []const u8,
     corpus_dir: []const u8,
     crashes_dir: []const u8,
     max_runs: u64 = 10_000,
@@ -50,6 +53,22 @@ pub fn main(init: std.process.Init) !void {
         else => std.process.exit(2),
     };
 
+    const h = fuzz_targets.lookup(opts.util);
+    // Surface template config errors at startup, not on the first crash.
+    switch (h) {
+        .stdin => {},
+        .argv => |c| harness.validateTemplate(c.template) catch |err| {
+            try stderr.print("fuzz: bad argv template for {s}: {s}\n", .{ opts.util, @errorName(err) });
+            try stderr.flush();
+            std.process.exit(2);
+        },
+        .file_arg => |c| harness.validateTemplate(c.template) catch |err| {
+            try stderr.print("fuzz: bad file_arg template for {s}: {s}\n", .{ opts.util, @errorName(err) });
+            try stderr.flush();
+            std.process.exit(2);
+        },
+    }
+
     var seed = opts.seed;
     if (!opts.seed_explicit) {
         const ns = std.Io.Timestamp.now(io, .real).nanoseconds;
@@ -59,8 +78,8 @@ pub fn main(init: std.process.Init) !void {
     const rand = prng.random();
 
     try stdout.print(
-        "fuzz: target={s} corpus={s} crashes={s} max_runs={d} timeout_ms={d} max_input={d} seed={d}\n",
-        .{ opts.target, opts.corpus_dir, opts.crashes_dir, opts.max_runs, opts.timeout_ms, opts.max_input_size, seed },
+        "fuzz: target={s} util={s} mode={s} corpus={s} crashes={s} max_runs={d} timeout_ms={d} max_input={d} seed={d}\n",
+        .{ opts.target, opts.util, @tagName(h), opts.corpus_dir, opts.crashes_dir, opts.max_runs, opts.timeout_ms, opts.max_input_size, seed },
     );
     try stdout.flush();
 
@@ -88,7 +107,14 @@ pub fn main(init: std.process.Init) !void {
             try mutate(arena, rand, &mutant, &corpus, opts.max_input_size);
         }
 
-        const outcome = runOne(io, opts.target, mutant.items, opts.timeout_ms) catch |err| {
+        const ps = harness.prepare(arena, io, opts.target, h, mutant.items) catch |err| {
+            try stderr.print("fuzz: harness prep error on run {d}: {s}\n", .{ run, @errorName(err) });
+            try stderr.flush();
+            continue;
+        };
+        defer harness.cleanup(io, ps);
+
+        const outcome = runOne(io, ps, opts.timeout_ms) catch |err| {
             try stderr.print("fuzz: spawn error on run {d}: {s}\n", .{ run, @errorName(err) });
             try stderr.flush();
             continue;
@@ -132,9 +158,10 @@ pub fn main(init: std.process.Init) !void {
 // CLI parsing
 
 const help_text =
-    \\fuzz <util-binary> --corpus DIR --crashes DIR [options]
+    \\fuzz <util-binary> --util NAME --corpus DIR --crashes DIR [options]
     \\
     \\Options:
+    \\  --util NAME          Utility name for harness lookup (required)
     \\  --corpus DIR         Seed corpus directory (required)
     \\  --crashes DIR        Where to write crash artifacts (required)
     \\  --max-runs N         Iterations (default 10000)
@@ -154,6 +181,7 @@ fn parseArgs(argv: []const [:0]const u8, stderr: *std.Io.Writer) !Options {
 
     var opts: Options = .{
         .target = argv[1],
+        .util = "",
         .corpus_dir = "",
         .crashes_dir = "",
     };
@@ -165,6 +193,10 @@ fn parseArgs(argv: []const [:0]const u8, stderr: *std.Io.Writer) !Options {
             try stderr.print("{s}", .{help_text});
             try stderr.flush();
             return error.HelpRequested;
+        } else if (std.mem.eql(u8, arg, "--util")) {
+            i += 1;
+            if (i >= argv.len) return missing(stderr, arg);
+            opts.util = argv[i];
         } else if (std.mem.eql(u8, arg, "--corpus")) {
             i += 1;
             if (i >= argv.len) return missing(stderr, arg);
@@ -197,8 +229,8 @@ fn parseArgs(argv: []const [:0]const u8, stderr: *std.Io.Writer) !Options {
         }
     }
 
-    if (opts.corpus_dir.len == 0 or opts.crashes_dir.len == 0) {
-        try stderr.print("fuzz: --corpus and --crashes are required\n", .{});
+    if (opts.util.len == 0 or opts.corpus_dir.len == 0 or opts.crashes_dir.len == 0) {
+        try stderr.print("fuzz: --util, --corpus, and --crashes are required\n", .{});
         try stderr.flush();
         return error.MissingArgument;
     }
@@ -488,10 +520,10 @@ fn watchdog(ctx: WatchdogCtx) void {
     std.posix.kill(ctx.pid, .KILL) catch {};
 }
 
-fn runOne(io: std.Io, target: []const u8, input: []const u8, timeout_ms: u64) !Outcome {
+fn runOne(io: std.Io, ps: harness.PreparedSpawn, timeout_ms: u64) !Outcome {
     var child = try std.process.spawn(io, .{
-        .argv = &.{target},
-        .stdin = .pipe,
+        .argv = ps.argv,
+        .stdin = if (ps.stdin_bytes != null) .pipe else .close,
         .stdout = .ignore,
         .stderr = .ignore,
     });
@@ -521,10 +553,12 @@ fn runOne(io: std.Io, target: []const u8, input: []const u8, timeout_ms: u64) !O
         };
     }
 
-    if (child.stdin) |*stdin| {
-        stdin.writeStreamingAll(io, input) catch {};
-        stdin.close(io);
-        child.stdin = null;
+    if (ps.stdin_bytes) |bytes| {
+        if (child.stdin) |*stdin| {
+            stdin.writeStreamingAll(io, bytes) catch {};
+            stdin.close(io);
+            child.stdin = null;
+        }
     }
 
     const term = child.wait(io) catch |err| {

@@ -2,9 +2,9 @@
 
 vibeutils ships with a small, self-contained mutational fuzzer at
 `tools/fuzz.zig`. It's a dev tool: no external dependencies, no
-`common` library import, std-only. v1 is a dumb stdin fuzzer
-intended to unbreak `just fuzz` on macOS and Linux and to start
-finding low-hanging crashes in the stdin filters.
+`common` library import, std-only. It runs on macOS and Linux and
+supports three input modes per utility (stdin, argv, file_arg)
+selected by a static config table at `tools/fuzz_targets.zig`.
 
 ## Running
 
@@ -74,20 +74,30 @@ or driven by something other than stdin. The `seed` recorded
 in the metadata lets you replay the exact mutation stream
 that found it.
 
-## Scope and limitations (v1)
+## Harness modes
 
-The fuzzer drives the utility's stdin only. That makes it
-useful for filters:
+Each utility runs in one of three modes, looked up by name
+from `tools/fuzz_targets.zig`:
 
-```
-cat wc sort uniq tee tr head tail nl tac grep cut
-```
+- **stdin** (default for unlisted utilities) — mutated bytes
+  go to the child's stdin. Good for filters: `wc cat sort
+  uniq tee tr head tail nl tac grep cut`.
+- **argv** — mutated bytes substituted into an argv template
+  where `{INPUT}` is the placeholder. Used for utilities
+  whose attack surface is the command line: `printf` (format
+  string), `grep` (regex), `date` (date string), `test`.
+- **file_arg** — mutated bytes written to a unique temp file
+  under `/tmp/fuzz-harness-<hex>`; the path is substituted
+  into the argv template. Used for utilities that take a
+  file path: `stat readlink realpath`. The temp file is
+  removed after each run.
 
-For utilities that don't read stdin (`echo`, `ls`, `stat`,
-`pwd`, `whoami`, ...), `fuzz-<util>` is still wired up — it
-just runs the utility with garbage on a stdin it ignores. The
-step exists for uniformity; signal-to-noise is low until
-argv-fuzzing lands.
+To add a new utility to a non-stdin mode, edit
+`tools/fuzz_targets.zig` and add a `lookup` branch with the
+appropriate template. Templates must contain exactly one
+`{INPUT}` token; this is validated at fuzzer startup.
+
+## Limitations
 
 No coverage feedback. The corpus stays fixed at the seeds
 loaded at startup. Without an instrumentation signal we can't
@@ -96,16 +106,15 @@ the corpus degrades mutation quality.
 
 ## Roadmap
 
-**v2** — multiple harness modes:
-- argv fuzzing for `printf`, `grep`, `find`, `test`, `dd`, `seq`.
-- file-arg fuzzing for `stat`, `du`, `readlink`, `realpath`.
-- per-utility config declaring which mode(s) to use plus an
-  argv template (e.g. `["--regex", "{INPUT}"]` for grep).
-- dictionary support: utility-specific token tables to splice
-  into mutated inputs (printf format specifiers, regex
-  metachars, etc.).
-- corpus minimization — shrink a crashing input to the
+**v2.x** — additive improvements:
+- Dictionary support: per-utility token tables to splice into
+  mutated inputs (printf format specifiers, regex metachars,
+  etc.).
+- Corpus minimization — shrink a crashing input to the
   smallest still-crashing form.
+- More argv/file_arg entries in `fuzz_targets.zig` as we find
+  bugs in the obvious targets and want to widen the surface
+  (e.g. `find`, `dd`, `seq`, `du`).
 
 **v3** — coverage-guided fuzzing via Zig's
 `-fsanitize-coverage=trace-pc-guard`. Record edge hits in
