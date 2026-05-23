@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Bug Fixes
+- **ls: memory leak in git status integration.** When
+  `git status --porcelain` reported the same filename twice
+  (e.g. `D  foo` plus `?? foo` for a staged-deleted-and-recreated
+  file), `refreshStatus` allocated a fresh key for the second
+  line that `HashMap.put` silently dropped — leaking one
+  allocation per duplicate. Reproduced as `error(gpa): memory
+  address … leaked` after `ls --icons=always --git=always` in
+  repos with such states.
+
 ## v0.9.3 — 2026-04-15
 
 ### Infrastructure

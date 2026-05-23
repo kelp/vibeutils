@@ -111,8 +111,16 @@ pub const GitRepo = struct {
 
         if (result.term != .Exited or result.term.Exited != 0) return;
 
-        // Parse git status output
-        var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+        try self.parsePorcelainOutput(result.stdout);
+
+        // Only mark as loaded after successful completion
+        self.status_loaded = true;
+    }
+
+    /// Parse `git status --porcelain` output into the status_map.
+    /// Keys are owned by the map and freed in `deinit`.
+    fn parsePorcelainOutput(self: *Self, porcelain: []const u8) !void {
+        var lines = std.mem.splitScalar(u8, porcelain, '\n');
         while (lines.next()) |line| {
             if (line.len < 3) continue; // Need at least "XY filename"
 
@@ -121,12 +129,21 @@ pub const GitRepo = struct {
             if (filename.len == 0) continue;
 
             const status = parseGitStatus(status_chars);
-            const filename_owned = try self.allocator.dupe(u8, filename);
-            try self.status_map.put(filename_owned, status);
+            // Porcelain v1 can list the same filename twice (e.g. `D  foo`
+            // followed by `?? foo` for a staged-deleted-and-recreated file).
+            // `put` keeps the existing key on collision, so dupe lazily via
+            // getOrPut to avoid leaking the second allocation.
+            const gop = try self.status_map.getOrPut(filename);
+            if (!gop.found_existing) {
+                gop.key_ptr.* = self.allocator.dupe(u8, filename) catch |err| {
+                    // Roll back the reserved slot so the (now-invalid) key
+                    // pointer isn't observed by iterators or deinit.
+                    _ = self.status_map.remove(filename);
+                    return err;
+                };
+            }
+            gop.value_ptr.* = status;
         }
-
-        // Only mark as loaded after successful completion
-        self.status_loaded = true;
     }
 
     fn makeRelativePath(self: *const Self, file_path: []const u8) ![]const u8 {
@@ -257,6 +274,40 @@ test "findGitRoot in non-git directory" {
             try testing.expect(err == error.FileNotFound);
         };
     }
+}
+
+test "parsePorcelainOutput: duplicate filenames do not leak keys" {
+    const allocator = testing.allocator;
+
+    // `git status --porcelain` reports the same path twice when a file is
+    // staged for deletion and then recreated untracked. Earlier versions
+    // duped a fresh key for the second line, which `HashMap.put` silently
+    // dropped because the original key was retained. testing.allocator
+    // fails this test if any dupe leaks.
+    var repo: GitRepo = .{
+        .root_path = try allocator.dupe(u8, "/tmp/fake-repo"),
+        .status_map = std.StringHashMap(GitStatus).init(allocator),
+        .allocator = allocator,
+        .last_refresh = 0,
+        .status_loaded = false,
+    };
+    defer repo.deinit();
+
+    const porcelain =
+        "D  AGENTS.md\n" ++
+        "?? AGENTS.md\n" ++
+        "D  CLAUDE.md\n" ++
+        "?? CLAUDE.md\n" ++
+        " M solo.txt\n";
+
+    try repo.parsePorcelainOutput(porcelain);
+
+    // Three unique paths: AGENTS.md, CLAUDE.md, solo.txt.
+    try testing.expectEqual(@as(u32, 3), repo.status_map.count());
+    // Later worktree state wins.
+    try testing.expectEqual(GitStatus.untracked, repo.status_map.get("AGENTS.md").?);
+    try testing.expectEqual(GitStatus.untracked, repo.status_map.get("CLAUDE.md").?);
+    try testing.expectEqual(GitStatus.modified, repo.status_map.get("solo.txt").?);
 }
 
 test "GitRepo init in non-git directory" {
