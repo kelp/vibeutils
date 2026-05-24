@@ -70,7 +70,7 @@ Verify all issues are fixed:
 - **Reviewer agents** (Phase 1 & 3): Use `opus` for thorough
   code analysis
 - **Programmer agent** (Phase 2): Use `opus` for correct Zig
-  0.15.x code generation
+  0.16.0 code generation
 
 Always pass the `model` parameter explicitly when spawning
 sub-agents. Do not rely on model inheritance.

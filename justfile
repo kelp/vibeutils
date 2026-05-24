@@ -116,7 +116,7 @@ install:
 # Run a specific utility with arguments
 run util +args='':
     @echo "Running {{util}} utility..."
-    @zig build run-{{util}} -- {{args}} 2>&1 || echo "Error: Failed to run {{util}}. It may need to be migrated to Zig 0.15.1 first."
+    @zig build run-{{util}} -- {{args}}
 
 # --- Build Modes ---
 

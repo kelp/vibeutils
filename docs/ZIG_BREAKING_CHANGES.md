@@ -18,10 +18,15 @@ Reference material on disk (always grep these before writing):
 - `docs/zig-0.16.0-docs.md` — official 0.16.0 language reference
 - `docs/zig-0.15.2-docs.md` — 0.15 language reference (for diffing)
 
-vibeutils currently builds against 0.15.1. Source migration to
-0.16 is a separate effort — see the "Migration Strategy for
-vibeutils" section at the end. Use this doc as ground truth when
-writing new code or reviewing 0.16-targeted patches.
+**vibeutils builds against Zig 0.16.0.** `build.zig.zon` pins
+`minimum_zig_version = "0.16.0"` and `flake.nix` pins the same
+toolchain. The 0.15 → 0.16 source migration is complete: utilities
+use "Juicy Main" (`pub fn main(init: std.process.Init)`), I/O is
+plumbed through every `runUtil` entry point, `std.Io.File` and
+`std.Io.Dir` replace the old `std.fs` types, and tests use
+`std.testing.io` alongside `std.testing.allocator`. Use this doc
+as a reference for the breaking changes that were applied, and as
+ground truth when writing new code or reviewing patches.
 
 ## Quick Reference Table
 
@@ -1232,38 +1237,52 @@ you want hardlink-style "fail if dest exists" semantics.
 New API for creating a connected socketpair (replaces ad-hoc
 `socketpair(2)` extern declarations).
 
-## Migration Strategy for vibeutils
+## Migration Status in vibeutils
 
-vibeutils currently builds against **Zig 0.15.1**. Source
-migration to 0.16 is a separate effort that hasn't started.
-Don't bump `build.zig.zon`'s `minimum_zig_version` until the
-migration is complete and tested.
+The 0.16 migration **is complete**. `build.zig.zon` and
+`flake.nix` both pin **Zig 0.16.0**. Current state:
+
+- **"Juicy Main" everywhere** — every utility's entry point is
+  `pub fn main(init: std.process.Init)`, returning either `!void`
+  or `noreturn` via `common.utilityMain`.
+- **`Io` plumbed through `runUtil`** — every utility's runtime
+  function takes `(allocator, io, args, stdout_writer, stderr_writer)`,
+  same shape as the existing `Allocator` plumbing.
+- **`std.Io.File` / `std.Io.Dir`** replace `std.fs.File` /
+  `std.fs.Dir` across `src/`. A handful of stragglers
+  (`std.fs.cwd().access`, `std.fs.path.join`, `std.fs.Dir`
+  return types in `src/common/test_utils_privilege.zig` and
+  `src/common/file_ops.zig`) remain, mostly in test utilities
+  where the deprecated alias still compiles cleanly.
+- **`writerStreaming` mandated for stdout/stderr** — enforced by
+  the regression test in `src/common/lib.zig` (issue #5). The
+  positional `writer()` form ignores `O_APPEND` on macOS and
+  breaks shell `>>` redirects.
+- **`std.testing.io`** is used alongside `std.testing.allocator`
+  in every utility's embedded tests.
+- **`environ_map`** is plumbed from `init.environ_map` — see
+  `src/env.zig` for the canonical pattern. No surviving
+  `std.os.environ` or `std.posix.setenv` workarounds.
+- **`std.mem.find*`** is the canonical form (~617 call sites).
+  ~73 call sites still use the deprecated `indexOf*` aliases
+  (`indexOf`, `indexOfScalar`, `indexOfPos`) — these still
+  compile because `mem.zig` retains them as `pub const indexOf =
+  find;` etc., but new code should prefer `find*`.
 
 **For new code today:**
-- Stay on the 0.15 patterns documented in `docs/ZIG_PATTERNS.md`
-- This file describes the *destination* of an eventual migration
-- When 0.16 docs and existing 0.15 code disagree, **0.15 wins
-  for now** — current vibeutils source is the source of truth
-  until the migration lands
-
-**When the migration starts:**
-- Plumb `Io` from `main` through every utility's runtime entry
-  point — same shape as the existing `Allocator` plumbing
-- Migrate `std.fs.File` / `std.fs.Dir` call sites mechanically
-  (mostly add `io` parameter)
-- Rewrite `setTimestamps` and atomic-file usages (signature
-  reshapes, not mechanical)
-- Convert `std.os.environ` reads (`getenv` etc.) to plumbed
-  `*const Environ.Map` parameters
-- Update `std.process.argsAlloc` callers to take `init.minimal.args`
-- Search-and-replace `indexOf*` → `find*` in `src/`
-- Rebuild `runUtil` test harness signatures: tests use
-  `std.testing.io` the way they currently use `testing.allocator`
+- Follow the 0.16 patterns in `docs/ZIG_PATTERNS.md` and the
+  shapes already in `src/`.
+- When in doubt, copy the shape of a recently-touched utility
+  (e.g. `src/wc.zig`, `src/cat.zig`, `src/true.zig`) rather
+  than inventing one.
+- Prefer `std.mem.find*` over `std.mem.indexOf*` even though
+  the latter still compiles.
 
 **Reference order when stuck:**
 1. Grep this file for the symbol or error message
-2. Grep `docs/zig-0.16.0-release-notes.md` for the same
-3. Grep `docs/zig-0.16.0-docs.md` (the language reference)
-4. As a last resort, read the actual `lib/std/Io/...` source in
+2. Grep an existing utility in `src/` for a known-good pattern
+3. Grep `docs/zig-0.16.0-release-notes.md` for the same
+4. Grep `docs/zig-0.16.0-docs.md` (the language reference)
+5. As a last resort, read the actual `lib/std/Io/...` source in
    your installed Zig — the lang ref is incomplete, the source
    is not

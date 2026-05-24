@@ -290,24 +290,49 @@ test "filter utility basic test" {
 
 #### Pattern 2: Dual Function Architecture (Recommended)
 
-Create two functions - one for public API, one for testing:
+Create two functions — one for public API, one for testing. The
+public function opens stdin; the inner function takes a
+`*std.Io.Reader` so tests can pass `std.Io.Reader.fixed(input)`.
+See `src/tee.zig` for the canonical pattern.
 
 ```zig
 // Public API that reads from stdin
-pub fn runUtil(allocator: Allocator, args: []const []const u8, stdout_writer: anytype, stderr_writer: anytype) !u8 {
-    const stdin_file = std.fs.File.stdin();
-    return runUtilWithInput(allocator, args, stdin_file, stdout_writer, stderr_writer);
+pub fn runUtil(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
+    return runUtilWithInput(allocator, io, args, &stdin_reader.interface,
+                            stdout_writer, stderr_writer);
 }
 
-// Testable function that accepts input
-fn runUtilWithInput(allocator: Allocator, args: []const []const u8, input_file: std.fs.File, stdout_writer: anytype, stderr_writer: anytype) !u8 {
+// Testable function that accepts an arbitrary reader
+fn runUtilWithInput(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    reader: *std.Io.Reader,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
     // Implementation here
 }
 
-// Test using the input variant
 test "filter utility with mock input" {
-    // Create mock input (this is still challenging in Zig 0.15.x)
-    // May still need to skip or use binary smoke tests
+    const io = std.testing.io;
+    var input: std.Io.Reader = .fixed("hello\nworld\n");
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    _ = try runUtilWithInput(testing.allocator, io, &.{}, &input,
+                             &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqualStrings("hello\nworld\n", stdout_aw.writer.buffered());
 }
 ```
 

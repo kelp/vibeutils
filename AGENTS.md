@@ -17,7 +17,7 @@
 - `make docs`: Generate API docs under `zig-out/docs/`.
 
 ## Coding Style & Naming Conventions
-- Language: Zig 0.15.x. Use `zig fmt` (via `make fmt`).
+- Language: Zig 0.16.0. Use `zig fmt` (via `make fmt`).
 - Indentation: Zig defaults (tabs), no trailing whitespace.
 - Functions: CLI entry is `run<Name>` (e.g., `runRm`), not `runUtility`.
 - Error handling: Writer-based pattern; pass `stdout_writer`/`stderr_writer` and use `common.printErrorWithProgram`.

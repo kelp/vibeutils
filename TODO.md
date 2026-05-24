@@ -5,7 +5,7 @@
 - **Utilities**: basename, cat, chmod, chown, cp, cut, date, dd, df, dirname, du, echo, env, false, find, free, grep, head, id, ln, ls, mkdir, mktemp, mv, nl, printf, pwd, readlink, realpath, rm, rmdir, seq, sleep, sort, stat, tac, tail, tee, test, timeout, touch, tr, true, uniq, wc, whoami, yes
 - **Flag coverage**: 288/288 MUST, 220/220 SHOULD (100%)
 - **Compatibility**: 90-100% GNU feature coverage for completed utilities
-- **Infrastructure**: justfile build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.15.2**, **7 shared common modules** (time, path, glob, prompt, format, file_ops, lib color detection)
+- **Infrastructure**: justfile build system, CI/CD, privileged testing, writer-based I/O, **Zig 0.16.0**, **7 shared common modules** (time, path, glob, prompt, format, file_ops, lib color detection)
 - **Packaging**: Homebrew tap, Nix flake with Cachix binary cache (4 platforms), GitHub release binaries
 - **Documentation**: Claude Code quality check (/qc), man page style guide, testing strategy, CHANGELOG.md
 

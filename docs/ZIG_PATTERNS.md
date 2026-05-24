@@ -4,13 +4,13 @@ This document contains Zig 0.16.x patterns and idioms used in this
 codebase. It serves as a quick reference for implementing GNU coreutils
 in Zig.
 
-vibeutils currently builds against 0.15.1 (`build.zig.zon`); new code
-should follow 0.16 patterns documented here. The full 0.15.x → 0.16
-breaking-change catalog (Writergate-scale APIs renamed, I/O as an
-Interface, environ becoming non-global, etc.) lives in
-`ZIG_BREAKING_CHANGES.md`. This document focuses on **the right way to
-do things in 0.16**; cross-references point at the breaking-changes doc
-for migration tables.
+vibeutils builds against Zig 0.16.0 (`build.zig.zon` and `flake.nix`
+both pin `0.16.0`); the 0.15 → 0.16 source migration is complete.
+The full 0.15.x → 0.16 breaking-change catalog (Writergate-scale APIs
+renamed, I/O as an Interface, environ becoming non-global, etc.)
+lives in `ZIG_BREAKING_CHANGES.md`. This document focuses on **the
+right way to do things in 0.16**; cross-references point at the
+breaking-changes doc for migration tables.
 
 > Verification note: every code pattern below was checked against
 > `docs/zig-0.16.0-docs.md` and `docs/zig-0.16.0-release-notes.md`. A

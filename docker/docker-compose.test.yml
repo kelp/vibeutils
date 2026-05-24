@@ -9,7 +9,7 @@ services:
       dockerfile: docker/test/Dockerfile.test
       target: test-ubuntu-24.04
       args:
-        ZIG_VERSION: "0.15.2"
+        ZIG_VERSION: "0.16.0"
     image: vibeutils-test:ubuntu-24.04
     container_name: vibeutils-test-ubuntu-24.04
     
@@ -104,7 +104,7 @@ services:
       dockerfile: docker/test/Dockerfile.test
       target: test-ubuntu-latest
       args:
-        ZIG_VERSION: "0.15.2"
+        ZIG_VERSION: "0.16.0"
     image: vibeutils-test:ubuntu-latest
     container_name: vibeutils-test-ubuntu-latest
     
@@ -192,7 +192,7 @@ services:
       dockerfile: docker/test/Dockerfile.test
       target: test-debian-12
       args:
-        ZIG_VERSION: "0.15.2"
+        ZIG_VERSION: "0.16.0"
     image: vibeutils-test:debian-12
     container_name: vibeutils-test-debian-12
     
@@ -280,7 +280,7 @@ services:
       dockerfile: docker/test/Dockerfile.test
       target: test-alpine
       args:
-        ZIG_VERSION: "0.15.2"
+        ZIG_VERSION: "0.16.0"
     image: vibeutils-test:alpine
     container_name: vibeutils-test-alpine
     

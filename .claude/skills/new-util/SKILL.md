@@ -11,7 +11,7 @@ is the utility name (e.g., `/new-util sort`).
 ## Before You Start
 
 1. Read `docs/ZIG_BREAKING_CHANGES.md` -- your Zig training is
-   outdated (covers 0.15.x)
+   outdated (covers 0.15.x → 0.16.0 migration)
 2. Read `docs/TESTING_STRATEGY.md` -- especially the filter
    utility section
 3. Read the template at
@@ -117,7 +117,7 @@ test "<utility>: basic functionality" {
     EXAMPLES, SEE ALSO, STANDARDS, AUTHORS.
     No HISTORY section. Validate: `mandoc -T lint`.
 
-14. **Run `/zig-check`** to audit for Zig 0.15 correctness.
+14. **Run `/zig-check`** to audit for Zig 0.16 correctness.
 
 15. **Coverage:** Run `make coverage` targeting 90%+.
 
