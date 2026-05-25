@@ -14,7 +14,16 @@
   regressions during integration testing: `head` now streams
   lines longer than its 8 KB read buffer instead of erroring
   with `StreamTooLong`; `mktemp` passes explicit `0o600`
-  permissions since 0.16's default is `0o666`.
+  permissions since 0.16's default is `0o666`. Contributor
+  docs, Docker version defaults, and `.claude/` skills updated
+  to reflect the 0.16-only state (CLAUDE.md, ZIG_PATTERNS.md,
+  ZIG_BREAKING_CHANGES.md, TESTING_STRATEGY.md, AGENTS.md,
+  zig-patterns and zig-check skills).
+- **Add Tiger Style coding guidance** to CLAUDE.md — paired
+  assertions, bounded loops, static-after-init memory,
+  snake_case naming with unit suffixes, 70-line function
+  limit, 100-column line limit. Advisory for new code and
+  refactors; not retroactively enforced.
 ### Bug Fixes
 - **ls: memory leak in git status integration.** When
   `git status --porcelain` reported the same filename twice
