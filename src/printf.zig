@@ -981,8 +981,24 @@ fn formatFixedFloat(buf: []u8, val: f64, precision: usize) ![]const u8 {
     return std.fmt.float.render(buf, val, .{ .mode = .decimal, .precision = precision });
 }
 
+/// Format Inf/NaN per GNU printf semantics: "inf", "-inf", "nan",
+/// uppercased for %E / %G. The normalization loops in formatSciFloat
+/// and formatGeneralFloat don't terminate for non-finite input, so
+/// every float-formatting entry point handles those cases up front.
+fn formatNonFiniteFloat(buf: []u8, val: f64, uppercase: bool) ![]const u8 {
+    const s: []const u8 = if (std.math.isNan(val))
+        (if (uppercase) "NAN" else "nan")
+    else if (val < 0)
+        (if (uppercase) "-INF" else "-inf")
+    else if (uppercase) "INF" else "inf";
+    if (buf.len < s.len) return error.NoSpaceLeft;
+    @memcpy(buf[0..s.len], s);
+    return buf[0..s.len];
+}
+
 /// Format a floating-point number in scientific notation (%e/%E).
 fn formatSciFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]const u8 {
+    if (!std.math.isFinite(val)) return formatNonFiniteFloat(buf, val, uppercase);
     if (val == 0.0) {
         var pos: usize = 0;
         buf[pos] = '0';
@@ -1051,6 +1067,7 @@ fn formatSciFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]con
 /// Uses %e if exponent < -4 or >= precision, otherwise %f.
 /// Trailing zeros are removed from the fractional part.
 fn formatGeneralFloat(buf: []u8, val: f64, precision: usize, uppercase: bool) ![]const u8 {
+    if (!std.math.isFinite(val)) return formatNonFiniteFloat(buf, val, uppercase);
     const prec = if (precision == 0) 1 else precision;
 
     if (val == 0.0) {
@@ -2018,3 +2035,80 @@ test "audit: printf space-sign flag negative" {
 }
 
 // %u is already tested in "printf unsigned integer" above -- no gap.
+
+// Regression: formatSciFloat and formatGeneralFloat normalize via
+// `while (abs_val >= 10.0) abs_val /= 10.0;`. For Inf, the condition is
+// always true and the loop never terminates. Verified by running with
+// `--test-timeout=10s` against printf.zig prior to the isFinite guard:
+// the test runner hangs. GNU printf outputs "inf" / "-inf" / "nan"
+// (uppercase for %E and %G).
+
+test "printf %e with positive infinity outputs inf" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%e", "inf" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("inf", buffer_aw.writer.buffered());
+}
+
+test "printf %e with negative infinity outputs -inf" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%e", "-inf" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("-inf", buffer_aw.writer.buffered());
+}
+
+test "printf %e with NaN outputs nan" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%e", "nan" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("nan", buffer_aw.writer.buffered());
+}
+
+test "printf %E with positive infinity outputs INF (uppercase)" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%E", "inf" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("INF", buffer_aw.writer.buffered());
+}
+
+test "printf %g with positive infinity outputs inf" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%g", "inf" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("inf", buffer_aw.writer.buffered());
+}
+
+test "printf %g with NaN outputs nan" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%g", "nan" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("nan", buffer_aw.writer.buffered());
+}
+
+test "printf %G with NaN outputs NAN (uppercase)" {
+    var buffer_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer buffer_aw.deinit();
+
+    const args = [_][]const u8{ "%G", "nan" };
+    const result = try runPrintf(testing.allocator, testing.io, &args, &buffer_aw.writer, common.null_writer);
+    try testing.expectEqual(@as(u8, 0), result);
+    try testing.expectEqualStrings("NAN", buffer_aw.writer.buffered());
+}
