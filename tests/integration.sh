@@ -18,6 +18,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BIN_DIR="$PROJECT_ROOT/zig-out/bin"
 
+# Prepend BIN_DIR to PATH so unqualified utility names in tests
+# (e.g. `head -n 1` in yes_test.sh) resolve to the freshly-built
+# binaries, not whatever vibeutils is installed system-wide.
+export PATH="$BIN_DIR:$PATH"
+
 # Source the new test infrastructure
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/test_runner.sh"
