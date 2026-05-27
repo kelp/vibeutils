@@ -1011,11 +1011,8 @@ test "ln: -P creates hard link to symlink itself" {
     const symlink_info = try common.file.FileInfo.lstat(symlink_abs);
     const hardlink_info = try common.file.FileInfo.lstat(hardlink_abs);
 
-    // -P should create hard link to the symlink itself,
-    // so the hardlink should be a symlink with the same inode as symlink.txt.
-    // This test should FAIL because -P is not implemented yet --
-    // the current code follows the symlink (like -L) and creates a
-    // hard link to the target file instead.
+    // -P creates a hard link to the symlink itself (linkat flags=0),
+    // so the hardlink shares the symlink's inode rather than the target's.
     try testing.expectEqual(symlink_info.inode, hardlink_info.inode);
 }
 
