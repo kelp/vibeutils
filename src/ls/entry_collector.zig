@@ -208,12 +208,11 @@ pub fn processSubdirectoriesRecursively(
 
     // Recurse into subdirectories
     for (subdirs.items) |subdir| {
-        // Print separator and header
+        // Print blank-line separator between directory listings.
+        // The header itself ({path}:\n) is emitted by printDirectoryListing
+        // in core.zig, so printing it here too would produce duplicates
+        // (audit finding G13).
         writer.writeAll("\n") catch |err| {
-            if (err == error.BrokenPipe) return; // Exit gracefully on pipe close
-            return err;
-        };
-        writer.print("{s}:\n", .{subdir.path}) catch |err| {
             if (err == error.BrokenPipe) return; // Exit gracefully on pipe close
             return err;
         };
