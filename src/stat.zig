@@ -533,12 +533,8 @@ fn expandFormatDirective(
             }
         },
         'o' => {
-            // Optimal I/O transfer size
-            if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-                try writer.print("{d}", .{stat_buf.blksize});
-            } else {
-                try writer.print("{d}", .{stat_buf.blksize});
-            }
+            // Optimal I/O transfer size.
+            try writer.print("{d}", .{stat_buf.blksize});
         },
         's' => {
             // Total size in bytes
@@ -758,6 +754,11 @@ fn printDefaultFormat(
         "regular empty file"
     else
         fileTypeString(mode);
+    // stat(2) returns non-negative values on success; assert before casting
+    // to u64 since @intCast panics on negative i64 sources.
+    std.debug.assert(stat_buf.size >= 0);
+    std.debug.assert(stat_buf.blocks >= 0);
+    std.debug.assert(stat_buf.blksize >= 0);
     const size_u: u64 = @intCast(stat_buf.size);
     const blocks_u: u64 = @intCast(stat_buf.blocks);
     const blksize_u: u64 = @intCast(stat_buf.blksize);
