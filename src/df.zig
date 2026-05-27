@@ -436,11 +436,20 @@ fn getFilesystemForPathDarwin(allocator: Allocator, path: []const u8) !FsInfo {
         };
     }
 
-    // Dupe strings so they outlive the stack-local StatFs
+    // Dupe strings so they outlive the stack-local StatFs. Bind each
+    // dupe to a local with an errdefer so a later dupe failure unwinds
+    // the earlier allocations (audit G2).
+    const source = try allocator.dupe(u8, extractCString(&sfs.f_mntfromname));
+    errdefer allocator.free(source);
+    const fstype = try allocator.dupe(u8, extractCString(&sfs.f_fstypename));
+    errdefer allocator.free(fstype);
+    const mount_point = try allocator.dupe(u8, extractCString(&sfs.f_mntonname));
+    errdefer allocator.free(mount_point);
+
     return FsInfo{
-        .source = try allocator.dupe(u8, extractCString(&sfs.f_mntfromname)),
-        .fstype = try allocator.dupe(u8, extractCString(&sfs.f_fstypename)),
-        .mount_point = try allocator.dupe(u8, extractCString(&sfs.f_mntonname)),
+        .source = source,
+        .fstype = fstype,
+        .mount_point = mount_point,
         .total_blocks = sfs.f_blocks,
         .used_blocks = sfs.f_blocks -| sfs.f_bfree,
         .avail_blocks = sfs.f_bavail,
@@ -506,8 +515,11 @@ fn getMountedFilesystemsLinux(io: std.Io, allocator: Allocator) ![]FsInfo {
         if (ret != 0) continue; // skip mount points we can't stat
 
         const source = allocator.dupe(u8, source_raw) catch return error.OutOfMemory;
+        errdefer allocator.free(source);
         const mount_point = allocator.dupe(u8, mount_point_raw) catch return error.OutOfMemory;
+        errdefer allocator.free(mount_point);
         const fstype = allocator.dupe(u8, fstype_raw) catch return error.OutOfMemory;
+        errdefer allocator.free(fstype);
 
         try result.append(allocator, FsInfo{
             .source = source,
@@ -583,10 +595,19 @@ fn getFilesystemForPathLinux(io: std.Io, allocator: Allocator, path: []const u8)
         }
     }
 
+    // Bind each dupe to a local with an errdefer so a later dupe
+    // failure unwinds the earlier allocations (audit G2).
+    const source = try allocator.dupe(u8, best_source);
+    errdefer allocator.free(source);
+    const fstype = try allocator.dupe(u8, best_fstype);
+    errdefer allocator.free(fstype);
+    const mount_point = try allocator.dupe(u8, best_mount);
+    errdefer allocator.free(mount_point);
+
     return FsInfo{
-        .source = try allocator.dupe(u8, best_source),
-        .fstype = try allocator.dupe(u8, best_fstype),
-        .mount_point = try allocator.dupe(u8, best_mount),
+        .source = source,
+        .fstype = fstype,
+        .mount_point = mount_point,
         .total_blocks = svfs.f_blocks,
         .used_blocks = svfs.f_blocks -| svfs.f_bfree,
         .avail_blocks = svfs.f_bavail,
