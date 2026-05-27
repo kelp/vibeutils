@@ -332,6 +332,44 @@ test "recursive: shows directory headers with proper formatting" {
     try LsAssertions.expectDirectoryHeader(output, "./dir1/subdir:");
 }
 
+test "recursive: each directory header appears exactly once (no duplicates)" {
+    // Guard against bug G13: ls -R printed each subdirectory path header twice.
+    // Substring presence (expectDirectoryHeader) cannot detect this because it
+    // stops at the first match. This test counts occurrences and asserts == 1.
+    var env = try LsTestEnv.init(testing.allocator);
+    defer env.deinit();
+
+    // Two top-level subdirs and one nested subdir exercise both shallow and
+    // deep recursion code paths.
+    try env.createDir("dir1");
+    try env.createDir("dir2");
+
+    var dir1 = try env.createDirAndOpen("dir1");
+    defer dir1.close(std.testing.io);
+    try dir1.createDir(std.testing.io, "subdir", .default_dir);
+
+    try env.runLs(.{ .recursive = true });
+
+    const output = env.getStdout();
+
+    const headers = [_][]const u8{ "./dir1:", "./dir2:", "./dir1/subdir:" };
+    for (headers) |header| {
+        var count: u32 = 0;
+        var pos: usize = 0;
+        while (std.mem.findPos(u8, output, pos, header)) |found| {
+            count += 1;
+            pos = found + header.len;
+        }
+        if (count != 1) {
+            std.debug.print(
+                "Header '{s}' appears {d} time(s) (expected 1) in output:\n{s}\n",
+                .{ header, count, output },
+            );
+            return error.HeaderCountWrong;
+        }
+    }
+}
+
 test "recursive: handles symlink cycles safely" {
     var env = try LsTestEnv.init(testing.allocator);
     defer env.deinit();
