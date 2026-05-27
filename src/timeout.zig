@@ -409,12 +409,9 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
             sendSignal(child_pid, 9, !parsed.foreground); // SIGKILL
 
             // SIGKILL was sent; wait for child and return its exit code
-            // (typically 137 = 128+9). GNU timeout does this too.
-            const kill_exit = waitChild(child_pid);
-            if (parsed.@"preserve-status") {
-                return kill_exit;
-            }
-            return kill_exit;
+            // (typically 137 = 128+9). GNU timeout does this too,
+            // regardless of --preserve-status.
+            return waitChild(child_pid);
         }
     }
 
