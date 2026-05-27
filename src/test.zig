@@ -1194,6 +1194,48 @@ test "file comparison operators -nt, -ot, -ef" {
     try testing.expectEqual(@intFromEnum(ExitCode.false), result);
 }
 
+// Regression: the comparison in isNewerThan/isOlderThan reads
+// `mtime.nanoseconds`, which on `std.Io.File.Stat` is the full
+// nanoseconds-since-epoch (`i96`), not a sub-second component of a
+// `tv_sec`/`tv_nsec` pair. Verify the comparison stays correct when
+// the two files straddle a wall-clock second boundary.
+test "file comparison -nt / -ot across a one-second boundary" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const f_old = try tmp.dir.createFile(io, "old", .{});
+    f_old.close(io);
+
+    // Sleep long enough to push the second file into the next whole
+    // second (1.1s — comfortable margin for low-resolution clocks).
+    io.sleep(std.Io.Duration.fromNanoseconds(1_100 * std.time.ns_per_ms), .awake) catch {};
+
+    const f_new = try tmp.dir.createFile(io, "new", .{});
+    f_new.close(io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(dir_path);
+    const old_path = try std.fmt.allocPrint(testing.allocator, "{s}/old", .{dir_path});
+    defer testing.allocator.free(old_path);
+    const new_path = try std.fmt.allocPrint(testing.allocator, "{s}/new", .{dir_path});
+    defer testing.allocator.free(new_path);
+
+    // -nt: the second-created file is newer than the first.
+    var result = try runTest(testing.allocator, io, &[_][]const u8{ new_path, "-nt", old_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // -ot: the first-created file is older than the second.
+    result = try runTest(testing.allocator, io, &[_][]const u8{ old_path, "-ot", new_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.true), result);
+
+    // Reverse direction must return false in both cases.
+    result = try runTest(testing.allocator, io, &[_][]const u8{ old_path, "-nt", new_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+    result = try runTest(testing.allocator, io, &[_][]const u8{ new_path, "-ot", old_path }, common.null_writer, common.null_writer);
+    try testing.expectEqual(@intFromEnum(ExitCode.false), result);
+}
+
 test "string ordering operator < (less than)" {
     const io = testing.io;
     // "abc" < "def" should be true
