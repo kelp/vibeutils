@@ -56,12 +56,28 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build for ${{ matrix.archive-name }}
-        run: >
-          zig build
-          -Dtarget=${{ matrix.target }}
-          -Doptimize=ReleaseSafe
-          -Dstrip=true
-          --prefix dist
+        shell: bash
+        run: |
+          # macOS: native build using the runner's system SDK via xcrun.
+          # Cross-compiling with -Dtarget=...-macos-none uses Zig's bundled
+          # libc subset; under Zig 0.16 translate-c chokes on Mach types
+          # like mach_msg_descriptor_t (declared opaque while @sizeOf
+          # assertions are emitted against them). Native build matches the
+          # host SDK and avoids the issue.
+          # Linux: keep the explicit musl target for static linking and
+          # cross-compile between arm64/amd64.
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            zig build \
+              -Doptimize=ReleaseSafe \
+              -Dstrip=true \
+              --prefix dist
+          else
+            zig build \
+              -Dtarget=${{ matrix.target }} \
+              -Doptimize=ReleaseSafe \
+              -Dstrip=true \
+              --prefix dist
+          fi
 
       - name: Copy man pages
         run: mkdir -p dist/share/man/man1 && cp man/man1/* dist/share/man/man1/
