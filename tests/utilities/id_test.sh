@@ -210,4 +210,165 @@ test_id() {
         print_test_result "id -a produces default format (no-op)" "FAIL" \
             "Expected uid=... format, got '$a_output'"
     fi
+
+    echo -e "${CYAN}Testing -r flag (real IDs)...${NC}"
+
+    # -r -u should print the real UID (numeric)
+    local ru_output ru_exit
+    ru_output=$("$binary" -r -u 2>/dev/null)
+    ru_exit=$?
+    if [[ $ru_exit -eq 0 && "$ru_output" =~ ^[0-9]+$ ]]; then
+        print_test_result "id -r -u prints numeric real UID" "PASS"
+    else
+        print_test_result "id -r -u prints numeric real UID" "FAIL" \
+            "Exit code: $ru_exit, output: '$ru_output'"
+    fi
+
+    # -r -g should print the real GID (numeric)
+    local rg_output rg_exit
+    rg_output=$("$binary" -r -g 2>/dev/null)
+    rg_exit=$?
+    if [[ $rg_exit -eq 0 && "$rg_output" =~ ^[0-9]+$ ]]; then
+        print_test_result "id -r -g prints numeric real GID" "PASS"
+    else
+        print_test_result "id -r -g prints numeric real GID" "FAIL" \
+            "Exit code: $rg_exit, output: '$rg_output'"
+    fi
+
+    # -r -u -n should print the real username (non-numeric)
+    local run_output run_exit
+    run_output=$("$binary" -r -u -n 2>/dev/null)
+    run_exit=$?
+    if [[ $run_exit -eq 0 && -n "$run_output" && ! "$run_output" =~ ^[0-9]+$ ]]; then
+        print_test_result "id -r -u -n prints real username" "PASS"
+    else
+        print_test_result "id -r -u -n prints real username" "FAIL" \
+            "Exit code: $run_exit, output: '$run_output'"
+    fi
+
+    # -r -u should match the system real UID
+    local sys_ruid
+    sys_ruid=$(id -r -u 2>/dev/null || /usr/bin/id -r -u 2>/dev/null)
+    if [[ -n "$sys_ruid" && "$ru_output" == "$sys_ruid" ]]; then
+        print_test_result "id -r -u matches system real UID" "PASS"
+    else
+        print_test_result "id -r -u matches system real UID" "FAIL" \
+            "Expected '$sys_ruid', got '$ru_output'"
+    fi
+
+    echo -e "${CYAN}Testing -p flag (pretty format)...${NC}"
+
+    # -p should output uid and groups labels on separate lines
+    local p_output p_exit
+    p_output=$("$binary" -p 2>/dev/null)
+    p_exit=$?
+    if [[ $p_exit -eq 0 && "$p_output" == *$'uid\t'* && "$p_output" == *$'groups\t'* ]]; then
+        print_test_result "id -p shows uid and groups labels" "PASS"
+    else
+        print_test_result "id -p shows uid and groups labels" "FAIL" \
+            "Exit code: $p_exit, output: '$p_output'"
+    fi
+
+    # -p should NOT contain uid= (default format leak)
+    if [[ $p_exit -eq 0 && "$p_output" != *"uid="* ]]; then
+        print_test_result "id -p does not leak default format" "PASS"
+    else
+        print_test_result "id -p does not leak default format" "FAIL" \
+            "Output contains 'uid=': '$p_output'"
+    fi
+
+    echo -e "${CYAN}Testing -F flag (full name / GECOS)...${NC}"
+
+    # -F should output a non-empty string (the GECOS field)
+    local f_output f_exit
+    f_output=$("$binary" -F 2>/dev/null)
+    f_exit=$?
+    if [[ $f_exit -eq 0 && -n "$f_output" ]]; then
+        print_test_result "id -F prints GECOS field" "PASS"
+    else
+        print_test_result "id -F prints GECOS field" "FAIL" \
+            "Exit code: $f_exit, output: '$f_output'"
+    fi
+
+    # -F for root should produce a non-empty string
+    local f_root_output f_root_exit
+    f_root_output=$("$binary" -F root 2>/dev/null)
+    f_root_exit=$?
+    if [[ $f_root_exit -eq 0 ]]; then
+        print_test_result "id -F root succeeds" "PASS"
+    else
+        print_test_result "id -F root succeeds" "FAIL" \
+            "Exit code: $f_root_exit, output: '$f_root_output'"
+    fi
+
+    echo -e "${CYAN}Testing -P flag (passwd entry)...${NC}"
+
+    # -P should output colon-delimited passwd format
+    local p_entry_output p_entry_exit
+    p_entry_output=$("$binary" -P 2>/dev/null)
+    p_entry_exit=$?
+    local colon_count
+    colon_count=$(echo "$p_entry_output" | tr -cd ':' | wc -c)
+    if [[ $p_entry_exit -eq 0 && $colon_count -ge 6 ]]; then
+        print_test_result "id -P outputs colon-delimited format" "PASS"
+    else
+        print_test_result "id -P outputs colon-delimited format" "FAIL" \
+            "Exit: $p_entry_exit, colons: $colon_count, output: '$p_entry_output'"
+    fi
+
+    # -P output should start with current username
+    local cur_user
+    cur_user=$(whoami)
+    if [[ "$p_entry_output" == "$cur_user:"* ]]; then
+        print_test_result "id -P starts with current username" "PASS"
+    else
+        print_test_result "id -P starts with current username" "FAIL" \
+            "Expected to start with '$cur_user:', got '$p_entry_output'"
+    fi
+
+    # -P root should contain uid 0
+    local p_root_output p_root_exit
+    p_root_output=$("$binary" -P root 2>/dev/null)
+    p_root_exit=$?
+    # Extract third colon-delimited field (UID)
+    local p_root_uid
+    p_root_uid=$(echo "$p_root_output" | cut -d: -f3)
+    if [[ $p_root_exit -eq 0 && "$p_root_uid" == "0" ]]; then
+        print_test_result "id -P root shows uid=0" "PASS"
+    else
+        print_test_result "id -P root shows uid=0" "FAIL" \
+            "Exit: $p_root_exit, uid field: '$p_root_uid', output: '$p_root_output'"
+    fi
+
+    echo -e "${CYAN}Testing -Gn flag (group names)...${NC}"
+
+    # -Gn should output only group names (no pure-numeric tokens)
+    local gn_output gn_exit
+    gn_output=$("$binary" -Gn 2>/dev/null)
+    gn_exit=$?
+    local has_numeric=false
+    for token in $gn_output; do
+        if [[ "$token" =~ ^[0-9]+$ ]]; then
+            has_numeric=true
+            break
+        fi
+    done
+    if [[ $gn_exit -eq 0 && -n "$gn_output" && "$has_numeric" == "false" ]]; then
+        print_test_result "id -Gn outputs only group names" "PASS"
+    else
+        print_test_result "id -Gn outputs only group names" "FAIL" \
+            "Exit: $gn_exit, has_numeric: $has_numeric, output: '$gn_output'"
+    fi
+
+    # -Gn word count should match -G word count
+    local g_output g_count gn_count
+    g_output=$("$binary" -G 2>/dev/null)
+    g_count=$(echo "$g_output" | wc -w | tr -d ' ')
+    gn_count=$(echo "$gn_output" | wc -w | tr -d ' ')
+    if [[ "$g_count" == "$gn_count" ]]; then
+        print_test_result "id -Gn count matches id -G count" "PASS"
+    else
+        print_test_result "id -Gn count matches id -G count" "FAIL" \
+            "-G has $g_count groups, -Gn has $gn_count names"
+    fi
 }
