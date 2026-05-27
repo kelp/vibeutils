@@ -1,5 +1,7 @@
-//! Cross-utility workflow tests for privilege operations
-//! These tests verify that multiple utilities work together correctly under privilege simulation
+//! Cross-utility workflow tests for privilege operations.
+//!
+//! These tests verify that multiple utilities work together correctly
+//! under privilege simulation.
 //!
 //! Prerequisites:
 //! - Built utilities in zig-out/bin/
@@ -14,121 +16,123 @@ const TestUtils = common.test_utils_privilege.TestUtils;
 const builtin = @import("builtin");
 
 test "privileged: mkdir and ls permission workflow" {
-    try privilege_test.requiresPrivilege();
-    
-    // Use arena allocator for temporary allocations
+    const io = testing.io;
+    try privilege_test.requiresPrivilege(io);
+
+    // Use arena allocator for temporary allocations.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    
-    var utils = TestUtils.init(allocator);
+
+    var utils = TestUtils.init(allocator, io);
     defer utils.deinit();
-    
+
     const temp_dir = try utils.getTempDir();
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    
-    // Create directories with different permissions
+    const temp_path = try temp_dir.dir.realPathFileAlloc(io, ".", allocator);
+
+    // Create directories with different permissions.
     const dirs = [_]struct { name: []const u8, mode: []const u8 }{
         .{ .name = "public", .mode = "755" },
         .{ .name = "private", .mode = "700" },
         .{ .name = "restricted", .mode = "750" },
     };
-    
+
     for (dirs) |dir_info| {
         const dir_path = try utils.safePath(temp_path, dir_info.name);
-        
+
         const result = try utils.runBuiltUtility("mkdir", &[_][]const u8{
-            "-m", dir_info.mode,
+            "-m",     dir_info.mode,
             dir_path,
         });
-        
-        try testing.expect(result.term.Exited == 0);
+
+        try testing.expect(result.term.exited == 0);
     }
-    
-    // List with ls to verify permissions
+
+    // List with ls to verify permissions.
     const ls_result = try utils.runBuiltUtility("ls", &[_][]const u8{
         "-la",
         temp_path,
     });
-    
-    try testing.expect(ls_result.term.Exited == 0);
-    
-    // Verify all directories are listed
+
+    try testing.expect(ls_result.term.exited == 0);
+
+    // Verify all directories are listed.
     for (dirs) |dir_info| {
-        try testing.expect(std.mem.indexOf(u8, ls_result.stdout, dir_info.name) != null);
+        try testing.expect(std.mem.find(u8, ls_result.stdout, dir_info.name) != null);
     }
-    
-    // Verify permissions are shown correctly (this is a basic check)
-    try testing.expect(std.mem.indexOf(u8, ls_result.stdout, "drwxr-xr-x") != null); // 755
-    try testing.expect(std.mem.indexOf(u8, ls_result.stdout, "drwx------") != null); // 700
-    try testing.expect(std.mem.indexOf(u8, ls_result.stdout, "drwxr-x---") != null); // 750
+
+    // Verify permissions are shown correctly (basic check).
+    try testing.expect(std.mem.find(u8, ls_result.stdout, "drwxr-xr-x") != null); // 755
+    try testing.expect(std.mem.find(u8, ls_result.stdout, "drwx------") != null); // 700
+    try testing.expect(std.mem.find(u8, ls_result.stdout, "drwxr-x---") != null); // 750
 }
 
 test "privileged: touch and cat file permissions" {
-    try privilege_test.requiresPrivilege();
-    
-    // Use arena allocator for temporary allocations
+    const io = testing.io;
+    try privilege_test.requiresPrivilege(io);
+
+    // Use arena allocator for temporary allocations.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    
-    var utils = TestUtils.init(allocator);
+
+    var utils = TestUtils.init(allocator, io);
     defer utils.deinit();
-    
+
     const temp_dir = try utils.getTempDir();
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    
-    // Create a file with touch
+    const temp_path = try temp_dir.dir.realPathFileAlloc(io, ".", allocator);
+
+    // Create a file with touch.
     const file_path = try utils.safePath(temp_path, "test.txt");
-    
+
     const touch_result = try utils.runBuiltUtility("touch", &[_][]const u8{
         file_path,
     });
-    
-    try testing.expect(touch_result.term.Exited == 0);
-    
-    // Write content to the file using direct file operations (safer than shell)
+
+    try testing.expect(touch_result.term.exited == 0);
+
+    // Write content to the file using direct file operations.
     {
-        const file = try temp_dir.dir.createFile("test.txt", .{});
-        defer file.close();
-        try file.writeAll("Hello, privileged world!\n");
+        const file = try temp_dir.dir.createFile(io, "test.txt", .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, "Hello, privileged world!\n");
     }
-    
-    // Change file permissions to read-only
+
+    // Change file permissions to read-only.
     const chmod_result = try utils.runBuiltUtility("chmod", &[_][]const u8{
         "400",
         file_path,
     });
-    
-    try testing.expect(chmod_result.term.Exited == 0);
-    
-    // Verify we can still read with cat
+
+    try testing.expect(chmod_result.term.exited == 0);
+
+    // Verify we can still read with cat.
     const cat_result = try utils.runBuiltUtility("cat", &[_][]const u8{
         file_path,
     });
-    
-    try testing.expect(cat_result.term.Exited == 0);
-    try testing.expect(std.mem.indexOf(u8, cat_result.stdout, "Hello, privileged world!") != null);
+
+    try testing.expect(cat_result.term.exited == 0);
+    try testing.expect(std.mem.find(u8, cat_result.stdout, "Hello, privileged world!") != null);
 }
 
 test "privileged: recursive directory operations" {
-    try privilege_test.requiresPrivilege();
-    
-    // Use arena allocator for temporary allocations
+    const io = testing.io;
+    try privilege_test.requiresPrivilege(io);
+
+    // Use arena allocator for temporary allocations.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    
-    var utils = TestUtils.init(allocator);
+
+    var utils = TestUtils.init(allocator, io);
     defer utils.deinit();
-    
+
     const temp_dir = try utils.getTempDir();
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    
-    // Create nested directory structure
+    const temp_path = try temp_dir.dir.realPathFileAlloc(io, ".", allocator);
+
+    // Create nested directory structure.
     const base_dir = try std.fmt.allocPrint(allocator, "{s}/project", .{temp_path});
-    defer allocator.free(base_dir);
-    
+
     const dirs = [_][]const u8{
         "project",
         "project/src",
@@ -136,12 +140,11 @@ test "privileged: recursive directory operations" {
         "project/test",
         "project/docs",
     };
-    
-    // Create all directories
+
+    // Create all directories.
     for (dirs) |dir| {
         const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ temp_path, dir });
-        defer allocator.free(full_path);
-        
+
         const result = try utils.runCommand(&[_][]const u8{
             "zig-out/bin/mkdir",
             "-p",
@@ -149,21 +152,20 @@ test "privileged: recursive directory operations" {
         });
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
-        
-        try testing.expect(result.term.Exited == 0);
+
+        try testing.expect(result.term.exited == 0);
     }
-    
-    // Set different permissions on different directories
+
+    // Set different permissions on different directories.
     const perms = [_]struct { path: []const u8, mode: []const u8 }{
         .{ .path = "project/src", .mode = "750" },
         .{ .path = "project/test", .mode = "755" },
         .{ .path = "project/docs", .mode = "644" },
     };
-    
+
     for (perms) |perm| {
         const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ temp_path, perm.path });
-        defer allocator.free(full_path);
-        
+
         const result = try utils.runCommand(&[_][]const u8{
             "chmod",
             perm.mode,
@@ -171,11 +173,11 @@ test "privileged: recursive directory operations" {
         });
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
-        
-        try testing.expect(result.term.Exited == 0);
+
+        try testing.expect(result.term.exited == 0);
     }
-    
-    // List recursively to verify structure
+
+    // List recursively to verify structure.
     const ls_result = try utils.runCommand(&[_][]const u8{
         "zig-out/bin/ls",
         "-laR",
@@ -183,47 +185,50 @@ test "privileged: recursive directory operations" {
     });
     defer allocator.free(ls_result.stdout);
     defer allocator.free(ls_result.stderr);
-    
-    try testing.expect(ls_result.term.Exited == 0);
-    
-    // Verify all directories are present
+
+    try testing.expect(ls_result.term.exited == 0);
+
+    // Verify all directories are present.
     for (dirs) |dir| {
         const dir_name = std.fs.path.basename(dir);
-        try testing.expect(std.mem.indexOf(u8, ls_result.stdout, dir_name) != null);
+        try testing.expect(std.mem.find(u8, ls_result.stdout, dir_name) != null);
     }
 }
 
 test "privileged: special file handling" {
-    try privilege_test.requiresPrivilege();
-    
-    // Skip on Windows
+    const io = testing.io;
+    try privilege_test.requiresPrivilege(io);
+
+    // Skip on Windows.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
-    
-    // Use arena allocator for temporary allocations
+
+    // Use arena allocator for temporary allocations.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    
-    var utils = TestUtils.init(allocator);
+
+    var utils = TestUtils.init(allocator, io);
     defer utils.deinit();
-    
+
     const temp_dir = try utils.getTempDir();
-    const temp_path = try temp_dir.dir.realpathAlloc(allocator, ".");
-    
-    // Create a FIFO (named pipe)
+    const temp_path = try temp_dir.dir.realPathFileAlloc(io, ".", allocator);
+
+    // Create a FIFO (named pipe).
     const fifo_path = try utils.safePath(temp_path, "test.fifo");
-    
+
     const mkfifo_result = try utils.runCommand(&[_][]const u8{
         "mkfifo",
         fifo_path,
     });
-    
-    // mkfifo might not be available on all systems
-    if (mkfifo_result.term.Exited != 0) {
+    defer allocator.free(mkfifo_result.stdout);
+    defer allocator.free(mkfifo_result.stderr);
+
+    // mkfifo might not be available on all systems.
+    if (mkfifo_result.term.exited != 0) {
         return error.SkipZigTest;
     }
-    
-    // List to verify special file is shown correctly
+
+    // List to verify special file is shown correctly.
     const ls_result = try utils.runCommand(&[_][]const u8{
         "zig-out/bin/ls",
         "-la",
@@ -231,10 +236,10 @@ test "privileged: special file handling" {
     });
     defer allocator.free(ls_result.stdout);
     defer allocator.free(ls_result.stderr);
-    
-    try testing.expect(ls_result.term.Exited == 0);
-    try testing.expect(std.mem.indexOf(u8, ls_result.stdout, "test.fifo") != null);
-    
-    // The output should indicate it's a FIFO (usually starts with 'p')
-    // Note: The exact format may vary by system
+
+    try testing.expect(ls_result.term.exited == 0);
+    try testing.expect(std.mem.find(u8, ls_result.stdout, "test.fifo") != null);
+
+    // The output should indicate it's a FIFO (usually starts with 'p').
+    // Note: The exact format may vary by system.
 }
