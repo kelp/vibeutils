@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0 — 2026-05-26
 
 ### Infrastructure
 - **Migrate to Zig 0.16.0.** All 47 utilities and the shared
