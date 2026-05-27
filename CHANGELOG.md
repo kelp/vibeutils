@@ -10,11 +10,7 @@
   (`*std.Io.Writer` for stdout/stderr, explicit `io: std.Io`).
   Toolchain pins (gale, flake, CI) and `build.zig.zon`'s
   `minimum_zig_version` all bumped to `0.16.0`. Build infra
-  ported off `linkLibC()` and `addRemoveDirTree`. Fixed two
-  regressions during integration testing: `head` now streams
-  lines longer than its 8 KB read buffer instead of erroring
-  with `StreamTooLong`; `mktemp` passes explicit `0o600`
-  permissions since 0.16's default is `0o666`. Contributor
+  ported off `linkLibC()` and `addRemoveDirTree`. Contributor
   docs, Docker version defaults, and `.claude/` skills updated
   to reflect the 0.16-only state (CLAUDE.md, ZIG_PATTERNS.md,
   ZIG_BREAKING_CHANGES.md, TESTING_STRATEGY.md, AGENTS.md,
@@ -34,7 +30,22 @@
   installed `head` predated the `streamOneLine`
   `StreamTooLong` fix.
 
+### Security
+- **mktemp: enforce `0o600` on created files.** Zig 0.16's
+  `createFile` defaults to `0o666`; POSIX requires temp
+  files to be created mode `0o600` so other users on the
+  system can't read them. `mktemp` now passes the explicit
+  mode. Regression introduced during the 0.16 migration.
+
 ### Bug Fixes
+- **head: streams lines longer than the read buffer.**
+  `takeDelimiterInclusive` returns `error.StreamTooLong`
+  when a line doesn't fit in head's 8 KB read buffer; the
+  previous catch only handled `EndOfStream`, so e.g.
+  `yes <9KB-str> | head -n 1` exited with `StreamTooLong`
+  and zero output. `streamOneLine` now drains the buffered
+  prefix and keeps refilling until the delimiter is found.
+  Regression introduced during the 0.16 migration.
 - **ls: memory leak in git status integration.** When
   `git status --porcelain` reported the same filename twice
   (e.g. `D  foo` plus `?? foo` for a staged-deleted-and-recreated
