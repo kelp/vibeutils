@@ -24,6 +24,16 @@
   snake_case naming with unit suffixes, 70-line function
   limit, 100-column line limit. Advisory for new code and
   refactors; not retroactively enforced.
+- **Pin integration tests to `zig-out/bin` via PATH.**
+  `tests/integration.sh` now prepends the freshly-built
+  binary directory to `PATH` so unqualified utility names
+  in test scripts (e.g. `head -n 1` in `yes_test.sh`)
+  resolve to the current build rather than whatever
+  vibeutils is installed system-wide. Reproduced as
+  `yes large string (9000 chars)` failing locally when the
+  installed `head` predated the `streamOneLine`
+  `StreamTooLong` fix.
+
 ### Bug Fixes
 - **ls: memory leak in git status integration.** When
   `git status --porcelain` reported the same filename twice
