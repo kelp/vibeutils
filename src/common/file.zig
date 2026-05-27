@@ -284,16 +284,20 @@ pub fn formatSizeKilobytes(size: u64, buf: []u8) ![]const u8 {
 }
 
 /// Return current Unix timestamp in seconds via C clock_gettime.
+/// Returns 0 (epoch) if clock_gettime fails, so callers see a harmless
+/// "1970" sentinel rather than reading uninitialized stack memory.
 fn currentTimestampSeconds() i64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    var ts: std.c.timespec = std.mem.zeroes(std.c.timespec);
+    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
     return ts.sec;
 }
 
 /// Return current Unix timestamp in nanoseconds via C clock_gettime.
+/// Returns 0 (epoch) if clock_gettime fails, so callers see a harmless
+/// "1970" sentinel rather than reading uninitialized stack memory.
 pub fn currentTimestampNanoseconds() i128 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    var ts: std.c.timespec = std.mem.zeroes(std.c.timespec);
+    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
 
