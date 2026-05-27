@@ -9,6 +9,12 @@ on:
         description: "Tag to release (e.g. v0.6.0)"
         required: true
 
+# Pre-empt the June 2 2026 GitHub Actions Node 24 cutover. Forces all
+# JS-based actions (setup-zig, etc.) to run on Node 24 regardless of
+# their action.yml-declared runtime.
+env:
+  ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node24
+
 jobs:
   build:
     timeout-minutes: 30

@@ -29,6 +29,26 @@
   `yes large string (9000 chars)` failing locally when the
   installed `head` predated the `streamOneLine`
   `StreamTooLong` fix.
+- **Pre-empt GitHub Actions Node 24 cutover (June 2, 2026).**
+  All workflows now set
+  `ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node24` at the
+  workflow level so JS-based actions (`setup-zig`,
+  `setup-just`, `install-nix-action`, etc.) run on Node 24
+  ahead of the forced runtime upgrade. Validates ahead of
+  time that our action set is Node-24-compatible, since the
+  pinned `mlugg/setup-zig@v2.2.1` still declares
+  `using: 'node20'` in its `action.yml`.
+- **Tighten GitHub Actions allowlist** (`gh api PUT
+  repos/kelp/vibeutils/actions/permissions/selected-actions`).
+  Replaced wildcard third-party patterns
+  (`extractions/setup-just@*`, `cachix/cachix-action@*`,
+  `cachix/install-nix-action@*`, `mlugg/setup-zig@*`) with
+  the specific commit SHAs the workflows pin to. Added the
+  transitive `extractions/setup-crate@0551596…` (pulled in by
+  `setup-just`) — its absence had been failing every CI run
+  on `main` since 2026-05-23. Flipped `verified_allowed` from
+  `true` to `false`; current workflows don't rely on it and
+  removing it prevents drift.
 
 ### Security
 - **mktemp: enforce `0o600` on created files.** Zig 0.16's
