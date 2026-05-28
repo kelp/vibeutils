@@ -6,6 +6,7 @@
 ///
 /// Design contract: docs/tiger-style-review/walker-design.md
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const directory = @import("directory.zig");
 
@@ -29,14 +30,14 @@ pub const Order = enum { pre, post, both };
 
 /// Configuration for a Walker instance.
 pub const WalkConfig = struct {
-    /// Hard upper bound on stack depth. Assertion fires if exceeded.
-    /// Default 1024 — POSIX PATH_MAX gives ~256 components; real filesystems
-    /// almost never exceed ~50. 1024 is a generous safety margin.
+    /// Hard upper bound on stack depth. When reached, next() returns
+    /// error.DepthLimitExceeded. Default 1024 — POSIX PATH_MAX gives ~256
+    /// components; real filesystems almost never exceed ~50.
     max_depth: u16 = 1024,
 
     /// Hard upper bound on total entries emitted before the walk forcibly
-    /// halts. Defends against pathologically large trees. Default 16 Mi.
-    /// Assertion fires on overflow; caller can lower for testing.
+    /// halts. When reached, next() returns error.EntryLimitExceeded.
+    /// Default 16 Mi.
     max_entries: u64 = 1 << 24,
 
     /// Symlink follow policy.
@@ -154,7 +155,7 @@ pub const Walker = struct {
     config: WalkConfig,
 
     /// Explicit stack of in-progress directory frames. Never exceeds
-    /// config.max_depth — asserted on every push.
+    /// config.max_depth — error returned on every push attempt past the cap.
     stack: std.ArrayListUnmanaged(Frame),
 
     /// Cycle detector (dev, inode). Initialized iff config.detect_cycles.
@@ -212,6 +213,8 @@ pub const Walker = struct {
     /// Advance to the next entry. Returns null when the walk is complete.
     /// Errors are per-entry: I/O errors surface here. After an error,
     /// `next()` may be called again — the walker stays re-entrant.
+    /// Returns error.DepthLimitExceeded when config.max_depth is reached.
+    /// Returns error.EntryLimitExceeded when config.max_entries is reached.
     pub fn next(self: *Walker, io: std.Io) !?Entry {
         _ = self;
         _ = io;
@@ -288,10 +291,54 @@ fn tmpPath(
     return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base, sub_path });
 }
 
-/// Create a flat file inside tmp_dir.
+/// Create a flat file inside a dir.
 fn createFile(io: std.Io, dir: std.Io.Dir, name: []const u8) !void {
     const f = try dir.createFile(io, name, .{});
     f.close(io);
+}
+
+/// Describes a single node in a tree fixture.
+pub const TreePath = struct {
+    path: []const u8,
+    kind: enum { file, dir, symlink },
+    /// Only used when kind == .symlink.
+    symlink_target: []const u8 = "",
+};
+
+/// Build a tree described as a flat list of (path, kind) pairs.
+/// Each path is relative to `dir`. Intermediate directories are created
+/// automatically, so "a/b/c.txt" creates "a", "a/b", then "a/b/c.txt".
+fn buildTree(io: std.Io, dir: std.Io.Dir, paths: []const TreePath) !void {
+    for (paths) |tp| {
+        switch (tp.kind) {
+            .file => try createFile(io, dir, tp.path),
+            .dir => try dir.createDirPath(io, tp.path),
+            .symlink => try dir.symLink(io, tp.symlink_target, tp.path, .{}),
+        }
+    }
+}
+
+/// Collect all entries from a walker. Returns a list of owned Entry copies
+/// (path duped, basename duped into path_buf). Caller frees via deinit.
+///
+/// This variant collects full Entry structs rather than just paths, so tests
+/// can check kind, depth, and visit fields.
+fn drainEntries(
+    walker: *Walker,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(Entry),
+) !void {
+    while (try walker.next(io)) |entry| {
+        // Dupe the path so it outlives the walker's internal path_buf.
+        const path_copy = try allocator.dupe(u8, entry.path);
+        var copy = entry;
+        copy.path = path_copy;
+        // basename is a slice into path; repoint it into path_copy.
+        const offset = @intFromPtr(entry.basename.ptr) - @intFromPtr(entry.path.ptr);
+        copy.basename = path_copy[offset .. offset + entry.basename.len];
+        try out.append(allocator, copy);
+    }
 }
 
 /// Collect all entry paths from a walker into a list.
@@ -310,15 +357,22 @@ fn drainWalker(
     return count;
 }
 
+/// Return the index of the first entry whose path ends with `suffix`, or null.
+fn indexOfEntry(entries: []const Entry, suffix: []const u8) ?usize {
+    for (entries, 0..) |e, i| {
+        if (std.mem.endsWith(u8, e.path, suffix)) return i;
+    }
+    return null;
+}
+
 // ============================================================================
 // Tests — §5.1 Walker unit tests
 // ============================================================================
 
 test "walker: empty directory emits nothing after the root" {
-    // §5.1 #1: Walk an empty directory. The walker should terminate without
-    // emitting any children (root itself is not emitted in pre-order by most
-    // callers, but we add the root path and expect next() to return null for
-    // an empty dir).
+    // §5.1 #1: Walk an empty directory. The walker DOES emit the root as its
+    // first pre-order entry (depth=0, kind=.directory, visit=.pre), then
+    // terminates with null because there are no children.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -330,21 +384,31 @@ test "walker: empty directory emits nothing after the root" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
-    // Stub always returns null, so next() terminates immediately.
-    // The test verifies the walker emitted at least the root entry — this will
-    // FAIL against the stub since next() returns null with zero entries.
-    const entry = try w.next(io);
-    try testing.expect(entry != null); // RED: stub returns null
+    // The root itself must be emitted first (depth=0, directory, pre).
+    const first = try w.next(io);
+    try testing.expect(first != null); // RED: stub returns null.
+    try testing.expectEqual(@as(u16, 0), first.?.depth);
+    try testing.expectEqual(std.Io.File.Kind.directory, first.?.kind);
+    try testing.expectEqual(.pre, first.?.visit);
+
+    // For .pre order, no more entries (directory is empty).
+    const second = try w.next(io);
+    try testing.expect(second == null);
 }
 
 test "walker: pre-order ordering emits parent before children" {
-    // §5.1 #2: Pre-order must emit a directory before its children.
+    // §5.1 #2: Pre-order must emit a directory before its contents.
+    // Tree: root/ -> a/ -> x.txt
+    // Expected order (by suffix): root_dir, then "a", then "a/x.txt".
+    // We verify parent index < child index.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "a");
-    try createFile(io, tmp.dir, "a/x.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "a", .kind = .dir },
+        .{ .path = "a/x.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -353,25 +417,35 @@ test "walker: pre-order ordering emits parent before children" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
-    var entries: std.ArrayListUnmanaged([]const u8) = .empty;
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
     defer {
-        for (entries.items) |e| testing.allocator.free(e);
+        for (entries.items) |e| testing.allocator.free(e.path);
         entries.deinit(testing.allocator);
     }
-    const count = try drainWalker(&w, io, testing.allocator, &entries);
+    try drainEntries(&w, io, testing.allocator, &entries);
 
-    // Expect at minimum the directory "a" and "a/x.txt". RED: stub emits 0.
-    try testing.expect(count >= 2);
+    // Must emit at least root, "a", and "a/x.txt". RED: stub emits 0.
+    try testing.expect(entries.items.len >= 3);
+
+    const idx_a = indexOfEntry(entries.items, "/a");
+    const idx_x = indexOfEntry(entries.items, "a/x.txt");
+    try testing.expect(idx_a != null and idx_x != null);
+    // Parent "a" must appear before child "a/x.txt".
+    try testing.expect(idx_a.? < idx_x.?);
 }
 
 test "walker: post-order ordering emits children before parent directory" {
     // §5.1 #3: Post-order must emit children before their containing directory.
+    // Tree: root/ -> d/ -> file.txt
+    // In post order: file.txt first, then "d", then root.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "d");
-    try createFile(io, tmp.dir, "d/file.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "d", .kind = .dir },
+        .{ .path = "d/file.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .post });
     defer w.deinit(io);
@@ -380,28 +454,35 @@ test "walker: post-order ordering emits children before parent directory" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
-    var entries: std.ArrayListUnmanaged([]const u8) = .empty;
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
     defer {
-        for (entries.items) |e| testing.allocator.free(e);
+        for (entries.items) |e| testing.allocator.free(e.path);
         entries.deinit(testing.allocator);
     }
-    const count = try drainWalker(&w, io, testing.allocator, &entries);
+    try drainEntries(&w, io, testing.allocator, &entries);
 
-    // Must emit at least the file and its parent dir. RED: stub emits 0.
-    try testing.expect(count >= 2);
-    // When implemented, entries.items[0] should be the file, not the dir.
-    // For now just assert we got something non-empty.
+    // Must emit at least the file and its parent. RED: stub emits 0.
+    try testing.expect(entries.items.len >= 2);
+
+    const idx_child = indexOfEntry(entries.items, "d/file.txt");
+    const idx_parent = indexOfEntry(entries.items, "/d");
+    try testing.expect(idx_child != null and idx_parent != null);
+    // Child file.txt must appear before its parent dir "d".
+    try testing.expect(idx_child.? < idx_parent.?);
 }
 
 test "walker: both-order emits each directory twice with pre before post" {
     // §5.1 #4: With order=.both, each directory appears once with visit=.pre
     // and once with visit=.post, in the correct relative order.
+    // Root is emitted first (pre) and last (post). "sub" also appears twice.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "sub");
-    try createFile(io, tmp.dir, "sub/f.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "sub", .kind = .dir },
+        .{ .path = "sub/f.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .both });
     defer w.deinit(io);
@@ -410,9 +491,16 @@ test "walker: both-order emits each directory twice with pre before post" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
+    defer {
+        for (entries.items) |e| testing.allocator.free(e.path);
+        entries.deinit(testing.allocator);
+    }
+    try drainEntries(&w, io, testing.allocator, &entries);
+
     var pre_count: u32 = 0;
     var post_count: u32 = 0;
-    while (try w.next(io)) |entry| {
+    for (entries.items) |entry| {
         if (entry.kind == .directory) {
             switch (entry.visit) {
                 .pre => pre_count += 1,
@@ -420,10 +508,16 @@ test "walker: both-order emits each directory twice with pre before post" {
             }
         }
     }
-    // With .both, "sub" must appear as pre AND post. RED: stub emits nothing.
+    // With .both, every directory (root + "sub") must appear as pre AND post.
+    // RED: stub emits nothing.
     try testing.expect(pre_count >= 1);
     try testing.expect(post_count >= 1);
     try testing.expectEqual(pre_count, post_count);
+
+    // In .both order, the root pre-entry is first and root post-entry is last.
+    try testing.expect(entries.items.len >= 1);
+    try testing.expectEqual(.pre, entries.items[0].visit);
+    try testing.expectEqual(.post, entries.items[entries.items.len - 1].visit);
 }
 
 test "walker: max_depth cap — walker terminates before exceeding limit" {
@@ -432,15 +526,20 @@ test "walker: max_depth cap — walker terminates before exceeding limit" {
     // immediately), the test fails because it gets zero entries instead of
     // some entries at depth <= 2.
     //
-    // Note: the real implementation asserts on overflow, causing a panic.
-    // The stub never reaches that assert, so the test goes RED on the
-    // "at least one entry was emitted" assertion below.
+    // Note: when the real implementation hits max_depth it returns
+    // error.DepthLimitExceeded from next(). The caller should handle or
+    // propagate this. Here we just verify no entry exceeds depth 2.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "l1/l2/l3/l4");
-    try createFile(io, tmp.dir, "l1/l2/l3/l4/deep.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "l1", .kind = .dir },
+        .{ .path = "l1/l2", .kind = .dir },
+        .{ .path = "l1/l2/l3", .kind = .dir },
+        .{ .path = "l1/l2/l3/l4", .kind = .dir },
+        .{ .path = "l1/l2/l3/l4/deep.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .max_depth = 2 });
     defer w.deinit(io);
@@ -451,30 +550,49 @@ test "walker: max_depth cap — walker terminates before exceeding limit" {
 
     var max_observed_depth: u16 = 0;
     var count: u32 = 0;
-    while (try w.next(io)) |entry| {
+    while (walker_next: {
+        const result = w.next(io);
+        if (result) |maybe_entry| {
+            break :walker_next maybe_entry;
+        } else |err| switch (err) {
+            error.DepthLimitExceeded => break :walker_next null,
+            else => return err,
+        }
+    }) |entry| {
         if (entry.depth > max_observed_depth) max_observed_depth = entry.depth;
         count += 1;
     }
-    // Must emit at least one entry (l1 at depth 1). RED: stub emits 0.
+    // Must emit at least the root + l1 at depth 1. RED: stub emits 0.
     try testing.expect(count >= 1);
     // Must not exceed the cap.
     try testing.expect(max_observed_depth <= 2);
 }
 
-test "walker: max_entries cap — walker terminates after limit entries" {
-    // §5.1 #6: A walker configured with max_entries=3 on a wider tree must
-    // stop after 3 entries. Against the stub (next() returns null), count is 0
-    // and the test fails on the "count == 3" assertion.
+test "walker: max_entries cap — next() returns EntryLimitExceeded after limit" {
+    // §5.1 #6a: A walker configured with max_entries=3 on a tree with 10
+    // files must return error.EntryLimitExceeded on the 4th next() call.
+    // Against the stub (next() always returns null), this fails because
+    // expectError never sees the error — the walker terminates with null.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try createFile(io, tmp.dir, "f1.txt");
-    try createFile(io, tmp.dir, "f2.txt");
-    try createFile(io, tmp.dir, "f3.txt");
-    try createFile(io, tmp.dir, "f4.txt");
-    try createFile(io, tmp.dir, "f5.txt");
+    // Build 10 flat files.
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "f01.txt", .kind = .file },
+        .{ .path = "f02.txt", .kind = .file },
+        .{ .path = "f03.txt", .kind = .file },
+        .{ .path = "f04.txt", .kind = .file },
+        .{ .path = "f05.txt", .kind = .file },
+        .{ .path = "f06.txt", .kind = .file },
+        .{ .path = "f07.txt", .kind = .file },
+        .{ .path = "f08.txt", .kind = .file },
+        .{ .path = "f09.txt", .kind = .file },
+        .{ .path = "f10.txt", .kind = .file },
+    });
 
+    // max_entries=3: root dir + 3 files = first 4 next() calls succeed.
+    // The 5th call hits the cap and must return error.EntryLimitExceeded.
     var w = try Walker.init(testing.allocator, .{ .max_entries = 3 });
     defer w.deinit(io);
 
@@ -482,25 +600,78 @@ test "walker: max_entries cap — walker terminates after limit entries" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
+    // Drain until we get an error or null. Count successful emissions.
     var count: u32 = 0;
-    while (try w.next(io)) |_| {
-        count += 1;
+    var got_limit_error = false;
+    while (true) {
+        const result = w.next(io);
+        if (result) |maybe_entry| {
+            if (maybe_entry == null) break;
+            count += 1;
+        } else |err| switch (err) {
+            error.EntryLimitExceeded => {
+                got_limit_error = true;
+                break;
+            },
+            else => return err,
+        }
     }
-    // Must emit exactly max_entries entries then stop. RED: stub emits 0.
-    try testing.expectEqual(@as(u32, 3), count);
+    // Must have hit the limit. RED: stub returns null immediately, no error.
+    try testing.expect(got_limit_error);
+    // Must have emitted at least 1 entry before hitting the cap.
+    try testing.expect(count >= 1);
+}
+
+test "walker: max_entries high cap — full tree drains without error" {
+    // §5.1 #6b: Positive companion: a generous cap lets all 10 files through.
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "f01.txt", .kind = .file },
+        .{ .path = "f02.txt", .kind = .file },
+        .{ .path = "f03.txt", .kind = .file },
+        .{ .path = "f04.txt", .kind = .file },
+        .{ .path = "f05.txt", .kind = .file },
+        .{ .path = "f06.txt", .kind = .file },
+        .{ .path = "f07.txt", .kind = .file },
+        .{ .path = "f08.txt", .kind = .file },
+        .{ .path = "f09.txt", .kind = .file },
+        .{ .path = "f10.txt", .kind = .file },
+    });
+
+    var w = try Walker.init(testing.allocator, .{ .max_entries = 100 });
+    defer w.deinit(io);
+
+    const root = try tmpPath(testing.allocator, io, &tmp, "");
+    defer testing.allocator.free(root);
+    try w.addRoot(root);
+
+    var count: u32 = 0;
+    while (try w.next(io)) |_| count += 1;
+
+    // Must emit root + 10 files = 11 entries. RED: stub emits 0.
+    try testing.expect(count >= 11);
 }
 
 test "walker: pruneCurrent on pre-order directory suppresses subtree" {
     // §5.1 #7: Calling pruneCurrent() after receiving a pre-order directory
     // entry must cause the walker to skip that subtree entirely.
+    // We prune "prune/" and verify "kept.txt" is still seen but "gone.txt"
+    // is not — both assertions are checked in a single walk pass.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "keep/inner");
-    try createFile(io, tmp.dir, "keep/inner/kept.txt");
-    try tmp.dir.createDirPath(io, "prune/inner");
-    try createFile(io, tmp.dir, "prune/inner/gone.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "keep", .kind = .dir },
+        .{ .path = "keep/inner", .kind = .dir },
+        .{ .path = "keep/inner/kept.txt", .kind = .file },
+        .{ .path = "prune", .kind = .dir },
+        .{ .path = "prune/inner", .kind = .dir },
+        .{ .path = "prune/inner/gone.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -509,38 +680,19 @@ test "walker: pruneCurrent on pre-order directory suppresses subtree" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
+    var saw_kept = false;
     var saw_pruned_content = false;
     while (try w.next(io)) |entry| {
         if (std.mem.eql(u8, entry.basename, "prune")) {
             w.pruneCurrent();
         }
-        if (std.mem.eql(u8, entry.basename, "gone.txt")) {
-            saw_pruned_content = true;
-        }
-    }
-    // The pruned subtree's content must not appear. RED: stub emits nothing so
-    // neither "prune" dir nor "gone.txt" is ever seen, but the test also
-    // expects to have seen "kept.txt" — assert that at minimum something emits.
-    //
-    // Simpler RED condition: assert we did NOT see "gone.txt", but also
-    // that the walker emitted at least 1 entry from "keep/".
-    try testing.expect(!saw_pruned_content);
-    // The stub satisfies this (never emits anything), so we add the positive
-    // assertion that the walker must have emitted at least "keep".
-    // Re-check: we need to assert count > 0. Use saw_pruned_content negation
-    // plus a separate count. We'll keep this test focused: RED is that
-    // the "keep" subtree was NOT emitted (stub returns null immediately).
-    // Assert the walker emitted entries from "keep":
-    var w2 = try Walker.init(testing.allocator, .{ .order = .pre });
-    defer w2.deinit(io);
-    const root2 = try tmpPath(testing.allocator, io, &tmp, "");
-    defer testing.allocator.free(root2);
-    try w2.addRoot(root2);
-    var saw_kept: bool = false;
-    while (try w2.next(io)) |entry| {
         if (std.mem.eql(u8, entry.basename, "kept.txt")) saw_kept = true;
+        if (std.mem.eql(u8, entry.basename, "gone.txt")) saw_pruned_content = true;
     }
-    try testing.expect(saw_kept); // RED: stub returns null, saw_kept stays false
+    // "kept.txt" must be seen; "gone.txt" must not. RED: stub emits nothing,
+    // so saw_kept stays false and the test fails.
+    try testing.expect(saw_kept);
+    try testing.expect(!saw_pruned_content);
 }
 
 test "walker: pruneCurrent on a non-directory is a no-op" {
@@ -550,8 +702,10 @@ test "walker: pruneCurrent on a non-directory is a no-op" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try createFile(io, tmp.dir, "a.txt");
-    try createFile(io, tmp.dir, "b.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "a.txt", .kind = .file },
+        .{ .path = "b.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -572,22 +726,23 @@ test "walker: pruneCurrent on a non-directory is a no-op" {
 
 test "walker: cycle detection prevents infinite loop on symlink loop" {
     // §5.1 #9: A symlink pointing back into its own ancestor creates a cycle.
-    // With detect_cycles=true and follow_all, the walker must terminate.
-    // With the stub (next() always null), this test fails because it gets
-    // zero entries but expects to see at least the initial file.
+    // With detect_cycles=true and follow_all, the walker must terminate and
+    // emit no path more than once.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try createFile(io, tmp.dir, "real.txt");
     try tmp.dir.createDirPath(io, "subdir");
-    // loop -> .. (symlink to parent, creating a cycle)
+    // loop -> .. (symlink to parent, creating a cycle).
     try tmp.dir.symLink(io, "..", "subdir/loop", .{});
 
+    // Use a generous max_entries so we would spin many times if cycle
+    // detection were broken, making a failure loud rather than silent.
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
         .detect_cycles = true,
-        .max_entries = 200,
+        .max_entries = 50,
     });
     defer w.deinit(io);
 
@@ -595,22 +750,28 @@ test "walker: cycle detection prevents infinite loop on symlink loop" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
-    var entries: std.ArrayListUnmanaged([]const u8) = .empty;
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
     defer {
-        for (entries.items) |e| testing.allocator.free(e);
+        for (entries.items) |e| testing.allocator.free(e.path);
         entries.deinit(testing.allocator);
     }
-    const count = try drainWalker(&w, io, testing.allocator, &entries);
+    try drainEntries(&w, io, testing.allocator, &entries);
 
     // Must terminate and emit the real file. RED: stub emits 0.
-    try testing.expect(count >= 1);
-    // No path should appear twice (no duplicate visits from cycle).
-    // Verify uniqueness: check for real.txt specifically.
     var saw_real = false;
-    for (entries.items) |p| {
-        if (std.mem.endsWith(u8, p, "real.txt")) saw_real = true;
+    for (entries.items) |e| {
+        if (std.mem.endsWith(u8, e.path, "real.txt")) saw_real = true;
     }
     try testing.expect(saw_real);
+
+    // Per-path uniqueness: no path should appear twice. Broken cycle
+    // detection would produce duplicates before hitting max_entries.
+    var seen: std.StringHashMapUnmanaged(void) = .{};
+    defer seen.deinit(testing.allocator);
+    for (entries.items) |e| {
+        const gop = try seen.getOrPut(testing.allocator, e.path);
+        try testing.expect(!gop.found_existing); // path emitted at most once
+    }
 }
 
 test "walker: stay_on_filesystem flag" {
@@ -647,9 +808,11 @@ test "walker: symlink policy no_follow emits symlink but does not descend" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "real_dir");
-    try createFile(io, tmp.dir, "real_dir/hidden.txt");
-    try tmp.dir.symLink(io, "real_dir", "link_dir", .{});
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "real_dir", .kind = .dir },
+        .{ .path = "real_dir/hidden.txt", .kind = .file },
+        .{ .path = "link_dir", .kind = .symlink, .symlink_target = "real_dir" },
+    });
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .no_follow,
@@ -679,18 +842,24 @@ test "walker: symlink policy no_follow emits symlink but does not descend" {
 test "walker: symlink policy follow_cmdline follows only depth-0 symlinks" {
     // §5.1 #12: With follow_cmdline (-H), symlinks at the root operand level
     // are followed; symlinks encountered during traversal are not.
+    // Tree: actual_dir/ -> deep.txt, nested/, nested/inner.txt
+    //       actual_dir/nested_link -> nested  (nested symlink, must NOT follow)
+    //       root_link -> actual_dir           (depth-0 symlink, MUST follow)
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "actual_dir");
-    try createFile(io, tmp.dir, "actual_dir/deep.txt");
-    try tmp.dir.createDirPath(io, "actual_dir/nested");
-    try tmp.dir.symLink(io, "nested", "actual_dir/nested_link", .{});
-    try createFile(io, tmp.dir, "actual_dir/nested/inner.txt");
-
-    // The root operand is a symlink to actual_dir.
-    try tmp.dir.symLink(io, "actual_dir", "root_link", .{});
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "actual_dir", .kind = .dir },
+        .{ .path = "actual_dir/deep.txt", .kind = .file },
+        .{ .path = "actual_dir/nested", .kind = .dir },
+        .{ .path = "actual_dir/nested/inner.txt", .kind = .file },
+        // nested_link is a symlink inside actual_dir pointing to nested/.
+        // follow_cmdline must NOT follow this.
+        .{ .path = "actual_dir/nested_link", .kind = .symlink, .symlink_target = "nested" },
+        // root_link is the depth-0 operand — follow_cmdline MUST follow this.
+        .{ .path = "root_link", .kind = .symlink, .symlink_target = "actual_dir" },
+    });
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_cmdline,
@@ -706,8 +875,12 @@ test "walker: symlink policy follow_cmdline follows only depth-0 symlinks" {
     var saw_nested_link_followed = false;
     while (try w.next(io)) |entry| {
         if (std.mem.eql(u8, entry.basename, "deep.txt")) saw_deep = true;
-        // If nested_link is followed (wrong), we'd see inner.txt via that path.
-        if (std.mem.eql(u8, entry.basename, "inner.txt")) {
+        // inner.txt is reachable via the REAL nested/ path, but we only care
+        // about paths that went through nested_link. Scope the check to
+        // entries whose path contains "nested_link".
+        if (std.mem.find(u8, entry.path, "nested_link") != null and
+            std.mem.eql(u8, entry.basename, "inner.txt"))
+        {
             saw_nested_link_followed = true;
         }
     }
@@ -724,9 +897,11 @@ test "walker: symlink policy follow_all follows all symlinks" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "target_dir");
-    try createFile(io, tmp.dir, "target_dir/target_file.txt");
-    try tmp.dir.symLink(io, "target_dir", "link_to_dir", .{});
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "target_dir", .kind = .dir },
+        .{ .path = "target_dir/target_file.txt", .kind = .file },
+        .{ .path = "link_to_dir", .kind = .symlink, .symlink_target = "target_dir" },
+    });
 
     var w = try Walker.init(testing.allocator, .{
         .symlinks = .follow_all,
@@ -756,14 +931,18 @@ test "walker: symlink policy follow_all follows all symlinks" {
 
 test "walker: sort_children emits directory entries in alphabetical order" {
     // §5.1 #14: With sort_children=true, sibling entries must be emitted in
-    // ascending lexicographic order by basename.
+    // ascending lexicographic order by basename. Only file-kind entries
+    // are checked since the root dir entry at depth=0 should not
+    // participate in the order assertion.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try createFile(io, tmp.dir, "z_last.txt");
-    try createFile(io, tmp.dir, "a_first.txt");
-    try createFile(io, tmp.dir, "m_middle.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "z_last.txt", .kind = .file },
+        .{ .path = "a_first.txt", .kind = .file },
+        .{ .path = "m_middle.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{
         .sort_children = true,
@@ -775,22 +954,31 @@ test "walker: sort_children emits directory entries in alphabetical order" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
-    var entries: std.ArrayListUnmanaged([]const u8) = .empty;
+    var entries: std.ArrayListUnmanaged(Entry) = .empty;
     defer {
-        for (entries.items) |e| testing.allocator.free(e);
+        for (entries.items) |e| testing.allocator.free(e.path);
         entries.deinit(testing.allocator);
     }
-    const count = try drainWalker(&w, io, testing.allocator, &entries);
+    try drainEntries(&w, io, testing.allocator, &entries);
 
     // Must emit all three files. RED: stub emits 0.
-    try testing.expect(count >= 3);
-    // Verify sorted order: a_ before m_ before z_.
-    if (entries.items.len >= 3) {
-        const first = std.fs.path.basename(entries.items[0]);
-        const second = std.fs.path.basename(entries.items[1]);
-        const third = std.fs.path.basename(entries.items[2]);
-        try testing.expect(std.mem.order(u8, first, second) == .lt);
-        try testing.expect(std.mem.order(u8, second, third) == .lt);
+    try testing.expect(entries.items.len >= 3);
+
+    // Filter to only non-directory entries for the order check.
+    var file_basenames: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer file_basenames.deinit(testing.allocator);
+    for (entries.items) |e| {
+        if (e.kind != .directory) {
+            try file_basenames.append(testing.allocator, e.basename);
+        }
+    }
+    try testing.expect(file_basenames.items.len >= 3);
+
+    // Verify sorted order: a_first < m_middle < z_last.
+    for (1..file_basenames.items.len) |i| {
+        try testing.expect(
+            std.mem.order(u8, file_basenames.items[i - 1], file_basenames.items[i]) == .lt,
+        );
     }
 }
 
@@ -801,10 +989,12 @@ test "walker: multiple roots are drained in insertion order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "tree_a");
-    try createFile(io, tmp.dir, "tree_a/file_a.txt");
-    try tmp.dir.createDirPath(io, "tree_b");
-    try createFile(io, tmp.dir, "tree_b/file_b.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "tree_a", .kind = .dir },
+        .{ .path = "tree_a/file_a.txt", .kind = .file },
+        .{ .path = "tree_b", .kind = .dir },
+        .{ .path = "tree_b/file_b.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -844,8 +1034,11 @@ test "walker: deinit after mid-walk abandonment closes all directory handles" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.createDirPath(io, "sub/deep");
-    try createFile(io, tmp.dir, "sub/deep/file.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "sub", .kind = .dir },
+        .{ .path = "sub/deep", .kind = .dir },
+        .{ .path = "sub/deep/file.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -872,8 +1065,10 @@ test "walker: path and basename slices must be duped before next() call" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try createFile(io, tmp.dir, "file1.txt");
-    try createFile(io, tmp.dir, "file2.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "file1.txt", .kind = .file },
+        .{ .path = "file2.txt", .kind = .file },
+    });
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -904,21 +1099,33 @@ test "walker: next() is re-entrant after a per-entry I/O error" {
     // walker stays re-entrant — calling next() again after an error must
     // continue from the next sibling rather than poisoning the walker state.
     //
-    // This test fakes the scenario by checking that the walker doesn't crash
-    // or get stuck after receiving an error on one entry. Since we can't
-    // easily inject an I/O error without fakeroot, we verify the walker
-    // handles a normal multi-entry walk and terminates cleanly — the real
-    // re-entrant behavior can only be tested with error injection.
+    // Method: build three sibling directories a/, locked/, z/. Place a file
+    // in each. chmod 000 locked/ so opening it returns error.AccessDenied.
+    // Walk: expect an error when the walker tries to open locked/, then verify
+    // a/ and z/ are still emitted in subsequent next() calls.
     //
-    // RED condition: the stub returns null immediately (zero entries), so
-    // the assertion that at least 2 entries were emitted fails.
+    // Restore locked/ to 0o700 in a defer so tmpDir cleanup can succeed.
+    // Skip on Windows where chmod semantics differ.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try createFile(io, tmp.dir, "sibling1.txt");
-    try createFile(io, tmp.dir, "sibling2.txt");
-    try createFile(io, tmp.dir, "sibling3.txt");
+    try buildTree(io, tmp.dir, &.{
+        .{ .path = "a", .kind = .dir },
+        .{ .path = "a/file_a.txt", .kind = .file },
+        .{ .path = "locked", .kind = .dir },
+        .{ .path = "locked/file_l.txt", .kind = .file },
+        .{ .path = "z", .kind = .dir },
+        .{ .path = "z/file_z.txt", .kind = .file },
+    });
+
+    // Make locked/ inaccessible using the Zig 0.16 native API (no libc needed).
+    const no_access = std.Io.File.Permissions.fromMode(0o000);
+    try tmp.dir.setFilePermissions(io, "locked", no_access, .{});
+    // Restore on exit so that tmp.cleanup() can remove it.
+    defer tmp.dir.setFilePermissions(io, "locked", std.Io.File.Permissions.fromMode(0o700), .{}) catch {};
 
     var w = try Walker.init(testing.allocator, .{ .order = .pre });
     defer w.deinit(io);
@@ -927,9 +1134,28 @@ test "walker: next() is re-entrant after a per-entry I/O error" {
     defer testing.allocator.free(root);
     try w.addRoot(root);
 
-    var count: u32 = 0;
-    while (try w.next(io)) |_| count += 1;
+    var saw_file_a = false;
+    var saw_file_z = false;
+    var saw_io_error = false;
 
-    // All three siblings must be emitted. RED: stub emits 0.
-    try testing.expect(count >= 3);
+    // Drive the walker; on an I/O error continue from the next call.
+    while (true) {
+        const result = w.next(io);
+        if (result) |maybe_entry| {
+            if (maybe_entry == null) break;
+            const entry = maybe_entry.?;
+            if (std.mem.eql(u8, entry.basename, "file_a.txt")) saw_file_a = true;
+            if (std.mem.eql(u8, entry.basename, "file_z.txt")) saw_file_z = true;
+        } else |err| {
+            // Any I/O error from the locked dir; record it and keep going.
+            _ = err;
+            saw_io_error = true;
+        }
+    }
+
+    // Must have seen an I/O error for locked/. RED: stub returns null, never errors.
+    try testing.expect(saw_io_error);
+    // Must have recovered and emitted file_a.txt and file_z.txt.
+    try testing.expect(saw_file_a);
+    try testing.expect(saw_file_z);
 }
