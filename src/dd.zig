@@ -2112,3 +2112,67 @@ test "audit: conv=ibm produces different output than conv=ebcdic for caret" {
     try testing.expectEqual(@as(u8, 0x9A), ebcdic_buf[0]);
     try testing.expectEqual(@as(u8, 0x5F), ibm_buf[0]);
 }
+
+// Audit G5: dd parses conv=sparse, conv=par{even,none,odd,set}, and
+// the files=N operand but never applies them. The audit calls for
+// rejecting these at parse time so users are not silently misled.
+// These tests assert each operand is rejected at parse time with a
+// non-zero exit status and a diagnostic on stderr that names the
+// offending operand. We always provide if=/of= so the bug-path copy
+// loop has a controlled, finite stdin replacement (no hang on real
+// stdin if the parser silently accepts the operand).
+
+/// Run dd with a single unsupported operand against a real tmp input file
+/// and assert misuse exit (2) with `expected_needle` in stderr.
+fn expectDdRejectsOperand(operand: []const u8, expected_needle: []const u8) !void {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try common.test_utils.createTestFile(io, tmp_dir.dir, "input.txt", "hello");
+
+    const input_path = try tmp_dir.dir.realPathFileAlloc(io, "input.txt", testing.allocator);
+    defer testing.allocator.free(input_path);
+    const base_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(base_path);
+    const output_path = try std.fmt.allocPrint(testing.allocator, "{s}/output.bin", .{base_path});
+    defer testing.allocator.free(output_path);
+
+    const if_arg = try std.fmt.allocPrint(testing.allocator, "if={s}", .{input_path});
+    defer testing.allocator.free(if_arg);
+    const of_arg = try std.fmt.allocPrint(testing.allocator, "of={s}", .{output_path});
+    defer testing.allocator.free(of_arg);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ if_arg, of_arg, operand, "status=none" };
+    const exit_code = try runDd(testing.allocator, io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 2), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), expected_needle) != null);
+}
+
+test "audit G5: runDd rejects conv=sparse with diagnostic" {
+    try expectDdRejectsOperand("conv=sparse", "sparse");
+}
+
+test "audit G5: runDd rejects conv=pareven with diagnostic" {
+    try expectDdRejectsOperand("conv=pareven", "pareven");
+}
+
+test "audit G5: runDd rejects conv=parnone with diagnostic" {
+    try expectDdRejectsOperand("conv=parnone", "parnone");
+}
+
+test "audit G5: runDd rejects conv=parodd with diagnostic" {
+    try expectDdRejectsOperand("conv=parodd", "parodd");
+}
+
+test "audit G5: runDd rejects conv=parset with diagnostic" {
+    try expectDdRejectsOperand("conv=parset", "parset");
+}
+
+test "audit G5: runDd rejects files= operand with diagnostic" {
+    try expectDdRejectsOperand("files=3", "files");
+}
