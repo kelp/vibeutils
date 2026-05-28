@@ -481,6 +481,13 @@ fn parseIntArgEx(s: []const u8) IntParseResult {
         return .{ .value = v, .ok = true };
     } else |_| {}
 
+    // Try float parse and truncate to integer (GNU behavior).
+    // GNU printf '%d' 3.9 outputs 3 (truncate), '%d' 1e2 outputs 100.
+    if (std.fmt.parseFloat(f64, s)) |fval| {
+        const truncated = @as(i64, @intFromFloat(@trunc(fval)));
+        return .{ .value = truncated, .ok = false };
+    } else |_| {}
+
     // Try partial parse: find longest leading numeric prefix
     var end: usize = 0;
     if (end < s.len and (s[end] == '-' or s[end] == '+')) end += 1;
