@@ -177,6 +177,20 @@ fn padFractional(buf: []u8, formatted: []const u8, precision: usize) []const u8 
     return buf[0..end];
 }
 
+/// Write a single byte to buf[pos], returning error.NoSpaceLeft if buf is full.
+fn writeByteBounded(buf: []u8, pos: *usize, b: u8) !void {
+    if (pos.* >= buf.len) return error.NoSpaceLeft;
+    buf[pos.*] = b;
+    pos.* += 1;
+}
+
+/// Write src into buf starting at pos, returning error.NoSpaceLeft if it won't fit.
+fn writeSliceBounded(buf: []u8, pos: *usize, src: []const u8) !void {
+    if (pos.* + src.len > buf.len) return error.NoSpaceLeft;
+    @memcpy(buf[pos.* .. pos.* + src.len], src);
+    pos.* += src.len;
+}
+
 /// Format number according to -f format specifier.
 /// Supports prefix/suffix text around the %specifier and width/precision.
 fn formatWithSpec(buf: []u8, value: f64, fmt_str: []const u8) ![]const u8 {
@@ -188,8 +202,7 @@ fn formatWithSpec(buf: []u8, value: f64, fmt_str: []const u8) ![]const u8 {
         if (fmt_str[i] == '%') {
             if (i + 1 < fmt_str.len and fmt_str[i + 1] == '%') {
                 // Literal %%
-                buf[pos] = '%';
-                pos += 1;
+                try writeByteBounded(buf, &pos, '%');
                 i += 1;
                 continue;
             }
@@ -246,50 +259,40 @@ fn formatWithSpec(buf: []u8, value: f64, fmt_str: []const u8) ![]const u8 {
                 if (width > 0 and formatted.len < width) {
                     const padding = width - formatted.len;
                     if (left_justify) {
-                        @memcpy(buf[pos .. pos + formatted.len], formatted);
-                        pos += formatted.len;
+                        try writeSliceBounded(buf, &pos, formatted);
                         for (0..padding) |_| {
-                            buf[pos] = ' ';
-                            pos += 1;
+                            try writeByteBounded(buf, &pos, ' ');
                         }
                     } else if (zero_pad) {
                         // Zero-pad: put sign first, then zeros, then digits
                         var fmt_start: usize = 0;
                         if (formatted.len > 0 and (formatted[0] == '-' or formatted[0] == '+')) {
-                            buf[pos] = formatted[0];
-                            pos += 1;
+                            try writeByteBounded(buf, &pos, formatted[0]);
                             fmt_start = 1;
                         }
                         for (0..padding) |_| {
-                            buf[pos] = '0';
-                            pos += 1;
+                            try writeByteBounded(buf, &pos, '0');
                         }
-                        @memcpy(buf[pos .. pos + formatted.len - fmt_start], formatted[fmt_start..]);
-                        pos += formatted.len - fmt_start;
+                        try writeSliceBounded(buf, &pos, formatted[fmt_start..]);
                     } else {
                         for (0..padding) |_| {
-                            buf[pos] = ' ';
-                            pos += 1;
+                            try writeByteBounded(buf, &pos, ' ');
                         }
-                        @memcpy(buf[pos .. pos + formatted.len], formatted);
-                        pos += formatted.len;
+                        try writeSliceBounded(buf, &pos, formatted);
                     }
                 } else {
-                    @memcpy(buf[pos .. pos + formatted.len], formatted);
-                    pos += formatted.len;
+                    try writeSliceBounded(buf, &pos, formatted);
                 }
 
                 // Copy suffix (everything after the conversion character)
                 const suffix = fmt_str[j + 1 ..];
-                @memcpy(buf[pos .. pos + suffix.len], suffix);
-                pos += suffix.len;
+                try writeSliceBounded(buf, &pos, suffix);
 
                 return buf[0..pos];
             }
         } else {
             // Prefix text before the format specifier
-            buf[pos] = fmt_str[i];
-            pos += 1;
+            try writeByteBounded(buf, &pos, fmt_str[i]);
         }
     }
 
@@ -311,12 +314,18 @@ fn formatScientific(buf: []u8, value: f64) ![]const u8 {
     var mantissa = abs_val;
 
     if (mantissa >= 10.0) {
-        while (mantissa >= 10.0) {
+        // f64 max exponent is 308; 400 iterations is a safe upper bound.
+        var iter: usize = 0;
+        while (mantissa >= 10.0) : (iter += 1) {
+            std.debug.assert(iter < 400);
             mantissa /= 10.0;
             exp += 1;
         }
     } else if (mantissa < 1.0 and mantissa > 0.0) {
-        while (mantissa < 1.0) {
+        // f64 min exponent is -308; 400 iterations is a safe upper bound.
+        var iter: usize = 0;
+        while (mantissa < 1.0) : (iter += 1) {
+            std.debug.assert(iter < 400);
             mantissa *= 10.0;
             exp -= 1;
         }
