@@ -1374,6 +1374,22 @@ overwrite-hint tests.
 - [ ] Integration tests that exercise the compiled binary's
       actual I/O initialization
 
+### 6. dd MUST-tier conv= Integration Coverage
+Salvaged from closed PR #34. `tests/utilities/dd_test.sh`
+lacks behavioral coverage for several MUST-tier `conv=`
+values; some existing tests also compare against macOS
+`/usr/bin/dd`, which produces empty output and silently
+passes.
+
+- [ ] Replace macOS `/usr/bin/dd` comparisons with
+      hardcoded GNU-equivalent expected values
+- [ ] Add behavioral tests for `conv=sync` (NUL padding +
+      full block), `conv=notrunc` vs. truncate contrast,
+      `conv=fsync`, `conv=osync`, `conv=ascii`,
+      `conv=ebcdic`, `conv=ibm`, `conv=noerror`
+- [ ] Cross-check against the existing rejection tests
+      added in commit cc57c2a (`conv=sparse`/`par*`/`files=`)
+
 ## Bugs
 
 - [ ] **`ls` does not switch to single-column output when
