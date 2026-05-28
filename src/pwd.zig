@@ -163,6 +163,19 @@ fn isValidPwd(io: std.Io, pwd_env: []const u8, physical_cwd: []const u8) bool {
     return true;
 }
 
+/// Return true if two FileInfo records point at the same filesystem object,
+/// using BOTH inode and device ID. Inode numbers are only unique within a
+/// single filesystem, so a stale `$PWD` on another mount can have a colliding
+/// inode with the real cwd. Comparing (inode, dev) is the standard way to
+/// detect "same file" across mounts (see coreutils sys-stat.h SAME_INODE).
+///
+/// TODO(audit-G2): stub — wire up real (inode, dev) check in GREEN commit.
+pub fn samePathByInodeAndDev(a: common.file.FileInfo, b: common.file.FileInfo) bool {
+    _ = a;
+    _ = b;
+    return false;
+}
+
 // ============================================================================
 // TESTS
 // ============================================================================
@@ -218,6 +231,27 @@ test "getWorkingDirectory logical mode with valid PWD" {
     // Should return an absolute path
     try testing.expect(cwd.len > 0);
     try testing.expect(cwd[0] == '/');
+}
+
+test "samePathByInodeAndDev compares inode AND device for same path" {
+    // Audit G2 regression: PWD validation must compare BOTH inode and device,
+    // not inode alone. Two different filesystems can share inode numbers, so
+    // a stale $PWD pointing at another mount can pass an inode-only check.
+    //
+    // Method: stat the same path twice — both records must compare equal
+    // across (inode, dev). A stub that ignores dev (or returns a constant)
+    // will fail this assertion.
+    const io = testing.io;
+    const a = try common.file.FileInfo.stat(io, ".");
+    const b = try common.file.FileInfo.stat(io, ".");
+    try testing.expect(samePathByInodeAndDev(a, b));
+
+    // Negative space: a record with a deliberately altered dev must compare
+    // unequal even when the inode matches. This catches an inode-only impl
+    // that ignores the dev field entirely.
+    var b_other_dev = b;
+    b_other_dev.dev = a.dev +% 1;
+    try testing.expect(!samePathByInodeAndDev(a, b_other_dev));
 }
 
 test "isValidPwd security validation" {
