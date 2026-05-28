@@ -1175,3 +1175,61 @@ test "audit: seq countdown with double-dash" {
     try testing.expectEqual(@as(u8, 0), result);
     try testing.expectEqualStrings("10\n8\n6\n4\n2\n", stdout_aw.writer.buffered());
 }
+
+// ========== AUDIT G10: buffer overflow in formatWithSpec ==========
+
+// formatWithSpec wrote into the caller-provided byte buffer without
+// bounds checks. Each prefix byte (line 291), %% literal (line 191-194),
+// width padding, formatted-digit @memcpy, and the suffix @memcpy could
+// drive `pos` past `buf.len`. The fix is to return error.NoSpaceLeft
+// when a write would overflow rather than corrupt memory.
+//
+// Methodology: call formatWithSpec with a buffer too small for the
+// format string's literal text. The literal prefix alone forces pos
+// past buf.len, so the function must return error.NoSpaceLeft instead
+// of writing OOB.
+test "audit G10: formatWithSpec rejects overflow from prefix text" {
+    var buf: [16]u8 = undefined;
+    // 20-byte prefix into a 16-byte buffer; no `%` so the loop walks the
+    // entire spec writing one byte per iteration into buf[pos].
+    const long_prefix = "AAAAAAAAAAAAAAAAAAAA";
+    try testing.expectError(error.NoSpaceLeft, formatWithSpec(&buf, 1.0, long_prefix));
+}
+
+test "audit G10: formatWithSpec rejects overflow before format spec" {
+    var buf: [16]u8 = undefined;
+    // 20-byte prefix then %f; prefix copy alone overflows buf.
+    const spec = "AAAAAAAAAAAAAAAAAAAA%f";
+    try testing.expectError(error.NoSpaceLeft, formatWithSpec(&buf, 1.0, spec));
+}
+
+test "audit G10: formatWithSpec rejects overflow from suffix" {
+    var buf: [16]u8 = undefined;
+    // "%f" formats to "1.000000" (8 bytes) leaving 8 bytes; a 10-byte
+    // suffix forces the suffix @memcpy past buf.len.
+    const spec = "%fXXXXXXXXXX";
+    try testing.expectError(error.NoSpaceLeft, formatWithSpec(&buf, 1.0, spec));
+}
+
+test "audit G10: formatWithSpec rejects overflow from %% literal" {
+    var buf: [8]u8 = undefined;
+    // Sixteen "%%" literals into an 8-byte buffer; each iteration writes
+    // a single '%' byte without a bounds check.
+    const spec = "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%";
+    try testing.expectError(error.NoSpaceLeft, formatWithSpec(&buf, 1.0, spec));
+}
+
+test "audit G10: formatWithSpec rejects overflow from width padding" {
+    var buf: [16]u8 = undefined;
+    // Width 50 with %f forces 50 padding+digit bytes into a 16-byte
+    // buffer.
+    const spec = "%50f";
+    try testing.expectError(error.NoSpaceLeft, formatWithSpec(&buf, 1.0, spec));
+}
+
+test "audit G10: formatWithSpec succeeds when buffer fits" {
+    var buf: [32]u8 = undefined;
+    // Sanity check: ordinary spec still works after the bounds-check fix.
+    const result = try formatWithSpec(&buf, 1.0, "val=%f");
+    try testing.expectEqualStrings("val=1.000000", result);
+}
