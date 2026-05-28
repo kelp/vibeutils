@@ -75,6 +75,9 @@ pub const path = @import("path.zig");
 /// Shared octal and symbolic file mode parser used by chmod and mkdir.
 pub const mode = @import("mode.zig");
 
+/// Bounded iterative directory walker (replaces per-utility recursive walk).
+pub const walker = @import("walker.zig");
+
 /// Glob pattern matching with bracket expressions
 pub const glob = @import("glob.zig");
 
@@ -332,13 +335,13 @@ test "utilities must use writerStreaming not writer for stdout/stderr (issue #5)
         return;
     };
 
-    var walker = try src_dir.walk(testing.allocator);
-    defer walker.deinit();
+    var src_walker = try src_dir.walk(testing.allocator);
+    defer src_walker.deinit();
 
     var violations: std.ArrayListUnmanaged(u8) = .empty;
     defer violations.deinit(testing.allocator);
 
-    while (try walker.next(io)) |entry| {
+    while (try src_walker.next(io)) |entry| {
         if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
         // Skip test/integration files and this file (contains patterns in strings)
         if (std.mem.find(u8, entry.path, "integration_tests") != null) continue;
@@ -572,4 +575,5 @@ test "posixErrorString: unknown error falls back to @errorName" {
 test {
     // All common module tests are included via individual test blocks
     _ = @import("git.zig");
+    _ = @import("walker.zig");
 }
