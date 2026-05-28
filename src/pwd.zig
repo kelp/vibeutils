@@ -149,18 +149,14 @@ fn isValidPwd(io: std.Io, pwd_env: []const u8, physical_cwd: []const u8) bool {
         return false;
     }
 
-    const pwd_stat = std.Io.Dir.cwd().statFile(io, pwd_env, .{}) catch return false;
-    const cwd_stat = std.Io.Dir.cwd().statFile(io, physical_cwd, .{}) catch return false;
+    const pwd_info = common.file.FileInfo.stat(io, pwd_env) catch return false;
+    const cwd_info = common.file.FileInfo.stat(io, physical_cwd) catch return false;
 
-    if (pwd_stat.inode != cwd_stat.inode) {
+    if (pwd_info.kind != .directory) {
         return false;
     }
 
-    if (pwd_stat.kind != .directory) {
-        return false;
-    }
-
-    return true;
+    return samePathByInodeAndDev(pwd_info, cwd_info);
 }
 
 /// Return true if two FileInfo records point at the same filesystem object,
@@ -168,12 +164,8 @@ fn isValidPwd(io: std.Io, pwd_env: []const u8, physical_cwd: []const u8) bool {
 /// single filesystem, so a stale `$PWD` on another mount can have a colliding
 /// inode with the real cwd. Comparing (inode, dev) is the standard way to
 /// detect "same file" across mounts (see coreutils sys-stat.h SAME_INODE).
-///
-/// TODO(audit-G2): stub — wire up real (inode, dev) check in GREEN commit.
 pub fn samePathByInodeAndDev(a: common.file.FileInfo, b: common.file.FileInfo) bool {
-    _ = a;
-    _ = b;
-    return false;
+    return a.inode == b.inode and a.dev == b.dev;
 }
 
 // ============================================================================
