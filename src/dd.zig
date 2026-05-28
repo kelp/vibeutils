@@ -33,14 +33,8 @@ const DdConfig = struct {
     conv_ibm: bool = false,
     conv_block: bool = false,
     conv_unblock: bool = false,
-    conv_sparse: bool = false,
-    conv_pareven: bool = false,
-    conv_parnone: bool = false,
-    conv_parodd: bool = false,
-    conv_parset: bool = false,
     cbs: ?usize = null,
     fillchar: u8 = ' ',
-    files: usize = 1,
     status: StatusLevel = .default,
     help: bool = false,
     version: bool = false,
@@ -154,9 +148,6 @@ fn parseOperands(args: []const []const u8) !DdConfig {
                     return error.InvalidValue;
             } else if (std.mem.eql(u8, key, "cbs")) {
                 config.cbs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "files")) {
-                config.files = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
             } else if (std.mem.eql(u8, key, "conv")) {
                 try parseConversions(&config, value);
             } else if (std.mem.eql(u8, key, "iseek")) {
@@ -236,16 +227,6 @@ fn parseConversions(config: *DdConfig, value: []const u8) !void {
             config.conv_ebcdic = true;
         } else if (std.mem.eql(u8, conv, "oldibm")) {
             config.conv_ibm = true;
-        } else if (std.mem.eql(u8, conv, "sparse")) {
-            config.conv_sparse = true;
-        } else if (std.mem.eql(u8, conv, "pareven")) {
-            config.conv_pareven = true;
-        } else if (std.mem.eql(u8, conv, "parnone")) {
-            config.conv_parnone = true;
-        } else if (std.mem.eql(u8, conv, "parodd")) {
-            config.conv_parodd = true;
-        } else if (std.mem.eql(u8, conv, "parset")) {
-            config.conv_parset = true;
         } else {
             return error.InvalidValue;
         }
@@ -435,7 +416,6 @@ fn printHelp(allocator: Allocator, writer: anytype) !void {
         \\  count=N         copy only N input blocks
         \\  skip=N          skip N ibs-sized blocks at start of input
         \\  seek=N          skip N obs-sized blocks at start of output
-        \\  files=N         copy and concatenate N input files (default: 1)
         \\  conv=CONVS      convert the file as per the comma-separated list
         \\  status=LEVEL    transfer information to print to stderr;
         \\                  LEVEL is one of: none, noxfer, progress
@@ -473,8 +453,38 @@ fn printVersion(writer: anytype) !void {
     try writer.print("dd ({s}) {s}\n", .{ common.name, common.version });
 }
 
+/// Scan args for operands that are parsed but not implemented.
+/// Returns the operand name if an unsupported operand is found, null otherwise.
+fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
+    for (args) |arg| {
+        if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
+            const key = arg[0..eq_pos];
+            const value = arg[eq_pos + 1 ..];
+            if (std.mem.eql(u8, key, "files")) {
+                return "files";
+            }
+            if (std.mem.eql(u8, key, "conv")) {
+                var iter = std.mem.splitScalar(u8, value, ',');
+                while (iter.next()) |conv| {
+                    if (std.mem.eql(u8, conv, "sparse")) return "sparse";
+                    if (std.mem.eql(u8, conv, "pareven")) return "pareven";
+                    if (std.mem.eql(u8, conv, "parnone")) return "parnone";
+                    if (std.mem.eql(u8, conv, "parodd")) return "parodd";
+                    if (std.mem.eql(u8, conv, "parset")) return "parset";
+                }
+            }
+        }
+    }
+    return null;
+}
+
 /// Execute the dd copy operation
 pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+    if (findUnsupportedOperand(args)) |name| {
+        common.printErrorWithProgram(allocator, stderr, "dd", "unsupported operand '{s}' (not implemented)", .{name});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
     const config = parseOperands(args) catch |err| {
         switch (err) {
             error.InvalidValue => {
@@ -1015,14 +1025,8 @@ test "parseOperands - defaults" {
     try testing.expect(!config.conv_ibm);
     try testing.expect(!config.conv_block);
     try testing.expect(!config.conv_unblock);
-    try testing.expect(!config.conv_sparse);
-    try testing.expect(!config.conv_pareven);
-    try testing.expect(!config.conv_parnone);
-    try testing.expect(!config.conv_parodd);
-    try testing.expect(!config.conv_parset);
     try testing.expect(config.cbs == null);
     try testing.expectEqual(@as(u8, ' '), config.fillchar);
-    try testing.expectEqual(@as(usize, 1), config.files);
     try testing.expectEqual(StatusLevel.default, config.status);
 }
 
@@ -1456,12 +1460,6 @@ test "parseOperands - cbs default is null" {
     try testing.expect(config.cbs == null);
 }
 
-test "parseOperands - files operand" {
-    const args = [_][]const u8{"files=3"};
-    const config = try parseOperands(&args);
-    try testing.expectEqual(@as(usize, 3), config.files);
-}
-
 test "parseConversions - fsync" {
     const args = [_][]const u8{"conv=fsync"};
     const config = try parseOperands(&args);
@@ -1880,44 +1878,6 @@ test "parseConversions - oldibm maps to ibm" {
     const args = [_][]const u8{"conv=oldibm"};
     const config = try parseOperands(&args);
     try testing.expect(config.conv_ibm);
-}
-
-test "parseConversions - sparse accepted as no-op" {
-    const args = [_][]const u8{"conv=sparse"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_sparse);
-}
-
-test "parseConversions - pareven accepted as no-op" {
-    const args = [_][]const u8{"conv=pareven"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_pareven);
-}
-
-test "parseConversions - parnone accepted as no-op" {
-    const args = [_][]const u8{"conv=parnone"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_parnone);
-}
-
-test "parseConversions - parodd accepted as no-op" {
-    const args = [_][]const u8{"conv=parodd"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_parodd);
-}
-
-test "parseConversions - parset accepted as no-op" {
-    const args = [_][]const u8{"conv=parset"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_parset);
-}
-
-test "parseConversions - multiple parity and sparse" {
-    const args = [_][]const u8{"conv=sparse,pareven,lcase"};
-    const config = try parseOperands(&args);
-    try testing.expect(config.conv_sparse);
-    try testing.expect(config.conv_pareven);
-    try testing.expect(config.conv_lcase);
 }
 
 test "runDd - conv=block with fillchar" {
