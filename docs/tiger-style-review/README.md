@@ -236,7 +236,24 @@ Roughly ordered by impact-per-effort:
   (commits `6c83bc8`, `c8324b3`, `318a023`, `e90a923`).
   `zig build test`, `zig build test-integration`, and `just it`
   all compile and run cleanly.
-- ⬜ Phase 1 — correctness bugs.
+- ✅ **Phase 1 — Correctness bugs (12 audit items).**
+  - `f073d4b` — printf %e/%E/%g/%G Inf/NaN infinite loop
+  - `2c1a715` — test(1) -nt/-ot regression cover (audit claim
+    was wrong; locked correctness in)
+  - `2ec4a2a` + `e835538` — ls -R duplicate directory headers
+  - `565f8e9` — timeout --preserve-status SIGKILL dead branch
+  - `4a81005` — stat %o dead branch + @intCast assertions
+  - `e7d70bd` — df sequential-dupe partial-allocation leaks
+  - `bc3c777` — common.file clock_gettime uninitialized read
+  - touch parseIso8601 — audit claim unreachable; no fix
+    needed (year capped at 4 digits by parser, max
+    `days * 86400` ≈ 2.5×10¹¹ vs i64 max 9.2×10¹⁸)
+  - `fcbb999` + `3524b62` — pwd PWD validation now compares
+    (inode, dev) not inode alone
+  - `373b741` + `80f437a` — seq formatWithSpec buffer overflow
+    and formatScientific unbounded loops
+  - `cc57c2a` + `456a1de` — dd rejects unsupported
+    conv=sparse / conv=par* / files= operands at parse time
 - ⬜ Phase 2 — shared bounded walker.
 - ⬜ Phase 3 — function-length splits.
 - ⬜ Phase 4 — assertion sweep.
