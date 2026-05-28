@@ -102,9 +102,8 @@ pub const Entry = struct {
     /// and .post on unwind.
     visit: enum { pre, post },
 
-    /// Cached stat result, populated when the walker had to stat the entry
-    /// to decide whether to descend or to honor stay_on_filesystem.
-    /// Callers should use this rather than re-stat'ing.
+    /// Cached stat result. Walker populates when stat is needed for descent
+    /// decisions; null otherwise. Callers should use this rather than re-stat.
     stat: ?Stat,
 
     /// Handle to the parent directory, valid until the next `next()`.
@@ -117,25 +116,41 @@ pub const Entry = struct {
 // Private Types
 // ============================================================================
 
+/// A child dirent entry (name + kind) as seen by the iterator.
+const DirEntry = struct {
+    name: []const u8,
+    kind: std.Io.File.Kind,
+};
+
 /// A single in-progress directory frame on the traversal stack.
 const Frame = struct {
     /// Owned: closed when popped.
     dir: std.Io.Dir,
+    /// Lives alongside dir; iterated until null.
     iterator: std.Io.Dir.Iterator,
+    /// Depth of THIS directory (not its children).
     depth: u16,
-    /// For trimming path_buf on pop.
+    /// path_buf length before this dir's name was appended (parent length).
     path_len_on_entry: usize,
-    /// Emit this dir post-order on unwind?
+    /// path_buf length of this dir's full path (for post-order emit).
+    dir_path_len: usize,
+    /// Emit this dir post-order when iterator exhausted?
     pending_post: bool,
-    /// Which root this descended from.
+    /// True once post-order entry was emitted; pop on next next() call.
+    post_emitted: bool,
+    /// Which root operand index this descended from.
     root_index: u32,
+    /// Non-null when sort_children=true: pre-collected sorted entries.
+    sorted_entries: ?std.ArrayListUnmanaged(DirEntry),
+    /// Next index into sorted_entries to consume.
+    sorted_index: u32,
 };
 
 /// A root path queued for traversal.
 const RootSpec = struct {
     /// Owned by allocator.
     path: []const u8,
-    /// Resolved -H/-L command-line logic.
+    /// True if we should follow symlinks when opening this root.
     follow_initial: bool,
 };
 
@@ -154,30 +169,34 @@ pub const Walker = struct {
     allocator: std.mem.Allocator,
     config: WalkConfig,
 
-    /// Explicit stack of in-progress directory frames. Never exceeds
-    /// config.max_depth — error returned on every push attempt past the cap.
+    /// Explicit stack of in-progress directory frames. Never exceeds max_depth.
     stack: std.ArrayListUnmanaged(Frame),
 
-    /// Cycle detector (dev, inode). Initialized iff config.detect_cycles.
+    /// Cycle detector (dev, inode). Non-null iff config.detect_cycles.
     visited: ?directory.FileSystemIdSet,
 
     /// Root operand queue. The walker drains this before declaring done.
     roots: std.ArrayListUnmanaged(RootSpec),
 
-    /// Device of the *current* root, for stay_on_filesystem. Re-captured per root.
+    /// Index of the next root to start (into roots array).
+    root_cursor: u32,
+
+    /// Device of the *current* root, for stay_on_filesystem.
     current_root_dev: ?u64,
 
     /// Scratch buffer for the path of the currently-emitted entry.
     /// Reused across calls to avoid allocator churn.
     path_buf: std.ArrayListUnmanaged(u8),
 
-    /// Running total of entries emitted. Bounds-checked against
-    /// config.max_entries on every `next()`.
+    /// Running total of entries emitted. Bounds-checked against max_entries.
     entries_emitted: u64,
 
-    /// When pruneCurrent() is called, the walker sets this flag so the
-    /// next next() call knows not to descend into the last emitted dir.
+    /// When true, the next next() call should pop the top frame (prune).
     prune_current: bool,
+
+    /// True when the last emitted entry was a pre-order directory.
+    /// Makes pruneCurrent() effective (pop the top frame next call).
+    last_was_pre_dir: bool,
 
     // -----------------------------------------------------------------------
     // Public lifecycle methods
@@ -189,88 +208,535 @@ pub const Walker = struct {
         allocator: std.mem.Allocator,
         config: WalkConfig,
     ) error{OutOfMemory}!Walker {
-        _ = config;
+        assert(config.max_depth > 0);
+        assert(config.max_entries > 0);
+        var visited: ?directory.FileSystemIdSet = null;
+        if (config.detect_cycles) {
+            visited = directory.FileSystemIdSet.init(allocator);
+        }
         return Walker{
             .allocator = allocator,
-            .config = .{},
+            .config = config,
             .stack = .empty,
-            .visited = null,
+            .visited = visited,
             .roots = .empty,
+            .root_cursor = 0,
             .current_root_dev = null,
             .path_buf = .empty,
             .entries_emitted = 0,
             .prune_current = false,
+            .last_was_pre_dir = false,
         };
     }
 
     /// Add a root path to walk. May be called multiple times before or
     /// between `next()` calls. Each root is processed in insertion order.
     pub fn addRoot(self: *Walker, path: []const u8) error{OutOfMemory}!void {
-        _ = self;
-        _ = path;
+        assert(path.len > 0);
+        const path_copy = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(path_copy);
+        const follow_initial = (self.config.symlinks != .no_follow);
+        try self.roots.append(self.allocator, RootSpec{
+            .path = path_copy,
+            .follow_initial = follow_initial,
+        });
+        assert(self.roots.items.len > 0);
     }
 
     /// Advance to the next entry. Returns null when the walk is complete.
-    /// Errors are per-entry: I/O errors surface here. After an error,
-    /// `next()` may be called again — the walker stays re-entrant.
+    /// Errors are per-entry. After an error, next() may be called again.
     /// Returns error.DepthLimitExceeded when config.max_depth is reached.
     /// Returns error.EntryLimitExceeded when config.max_entries is reached.
     pub fn next(self: *Walker, io: std.Io) !?Entry {
-        _ = self;
-        _ = io;
-        return null;
+        assert(self.stack.items.len <= self.config.max_depth);
+        if (self.entries_emitted >= self.config.max_entries) {
+            return error.EntryLimitExceeded;
+        }
+        // Handle prune: pop the frame that was just pushed for a pre-dir emit.
+        if (self.prune_current and self.last_was_pre_dir) {
+            self.prune_current = false;
+            self.last_was_pre_dir = false;
+            assert(self.stack.items.len > 0);
+            self.popFrame(io);
+        }
+        self.prune_current = false;
+        while (true) {
+            // Pop frames whose post-order entry was already emitted.
+            if (self.stack.items.len > 0) {
+                const top = &self.stack.items[self.stack.items.len - 1];
+                if (top.post_emitted) {
+                    self.popFrame(io);
+                    continue;
+                }
+            }
+            // If stack empty, start next root.
+            if (self.stack.items.len == 0) {
+                self.last_was_pre_dir = false;
+                const maybe = try self.startNextRoot(io);
+                if (maybe) |entry| {
+                    self.entries_emitted += 1;
+                    assert(self.entries_emitted <= self.config.max_entries);
+                    self.last_was_pre_dir = (entry.kind == .directory and entry.visit == .pre);
+                    return entry;
+                }
+                // startNextRoot may push a frame without emitting (post-only order).
+                // If stack is still empty, all roots are exhausted.
+                if (self.stack.items.len == 0) return null;
+                continue; // frame was pushed; drive nextFromStack.
+            }
+            // Advance one step on the current stack.
+            self.last_was_pre_dir = false;
+            const maybe = try self.nextFromStack(io);
+            if (maybe) |entry| {
+                self.entries_emitted += 1;
+                assert(self.entries_emitted <= self.config.max_entries);
+                self.last_was_pre_dir = (entry.kind == .directory and entry.visit == .pre);
+                return entry;
+            }
+            // nextFromStack returned null (frame popped or post emit queued).
+        }
     }
 
     /// Tell the walker not to descend into the most recently emitted entry,
     /// if it was a directory in pre-order. No-op otherwise.
     pub fn pruneCurrent(self: *Walker) void {
-        _ = self;
+        assert(self.stack.items.len <= self.config.max_depth);
+        self.prune_current = true;
     }
 
-    /// Free all owned memory; close all open Dir handles still on the stack.
+    /// Free all owned memory; close all open Dir handles on the stack.
     /// Safe to call multiple times. Must be called even if `next` errored.
     pub fn deinit(self: *Walker, io: std.Io) void {
-        _ = self;
-        _ = io;
+        assert(self.stack.items.len <= self.config.max_depth);
+        while (self.stack.items.len > 0) {
+            self.popFrame(io);
+        }
+        assert(self.stack.items.len == 0);
+        for (self.roots.items) |root| self.allocator.free(root.path);
+        self.roots.deinit(self.allocator);
+        self.path_buf.deinit(self.allocator);
+        if (self.visited) |*v| v.deinit();
+        self.stack.deinit(self.allocator);
     }
 
     // -----------------------------------------------------------------------
-    // Private helpers (stubs — real logic belongs in the implementer's pass)
+    // Private helpers
     // -----------------------------------------------------------------------
 
-    /// Pop the top frame from the stack, close its dir handle, and restore
-    /// path_buf to its pre-descent length.
+    /// Pop the top frame: close its dir handle and restore path_buf.
     fn popFrame(self: *Walker, io: std.Io) void {
-        _ = self;
-        _ = io;
+        assert(self.stack.items.len > 0);
+        var frame = self.stack.pop().?;
+        freeSortedEntries(self.allocator, &frame);
+        self.path_buf.items.len = frame.path_len_on_entry;
+        frame.dir.close(io);
+        assert(self.path_buf.items.len == frame.path_len_on_entry);
     }
 
-    /// Push a new directory frame onto the stack, asserting depth < max_depth.
+    /// Push a new frame; path_buf must already contain the dir's full path.
     fn descendInto(
         self: *Walker,
         io: std.Io,
-        parent_path_len: usize,
+        path_len_on_entry: usize,
+        dir_path_len: usize,
         dir: std.Io.Dir,
         depth: u16,
         root_index: u32,
         pending_post: bool,
-    ) error{OutOfMemory}!void {
-        _ = self;
-        _ = io;
-        _ = parent_path_len;
-        _ = dir;
-        _ = depth;
-        _ = root_index;
-        _ = pending_post;
+    ) !void {
+        assert(self.stack.items.len < self.config.max_depth);
+        assert(depth <= self.config.max_depth);
+        var frame = Frame{
+            .dir = dir,
+            .iterator = dir.iterate(),
+            .depth = depth,
+            .path_len_on_entry = path_len_on_entry,
+            .dir_path_len = dir_path_len,
+            .pending_post = pending_post,
+            .post_emitted = false,
+            .root_index = root_index,
+            .sorted_entries = null,
+            .sorted_index = 0,
+        };
+        // Pre-collect entries when sort_children=true or detect_cycles=true.
+        // When detect_cycles=true we also pre-scan symlinks to add their
+        // targets to visited before any directory is descended (prevents
+        // double-visiting a filesystem object reached via both a real path
+        // and a symlink in the same parent directory).
+        if (self.config.sort_children or self.config.detect_cycles) {
+            // register_symlink_targets=true only for no_follow / follow_cmdline.
+            // For follow_all, symlinks ARE the traversal path; pre-registering their
+            // targets in visited would block the intended descent through the symlink.
+            const reg = self.config.detect_cycles and
+                (self.config.symlinks != .follow_all);
+            try collectAndPreprocess(
+                self.allocator,
+                io,
+                &frame,
+                self.config.skip_dot_entries,
+                self.config.sort_children,
+                reg,
+                if (self.config.detect_cycles) &self.visited else null,
+            );
+        }
+        try self.stack.append(self.allocator, frame);
+        assert(self.stack.items.len > 0);
     }
 
-    /// Drive one step of the walk: advance the top frame's iterator or pop it.
-    fn nextFromStack(self: *Walker, io: std.Io) !?Entry {
-        _ = self;
-        _ = io;
+    /// Start traversing the next root from the roots queue.
+    fn startNextRoot(self: *Walker, io: std.Io) !?Entry {
+        assert(self.stack.items.len == 0);
+        if (self.root_cursor >= self.roots.items.len) return null;
+        const root = self.roots.items[self.root_cursor];
+        self.root_cursor += 1;
+        assert(root.path.len > 0);
+        self.path_buf.items.len = 0;
+        try self.path_buf.appendSlice(self.allocator, root.path);
+        const path_len = self.path_buf.items.len;
+        const basename = std.fs.path.basename(root.path);
+        const bn_start = if (path_len >= basename.len) path_len - basename.len else 0;
+        // Try opening as a directory (follows symlinks if follow_initial=true).
+        const dir = std.Io.Dir.cwd().openDir(io, root.path, .{ .iterate = true }) catch {
+            // Not a directory (or a symlink to a non-directory with follow_initial).
+            // Emit as a non-directory leaf.
+            return buildEntry(self.path_buf.items, bn_start, .file, 0, .pre, null, null);
+        };
+        // Capture root device for stay_on_filesystem.
+        if (self.config.stay_on_filesystem) {
+            if (directory.FileSystemId.fromDir(dir)) |fs_id| {
+                self.current_root_dev = fs_id.device;
+            } else |_| {
+                self.current_root_dev = null;
+            }
+        }
+        return self.startRootDir(io, path_len, bn_start, dir);
+    }
+
+    /// Open a root directory and push its frame; emit pre-order if needed.
+    fn startRootDir(
+        self: *Walker,
+        io: std.Io,
+        path_len: usize,
+        bn_start: usize,
+        dir: std.Io.Dir,
+    ) !?Entry {
+        assert(self.stack.items.len == 0);
+        assert(dir.handle >= 0);
+        // Cycle detection for the root.
+        if (self.config.detect_cycles) {
+            if (self.visited) |*v| {
+                const fs_id = try directory.FileSystemId.fromDir(dir);
+                const gop = try v.getOrPut(fs_id);
+                if (gop.found_existing) {
+                    dir.close(io);
+                    return null;
+                }
+            }
+        }
+        const pending_post = (self.config.order != .pre);
+        const emit_pre = (self.config.order != .post);
+        const root_idx = if (self.root_cursor > 0) self.root_cursor - 1 else 0;
+        try self.descendInto(io, 0, path_len, dir, 0, root_idx, pending_post);
+        if (emit_pre) {
+            return buildEntry(self.path_buf.items, bn_start, .directory, 0, .pre, null, null);
+        }
         return null;
     }
+
+    /// Advance the top frame's iterator; descend or emit as appropriate.
+    fn nextFromStack(self: *Walker, io: std.Io) !?Entry {
+        assert(self.stack.items.len > 0);
+        const frame_idx = self.stack.items.len - 1;
+        const frame = &self.stack.items[frame_idx];
+        // Get next child dirent.
+        const maybe_de = try nextChildDirent(io, frame, self.config.skip_dot_entries);
+        if (maybe_de == null) {
+            return self.handleExhaustedFrame(io, frame_idx);
+        }
+        const de = maybe_de.?;
+        return self.processChild(io, frame_idx, de);
+    }
+
+    /// Process a single child entry: decide whether to descend or emit.
+    fn processChild(
+        self: *Walker,
+        io: std.Io,
+        frame_idx: usize,
+        de: DirEntry,
+    ) !?Entry {
+        assert(frame_idx < self.stack.items.len);
+        assert(de.name.len > 0);
+        const frame = &self.stack.items[frame_idx];
+        const parent_path_len = frame.dir_path_len;
+        // Build child path in path_buf.
+        self.path_buf.items.len = parent_path_len;
+        try self.path_buf.append(self.allocator, '/');
+        try self.path_buf.appendSlice(self.allocator, de.name);
+        const child_path_len = self.path_buf.items.len;
+        const bn_start = parent_path_len + 1;
+        const child_depth = frame.depth + 1;
+        // Resolve effective kind based on symlink policy.
+        const eff_kind = resolveKind(de.kind, self.config.symlinks);
+        const is_dir = (eff_kind == .directory);
+        const stay = self.shouldStayAbove(de.kind, frame);
+        if (!is_dir or stay) {
+            return buildEntry(self.path_buf.items, bn_start, eff_kind, child_depth, .pre, null, frame.dir);
+        }
+        // Descend: check depth cap.
+        if (child_depth >= self.config.max_depth) {
+            self.path_buf.items.len = parent_path_len;
+            return error.DepthLimitExceeded;
+        }
+        return self.descendChildDir(io, frame_idx, child_depth, child_path_len, parent_path_len);
+    }
+
+    /// Open and push a child directory frame; emit pre-order if needed.
+    fn descendChildDir(
+        self: *Walker,
+        io: std.Io,
+        parent_frame_idx: usize,
+        child_depth: u16,
+        child_path_len: usize,
+        parent_path_len: usize,
+    ) !?Entry {
+        assert(parent_frame_idx < self.stack.items.len);
+        assert(child_depth > 0);
+        assert(child_depth < self.config.max_depth);
+        const child_path = self.path_buf.items[0..child_path_len];
+        const child_dir = std.Io.Dir.cwd().openDir(io, child_path, .{ .iterate = true }) catch |err| {
+            self.path_buf.items.len = parent_path_len;
+            return err;
+        };
+        // Cycle detection.
+        if (self.config.detect_cycles) {
+            if (self.visited) |*v| {
+                const fs_id = directory.FileSystemId.fromDir(child_dir) catch {
+                    child_dir.close(io);
+                    self.path_buf.items.len = parent_path_len;
+                    return null;
+                };
+                const gop = v.getOrPut(fs_id) catch {
+                    child_dir.close(io);
+                    self.path_buf.items.len = parent_path_len;
+                    return null;
+                };
+                if (gop.found_existing) {
+                    child_dir.close(io);
+                    self.path_buf.items.len = parent_path_len;
+                    return null; // Cycle: skip.
+                }
+            }
+        }
+        // Check stay_on_filesystem for the opened child dir.
+        if (self.config.stay_on_filesystem) {
+            if (self.current_root_dev) |root_dev| {
+                const child_dev_id = directory.FileSystemId.fromDir(child_dir) catch null;
+                if (child_dev_id != null and child_dev_id.?.device != root_dev) {
+                    child_dir.close(io);
+                    self.path_buf.items.len = parent_path_len;
+                    return null; // Cross device: skip.
+                }
+            }
+        }
+        const pframe = &self.stack.items[parent_frame_idx];
+        const root_index = pframe.root_index;
+        const pending_post = (self.config.order != .pre);
+        const emit_pre = (self.config.order != .post);
+        const bn_start = parent_path_len + 1;
+        try self.descendInto(io, parent_path_len, child_path_len, child_dir, child_depth, root_index, pending_post);
+        if (emit_pre) {
+            return buildEntry(self.path_buf.items, bn_start, .directory, child_depth, .pre, null, null);
+        }
+        return null; // post-order: emit on unwind.
+    }
+
+    /// Handle an exhausted frame: emit post-order or just pop.
+    fn handleExhaustedFrame(self: *Walker, io: std.Io, frame_idx: usize) ?Entry {
+        assert(frame_idx < self.stack.items.len);
+        const frame = &self.stack.items[frame_idx];
+        assert(!frame.post_emitted);
+        if (!frame.pending_post) {
+            self.popFrame(io);
+            return null;
+        }
+        // Emit post-order entry. path_buf has this dir's full path.
+        self.path_buf.items.len = frame.dir_path_len;
+        const path = self.path_buf.items;
+        const depth = frame.depth;
+        const bn_start = basenameStart(path);
+        frame.post_emitted = true; // Pop on next next() call.
+        return buildEntry(path, bn_start, .directory, depth, .post, null, null);
+    }
+
+    /// Returns true if we should NOT descend due to stay_on_filesystem.
+    /// For child entries, we compare device via the opened dir (handled in
+    /// descendChildDir). This is a pre-check on the dirent kind only.
+    fn shouldStayAbove(self: *Walker, kind: std.Io.File.Kind, frame: *const Frame) bool {
+        // The actual device check happens in descendChildDir using fromDir.
+        // Here we only skip based on non-directory kind (already handled by caller).
+        _ = kind;
+        _ = frame;
+        if (!self.config.stay_on_filesystem) return false;
+        // For stay_on_filesystem, the descendChildDir will check after opening.
+        return false;
+    }
 };
+
+// ============================================================================
+// Module-level helpers
+// ============================================================================
+
+/// Resolve the effective kind of an entry based on symlink policy.
+/// For no_follow: symlinks stay as .sym_link.
+/// For follow_all: .sym_link becomes .directory (caller opens it).
+/// For follow_cmdline: symlinks during traversal are never followed; the
+/// root operand is handled by startNextRoot using follow_initial=true.
+fn resolveKind(
+    raw_kind: std.Io.File.Kind,
+    policy: SymlinkPolicy,
+) std.Io.File.Kind {
+    if (raw_kind != .sym_link) return raw_kind;
+    const should_follow = switch (policy) {
+        .no_follow => false,
+        .follow_cmdline => false, // root handled by startNextRoot; never follow during traversal
+        .follow_all => true,
+    };
+    if (!should_follow) return .sym_link;
+    // Signal to caller to open as directory. Caller will try openDir.
+    return .directory;
+}
+
+/// Free sorted entries for a frame.
+fn freeSortedEntries(allocator: std.mem.Allocator, frame: *Frame) void {
+    if (frame.sorted_entries) |*entries| {
+        for (entries.items) |de| allocator.free(de.name);
+        entries.deinit(allocator);
+        frame.sorted_entries = null;
+    }
+}
+
+/// Collect children of a directory frame into sorted_entries.
+/// When sort_entries=true, sort by name ascending.
+/// When register_symlink_targets=true, scan all symlinks and add their
+/// followed targets to visited before normal iteration. This prevents a
+/// real directory from being descended when a not-followed symlink
+/// pointing to it appears in the same directory listing.
+fn collectAndPreprocess(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    frame: *Frame,
+    skip_dot: bool,
+    sort_entries: bool,
+    register_symlink_targets: bool,
+    visited: ?*?directory.FileSystemIdSet,
+) !void {
+    assert(frame.sorted_entries == null);
+    var entries: std.ArrayListUnmanaged(DirEntry) = .empty;
+    errdefer {
+        for (entries.items) |de| allocator.free(de.name);
+        entries.deinit(allocator);
+    }
+    while (try frame.iterator.next(io)) |entry| {
+        if (skip_dot and isDotEntry(entry.name)) continue;
+        const name_copy = try allocator.dupe(u8, entry.name);
+        errdefer allocator.free(name_copy);
+        try entries.append(allocator, DirEntry{ .name = name_copy, .kind = entry.kind });
+    }
+    if (sort_entries) {
+        std.mem.sort(DirEntry, entries.items, {}, struct {
+            fn cmp(_: void, a: DirEntry, b: DirEntry) bool {
+                return std.mem.order(u8, a.name, b.name) == .lt;
+            }
+        }.cmp);
+    }
+    // Pre-register symlink targets in the cycle set so that real dirs
+    // pointing to the same inode are skipped when the iterator gets to them.
+    // Only done when we are NOT following symlinks (no_follow / follow_cmdline)
+    // — in follow_all mode the symlink IS the traversal path and must not be
+    // pre-emptively blocked by cycle detection.
+    if (register_symlink_targets) {
+        if (visited) |v_ptr| {
+            if (v_ptr.*) |*v| {
+                for (entries.items) |de| {
+                    if (de.kind != .sym_link) continue;
+                    // Open the symlink target (follows symlink) to get its id.
+                    const target_dir = frame.dir.openDir(io, de.name, .{}) catch continue;
+                    const fs_id = directory.FileSystemId.fromDir(target_dir) catch {
+                        target_dir.close(io);
+                        continue;
+                    };
+                    target_dir.close(io);
+                    _ = v.getOrPut(fs_id) catch {};
+                }
+            }
+        }
+    }
+    frame.sorted_entries = entries;
+    assert(frame.sorted_index == 0);
+}
+
+/// Get the next child entry from a frame (sorted or live iterator).
+fn nextChildDirent(
+    io: std.Io,
+    frame: *Frame,
+    skip_dot: bool,
+) !?DirEntry {
+    if (frame.sorted_entries) |*entries| {
+        if (frame.sorted_index >= entries.items.len) return null;
+        const de = entries.items[frame.sorted_index];
+        frame.sorted_index += 1;
+        assert(frame.sorted_index <= @as(u32, @intCast(entries.items.len)));
+        return de;
+    }
+    // Live iterator.
+    while (true) {
+        const maybe = try frame.iterator.next(io);
+        if (maybe == null) return null;
+        const entry = maybe.?;
+        if (skip_dot and isDotEntry(entry.name)) continue;
+        return DirEntry{ .name = entry.name, .kind = entry.kind };
+    }
+}
+
+/// Build an Entry from components.
+fn buildEntry(
+    path: []const u8,
+    basename_start: usize,
+    kind: std.Io.File.Kind,
+    depth: u16,
+    visit: @FieldType(Entry, "visit"),
+    stat: ?Stat,
+    parent_dir: ?std.Io.Dir,
+) Entry {
+    assert(basename_start <= path.len);
+    return Entry{
+        .path = path,
+        .basename = path[basename_start..],
+        .kind = kind,
+        .depth = depth,
+        .visit = visit,
+        .stat = stat,
+        .parent_dir = parent_dir,
+    };
+}
+
+/// Returns true if the name is "." or "..".
+fn isDotEntry(name: []const u8) bool {
+    return std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..");
+}
+
+/// Return the byte offset of the last '/' + 1 in path, or 0 if none.
+fn basenameStart(path: []const u8) usize {
+    assert(path.len > 0);
+    var i: usize = path.len;
+    while (i > 0) {
+        i -= 1;
+        if (path[i] == '/') return i + 1;
+    }
+    return 0;
+}
+
+const assert = std.debug.assert;
 
 // ============================================================================
 // Test Helpers
@@ -1148,7 +1614,7 @@ test "walker: next() is re-entrant after a per-entry I/O error" {
             if (std.mem.eql(u8, entry.basename, "file_z.txt")) saw_file_z = true;
         } else |err| {
             // Any I/O error from the locked dir; record it and keep going.
-            _ = err;
+            _ = @intFromError(err);
             saw_io_error = true;
         }
     }
