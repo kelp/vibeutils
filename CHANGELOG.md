@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **macOS build broken on the macOS 26 SDK (#40).** `free`
+  imported the mach headers via `@cImport`, but Zig 0.16's
+  translate-c cannot size the `mach_msg_*_descriptor_t`
+  bitfield/union types in the 26.x SDK, failing the build
+  with "struct changed size unexpectedly". Replaced the mach
+  `@cImport` with hand-written `extern` declarations for the
+  few calls `free` needs (`host_statistics64`,
+  `mach_host_self`, `vm_statistics64_data_t`). These track
+  the stable kernel ABI and are immune to SDK header churn.
+
 ## v0.10.0 — 2026-05-26
 
 ### Infrastructure
