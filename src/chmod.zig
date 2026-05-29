@@ -2130,3 +2130,366 @@ test "behavioral: chmod -x via runChmod removes execute permission" {
     const actual_mode = try getFileMode(abs_path);
     try testing.expectEqual(@as(u32, 0o644), actual_mode);
 }
+
+// =============================================================================
+// Characterization tests: lock in recursive-traversal behavior for the
+// upcoming chmodRecursive -> bounded walker migration.
+//
+// These tests assert on-disk file modes after a real recursive chmod run.
+// They are behavior-PRESERVING: they pass on the current recursive code and
+// must keep passing once chmodRecursive is replaced by the walker driver loop.
+// Each test exercises a distinct invariant that a wrong rewrite would break.
+//
+// They follow the non-privileged behavioral-test pattern already used by
+// "chmod: -R -P should not follow symlinks during traversal": skip under root,
+// create real temp files, run chmodFiles, then stat the results.
+// =============================================================================
+
+test "char: -R applies mode to every entry across a multi-level tree" {
+    // Guards: recursive descent must reach files at every depth, not just the
+    // top level. A rewrite that fails to descend would leave deep files at
+    // their original mode.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(testing.io, "a", .default_dir);
+    try tmp_dir.dir.createDir(testing.io, "a/b", .default_dir);
+    try tmp_dir.dir.createDir(testing.io, "a/b/c", .default_dir);
+
+    const f0 = try tmp_dir.dir.createFile(testing.io, "a/top.txt", .{});
+    f0.close(testing.io);
+    const f1 = try tmp_dir.dir.createFile(testing.io, "a/b/mid.txt", .{});
+    f1.close(testing.io);
+    const f2 = try tmp_dir.dir.createFile(testing.io, "a/b/c/deep.txt", .{});
+    f2.close(testing.io);
+
+    const paths = [_][]const u8{ "a/top.txt", "a/b/mid.txt", "a/b/c/deep.txt", "a", "a/b", "a/b/c" };
+    var abs_paths: [paths.len][:0]u8 = undefined;
+    for (paths, 0..) |rel, idx| {
+        abs_paths[idx] = try tmp_dir.dir.realPathFileAlloc(testing.io, rel, testing.allocator);
+    }
+    defer for (abs_paths) |p| testing.allocator.free(p);
+
+    // Start every entry at a mode distinct from the target so a no-op rewrite
+    // is detectable.
+    for (abs_paths) |p| try setFileModeOctal(p, 0o700);
+
+    const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "a", testing.allocator);
+    defer testing.allocator.free(root_abs);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const files = [_][]const u8{root_abs};
+    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+
+    // Every file and every directory in the tree must now be 0o750.
+    for (abs_paths) |p| {
+        try testing.expectEqual(@as(u32, 0o750), try getFileMode(p));
+    }
+}
+
+test "char: post-order applies mode to leaf, child, and parent in one run" {
+    // Guards the post-order / open-first invariant: a directory's contents must
+    // be chmod'd BEFORE the directory itself. The target mode 0o600 strips the
+    // owner-search bit (x) from directories, so path-based descent through a
+    // parent is impossible once that parent has been chmod'd. This is the teeth
+    // of the test:
+    //   * A correct post-order walk reaches the deepest leaf first, chmods it,
+    //     then the child dir, then the parent. Every entry is processed while
+    //     its ancestors still have x, so the leaf ends at 0o600.
+    //   * A broken pre-order walk chmods the parent to 0o600 first, immediately
+    //     locking itself out of "parent/child/leaf.txt"; the leaf is never
+    //     reached and stays at its distinct starting mode (0o644).
+    // Removing the owner search bit blocks traversal even for a non-root process
+    // (verified: a uid!=0 process cannot path-descend through a dir lacking x),
+    // so this discriminates the two orderings without root. After the run we
+    // restore traversal bits on the directories so we (and cleanup) can re-stat
+    // the leaf; the leaf is a file, so restoring dir bits does not perturb it.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(testing.io, "parent", .default_dir);
+    try tmp_dir.dir.createDir(testing.io, "parent/child", .default_dir);
+    const leaf = try tmp_dir.dir.createFile(testing.io, "parent/child/leaf.txt", .{});
+    leaf.close(testing.io);
+
+    const parent_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent", testing.allocator);
+    defer testing.allocator.free(parent_abs);
+    const child_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent/child", testing.allocator);
+    defer testing.allocator.free(child_abs);
+    const leaf_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "parent/child/leaf.txt", testing.allocator);
+    defer testing.allocator.free(leaf_abs);
+
+    // Directories start traversable (0o700). The leaf starts at 0o644 so the
+    // 0o600 target is a real, detectable change distinct from any starting mode.
+    try setFileModeOctal(parent_abs, 0o700);
+    try setFileModeOctal(child_abs, 0o700);
+    try setFileModeOctal(leaf_abs, 0o644);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const files = [_][]const u8{parent_abs};
+    try chmodFiles(testing.io, testing.allocator, "600", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+
+    // Restore directory traversal so we can re-stat the leaf and so cleanup can
+    // recurse; restoring dir bits cannot change the leaf's own mode.
+    try setFileModeOctal(parent_abs, 0o700);
+    try setFileModeOctal(child_abs, 0o700);
+
+    // The deepest leaf must carry 0o600. A pre-order rewrite would have locked
+    // itself out after chmod'ing the parent and left the leaf at 0o644.
+    try testing.expectEqual(@as(u32, 0o600), try getFileMode(leaf_abs));
+}
+
+test "char: -L descends symlinked directory and chmods its contents" {
+    // Guards: under -L (traverse_all_symlinks) a symlink that points at a
+    // directory must be descended and every entry under the target receives
+    // the mode. A rewrite that ignored -L would leave the target's contents
+    // unchanged.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Real directory outside the walked tree, containing a file.
+    try tmp_dir.dir.createDir(testing.io, "real_target", .default_dir);
+    const inside = try tmp_dir.dir.createFile(testing.io, "real_target/inside.txt", .{});
+    inside.close(testing.io);
+
+    // The tree we walk; contains a symlink to real_target.
+    try tmp_dir.dir.createDir(testing.io, "tree", .default_dir);
+    var tree = try tmp_dir.dir.openDir(testing.io, "tree", .{});
+    defer tree.close(testing.io);
+    tree.symLink(testing.io, "../real_target", "link_to_dir", .{}) catch |err| switch (err) {
+        error.AccessDenied => return,
+        else => return,
+    };
+
+    const inside_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "real_target/inside.txt", testing.allocator);
+    defer testing.allocator.free(inside_abs);
+    const tree_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "tree", testing.allocator);
+    defer testing.allocator.free(tree_abs);
+
+    try setFileModeOctal(inside_abs, 0o700);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Target 0o750 keeps directories owner-traversable so the non-root test
+    // process can stat results after the descent into the symlinked directory.
+    const files = [_][]const u8{tree_abs};
+    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{
+        .recursive = true,
+        .traverse_all_symlinks = true,
+    });
+
+    // The file reached only by following the symlinked directory must be 0o750.
+    try testing.expectEqual(@as(u32, 0o750), try getFileMode(inside_abs));
+}
+
+test "char: -P leaves symlink target unchanged but chmods sibling files" {
+    // Guards: under -P (default) symlinks are not followed, so the target keeps
+    // its mode, while a real sibling file in the same directory IS chmod'd.
+    // Distinct target/sibling modes prevent a default-value trap.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const target = try tmp_dir.dir.createFile(testing.io, "outside.txt", .{});
+    target.close(testing.io);
+
+    try tmp_dir.dir.createDir(testing.io, "dir", .default_dir);
+    var dir = try tmp_dir.dir.openDir(testing.io, "dir", .{});
+    defer dir.close(testing.io);
+    const sibling = try dir.createFile(testing.io, "sibling.txt", .{});
+    sibling.close(testing.io);
+    dir.symLink(testing.io, "../outside.txt", "thelink", .{}) catch |err| switch (err) {
+        error.AccessDenied => return,
+        else => return,
+    };
+
+    const target_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "outside.txt", testing.allocator);
+    defer testing.allocator.free(target_abs);
+    const sibling_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "dir/sibling.txt", testing.allocator);
+    defer testing.allocator.free(sibling_abs);
+    const dir_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "dir", testing.allocator);
+    defer testing.allocator.free(dir_abs);
+
+    try setFileModeOctal(target_abs, 0o600);
+    try setFileModeOctal(sibling_abs, 0o700);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Target 0o750 keeps "dir" owner-traversable for result verification; the
+    // sibling starts at 0o700 so the change is detectable, and the symlink
+    // target starts at 0o600 so a wrongly-followed symlink would be visible.
+    const files = [_][]const u8{dir_abs};
+    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{
+        .recursive = true,
+        .no_traverse_symlinks = true,
+    });
+
+    // Sibling must change; symlink target must be untouched.
+    try testing.expectEqual(@as(u32, 0o750), try getFileMode(sibling_abs));
+    try testing.expectEqual(@as(u32, 0o600), try getFileMode(target_abs));
+}
+
+test "char: deep tree (~100 levels) completes without stack overflow" {
+    // Guards: a ~100-level nested directory chain must be fully chmod'd. This
+    // is the core motivation for the walker migration (iterative bound vs.
+    // per-level recursion). We verify the deepest file received the mode.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const depth: usize = 100;
+
+    // Build the nested path "d/d/d/.../d" iteratively.
+    var path_buf: std.ArrayList(u8) = .empty;
+    defer path_buf.deinit(testing.allocator);
+    var level: usize = 0;
+    while (level < depth) : (level += 1) {
+        if (level != 0) try path_buf.append(testing.allocator, '/');
+        try path_buf.append(testing.allocator, 'd');
+        try tmp_dir.dir.createDir(testing.io, path_buf.items, .default_dir);
+    }
+    // Place a file at the bottom.
+    try path_buf.appendSlice(testing.allocator, "/bottom.txt");
+    const bottom = try tmp_dir.dir.createFile(testing.io, path_buf.items, .{});
+    bottom.close(testing.io);
+
+    const bottom_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, path_buf.items, testing.allocator);
+    defer testing.allocator.free(bottom_abs);
+    try setFileModeOctal(bottom_abs, 0o700);
+
+    const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "d", testing.allocator);
+    defer testing.allocator.free(root_abs);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Target 0o750 keeps every level owner-traversable so the deepest file can
+    // be stat'd afterward; the bottom file starts at 0o700 to make the change
+    // detectable.
+    const files = [_][]const u8{root_abs};
+    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+
+    // The file 100 levels deep must have received the new mode.
+    try testing.expectEqual(@as(u32, 0o750), try getFileMode(bottom_abs));
+}
+
+test "char: symlink cycle does not cause an infinite loop" {
+    // Guards: a symlink pointing back into an ancestor directory must not cause
+    // chmod -R to loop forever. We use the default -P policy (symlinks not
+    // followed) so the cycle is inert, plus assert the real file still gets the
+    // mode. Under the walker, detect_cycles=true provides the same guarantee
+    // for -L; here we lock in that -R completes and the run terminates.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+    try tmp_dir.dir.createDir(testing.io, "root/sub", .default_dir);
+    var sub = try tmp_dir.dir.openDir(testing.io, "root/sub", .{});
+    defer sub.close(testing.io);
+    const f = try sub.createFile(testing.io, "real.txt", .{});
+    f.close(testing.io);
+    // Symlink that points back up to the walk root, forming a cycle.
+    sub.symLink(testing.io, "../../root", "loop", .{}) catch |err| switch (err) {
+        error.AccessDenied => return,
+        else => return,
+    };
+
+    const real_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "root/sub/real.txt", testing.allocator);
+    defer testing.allocator.free(real_abs);
+    const root_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "root", testing.allocator);
+    defer testing.allocator.free(root_abs);
+
+    try setFileModeOctal(real_abs, 0o700);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -R with default -P: must terminate, and the real file must be chmod'd.
+    // Target 0o750 keeps directories owner-traversable for verification.
+    const files = [_][]const u8{root_abs};
+    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+
+    try testing.expectEqual(@as(u32, 0o750), try getFileMode(real_abs));
+}
+
+test "char: wide directory - every entry receives the mode" {
+    // Guards: a directory with many entries must have ALL of them chmod'd, not
+    // just the first few. A rewrite that mishandled iterator batching would
+    // miss some entries.
+    if (std.c.getuid() == 0) return;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(testing.io, "wide", .default_dir);
+    var wide = try tmp_dir.dir.openDir(testing.io, "wide", .{});
+    defer wide.close(testing.io);
+
+    const count: usize = 64;
+    var name_buf: [32]u8 = undefined;
+    var idx: usize = 0;
+    while (idx < count) : (idx += 1) {
+        const name = try std.fmt.bufPrint(&name_buf, "f{d}.txt", .{idx});
+        const file = try wide.createFile(testing.io, name, .{});
+        file.close(testing.io);
+    }
+
+    const wide_abs = try tmp_dir.dir.realPathFileAlloc(testing.io, "wide", testing.allocator);
+    defer testing.allocator.free(wide_abs);
+
+    // Set every entry to a distinct starting mode so a partial run is visible.
+    idx = 0;
+    while (idx < count) : (idx += 1) {
+        const name = try std.fmt.bufPrint(&name_buf, "wide/f{d}.txt", .{idx});
+        const abs = try tmp_dir.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+        defer testing.allocator.free(abs);
+        try setFileModeOctal(abs, 0o700);
+    }
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // Target 0o750 keeps the "wide" directory owner-traversable so each entry
+    // can be re-stat'd; entries start at 0o700 so the change is detectable.
+    const files = [_][]const u8{wide_abs};
+    try chmodFiles(testing.io, testing.allocator, "750", &files, &stdout_aw.writer, &stderr_aw.writer, ChmodOptions{ .recursive = true });
+
+    // Verify every single entry is now 0o750.
+    idx = 0;
+    while (idx < count) : (idx += 1) {
+        const name = try std.fmt.bufPrint(&name_buf, "wide/f{d}.txt", .{idx});
+        const abs = try tmp_dir.dir.realPathFileAlloc(testing.io, name, testing.allocator);
+        defer testing.allocator.free(abs);
+        try testing.expectEqual(@as(u32, 0o750), try getFileMode(abs));
+    }
+}
