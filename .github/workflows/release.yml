@@ -30,10 +30,7 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-macos-none
             archive-name: darwin-arm64
-            runner: macos-14
-          - target: x86_64-macos-none
-            archive-name: darwin-amd64
-            runner: macos-15-intel
+            runner: macos-26
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -250,8 +247,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
-          - os: macos-15-intel
+          - os: macos-26
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
