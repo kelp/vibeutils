@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+- **Dropped the `darwin-amd64` (Intel macOS) prebuilt binary.**
+  Builds and CI now target macOS 26 (Tahoe), which is Apple
+  Silicon only, so the release no longer ships an x86_64 macOS
+  tarball and Homebrew bottles are tagged `arm64_tahoe` instead
+  of `arm64_sequoia`. Intel Mac users can still build from
+  source. CI (`test.yml`/`integration.yml`) and the release
+  build all run on `macos-26`, plus Linux x86_64 and arm64.
+
 ## v0.10.1 — 2026-05-28
 
 ### Fixed

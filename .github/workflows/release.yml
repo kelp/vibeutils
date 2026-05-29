@@ -128,7 +128,8 @@ jobs:
         id: bottle
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          BOTTLE_NAME="vibeutils-${VERSION}.arm64_sequoia.bottle.tar.gz"
+          # macOS 26 (Tahoe) bottle; binaries are built on the macos-26 runner.
+          BOTTLE_NAME="vibeutils-${VERSION}.arm64_tahoe.bottle.tar.gz"
 
           # Extract darwin-arm64 binary tarball
           mkdir -p extracted
@@ -228,7 +229,7 @@ jobs:
             if (/^  sha256 / && !in_bottle) { print "  sha256 \"" source_sha "\""; next }
             if (/^  bottle do/) { in_bottle=1 }
             if (in_bottle && /root_url/) { print "    root_url \"" bottle_url "\""; next }
-            if (in_bottle && /arm64_sequoia/) { print "    sha256 cellar: :any_skip_relocation, arm64_sequoia: \"" bottle_sha "\""; next }
+            if (in_bottle && /arm64_(sequoia|tahoe)/) { print "    sha256 cellar: :any_skip_relocation, arm64_tahoe: \"" bottle_sha "\""; next }
             if (/^  end/ && in_bottle) { in_bottle=0 }
             print
           }' "$FORMULA" > "${FORMULA}.tmp" && mv "${FORMULA}.tmp" "$FORMULA"
