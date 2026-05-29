@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.1 — 2026-05-28
 
 ### Fixed
 - **macOS build broken on the macOS 26 SDK (#40).** `free`
