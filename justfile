@@ -148,6 +148,11 @@ fmt:
 fmt-check:
     zig build fmt-check
 
+# Install git hooks (pre-commit fmt gate). Run once after cloning.
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "Installed git hooks from .githooks (pre-commit fmt gate)."
+
 # Lint man pages
 lint-man:
     @echo "Linting man pages..."

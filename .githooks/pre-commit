@@ -1,0 +1,21 @@
+#!/bin/sh
+# Block the commit unless `zig fmt` is clean across the tree.
+#
+# We always want formatting auto-fixed, so when it is not clean this hook runs
+# the formatter and then ABORTS -- letting you review the reformatted files and
+# re-commit. When the tree is already clean (the common case, since the dev and
+# the TDD workflow run `just fmt`), this is a fast no-op and the commit proceeds.
+#
+# Installed via `just install-hooks` (sets core.hooksPath to .githooks).
+
+if zig build fmt-check >/dev/null 2>&1; then
+    exit 0
+fi
+
+echo "pre-commit: Zig formatting is not clean. Running 'zig build fmt' to fix it..." >&2
+if ! zig build fmt >/dev/null 2>&1; then
+    echo "pre-commit: 'zig build fmt' failed -- fix the build, then re-commit." >&2
+    exit 1
+fi
+echo "pre-commit: formatting fixed in your working tree. Review the changes, stage them, and re-commit." >&2
+exit 1
