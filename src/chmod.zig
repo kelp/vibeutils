@@ -7,6 +7,7 @@ const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
 const privilege_test = common.privilege_test;
+const assert = std.debug.assert;
 
 /// Command-line arguments for chmod
 const ChmodArgs = struct {
@@ -63,33 +64,26 @@ const ChmodArgs = struct {
 };
 
 /// Main entry point for chmod utility
-pub fn runChmod(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
-    // Pre-process: if an argument looks like a symbolic mode starting
-    // with '-' (e.g. "-w", "-rwx"), insert "--" before it so the
-    // argparser treats it and everything after as positionals.
-    var effective_args: ?[]const []const u8 = null;
+pub fn runChmod(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    // Insert a "--" before a leading symbolic mode so argparse treats it as a
+    // positional; effective_args is non-null only when a rewrite happened.
+    const effective_args = try prepareArgs(allocator, args);
     defer if (effective_args) |ea| allocator.free(ea);
-
-    for (args, 0..) |arg, idx| {
-        // Stop scanning once we hit "--" (already handled by argparse)
-        if (std.mem.eql(u8, arg, "--")) break;
-        // Only inspect args that start with '-'
-        if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
-            if (looksLikeSymbolicMode(arg)) {
-                // Build new array: args[0..idx] ++ ["--"] ++ args[idx..]
-                var new_args = try allocator.alloc([]const u8, args.len + 1);
-                @memcpy(new_args[0..idx], args[0..idx]);
-                new_args[idx] = "--";
-                @memcpy(new_args[idx + 1 ..], args[idx..]);
-                effective_args = new_args;
-                break;
-            }
-        }
-    }
-
     const parse_args = effective_args orelse args;
 
-    const parsed_args = common.argparse.ArgParser.parseOrExit(ChmodArgs, allocator, parse_args, "chmod", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
+    const parsed_args = common.argparse.ArgParser.parseOrExit(
+        ChmodArgs,
+        allocator,
+        parse_args,
+        "chmod",
+        stderr_writer,
+    ) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
     if (parsed_args.help) {
@@ -103,63 +97,180 @@ pub fn runChmod(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     }
 
     const positionals = parsed_args.positionals;
-
-    // --reference requires only file arguments
     const using_reference = parsed_args.reference != null;
-    if (using_reference) {
-        if (positionals.len < 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "missing file operand\nTry 'chmod --help' for more information.", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-    } else {
-        if (positionals.len < 2) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "missing operand\nTry 'chmod --help' for more information.", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
+    if (!try checkOperandCount(allocator, positionals, using_reference, stderr_writer)) {
+        return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // With --reference, all args are files; otherwise first is mode
+    // With --reference, all args are files; otherwise the first is the mode.
     const mode_str = if (using_reference) "" else positionals[0];
     const files = if (using_reference) positionals else positionals[1..];
 
-    const options = ChmodOptions{
+    const options = buildOptions(parsed_args, parse_args);
+
+    // --preserve-root: refuse to operate recursively on '/'.
+    if (try preserveRootViolation(allocator, options, files, stderr_writer)) {
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+
+    chmodFiles(io, allocator, mode_str, files, stdout_writer, stderr_writer, options) catch |err| {
+        reportChmodFilesError(allocator, stderr_writer, err, options);
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Report a top-level chmodFiles failure. FileOperationFailed means individual
+/// entries already printed their own diagnostics, so we stay silent; any other
+/// error is an unexpected operation failure worth surfacing once.
+fn reportChmodFilesError(
+    allocator: std.mem.Allocator,
+    stderr_writer: anytype,
+    err: anyerror,
+    options: ChmodOptions,
+) void {
+    switch (err) {
+        ChmodError.FileOperationFailed => {
+            // Specific file errors already reported, just return failure code.
+        },
+        else => {
+            if (!options.quiet) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chmod",
+                    "operation failed: {s}",
+                    .{common.posixErrorString(err)},
+                );
+            }
+        },
+    }
+}
+
+/// Rewrite args so a leading symbolic mode that starts with '-' (e.g. "-w",
+/// "-rwx") is preceded by "--", forcing argparse to treat it and everything
+/// after as positionals. Returns a freshly allocated slice the caller must
+/// free, or null when no rewrite was needed (the original args suffice).
+fn prepareArgs(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+) error{OutOfMemory}!?[]const []const u8 {
+    for (args, 0..) |arg, idx| {
+        // Stop scanning at "--": argparse already handles the explicit divider.
+        if (std.mem.eql(u8, arg, "--")) break;
+        // Only short-flag-shaped args ("-x", not "--long") can be ambiguous.
+        if (arg.len <= 1 or arg[0] != '-' or arg[1] == '-') continue;
+        if (!looksLikeSymbolicMode(arg)) continue;
+        // Build args[0..idx] ++ ["--"] ++ args[idx..] so the mode survives.
+        const new_args = try allocator.alloc([]const u8, args.len + 1);
+        @memcpy(new_args[0..idx], args[0..idx]);
+        new_args[idx] = "--";
+        @memcpy(new_args[idx + 1 ..], args[idx..]);
+        assert(new_args.len == args.len + 1);
+        return new_args;
+    }
+    return null;
+}
+
+/// Validate that enough positional operands were supplied. Returns true when
+/// the operand count is sufficient; otherwise it reports the error and returns
+/// false so the caller can exit with the misuse status.
+fn checkOperandCount(
+    allocator: std.mem.Allocator,
+    positionals: []const []const u8,
+    using_reference: bool,
+    stderr_writer: anytype,
+) !bool {
+    assert(positionals.len <= std.math.maxInt(usize));
+    // With --reference we need at least one file; otherwise a mode plus a file.
+    const minimum: usize = if (using_reference) 1 else 2;
+    if (positionals.len >= minimum) {
+        return true;
+    }
+    const message = if (using_reference)
+        "missing file operand\nTry 'chmod --help' for more information."
+    else
+        "missing operand\nTry 'chmod --help' for more information.";
+    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "{s}", .{message});
+    assert(positionals.len < minimum);
+    return false;
+}
+
+/// Build the ChmodOptions from parsed flags, resolving the mutually exclusive
+/// -H / -L / -P symlink flags by last-flag-wins so passing both never panics.
+fn buildOptions(parsed_args: ChmodArgs, parse_args: []const []const u8) ChmodOptions {
+    assert(parse_args.len > 0);
+    const symlink_policy = resolveSymlinkFlags(parsed_args, parse_args);
+    return .{
         .changes_only = parsed_args.changes,
         .quiet = parsed_args.silent,
         .verbose = parsed_args.verbose,
         .no_dereference = parsed_args.no_dereference,
         .recursive = parsed_args.recursive,
-        .traverse_cmdline_symlinks = parsed_args.H,
-        .traverse_all_symlinks = parsed_args.L,
-        .no_traverse_symlinks = parsed_args.P,
+        .traverse_cmdline_symlinks = symlink_policy == .follow_cmdline,
+        .traverse_all_symlinks = symlink_policy == .follow_all,
+        .no_traverse_symlinks = symlink_policy == .no_follow,
         .reference_file = parsed_args.reference,
         .preserve_root = parsed_args.preserve_root,
     };
+}
 
-    // --preserve-root: refuse to operate recursively on '/'
-    if (options.preserve_root and options.recursive) {
-        for (files) |file_path| {
-            if (std.mem.eql(u8, file_path, "/")) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "it is dangerous to operate recursively on '/'\nUse --no-preserve-root to override this failsafe.", .{});
-                return @intFromEnum(common.ExitCode.general_error);
+/// GNU chmod treats -H / -L / -P as mutually exclusive with last-flag-wins.
+/// The boolean parser cannot express ordering, so we re-scan the raw args to
+/// find the final occurrence and return exactly one policy, never two at once.
+fn resolveSymlinkFlags(
+    parsed_args: ChmodArgs,
+    parse_args: []const []const u8,
+) common.walker.SymlinkPolicy {
+    // No symlink flag set at all means the default -P (never follow).
+    if (!parsed_args.H and !parsed_args.L and !parsed_args.P) {
+        return .no_follow;
+    }
+    var policy: common.walker.SymlinkPolicy = .no_follow;
+    for (parse_args) |arg| {
+        // Stop at "--": everything after is a positional, not a flag.
+        if (std.mem.eql(u8, arg, "--")) break;
+        if (arg.len < 2 or arg[0] != '-' or arg[1] == '-') continue;
+        // Short flags may be bundled (e.g. "-RL"); the last H/L/P wins.
+        for (arg[1..]) |flag_char| {
+            switch (flag_char) {
+                'H' => policy = .follow_cmdline,
+                'L' => policy = .follow_all,
+                'P' => policy = .no_follow,
+                else => {},
             }
         }
     }
+    return policy;
+}
 
-    chmodFiles(io, allocator, mode_str, files, stdout_writer, stderr_writer, options) catch |err| {
-        switch (err) {
-            ChmodError.FileOperationFailed => {
-                // Specific file errors already reported, just return failure code
-            },
-            else => {
-                if (!options.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "operation failed: {s}", .{common.posixErrorString(err)});
-                }
-            },
+/// Detect a --preserve-root violation (recursive chmod targeting '/'). Returns
+/// true after reporting the error so the caller can exit with a failure code.
+fn preserveRootViolation(
+    allocator: std.mem.Allocator,
+    options: ChmodOptions,
+    files: []const []const u8,
+    stderr_writer: anytype,
+) !bool {
+    assert(files.len > 0);
+    if (!options.preserve_root or !options.recursive) {
+        return false;
+    }
+    for (files) |file_path| {
+        if (std.mem.eql(u8, file_path, "/")) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "chmod",
+                "it is dangerous to operate recursively on '/'\n" ++
+                    "Use --no-preserve-root to override this failsafe.",
+                .{},
+            );
+            return true;
         }
-        return @intFromEnum(common.ExitCode.general_error);
-    };
-
-    return @intFromEnum(common.ExitCode.success);
+    }
+    return false;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -261,134 +372,214 @@ const ModeSpec = union(enum) {
 
 /// Apply chmod operations to files
 /// Handles both single files and recursive directory operations
-fn chmodFiles(io: std.Io, allocator: std.mem.Allocator, mode_str: []const u8, files: []const []const u8, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
-    // Handle reference file mode if specified
-    var reference_mode: ?Mode = null;
-    if (options.reference_file) |ref_file| {
-        const ref_stat = statByPath(ref_file) catch |err| {
-            if (!options.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access reference file '{s}': {s}", .{ ref_file, common.posixErrorString(err) });
-            }
-            return err;
-        };
-        reference_mode = Mode.fromOctal(@as(u32, @intCast(ref_stat.mode & 0o7777)));
-    }
+fn chmodFiles(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    mode_str: []const u8,
+    files: []const []const u8,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: ChmodOptions,
+) !void {
+    assert(files.len > 0);
+    // Exactly one mode source applies: a reference file or a mode string.
+    assert((options.reference_file != null) or (mode_str.len > 0));
 
-    // Determine mode to use - reference mode takes precedence
-    const use_reference = reference_mode != null;
+    const mode_spec = try resolveModeSpec(allocator, mode_str, stderr_writer, options);
 
-    // Pre-parse mode once for performance optimization
-    var parsed_octal_mode: ?Mode = null;
-    var is_symbolic = false;
-
-    if (!use_reference) {
-        // Check if this is a symbolic mode
-        is_symbolic = blk: {
-            for (mode_str) |c| {
-                if (std.ascii.isAlphabetic(c) or c == '+' or c == '-' or c == '=' or c == ',') {
-                    break :blk true;
-                }
-            }
-            break :blk false;
-        };
-
-        // Warn if a numeric mode contains non-octal digits (8 or 9)
-        if (!is_symbolic and hasNonOctalDigits(mode_str)) {
-            common.printWarningWithProgram(allocator, stderr_writer, "chmod", "'{s}' contains non-octal digits; numeric modes use octal (0-7)", .{mode_str});
-        }
-
-        // Pre-parse octal mode if it's not symbolic
-        if (!is_symbolic) {
-            parsed_octal_mode = parseMode(mode_str) catch |err| switch (err) {
-                ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
-                    if (!options.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_str});
-                    }
-                    return err;
-                },
-                else => return err,
-            };
-        }
-    }
-
-    // Construct ModeSpec once from the parsed mode information
-    const mode_spec: ModeSpec = if (use_reference)
-        .{ .reference = reference_mode.? }
-    else if (is_symbolic)
-        .{ .symbolic = mode_str }
-    else
-        .{ .octal = parsed_octal_mode.? };
-
-    // Track if any file operations failed
+    // Track if any file operations failed across all operands.
     var had_errors = false;
-
     for (files) |file_path| {
-        if (options.recursive) {
-            // Use lstat to check if the command-line arg is a symlink
-            const lstat_result = common.file.FileInfo.lstat(file_path) catch |err| {
-                if (!options.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
-                }
-                had_errors = true;
-                continue;
-            };
-
-            const should_follow = lstat_result.kind == .sym_link and
-                (options.traverse_cmdline_symlinks or options.traverse_all_symlinks);
-
-            const effective_kind = if (should_follow) blk: {
-                // Follow the symlink to check the target type
-                const target_stat = statByPath(file_path) catch |err| {
-                    if (!options.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
-                    }
-                    had_errors = true;
-                    continue;
-                };
-                break :blk target_stat.kind;
-            } else lstat_result.kind;
-
-            if (effective_kind == .directory) {
-                chmodRecursive(io, allocator, file_path, mode_spec, writer, stderr_writer, options) catch {
-                    had_errors = true;
-                };
-            } else {
-                // For recursive processing of files, we want to catch and track errors
-                applyModeSpecToFile(file_path, mode_spec, writer, options) catch {
-                    had_errors = true;
-                };
-            }
-        } else {
-            // Non-recursive processing - track errors from helper function
-            const result = applyModeToPath(io, allocator, file_path, mode_spec, writer, stderr_writer, options);
-            if (!result) {
-                had_errors = true;
-            }
-        }
+        const ok = if (options.recursive)
+            chmodOneRecursive(io, allocator, file_path, mode_spec, writer, stderr_writer, options)
+        else
+            applyModeToPath(io, allocator, file_path, mode_spec, writer, stderr_writer, options);
+        if (!ok) had_errors = true;
     }
 
-    // If any operations failed, return an error to signal overall failure
+    // A non-empty error tally signals overall failure to the caller.
     if (had_errors) {
         return ChmodError.FileOperationFailed;
     }
 }
 
+/// Resolve the single ModeSpec used for the whole run from either a reference
+/// file's mode or the user-supplied mode string. Parsing once here keeps the
+/// hot per-file loop free of redundant mode parsing.
+fn resolveModeSpec(
+    allocator: std.mem.Allocator,
+    mode_str: []const u8,
+    stderr_writer: anytype,
+    options: ChmodOptions,
+) !ModeSpec {
+    if (options.reference_file) |ref_file| {
+        const ref_stat = statByPath(ref_file) catch |err| {
+            if (!options.quiet) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chmod",
+                    "cannot access reference file '{s}': {s}",
+                    .{ ref_file, common.posixErrorString(err) },
+                );
+            }
+            return err;
+        };
+        return .{ .reference = Mode.fromOctal(@as(u32, @intCast(ref_stat.mode & 0o7777))) };
+    }
+
+    assert(mode_str.len > 0);
+    // A mode string is symbolic if it carries letters or operator characters.
+    const is_symbolic = blk: {
+        for (mode_str) |character| {
+            if (std.ascii.isAlphabetic(character) or character == '+' or
+                character == '-' or character == '=' or character == ',')
+            {
+                break :blk true;
+            }
+        }
+        break :blk false;
+    };
+    if (is_symbolic) {
+        return .{ .symbolic = mode_str };
+    }
+
+    // Warn if a numeric mode contains non-octal digits (8 or 9).
+    if (hasNonOctalDigits(mode_str)) {
+        common.printWarningWithProgram(
+            allocator,
+            stderr_writer,
+            "chmod",
+            "'{s}' contains non-octal digits; numeric modes use octal (0-7)",
+            .{mode_str},
+        );
+    }
+    const parsed = parseMode(mode_str) catch |err| switch (err) {
+        ChmodError.InvalidMode, ChmodError.InvalidOctalMode => {
+            if (!options.quiet) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chmod",
+                    "invalid mode: '{s}'",
+                    .{mode_str},
+                );
+            }
+            return err;
+        },
+        else => return err,
+    };
+    return .{ .octal = parsed };
+}
+
+/// Apply the mode to a single command-line operand under -R. Resolves whether
+/// the operand is a directory to descend (honoring -H / -L symlink following)
+/// and dispatches to the bounded walker or a direct chmod. Returns true on
+/// success, false if any error occurred, matching applyModeToPath's contract.
+fn chmodOneRecursive(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    mode_spec: ModeSpec,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: ChmodOptions,
+) bool {
+    assert(file_path.len > 0);
+    assert(options.recursive);
+
+    const lstat_result = common.file.FileInfo.lstat(file_path) catch |err| {
+        if (!options.quiet) {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "chmod",
+                "cannot access '{s}': {s}",
+                .{ file_path, common.posixErrorString(err) },
+            );
+        }
+        return false;
+    };
+
+    const should_follow = lstat_result.kind == .sym_link and
+        (options.traverse_cmdline_symlinks or options.traverse_all_symlinks);
+    const effective_kind = if (should_follow) blk: {
+        const target_stat = statByPath(file_path) catch |err| {
+            if (!options.quiet) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "chmod",
+                    "cannot access '{s}': {s}",
+                    .{ file_path, common.posixErrorString(err) },
+                );
+            }
+            return false;
+        };
+        break :blk target_stat.kind;
+    } else lstat_result.kind;
+
+    if (effective_kind == .directory) {
+        chmodWalk(
+            io,
+            allocator,
+            file_path,
+            mode_spec,
+            writer,
+            stderr_writer,
+            options,
+        ) catch return false;
+        return true;
+    }
+    applyModeSpecToFile(file_path, mode_spec, writer, options) catch return false;
+    return true;
+}
+
 /// Apply mode to a single path with proper error handling
 /// Returns true on success, false on failure
-fn applyModeToPath(io: std.Io, allocator: std.mem.Allocator, file_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) bool {
+fn applyModeToPath(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    mode_spec: ModeSpec,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: ChmodOptions,
+) bool {
+    assert(file_path.len > 0);
+    // A symbolic spec must carry a non-empty mode string to re-parse per file.
+    assert(mode_spec != .symbolic or mode_spec.symbolic.len > 0);
     _ = io;
     applyModeSpecToFile(file_path, mode_spec, writer, options) catch |err| {
         if (!options.quiet) {
             switch (err) {
                 error.InvalidMode => {
                     if (mode_spec == .symbolic) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "invalid mode: '{s}'", .{mode_spec.symbolic});
+                        common.printErrorWithProgram(
+                            allocator,
+                            stderr_writer,
+                            "chmod",
+                            "invalid mode: '{s}'",
+                            .{mode_spec.symbolic},
+                        );
                     } else {
-                        common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
+                        common.printErrorWithProgram(
+                            allocator,
+                            stderr_writer,
+                            "chmod",
+                            "cannot access '{s}': {s}",
+                            .{ file_path, common.posixErrorString(err) },
+                        );
                     }
                 },
                 else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ file_path, common.posixErrorString(err) });
+                    common.printErrorWithProgram(
+                        allocator,
+                        stderr_writer,
+                        "chmod",
+                        "cannot access '{s}': {s}",
+                        .{ file_path, common.posixErrorString(err) },
+                    );
                 },
             }
         }
@@ -397,76 +588,175 @@ fn applyModeToPath(io: std.Io, allocator: std.mem.Allocator, file_path: []const 
     return true;
 }
 
-/// Recursively apply chmod to a directory and all its contents
-/// Processes directory contents first, then the directory itself to avoid permission conflicts
-fn chmodRecursive(io: std.Io, allocator: std.mem.Allocator, dir_path: []const u8, mode_spec: ModeSpec, writer: anytype, stderr_writer: anytype, options: ChmodOptions) !void {
-    // Open directory for iteration FIRST, before changing its permissions
-    // This ensures we can access the directory contents even if the new permissions would block access
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        if (!options.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, "chmod", "cannot access '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
-        }
-        return err;
+/// Map chmod's symlink-traversal options onto the walker's symlink policy.
+/// We honor -L (follow all), -H (follow command-line operands only), and the
+/// default -P (never follow), so the bounded walker reproduces the recursion's
+/// original behavior exactly.
+fn symlinkPolicyFromOptions(options: ChmodOptions) common.walker.SymlinkPolicy {
+    assert(!(options.traverse_all_symlinks and options.traverse_cmdline_symlinks));
+    const policy: common.walker.SymlinkPolicy = if (options.traverse_all_symlinks)
+        .follow_all
+    else if (options.traverse_cmdline_symlinks)
+        .follow_cmdline
+    else
+        .no_follow;
+    // Postcondition: the chosen policy reflects the (mutually exclusive) inputs,
+    // covering both follow branches so the full mapping is verified.
+    assert((policy == .follow_all) == options.traverse_all_symlinks);
+    assert((policy == .follow_cmdline) == options.traverse_cmdline_symlinks);
+    return policy;
+}
+
+/// Apply chmod to a directory and all its contents using the bounded walker.
+/// Post-order traversal preserves the original "open first, chmod the directory
+/// last" invariant: a directory's children are emitted (and chmod'd) before the
+/// directory itself, so removing a directory's search bit cannot lock the walk
+/// out of its own contents. This replaces the former direct recursion, which
+/// Tiger Style forbids, with an explicit bounded iteration.
+fn chmodWalk(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+    mode_spec: ModeSpec,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: ChmodOptions,
+) !void {
+    assert(dir_path.len > 0);
+    assert(options.recursive);
+
+    const config = common.walker.WalkConfig{
+        .order = .post,
+        .symlinks = symlinkPolicyFromOptions(options),
+        .stay_on_filesystem = false, // chmod has no cross-device flag.
+        .detect_cycles = true, // Terminates symlink cycles under -L.
+        // These caps make the driver loop below provably finite.
+        .max_depth = 1024,
+        .max_entries = 1 << 24,
     };
-    defer dir.close(io);
 
-    // Track if any file operations failed in this directory
+    var walker = try common.walker.Walker.init(allocator, config);
+    defer walker.deinit(io);
+    try walker.addRoot(dir_path);
+
+    // Track failures across the whole subtree, mirroring the recursion's
+    // per-entry "catch -> had_errors" behavior so one bad entry does not abort
+    // the rest of the walk.
     var had_errors = false;
+    try walkAndApply(
+        io,
+        allocator,
+        &walker,
+        dir_path,
+        mode_spec,
+        writer,
+        stderr_writer,
+        options,
+        &had_errors,
+    );
 
-    // Process all directory contents FIRST
-    var iterator = dir.iterate();
-    while (try iterator.next(io)) |entry| {
-        const full_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
-        defer allocator.free(full_path);
+    if (had_errors) {
+        return ChmodError.FileOperationFailed;
+    }
+}
 
-        switch (entry.kind) {
-            .directory => {
-                // Recursively process subdirectory
-                chmodRecursive(io, allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
-                    had_errors = true;
-                };
+/// Drive the bounded walker to completion, applying the mode to every emitted
+/// entry. Split out of chmodWalk to keep each function under the Tiger Style
+/// 70-line cap. Records any per-entry failure in had_errors_out rather than
+/// aborting, so one bad entry does not stop the rest of the walk.
+fn walkAndApply(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    walker: *common.walker.Walker,
+    dir_path: []const u8,
+    mode_spec: ModeSpec,
+    writer: anytype,
+    stderr_writer: anytype,
+    options: ChmodOptions,
+    had_errors_out: *bool,
+) !void {
+    assert(dir_path.len > 0);
+    assert(options.recursive);
+
+    // The walker bounds this loop via config.max_depth / config.max_entries: it
+    // returns null when exhausted, or latches a terminal error once a cap is hit.
+    while (true) {
+        const maybe_entry = walker.next(io) catch |err| switch (err) {
+            // Terminal cap errors latch (next() re-returns them forever), so we
+            // report the reason and break, matching GNU's diagnostic-then-fail.
+            error.DepthLimitExceeded, error.EntryLimitExceeded => {
+                reportWalkLimit(allocator, stderr_writer, dir_path, err, options);
+                had_errors_out.* = true;
+                break;
             },
-            .sym_link => {
-                // With -L, follow symlinks to directories during traversal
-                if (options.traverse_all_symlinks) {
-                    const target_stat = statByPath(full_path) catch {
-                        // Symlink target inaccessible; apply chmod to symlink itself
-                        const result = applyModeToPath(io, allocator, full_path, mode_spec, writer, stderr_writer, options);
-                        if (!result) had_errors = true;
-                        continue;
-                    };
-                    if (target_stat.kind == .directory) {
-                        chmodRecursive(io, allocator, full_path, mode_spec, writer, stderr_writer, options) catch {
-                            had_errors = true;
-                        };
-                        continue;
-                    }
+            // Per-entry open/iterate errors leave the walker re-entrant; report
+            // the failure and keep walking the remaining entries.
+            else => {
+                if (!options.quiet) {
+                    common.printErrorWithProgram(
+                        allocator,
+                        stderr_writer,
+                        "chmod",
+                        "cannot read directory under '{s}': {s}",
+                        .{ dir_path, common.posixErrorString(err) },
+                    );
                 }
-                // Default (-P, -H during recursion): skip symlinks entirely.
-                // GNU chmod does not follow symlinks during recursive traversal
-                // and cannot change symlink permissions on Linux, so they are
-                // silently skipped.
+                had_errors_out.* = true;
                 continue;
             },
+        };
+        const entry = maybe_entry orelse break;
+        switch (entry.kind) {
+            // Under -P / -H the walker emits symlinks without descending them;
+            // GNU chmod skips symlinks during recursive traversal, so do we.
+            .sym_link => continue,
             else => {
-                // Handle all other file types (regular files, devices, etc.)
-                const result = applyModeToPath(io, allocator, full_path, mode_spec, writer, stderr_writer, options);
-                if (!result) {
-                    had_errors = true;
-                }
+                const result = applyModeToPath(
+                    io,
+                    allocator,
+                    entry.path,
+                    mode_spec,
+                    writer,
+                    stderr_writer,
+                    options,
+                );
+                if (!result) had_errors_out.* = true;
             },
         }
     }
+}
 
-    // Apply mode to the directory itself LAST, after processing all contents
-    // This prevents the scenario where changing directory permissions blocks access to its contents
-    applyModeSpecToFile(dir_path, mode_spec, writer, options) catch {
-        had_errors = true;
-    };
-
-    // If any operations failed, return an error
-    if (had_errors) {
-        return ChmodError.FileOperationFailed;
+/// Report why the bounded walker stopped early when it hits a safety cap, so
+/// the user sees a reason instead of a bare non-zero exit. The caps protect
+/// against pathological trees and symlink cycles the cycle detector misses.
+fn reportWalkLimit(
+    allocator: std.mem.Allocator,
+    stderr_writer: anytype,
+    dir_path: []const u8,
+    err: anyerror,
+    options: ChmodOptions,
+) void {
+    assert(dir_path.len > 0);
+    assert(err == error.DepthLimitExceeded or err == error.EntryLimitExceeded);
+    if (options.quiet) return;
+    // The format string must be comptime-known, so branch rather than select a
+    // runtime string; each arm names the reason the walker refused to continue.
+    if (err == error.DepthLimitExceeded) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "chmod",
+            "directory too deep, recursion limit reached: '{s}'",
+            .{dir_path},
+        );
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "chmod",
+            "too many entries, limit exceeded: '{s}'",
+            .{dir_path},
+        );
     }
 }
 
@@ -503,8 +793,6 @@ fn hasNonOctalDigits(mode_str: []const u8) bool {
     return false;
 }
 
-/// Parse a mode string (octal or symbolic) into a Mode struct
-/// First attempts octal parsing, then falls back to symbolic mode parsing
 /// Stat a path, following symlinks. Returns mode and kind without needing io.
 fn statByPath(path: []const u8) !struct { mode: std.posix.mode_t, kind: std.Io.File.Kind } {
     var buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
@@ -613,29 +901,82 @@ fn parseMode(mode_str: []const u8) !Mode {
 /// Apply a mode specification to a single file
 /// Reports changes if verbose or changes_only flags are set
 /// When no_dereference is set, operates on symlinks themselves via fchmodat
-fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anytype, options: ChmodOptions) !void {
-    // Get file stats - use lstat when no_dereference to get symlink info,
-    // otherwise follow symlinks.
-    const stat_mode: std.posix.mode_t, const stat_kind: std.Io.File.Kind = blk: {
-        if (options.no_dereference) {
-            const info = common.file.FileInfo.lstat(file_path) catch |err| {
-                return switch (err) {
-                    error.FileNotFound => error.FileNotFound,
-                    else => err,
-                };
+/// Stat a path for chmod, honoring the no_dereference flag: lstat (the symlink
+/// itself) when set, otherwise follow symlinks. Normalizes errors so callers
+/// see a consistent set regardless of the platform stat path taken.
+fn statForChmod(
+    file_path: []const u8,
+    no_dereference: bool,
+) !struct { mode: std.posix.mode_t, kind: std.Io.File.Kind } {
+    assert(file_path.len > 0);
+    if (no_dereference) {
+        const info = common.file.FileInfo.lstat(file_path) catch |err| {
+            return switch (err) {
+                error.FileNotFound => error.FileNotFound,
+                else => err,
             };
-            break :blk .{ info.mode, info.kind };
-        } else {
-            const s = statByPath(file_path) catch |err| switch (err) {
-                error.FileNotFound => return error.FileNotFound,
-                error.AccessDenied => return error.AccessDenied,
-                else => return err,
-            };
-            break :blk .{ s.mode, s.kind };
-        }
+        };
+        return .{ .mode = info.mode, .kind = info.kind };
+    }
+    const s = statByPath(file_path) catch |err| switch (err) {
+        error.FileNotFound => return error.FileNotFound,
+        error.AccessDenied => return error.AccessDenied,
+        else => return err,
     };
+    // statByPath follows symlinks, so the resolved kind is never a symlink.
+    assert(s.kind != .sym_link);
+    return .{ .mode = s.mode, .kind = s.kind };
+}
 
-    const old_mode = @as(u32, @intCast(stat_mode & 0o7777));
+/// Apply the computed mode to a path via the chmod / fchmodat syscall, choosing
+/// fchmodat with AT_SYMLINK_NOFOLLOW under no_dereference. Maps syscall errno
+/// onto our error set; treats EOPNOTSUPP on symlinks as success per POSIX.
+fn applyModeViaSyscall(file_path: []const u8, new_mode: u32, no_dereference: bool) !void {
+    assert(file_path.len > 0);
+    assert(new_mode <= 0o7777);
+    const path_z = try std.posix.toPosixPath(file_path);
+    const c = std.c;
+    if (no_dereference) {
+        const result = c.fchmodat(
+            c.AT.FDCWD,
+            &path_z,
+            @as(c.mode_t, @intCast(new_mode)),
+            c.AT.SYMLINK_NOFOLLOW,
+        );
+        if (result == 0) return;
+        const errno = c._errno().*;
+        // EOPNOTSUPP is expected on many systems for symlink chmod; accept it.
+        if (errno == @intFromEnum(c.E.OPNOTSUPP)) return;
+        return switch (errno) {
+            @intFromEnum(c.E.NOENT) => error.FileNotFound,
+            @intFromEnum(c.E.ACCES) => error.PermissionDenied,
+            @intFromEnum(c.E.PERM) => error.PermissionDenied,
+            else => error.Unexpected,
+        };
+    }
+    const result = c.chmod(&path_z, @as(c.mode_t, @intCast(new_mode)));
+    if (result == 0) return;
+    const errno = c._errno().*;
+    return switch (errno) {
+        @intFromEnum(c.E.NOENT) => error.FileNotFound,
+        @intFromEnum(c.E.ACCES) => error.PermissionDenied,
+        @intFromEnum(c.E.PERM) => error.PermissionDenied,
+        else => error.Unexpected,
+    };
+}
+
+fn applyModeSpecToFile(
+    file_path: []const u8,
+    mode_spec: ModeSpec,
+    writer: anytype,
+    options: ChmodOptions,
+) !void {
+    assert(file_path.len > 0);
+    assert(mode_spec != .symbolic or mode_spec.symbolic.len > 0);
+
+    const stat_result = try statForChmod(file_path, options.no_dereference);
+    const stat_kind = stat_result.kind;
+    const old_mode = @as(u32, @intCast(stat_result.mode & 0o7777));
 
     // Compute new mode based on spec type
     const new_mode = switch (mode_spec) {
@@ -652,38 +993,7 @@ fn applyModeSpecToFile(file_path: []const u8, mode_spec: ModeSpec, writer: anyty
         },
     };
 
-    // Use fchmodat with AT_SYMLINK_NOFOLLOW when no_dereference is set,
-    // otherwise use regular chmod
-    const path_z = try std.posix.toPosixPath(file_path);
-    const c = std.c;
-    if (options.no_dereference) {
-        const result = c.fchmodat(c.AT.FDCWD, &path_z, @as(c.mode_t, @intCast(new_mode)), c.AT.SYMLINK_NOFOLLOW);
-        if (result != 0) {
-            const errno = c._errno().*;
-            // EOPNOTSUPP is expected on many systems for symlink chmod
-            // Silently accept it per POSIX behavior
-            if (errno == @intFromEnum(c.E.OPNOTSUPP)) {
-                return;
-            }
-            return switch (errno) {
-                @intFromEnum(c.E.NOENT) => error.FileNotFound,
-                @intFromEnum(c.E.ACCES) => error.PermissionDenied,
-                @intFromEnum(c.E.PERM) => error.PermissionDenied,
-                else => error.Unexpected,
-            };
-        }
-    } else {
-        const result = c.chmod(&path_z, @as(c.mode_t, @intCast(new_mode)));
-        if (result != 0) {
-            const errno = c._errno().*;
-            return switch (errno) {
-                @intFromEnum(c.E.NOENT) => error.FileNotFound,
-                @intFromEnum(c.E.ACCES) => error.PermissionDenied,
-                @intFromEnum(c.E.PERM) => error.PermissionDenied,
-                else => error.Unexpected,
-            };
-        }
-    }
+    try applyModeViaSyscall(file_path, new_mode, options.no_dereference);
 
     // Report changes if requested
     if (options.verbose or (options.changes_only and old_mode != new_mode)) {
@@ -733,7 +1043,13 @@ fn modeToString(mode: u32) [9]u8 {
 
 /// Helper function for testing chmod functionality
 /// Used in integration tests to simulate command-line usage
-fn chmod(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8, writer: anytype, stderr_writer: anytype) !void {
+fn chmod(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    writer: anytype,
+    stderr_writer: anytype,
+) !void {
     if (args.len < 2) {
         return error.InvalidArguments;
     }
