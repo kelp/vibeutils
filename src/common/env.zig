@@ -3,7 +3,6 @@
 /// In test builds (common tests run without -lc), reads from std.testing.environ
 /// and std.Io.File.isTty. In release builds (utilities link libc), delegates
 /// to std.c.getenv and std.c.isatty.
-
 const std = @import("std");
 const builtin = @import("builtin");
 

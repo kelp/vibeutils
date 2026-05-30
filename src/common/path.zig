@@ -82,7 +82,6 @@ pub fn canonicalizeParentMustExist(allocator: Allocator, io: std.Io, path: []con
 /// Resolves as much as possible via realpath, then appends the remaining
 /// parts with `.` and `..` cleaned logically.
 pub fn canonicalizeMissing(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
-
     if (path.len == 0) {
         // Empty path: return current directory
         var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

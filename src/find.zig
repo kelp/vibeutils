@@ -2441,7 +2441,11 @@ fn formatDate(timestamp: i64, buf: *[24]u8) []const u8 {
     const hours = @divTrunc(day_secs.secs, 3600);
     const mins = @divTrunc(@rem(day_secs.secs, 3600), 60);
 
-    const now = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; };
+    const now = blk: {
+        var _ts: c.timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    };
     const six_months: i64 = 180 * 86400;
 
     if (timestamp < now - six_months or timestamp > now + six_months) {
@@ -2767,7 +2771,11 @@ pub fn runFind(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         return @intFromEnum(common.ExitCode.general_error);
     };
 
-    const now = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; };
+    const now = blk: {
+        var _ts: c.timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    };
     var had_error = false;
     var batch_ctx = BatchContext{};
 
@@ -4047,7 +4055,11 @@ test "find: -anewer matches files accessed after reference" {
 
     // Set the reference file's mtime to the past so newly created files
     // will have a later access time
-    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600; // 1 hour ago
+    const past = blk: {
+        var _ts: c.timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    } - 3600; // 1 hour ago
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -4087,7 +4099,11 @@ test "find: -cnewer matches files changed after reference" {
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Set the reference file's mtime to the past
-    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600;
+    const past = blk: {
+        var _ts: c.timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    } - 3600;
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -4787,7 +4803,11 @@ test "find: -mnewer is alias for -newer" {
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
     // Set reference file mtime to the past
-    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600;
+    const past = blk: {
+        var _ts: c.timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    } - 3600;
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
@@ -5388,7 +5408,11 @@ test "find: -newer matches files modified after reference" {
 
     // Set the reference file's mtime to the past so newly created files
     // will have a later modification time
-    const past = blk: { var _ts: c.timespec = undefined; _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts); break :blk _ts.sec; } - 3600; // 1 hour ago
+    const past = blk: {
+        var _ts: c.timespec = undefined;
+        _ = c.clock_gettime(c.CLOCK.REALTIME, &_ts);
+        break :blk _ts.sec;
+    } - 3600; // 1 hour ago
     const past_ts = std.posix.timespec{ .sec = past, .nsec = 0 };
     const ref_abs_path = try std.fs.path.join(allocator, &.{ dir_path, "old_ref.txt" });
     var ref_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;

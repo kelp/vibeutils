@@ -468,14 +468,14 @@ pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
             for (per_file_lines.items) |*fl| fl.deinit(allocator);
             per_file_lines.deinit(allocator);
         }
-        var merge_buffers : std.ArrayListUnmanaged([]const u8) = .empty;
+        var merge_buffers: std.ArrayListUnmanaged([]const u8) = .empty;
         defer {
             for (merge_buffers.items) |buf| allocator.free(buf);
             merge_buffers.deinit(allocator);
         }
 
         for (opts.files.items) |file_path| {
-            var file_lines : std.ArrayListUnmanaged([]const u8) = .empty;
+            var file_lines: std.ArrayListUnmanaged([]const u8) = .empty;
             if (std.mem.eql(u8, file_path, "-")) {
                 const stdin_file = std.Io.File.stdin();
                 try readLines(allocator, io, stdin_file, &file_lines, delimiter, &merge_buffers);
@@ -520,7 +520,7 @@ pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     }
 
     // Read all lines from files or stdin
-    var lines : std.ArrayListUnmanaged([]const u8) = .empty;
+    var lines: std.ArrayListUnmanaged([]const u8) = .empty;
     defer lines.deinit(allocator);
     var buffers: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
@@ -1272,7 +1272,7 @@ fn parseBufferSize(s: []const u8) ?usize {
 
 /// Merge pre-sorted line lists using a simple merge
 fn mergeLines(allocator: Allocator, file_lines: []const []const []const u8, ctx: SortContext) !std.ArrayListUnmanaged([]const u8) {
-    var result : std.ArrayListUnmanaged([]const u8) = .empty;
+    var result: std.ArrayListUnmanaged([]const u8) = .empty;
     errdefer result.deinit(allocator);
 
     // Track current position in each file's lines
@@ -2020,9 +2020,9 @@ test "readLines does not leak the content buffer" {
     const file = try std.Io.Dir.cwd().openFile(testing.io, tmp_path, .{});
     defer file.close(testing.io);
 
-    var lines : std.ArrayListUnmanaged([]const u8) = .empty;
+    var lines: std.ArrayListUnmanaged([]const u8) = .empty;
     defer lines.deinit(allocator);
-    var bufs : std.ArrayListUnmanaged([]const u8) = .empty;
+    var bufs: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (bufs.items) |buf| allocator.free(buf);
         bufs.deinit(allocator);

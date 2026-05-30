@@ -216,11 +216,10 @@ const MultiWriter = struct {
                     return err;
                 };
                 break :blk std.Io.File{ .handle = fd, .flags = .{ .nonblocking = false } };
-            } else
-                std.Io.Dir.cwd().createFile(io, file_name, .{ .read = false, .truncate = true }) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(err) });
-                    return err;
-                };
+            } else std.Io.Dir.cwd().createFile(io, file_name, .{ .read = false, .truncate = true }) catch |err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "tee", "{s}: {s}", .{ file_name, common.posixErrorString(err) });
+                return err;
+            };
             files[i].file = opened_file;
             files[i].writer = opened_file.writerStreaming(io, &files[i].buf);
             files_opened += 1;
