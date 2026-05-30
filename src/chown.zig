@@ -1329,3 +1329,540 @@ test "chown help text includes new flags" {
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "numeric IDs") != null);
     try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "mount points") != null);
 }
+
+// Characterization tests for the recursion -> bounded-walker migration.
+//
+// These tests lock in the OBSERVABLE behavior that the walker rewrite must
+// preserve. They PASS on the current recursive implementation; their job is
+// to go RED if a future walker-based rewrite changes traversal coverage,
+// ordering, symlink policy, cross-device pruning, or robustness. Because the
+// verbose stream prints the exact path of every entry chowned, asserting which
+// paths appear (and which do NOT) directly characterizes traversal coverage,
+// ordering, and symlink/device policy without needing real ownership changes.
+//
+// All recursive-walk tests are privileged: they run under fakeroot so that
+// chownSingle's chown/lchown syscalls succeed and the verbose lines are
+// emitted. A non-privileged run skips via requiresPrivilege.
+
+const characterization_uid: common.user_group.uid_t = 4242;
+const characterization_gid: common.user_group.gid_t = 4243;
+
+/// Resolve the realpath of a test tmp dir into the caller-provided buffer and
+/// return a slice owned by inner_allocator (stable for the test's lifetime).
+fn characterizationTmpRealpath(
+    inner_allocator: std.mem.Allocator,
+    tmp_dir: *testing.TmpDir,
+    path_buf: *[std.Io.Dir.max_path_bytes]u8,
+) ![]const u8 {
+    const len = try tmp_dir.dir.realPathFile(testing.io, ".", path_buf);
+    return inner_allocator.dupe(u8, path_buf[0..len]);
+}
+
+/// True when the verbose stream reported a change for the given quoted path.
+/// The verbose line format is: changed ownership of '<path>' from ... to ...
+/// so a fully-quoted marker like "'/abs/path'" cannot false-match a longer
+/// path that merely shares a prefix.
+fn characterizationReported(output: []const u8, quoted_path: []const u8) bool {
+    return std.mem.find(u8, output, quoted_path) != null;
+}
+
+test "privileged: recursive walk reports a change for every entry in a multi-level tree" {
+    // Guards full coverage: -R must chown EVERY entry in the tree, not
+    // just the root. The walker rewrite must reproduce full coverage. A
+    // regression that stops descending (or skips leaves) drops one of the
+    // asserted markers and the test goes RED.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            // root/{child.txt, subdir/{grandchild.txt}}
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            defer root.close(testing.io);
+            (try root.createFile(testing.io, "child.txt", .{})).close(testing.io);
+            try root.createDir(testing.io, "subdir", .default_dir);
+            var subdir = try root.openDir(testing.io, "subdir", .{});
+            defer subdir.close(testing.io);
+            (try subdir.createFile(testing.io, "grandchild.txt", .{})).close(testing.io);
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{ .recursive = true, .verbose = true };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+            // Every entry in the tree must be reported.
+            const expected = [_][]const u8{
+                "'{s}/root'",
+                "'{s}/root/child.txt'",
+                "'{s}/root/subdir'",
+                "'{s}/root/subdir/grandchild.txt'",
+            };
+            inline for (expected) |fmt| {
+                const quoted = try std.fmt.allocPrint(inner_allocator, fmt, .{base});
+                try testing.expect(characterizationReported(out, quoted));
+            }
+        }
+    }.testFn);
+}
+
+test "privileged: recursive walk processes children before their parent directory (post-order)" {
+    // Guards post-order: each directory's own verbose line must appear AFTER
+    // every line for its children. The walker rewrite uses order=.post and
+    // must keep this; a pre-order regression would emit the parent first and
+    // flip the position checks below to RED.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            defer root.close(testing.io);
+            (try root.createFile(testing.io, "child.txt", .{})).close(testing.io);
+            try root.createDir(testing.io, "subdir", .default_dir);
+            var subdir = try root.openDir(testing.io, "subdir", .{});
+            defer subdir.close(testing.io);
+            (try subdir.createFile(testing.io, "grandchild.txt", .{})).close(testing.io);
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{ .recursive = true, .verbose = true };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+
+            const grandchild_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/subdir/grandchild.txt'", .{base});
+            const child_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/child.txt'", .{base});
+            const subdir_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/subdir'", .{base});
+            const root_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root'", .{base});
+
+            const grandchild_pos = std.mem.find(u8, out, grandchild_marker) orelse return error.MissingGrandchildLine;
+            const child_pos = std.mem.find(u8, out, child_marker) orelse return error.MissingChildLine;
+            // The subdir and root markers are prefixes of their children's
+            // paths, so search for the LAST occurrence: the directory's own
+            // trailing quote in the marker makes each match the directory's own
+            // line, which (under post-order) comes after its children.
+            const subdir_pos = std.mem.lastIndexOf(u8, out, subdir_marker) orelse return error.MissingSubdirLine;
+            const root_pos = std.mem.lastIndexOf(u8, out, root_marker) orelse return error.MissingRootLine;
+
+            // grandchild before its parent subdir; subdir before root.
+            try testing.expect(grandchild_pos < subdir_pos);
+            try testing.expect(child_pos < root_pos);
+            try testing.expect(subdir_pos < root_pos);
+        }
+    }.testFn);
+}
+
+test "privileged: -P reports the symlink itself and does not descend into its target" {
+    // Guards: under no_traverse_symlinks (-P), a symlink encountered during
+    // recursion is processed in place (lchown on the LINK) and its target
+    // subtree is NOT traversed. The walker rewrite emits such symlinks as
+    // .sym_link with no descent. We assert the link IS reported while the file
+    // behind it is NOT.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            // outside/secret.txt is the symlink target; must stay untouched.
+            try tmp_dir.dir.createDir(testing.io, "outside", .default_dir);
+            var outside = try tmp_dir.dir.openDir(testing.io, "outside", .{});
+            defer outside.close(testing.io);
+            (try outside.createFile(testing.io, "secret.txt", .{})).close(testing.io);
+
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            defer root.close(testing.io);
+            root.symLink(testing.io, "../outside", "link", .{}) catch return error.SkipZigTest;
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            // -P with -h so the link node itself is lchown'd and reported.
+            const options = ChownOptions{
+                .recursive = true,
+                .no_traverse_symlinks = true,
+                .no_dereference = true,
+                .verbose = true,
+            };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+
+            const link_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/link'", .{base});
+            // If -P regressed and DID descend, the leaked file would be
+            // reported THROUGH the link name (paths are built by joining the
+            // traversal path with the entry name, never via the real target),
+            // exactly like the -L test reports "'{base}/root/link/reached.txt'".
+            // So the through-link form is the only marker that can actually
+            // surface a descent regression.
+            const secret_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/link/secret.txt'", .{base});
+
+            // The link itself must be reported.
+            try testing.expect(characterizationReported(out, link_marker));
+            // The target subtree must NOT be entered (no descent through -P).
+            try testing.expect(!characterizationReported(out, secret_marker));
+        }
+    }.testFn);
+}
+
+test "privileged: -L follows a symlink-to-directory and reports the target subtree" {
+    // Guards: under traverse_all_symlinks (-L), a symlink to a directory is
+    // followed and entries beneath the target ARE processed. The walker
+    // rewrite maps -L to .follow_all and must descend through the link. We
+    // assert the file behind the link is reported.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            try tmp_dir.dir.createDir(testing.io, "outside", .default_dir);
+            var outside = try tmp_dir.dir.openDir(testing.io, "outside", .{});
+            defer outside.close(testing.io);
+            (try outside.createFile(testing.io, "reached.txt", .{})).close(testing.io);
+
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            defer root.close(testing.io);
+            root.symLink(testing.io, "../outside", "link", .{}) catch return error.SkipZigTest;
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{
+                .recursive = true,
+                .traverse_all_symlinks = true,
+                .verbose = true,
+            };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+            // Following the link reaches the file behind it via the link path.
+            // Anchor on the full quoted path (leading quote + base) so the
+            // marker cannot false-match any other reported path.
+            const reached_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/link/reached.txt'", .{base});
+            try testing.expect(characterizationReported(out, reached_marker));
+        }
+    }.testFn);
+}
+
+test "privileged: -H follows a command-line symlink but not symlinks found during recursion" {
+    // Guards: under traverse_cmdline_symlinks (-H) the symlink policy is
+    // depth-sensitive. A symlink-to-directory passed AS the operand (depth 0)
+    // must be followed and its target subtree processed; a symlink-to-directory
+    // encountered DURING recursion (depth > 0) must NOT be descended (it is
+    // chowned in place, like -P). This is the distinguishing fixture for -H:
+    // the walker rewrite maps -H to the .follow_cmdline policy, and a wrong
+    // mapping that collapsed -H into -P (operand link not followed) or into -L
+    // (nested link followed) would fail exactly one of the two assertions here.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            // operand_target/ holds entries reachable only by FOLLOWING the
+            // command-line symlink. nested_target/ holds an entry reachable
+            // only by following a symlink found DURING recursion.
+            try tmp_dir.dir.createDir(testing.io, "operand_target", .default_dir);
+            var operand_target = try tmp_dir.dir.openDir(testing.io, "operand_target", .{});
+            defer operand_target.close(testing.io);
+            (try operand_target.createFile(testing.io, "via_operand.txt", .{})).close(testing.io);
+
+            // A nested symlink inside operand_target pointing at nested_target.
+            try tmp_dir.dir.createDir(testing.io, "nested_target", .default_dir);
+            var nested_target = try tmp_dir.dir.openDir(testing.io, "nested_target", .{});
+            defer nested_target.close(testing.io);
+            (try nested_target.createFile(testing.io, "via_nested.txt", .{})).close(testing.io);
+            operand_target.symLink(testing.io, "../nested_target", "nested_link", .{}) catch return error.SkipZigTest;
+
+            // The command-line operand is itself a symlink to operand_target.
+            tmp_dir.dir.symLink(testing.io, "operand_target", "operand_link", .{}) catch return error.SkipZigTest;
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            // Pass the SYMLINK as the operand so depth-0 following is exercised.
+            const operand_path = try std.fmt.allocPrint(inner_allocator, "{s}/operand_link", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{
+                .recursive = true,
+                .traverse_cmdline_symlinks = true,
+                .verbose = true,
+            };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, operand_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+
+            // The command-line symlink WAS followed: the file behind it, reached
+            // through the operand path, must be reported.
+            const via_operand_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/operand_link/via_operand.txt'", .{base});
+            try testing.expect(characterizationReported(out, via_operand_marker));
+
+            // The nested symlink found during recursion was NOT descended: the
+            // file behind it must NOT be reported. Paths are built through the
+            // traversal/link name, so a wrongly-descended nested link would
+            // surface as '.../operand_link/nested_link/via_nested.txt'; the
+            // through-link substring below has teeth against that regression.
+            const via_nested_through_operand = try std.fmt.allocPrint(inner_allocator, "/nested_link/via_nested.txt'", .{});
+            try testing.expect(!characterizationReported(out, via_nested_through_operand));
+        }
+    }.testFn);
+}
+
+test "privileged: -x stays on the same filesystem and still reports same-device entries" {
+    // Guards: with no_cross_device (-x) and a root_dev captured from the start
+    // path, descent continues across entries that share that device. A wrong
+    // device comparison could prune everything; this test ensures same-device
+    // children are still fully processed. Cross-device pruning itself needs a
+    // real mount and is covered by integration tests; here we lock in that -x
+    // does not break the common single-filesystem case.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            defer root.close(testing.io);
+            try root.createDir(testing.io, "sub", .default_dir);
+            var sub = try root.openDir(testing.io, "sub", .{});
+            defer sub.close(testing.io);
+            (try sub.createFile(testing.io, "leaf.txt", .{})).close(testing.io);
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{ .recursive = true, .no_cross_device = true, .verbose = true };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+            // The deep same-device leaf must still be reached under -x.
+            const leaf_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/sub/leaf.txt'", .{base});
+            try testing.expect(characterizationReported(out, leaf_marker));
+        }
+    }.testFn);
+}
+
+test "privileged: deep directory tree completes without stack overflow" {
+    // Guards robustness: a deep tree must complete. The leaf being reported
+    // can only happen if traversal reached the bottom without overflowing.
+    // The current recursion handles this depth; the walker rewrite (explicit
+    // stack, max_depth=1024) must too. Depth 100 is well under that bound and
+    // far past where unbounded recursion risk would matter for the assertion.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            // Build root/d/d/d/.../leaf.txt at depth 100.
+            const depth: usize = 100;
+            var leaf_path: std.array_list.Managed(u8) = .init(inner_allocator);
+            defer leaf_path.deinit();
+            try leaf_path.appendSlice("'");
+            try leaf_path.appendSlice(root_path);
+
+            var current = try std.Io.Dir.cwd().openDir(testing.io, root_path, .{});
+            var i: usize = 0;
+            while (i < depth) : (i += 1) {
+                try current.createDir(testing.io, "d", .default_dir);
+                const next = try current.openDir(testing.io, "d", .{});
+                current.close(testing.io);
+                current = next;
+                try leaf_path.appendSlice("/d");
+            }
+            (try current.createFile(testing.io, "leaf.txt", .{})).close(testing.io);
+            current.close(testing.io);
+            try leaf_path.appendSlice("/leaf.txt'");
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{ .recursive = true, .verbose = true };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+
+            const out = stdout_aw.writer.buffered();
+            // Reaching the deepest leaf proves the traversal ran to the bottom.
+            try testing.expect(characterizationReported(out, leaf_path.items));
+        }
+    }.testFn);
+}
+
+test "privileged: -L with a symlink cycle terminates cleanly instead of looping forever" {
+    // Guards robustness: under -L a symlink cycle must not loop forever. The
+    // current recursion relies on the kernel's ELOOP; the walker rewrite
+    // relies on its cycle detector. Either way the call must RETURN. The test
+    // proves termination simply by completing: an infinite loop would time the
+    // suite out. The regular (non-cycle) file under root is still reported,
+    // proving the cycle did not abort the whole walk.
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    try privilege_test.withFakeroot(allocator, struct {
+        fn testFn(inner_allocator: std.mem.Allocator) !void {
+            var tmp_dir = testing.tmpDir(.{});
+            defer tmp_dir.cleanup();
+
+            try tmp_dir.dir.createDir(testing.io, "root", .default_dir);
+            var root = try tmp_dir.dir.openDir(testing.io, "root", .{});
+            defer root.close(testing.io);
+            (try root.createFile(testing.io, "f.txt", .{})).close(testing.io);
+            // root/loop -> . (symlink to its own directory) creates a cycle
+            // that -L would follow forever absent a stopping mechanism.
+            root.symLink(testing.io, ".", "loop", .{}) catch return error.SkipZigTest;
+
+            var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            const base = try characterizationTmpRealpath(inner_allocator, &tmp_dir, &path_buf);
+            const root_path = try std.fmt.allocPrint(inner_allocator, "{s}/root", .{base});
+
+            const ownership = common.user_group.OwnershipSpec{
+                .user = characterization_uid,
+                .group = characterization_gid,
+            };
+            const options = ChownOptions{
+                .recursive = true,
+                .traverse_all_symlinks = true,
+                .verbose = true,
+            };
+
+            var stdout_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stdout_aw.deinit();
+            var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
+            defer stderr_aw.deinit();
+
+            // Must return (not hang). Per-entry errors from the cycle are
+            // tolerated: the current code surfaces ELOOP from the kernel; a
+            // future walker surfaces its own cycle stop. Both must terminate.
+            chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null) catch {};
+
+            const out = stdout_aw.writer.buffered();
+            const file_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/f.txt'", .{base});
+            try testing.expect(characterizationReported(out, file_marker));
+        }
+    }.testFn);
+}
