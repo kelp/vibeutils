@@ -103,6 +103,38 @@ Two edits to the code-review stage in `tdd-pipeline.js`
   was ~17 needless heavy runs. Same fix already applied to the
   test-reviewer (a).
 
+## APPLIED after chown green — implementer→test-writer route-back
+
+Gap found during the chown green phase: the implementer is
+forbidden from editing tests (separate-agents rule), but the
+green loop could only route fixes back to the *implementer*. When
+the real problem is a TEST (over-constrained, toothless, or
+referencing a renamed symbol), the implementer had no path — it
+would stall or contort the code to satisfy a bad test. Concretely:
+the chown post-refactor rename (chownRecursive→chownWalk) needed
+test edits, so it had to be done by an agent dispatched OUTSIDE
+the pipeline.
+
+Fix (in `tdd-pipeline.js`):
+- Implementer now returns a structured outcome
+  (`done` | `needs_test_change` + instructions) via IMPLEMENT_SCHEMA.
+- New `runImplementer()` wraps every implementer dispatch (initial,
+  verify-fix, code-review-fix). On `needs_test_change` it calls
+  `routeTestChange()`, which dispatches the **test-writer** (the
+  only agent allowed to edit tests) to adjudicate **judge-first**:
+  fix the test (keeping teeth) only if genuinely wrong, else refuse
+  and bounce back so the implementer fixes the code. Bounded by
+  GATE_FIX_MAX hops.
+- Green return now carries `tests_changed_during_green` so the
+  orchestrator knows the RED tests were modified during green and
+  can note it in the commit.
+- Guardrail rationale: without judge-first, an implementer could
+  dodge a real bug by declaring the test wrong. The separate
+  test-writer is the check.
+
+Documented as a strictly-enforced principle in CLAUDE.md
+(Test-First Discipline, rule 1).
+
 ---
 
 ### Original framing of the (a/b/c) decision (kept for context)

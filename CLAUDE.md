@@ -385,7 +385,16 @@ everything else is judgment.
    Parallelism is fine and encouraged ACROSS independent
    units (different utilities, unrelated areas) to move
    faster — the only prohibition is test-writing and
-   code-writing the SAME thing at the same time.
+   code-writing the SAME thing at the same time. If, during
+   implementation, the implementer concludes a TEST (not the
+   code) is wrong, it must NOT edit the test — it routes the
+   change back to the test-writer with instructions. The
+   test-writer adjudicates judge-first: it fixes the test
+   (keeping it toothful) only if the test is genuinely wrong,
+   otherwise it refuses and the implementer fixes the code.
+   This keeps the separation intact instead of letting a
+   fix-writer dodge a real bug by rewriting the test that
+   caught it.
 2. **A test must be proven able to fail before its change is
    trusted.** How you prove it depends on the kind of work
    (below). A test that can never fail is a bug in the test;

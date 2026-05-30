@@ -170,6 +170,52 @@ const FINAL_SCHEMA = {
   },
 };
 
+// The implementer may discover that a TEST (not the code) is wrong. It must
+// NOT edit the test itself (separate-agents rule); instead it signals
+// needs_test_change so the orchestrator can route the change to the
+// test-writer. This is the path that was missing — without it the implementer
+// either stalls or contorts the code to satisfy a bad test.
+const IMPLEMENT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['outcome', 'summary'],
+  properties: {
+    outcome: {
+      type: 'string',
+      enum: ['done', 'needs_test_change'],
+      description:
+        "'done' = implementation complete against the existing tests. 'needs_test_change' = a test is wrong (over-constrained, toothless, asserts an unspecified detail, or references a renamed symbol) and must be fixed by the test-writer before the code can be correct.",
+    },
+    summary: { type: 'string' },
+    test_change_instructions: {
+      type: 'string',
+      description:
+        'When outcome=needs_test_change: name the exact test(s), why each is wrong, and what the correct assertion should be. Empty when outcome=done.',
+    },
+  },
+};
+
+// The test-writer adjudicates an implementer's test-change request judge-first:
+// fix the test (keeping it toothful) only if it is genuinely wrong; otherwise
+// refuse and bounce it back so the implementer fixes the code. This guardrail
+// stops an implementer from dodging a real bug by declaring the test wrong.
+const TESTFIX_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['changed', 'summary'],
+  properties: {
+    changed: {
+      type: 'boolean',
+      description:
+        'true if the test was genuinely wrong and you fixed it (still with teeth); false if the test is correct and the implementation must change instead.',
+    },
+    summary: {
+      type: 'string',
+      description: 'What you changed and why, or why the test stands and the code must change.',
+    },
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Briefing helpers
 // ---------------------------------------------------------------------------
@@ -229,6 +275,87 @@ async function scoutBriefing() {
     ].join('\n'),
     { label: `scout:${a.utility}`, phase: 'Scout', model: 'sonnet', schema: BRIEFING_SCHEMA },
   );
+}
+
+// Route an implementer's test-change request to the test-writer (the only
+// agent allowed to edit tests), judge-first. Returns { changed, summary }.
+async function routeTestChange(brief, instructions, hop, phaseName) {
+  return await agent(
+    [
+      brief,
+      '',
+      '## YOUR TASK (test-writer) — adjudicate an implementer test-change request',
+      taskHeader(),
+      '',
+      'The implementer reports that a TEST must change rather than the implementation. Judge that FIRST by',
+      'reading the test and the behavior it guards:',
+      '  - If the test is genuinely WRONG (over-constrained, asserts an unspecified detail, references a',
+      '    renamed symbol, or is toothless), fix it — and keep it with TEETH: it must still fail if the',
+      '    guarded behavior regresses. Set changed=true and describe the fix.',
+      '  - If the test is CORRECT, do NOT change it. Set changed=false and explain why the implementation,',
+      '    not the test, must change. The implementer will then be told to fix the code.',
+      '',
+      `Implementer's request:\n${instructions}`,
+      '',
+      `Edit ONLY the test code in ${a.target_file}; do not touch implementation logic. Run \`just fmt\`.`,
+      'Do NOT commit.',
+    ].join('\n'),
+    {
+      label: `test-writer:${a.utility}#adjudicate${hop}`,
+      phase: phaseName,
+      model: 'opus',
+      agentType: 'tdd-pipeline:test-writer',
+      schema: TESTFIX_SCHEMA,
+    },
+  );
+}
+
+// Dispatch the implementer and, if it reports a test is wrong, route the change
+// to the test-writer (judge-first) and re-dispatch the implementer. Bounded.
+// Returns { result: <IMPLEMENT_SCHEMA>, tests_changed: bool }.
+async function runImplementer(promptText, label, phaseName, brief) {
+  let result = await agent(promptText, {
+    label,
+    phase: phaseName,
+    model: 'opus',
+    agentType: 'tdd-pipeline:implementer',
+    schema: IMPLEMENT_SCHEMA,
+  });
+  let tests_changed = false;
+  let hop = 0;
+  while (result.outcome === 'needs_test_change' && hop < GATE_FIX_MAX) {
+    hop += 1;
+    const verdict = await routeTestChange(brief, result.test_change_instructions || '', hop, phaseName);
+    if (verdict.changed) {
+      tests_changed = true;
+    }
+    log(`implementer requested a test change (hop ${hop}); test-writer changed=${verdict.changed}`);
+    result = await agent(
+      [
+        brief,
+        '',
+        '## YOUR TASK (implementer, after the test-writer adjudicated)',
+        taskHeader(),
+        '',
+        `Your earlier summary: ${result.summary}`,
+        `Test-writer changed the test: ${verdict.changed}`,
+        `Test-writer note: ${verdict.summary}`,
+        verdict.changed
+          ? 'The test was updated. Make the implementation pass against the UPDATED tests.'
+          : 'The test-writer judged the test CORRECT and did not change it. Do NOT request another test change for this issue — fix the IMPLEMENTATION to satisfy the existing test.',
+        '',
+        `Edit ONLY ${a.target_file} implementation code. Run \`just fmt\`. Do NOT commit. Return your outcome.`,
+      ].join('\n'),
+      {
+        label: `${label}#aftertest${hop}`,
+        phase: phaseName,
+        model: 'opus',
+        agentType: 'tdd-pipeline:implementer',
+        schema: IMPLEMENT_SCHEMA,
+      },
+    );
+  }
+  return { result, tests_changed };
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +548,8 @@ async function runGreen() {
   const brief = formatBriefing(briefing);
 
   phase('Implement');
-  let implNote = await agent(
+  let testsChangedDuringGreen = false;
+  let impl = await runImplementer(
     [
       brief,
       '',
@@ -444,10 +572,17 @@ async function runGreen() {
       '  - DO run `just fmt` to fix formatting — we always want formatting auto-fixed, and a pre-commit',
       '    hook will block the commit if it is not clean. (The repo is kept fmt-clean, so `just fmt` should',
       '    only reflow the file you edited.)',
-      '  - Do NOT commit. Summarize your changes.',
+      '  - You may NOT edit tests (the test-writer owns those). If you conclude a TEST is wrong — not the',
+      '    code — return outcome=needs_test_change with exact instructions instead of editing it or',
+      '    contorting the implementation; the test-writer will adjudicate and the loop returns to you.',
+      '  - Do NOT commit. Summarize your changes and set outcome=done when complete.',
     ].join('\n'),
-    { label: `implementer:${a.utility}`, phase: 'Implement', model: 'opus', agentType: 'tdd-pipeline:implementer' },
+    `implementer:${a.utility}`,
+    'Implement',
+    brief,
   );
+  testsChangedDuringGreen = testsChangedDuringGreen || impl.tests_changed;
+  let implNote = impl.result.summary;
 
   // Verify gate: re-dispatch implementer on failure (bounded).
   phase('Verify gate');
@@ -468,7 +603,7 @@ async function runGreen() {
     if (vfix === GATE_FIX_MAX) break;
     vfix += 1;
     log(`verify gate failed (pass=${verify.all_pass} lint=${verify.lint_clean} recursionGone=${verify.recursion_removed}) — re-dispatching implementer.`);
-    implNote = await agent(
+    const vimpl = await runImplementer(
       [
         brief,
         '',
@@ -481,10 +616,15 @@ async function runGreen() {
         `Gate report: ${verify.summary}`,
         `Output excerpt:\n${verify.output_excerpt}`,
         '',
-        'Do NOT commit. Return a short summary.',
+        'If the failure is a WRONG test rather than wrong code, return outcome=needs_test_change with',
+        'instructions instead of editing the test. Otherwise fix the code and set outcome=done. Do NOT commit.',
       ].join('\n'),
-      { label: `implementer:${a.utility}#vfix${vfix}`, phase: 'Verify gate', model: 'opus', agentType: 'tdd-pipeline:implementer' },
+      `implementer:${a.utility}#vfix${vfix}`,
+      'Verify gate',
+      brief,
     );
+    testsChangedDuringGreen = testsChangedDuringGreen || vimpl.tests_changed;
+    implNote = vimpl.result.summary;
   }
 
   // Code review: loop until APPROVED (user requirement).
@@ -513,7 +653,7 @@ async function runGreen() {
     log(`code review round ${round}: ${codeReview.assessment} (${(codeReview.issues || []).length} issues)`);
     if (codeReview.assessment === 'APPROVED') break;
 
-    implNote = await agent(
+    const crimpl = await runImplementer(
       [
         brief,
         '',
@@ -524,10 +664,16 @@ async function runGreen() {
         '',
         reviewFeedback(codeReview),
         '',
-        'Apply every fix and keep all tests green. Do NOT commit. Return a short summary.',
+        'Apply every fix and keep all tests green. If a review point is actually a WRONG test rather than',
+        'wrong code, return outcome=needs_test_change with instructions instead of editing the test.',
+        'Otherwise fix the code and set outcome=done. Do NOT commit.',
       ].join('\n'),
-      { label: `implementer:${a.utility}#crfix${round}`, phase: 'Code review', model: 'opus', agentType: 'tdd-pipeline:implementer' },
+      `implementer:${a.utility}#crfix${round}`,
+      'Code review',
+      brief,
     );
+    testsChangedDuringGreen = testsChangedDuringGreen || crimpl.tests_changed;
+    implNote = crimpl.result.summary;
   }
   if (codeReview.assessment !== 'APPROVED') {
     log(`WARNING: code review hit the ${REVIEW_ROUND_MAX}-round backstop without APPROVED — surfacing for human review.`);
@@ -547,6 +693,7 @@ async function runGreen() {
     phase: 'green',
     utility: a.utility,
     impl_summary: implNote,
+    tests_changed_during_green: testsChangedDuringGreen,
     verify_gate: verify,
     code_review: codeReview,
     final_verify: finalCheck,
