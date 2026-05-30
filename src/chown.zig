@@ -5,6 +5,7 @@ const testing = std.testing;
 const fs = std.fs;
 const c = std.c;
 const privilege_test = common.privilege_test;
+const assert = std.debug.assert;
 
 // External C function bindings
 
@@ -181,7 +182,7 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     var exit_code: u8 = 0;
     for (files) |file_path| {
         if (options.recursive) {
-            chownRecursive(io, file_path, ownership, options, allocator, stdout_writer, stderr_writer, null) catch {
+            chownWalk(io, file_path, ownership, options, allocator, stdout_writer, stderr_writer) catch {
                 exit_code = @intFromEnum(common.ExitCode.general_error);
             };
         } else {
@@ -295,7 +296,7 @@ fn chownFile(
 
     // Apply ownership change
     if (options.recursive) {
-        try chownRecursive(io, path, ownership, options, allocator, stdout_writer, stderr_writer, null);
+        try chownWalk(io, path, ownership, options, allocator, stdout_writer, stderr_writer);
     } else {
         try chownSingle(io, allocator, path, ownership, options, stdout_writer, stderr_writer);
     }
@@ -333,17 +334,28 @@ fn chownSingle(io: std.Io, allocator: std.mem.Allocator, path: []const u8, owner
     }
 }
 
-/// Get the device ID for a path. Uses the cross-platform
-/// common.file.FileInfo.stat which handles Linux (statx) and
-/// macOS/BSD (fstat via the file descriptor) uniformly.
-fn getDeviceId(io: std.Io, path: []const u8) !u64 {
-    const info = common.file.FileInfo.stat(io, path) catch return error.StatFailed;
-    return info.dev;
+/// Map chown's -P/-H/-L options to the bounded walker's symlink policy.
+/// -L (traverse_all) follows every symlink; -H (traverse_cmdline) follows only
+/// the command-line operand; the default (-P or plain -R) follows none.
+fn symlinkPolicyFromOptions(options: ChownOptions) common.walker.SymlinkPolicy {
+    // -L and -P are mutually exclusive; -L wins over -H if both somehow set.
+    assert(!(options.traverse_all_symlinks and options.no_traverse_symlinks));
+    assert(!(options.traverse_cmdline_symlinks and options.no_traverse_symlinks));
+    if (options.traverse_all_symlinks) {
+        return .follow_all;
+    }
+    if (options.traverse_cmdline_symlinks) {
+        return .follow_cmdline;
+    }
+    return .no_follow;
 }
 
-/// Recursively change ownership of directory and contents
-/// Respects -H/-L/-P symlink traversal options and -x mount point crossing
-fn chownRecursive(
+/// Change ownership of a tree rooted at `path` using the bounded directory
+/// walker. Traversal runs through `common.walker.Walker`, whose explicit,
+/// bounded stack avoids self-recursive descent. Post-order (`order = .post`)
+/// guarantees each child is chowned before its parent, preserving the prior
+/// behavior. Respects -H/-L/-P symlink options and -x mount-point crossing.
+fn chownWalk(
     io: std.Io,
     path: []const u8,
     ownership: common.user_group.OwnershipSpec,
@@ -351,74 +363,84 @@ fn chownRecursive(
     allocator: std.mem.Allocator,
     stdout_writer: anytype,
     stderr_writer: anytype,
-    root_dev: ?u64,
 ) !void {
-    // Check if it's a directory to recurse into.
-    // With -P (or default -R with no -H/-L), use lstat so a cmdline
-    // symlink-to-directory is not followed — we change the symlink itself.
-    const use_lstat = options.no_traverse_symlinks or
-        (!options.traverse_all_symlinks and !options.traverse_cmdline_symlinks);
-    const stat_info = (if (use_lstat)
-        common.file.FileInfo.lstat(path)
-    else
-        common.file.FileInfo.stat(io, path)) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot stat '{s}': {s}", .{ path, common.posixErrorString(err) });
-        return;
-    };
+    assert(path.len > 0);
+    assert(options.recursive);
 
-    // -x: skip entries on different filesystems
-    if (options.no_cross_device) {
-        const dev = getDeviceId(io, path) catch 0;
-        if (root_dev) |rd| {
-            if (dev != rd) return;
-        }
+    const policy = symlinkPolicyFromOptions(options);
+
+    // -P (no_follow): a symlink operand on the command line must be lchown'd
+    // as the link itself and NOT descended. GNU/POSIX -P never traverses any
+    // symlink, including the operand. lstat the operand and short-circuit when
+    // it is a symlink so we never open (and walk into) its target directory.
+    if (policy == .no_follow and operandIsSymlink(path)) {
+        try chownSingle(io, allocator, path, ownership, options, stdout_writer, stderr_writer);
+        return;
     }
 
-    // Determine effective root_dev for children
-    const effective_root_dev: ?u64 = if (options.no_cross_device)
-        root_dev orelse (getDeviceId(io, path) catch null)
-    else
-        null;
+    var walk = try common.walker.Walker.init(allocator, .{
+        .order = .post,
+        .symlinks = policy,
+        .stay_on_filesystem = options.no_cross_device,
+        .detect_cycles = true,
+    });
+    defer walk.deinit(io);
+    try walk.addRoot(path);
+
+    try walkAndApply(
+        io,
+        &walk,
+        path,
+        ownership,
+        options,
+        allocator,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+/// True when the operand at `path` is itself a symbolic link (lstat, no follow).
+/// Used by -P to decide whether to chown the link without descending. A failed
+/// lstat returns false so the walker drives normal error reporting downstream.
+fn operandIsSymlink(path: []const u8) bool {
+    assert(path.len > 0);
+    const info = common.file.FileInfo.lstat(path) catch return false;
+    return info.kind == .sym_link;
+}
+
+/// Drive the walker to completion, chowning each emitted entry in post-order.
+/// Extracted from chownWalk to keep both functions under the 70-line cap and to
+/// isolate the bounded drive loop (no recursion). Per-entry failures are
+/// reported and tolerated; a walker-level error (e.g. a -L cycle stop) is
+/// surfaced as a non-fatal error after the already-emitted output is preserved.
+fn walkAndApply(
+    io: std.Io,
+    walk: *common.walker.Walker,
+    path: []const u8,
+    ownership: common.user_group.OwnershipSpec,
+    options: ChownOptions,
+    allocator: std.mem.Allocator,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !void {
+    assert(path.len > 0);
 
     var had_errors = false;
-
-    if (stat_info.kind == .directory) {
-        // Open directory and iterate — process children first
-        var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot open directory '{s}': {s}", .{ path, common.posixErrorString(err) });
-            return;
+    while (walk.next(io)) |maybe_entry| {
+        const entry = maybe_entry orelse break;
+        assert(entry.path.len > 0);
+        chownSingle(io, allocator, entry.path, ownership, options, stdout_writer, stderr_writer) catch |err| {
+            handleError(allocator, entry.path, err, options, stderr_writer);
+            had_errors = true;
         };
-        defer dir.close(io);
-
-        var iterator = dir.iterate();
-        while (try iterator.next(io)) |entry| {
-            // Build full path
-            const full_path = try std.fs.path.join(allocator, &.{ path, entry.name });
-            defer allocator.free(full_path);
-
-            // Respect symlink traversal options (-P default, -H, -L)
-            if (entry.kind == .sym_link and !options.traverse_all_symlinks) {
-                // -P (default) or -H: don't follow symlinks during recursion
-                // Just change ownership of the symlink itself
-                chownSingle(io, allocator, full_path, ownership, options, stdout_writer, stderr_writer) catch |err| {
-                    handleError(allocator, full_path, err, options, stderr_writer);
-                    had_errors = true;
-                };
-                continue;
-            }
-
-            // Recurse into subdirectory or change file
-            chownRecursive(io, full_path, ownership, options, allocator, stdout_writer, stderr_writer, effective_root_dev) catch {
-                had_errors = true;
-            };
-        }
-    }
-
-    // Change the directory/file itself after processing children
-    chownSingle(io, allocator, path, ownership, options, stdout_writer, stderr_writer) catch |err| {
-        handleError(allocator, path, err, options, stderr_writer);
+    } else |err| {
+        // A cycle stop or per-entry I/O error surfaced from the walker. The
+        // cycle case is the -L self-link guard the tests exercise; treat any
+        // such failure as a non-fatal error so the rest of the walk's output
+        // (already emitted) is preserved, matching the old kernel-ELOOP path.
+        common.printErrorWithProgram(allocator, stderr_writer, "chown", "cannot traverse '{s}': {s}", .{ path, common.posixErrorString(err) });
         had_errors = true;
-    };
+    }
 
     if (had_errors) {
         return error.FileOperationFailed;
@@ -1407,7 +1429,7 @@ test "privileged: recursive walk reports a change for every entry in a multi-lev
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
             // Every entry in the tree must be reported.
@@ -1465,7 +1487,7 @@ test "privileged: recursive walk processes children before their parent director
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
 
@@ -1540,7 +1562,7 @@ test "privileged: -P reports the symlink itself and does not descend into its ta
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
 
@@ -1606,7 +1628,7 @@ test "privileged: -L follows a symlink-to-directory and reports the target subtr
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
             // Following the link reaches the file behind it via the link path.
@@ -1676,7 +1698,7 @@ test "privileged: -H follows a command-line symlink but not symlinks found durin
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, operand_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, operand_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
 
@@ -1697,8 +1719,8 @@ test "privileged: -H follows a command-line symlink but not symlinks found durin
 }
 
 test "privileged: -x stays on the same filesystem and still reports same-device entries" {
-    // Guards: with no_cross_device (-x) and a root_dev captured from the start
-    // path, descent continues across entries that share that device. A wrong
+    // Guards: with no_cross_device (-x), the walker's stay_on_filesystem device
+    // tracking continues descent across entries that share that device. A wrong
     // device comparison could prune everything; this test ensures same-device
     // children are still fully processed. Cross-device pruning itself needs a
     // real mount and is covered by integration tests; here we lock in that -x
@@ -1737,7 +1759,7 @@ test "privileged: -x stays on the same filesystem and still reports same-device 
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
             // The deep same-device leaf must still be reached under -x.
@@ -1801,7 +1823,7 @@ test "privileged: deep directory tree completes without stack overflow" {
             var stderr_aw: std.Io.Writer.Allocating = .init(inner_allocator);
             defer stderr_aw.deinit();
 
-            try chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null);
+            try chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer);
 
             const out = stdout_aw.writer.buffered();
             // Reaching the deepest leaf proves the traversal ran to the bottom.
@@ -1858,7 +1880,7 @@ test "privileged: -L with a symlink cycle terminates cleanly instead of looping 
             // Must return (not hang). Per-entry errors from the cycle are
             // tolerated: the current code surfaces ELOOP from the kernel; a
             // future walker surfaces its own cycle stop. Both must terminate.
-            chownRecursive(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer, null) catch {};
+            chownWalk(testing.io, root_path, ownership, options, inner_allocator, &stdout_aw.writer, &stderr_aw.writer) catch {};
 
             const out = stdout_aw.writer.buffered();
             const file_marker = try std.fmt.allocPrint(inner_allocator, "'{s}/root/f.txt'", .{base});
