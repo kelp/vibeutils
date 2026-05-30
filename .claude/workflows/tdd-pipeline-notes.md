@@ -18,7 +18,7 @@ must be expressed as separate `agent()` steps in the script.
 | Green check | workflow-subagent | haiku | run suite, report facts |
 | Implement | tdd-pipeline:implementer | opus | correct Zig 0.16 + Tiger Style, recursion removal |
 | Verify gate | workflow-subagent | haiku | run full+privileged+lint, report facts |
-| Code review | tdd-pipeline:code-reviewer | sonnet | quality polish; correctness already gated by tests; loops until APPROVED |
+| Code review | tdd-pipeline:code-reviewer | opus | reviews the refactor; sonnet took 5 rounds on the walker, opus one-shots; loops until APPROVED |
 | Final verify | workflow-subagent | haiku | one more full-suite run |
 
 Every `model` is an explicit one-liner in the script, so
@@ -87,6 +87,21 @@ scorecard above:
 Still open to revisit after a green-phase run: whether to add
 a separate haiku "runner" between writer and review (vs the
 implementer self-checking), measured against reload cost.
+
+## APPLIED before chown green (scorecard tuning)
+
+Two edits to the code-review stage in `tdd-pipeline.js`
+(2026-05-29), driven by the chmod green-phase scorecard:
+- **Promote code-reviewer sonnet → opus.** Sonnet needed 5
+  review rounds on the walker migration; the opus test-reviewer
+  one-shot its review. Cheaper-per-token but more-rounds was a
+  net loss — the counter-intuitive prior we flagged, now
+  confirmed on the review gate too.
+- **Code-reviewer reviews by READING only.** Told it not to run
+  the test/privileged/integration suites or any build — the
+  verify gate already proved green + recursion-free; re-running
+  was ~17 needless heavy runs. Same fix already applied to the
+  test-reviewer (a).
 
 ---
 

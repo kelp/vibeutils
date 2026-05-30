@@ -502,9 +502,13 @@ async function runGreen() {
         '',
         `Review the implementation in ${a.target_file}: correctness against the tests, resource management`,
         '(walker deinit, dir handles, path dupes), Tiger Style compliance, and that no recursion remains.',
+        'Judge BY READING AND REASONING ONLY. Do NOT run the test suite, the privileged suite, integration',
+        'tests, or any build — a dedicated verify gate already proved the code green and recursion-free, and',
+        're-running those here only burns wall-clock. If you suspect a behavior is wrong, cite the specific',
+        'code and the test that should have caught it as an issue instead of running anything.',
         'Return APPROVED only when there is nothing left to fix.',
       ].join('\n'),
-      { label: `code-review:${a.utility}#${round}`, phase: 'Code review', model: 'sonnet', schema: REVIEW_SCHEMA },
+      { label: `code-review:${a.utility}#${round}`, phase: 'Code review', model: 'opus', schema: REVIEW_SCHEMA },
     );
     log(`code review round ${round}: ${codeReview.assessment} (${(codeReview.issues || []).length} issues)`);
     if (codeReview.assessment === 'APPROVED') break;
