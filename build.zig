@@ -160,12 +160,14 @@ fn buildTests(
         }
     }
 
-    // A scoped run that matched nothing is a user typo. Panic rather than
-    // return an error: build()'s `catch |err| return` convention swallows
-    // the nonzero exit, which would let the (empty) test step silently
-    // "pass" — exactly the failure mode a TDD gate must never have.
+    // A scoped run that matched nothing is a user typo. Exit with a clean
+    // one-line error and a nonzero code. Returning an error here would be
+    // swallowed by build()'s `catch |err| return` convention (silent pass —
+    // the failure mode a TDD gate must never have); a panic prints a noisy
+    // stack trace. process.exit(1) is loud and tidy.
     if (test_util != null and !matched) {
-        std.debug.panic("-Dtest-util: no utility named '{s}'", .{test_util.?});
+        std.log.err("-Dtest-util: no utility named '{s}'", .{test_util.?});
+        std.process.exit(1);
     }
 
     // Common library tests
