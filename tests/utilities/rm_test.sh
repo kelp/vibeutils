@@ -953,10 +953,11 @@ test_rm() {
     mkdir -p "$mixed_root/mix"
     create_temp_file "remove this" "$mixed_root/mix/only.txt"
     create_temp_file "keep this" "$mixed_root/mix/spare.txt"
-    # Descend (y), then accept the first file (y) and decline the second (n).
-    # Whatever iteration order, exactly one file is removed and one kept, so
-    # the parent must survive non-empty.
-    printf "y\ny\nn\n" | "$binary" -ri "$mixed_root" >/dev/null 2>&1
+    # Prompts in order: descend mixed_root (y), descend mix (y), then the two
+    # files: accept the first (y) and decline the second (n). Whatever the file
+    # iteration order, exactly one file is removed and one kept, so the parent
+    # must survive non-empty.
+    printf "y\ny\ny\nn\n" | "$binary" -ri "$mixed_root" >/dev/null 2>&1
     local mixed_exit=$?
     local remaining_count=0
     [[ -f "$mixed_root/mix/only.txt" ]] && remaining_count=$((remaining_count + 1))
