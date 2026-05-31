@@ -243,13 +243,10 @@ fn removeFiles(allocator: Allocator, io: std.Io, files: []const []const u8, stdo
             error.IsDir => {
                 if (options.recursive) {
                     removeDirectory(allocator, io, file, stdout_writer, stderr_writer, options) catch |dir_err| {
-                        switch (dir_err) {
-                            error.InteractiveUserCancelled => {}, // User said no in interactive mode, continue
-                            else => {
-                                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(dir_err) });
-                                any_errors = true;
-                            },
-                        }
+                        // The walker driver handles interactive declines
+                        // internally, so any error here is a real failure.
+                        common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ file, common.posixErrorString(dir_err) });
+                        any_errors = true;
                     };
                 } else if (options.remove_empty_dirs) {
                     // -d flag: attempt to remove empty directory (like rmdir)
@@ -342,12 +339,6 @@ fn removeItem(_: Allocator, io: std.Io, file_path: []const u8, stdout_writer: *s
     }
 }
 
-/// Entry type for collected directory entries
-const Entry = struct {
-    name: []const u8,
-    kind: std.Io.File.Kind,
-};
-
 /// Remove a directory recursively with per-entry verbose/interactive support.
 fn removeDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions) !void {
     // For non-verbose, non-interactive mode with force and no -x, use deleteTree as fast path
@@ -359,14 +350,10 @@ fn removeDirectory(allocator: Allocator, io: std.Io, dir_path: []const u8, stdou
         return;
     }
 
-    // Determine root device ID for -x (don't cross mount points)
-    const root_dev: ?u64 = if (options.no_cross_device)
-        getDeviceId(io, dir_path) catch null
-    else
-        null;
-
-    // Manual depth-first recursive traversal
-    try removeDirectoryRecursive(allocator, io, dir_path, stdout_writer, stderr_writer, options, root_dev);
+    // Slow path: drive the bounded directory walker. The walker handles
+    // depth-first post-order deletion, symlink policy, cycle detection, and
+    // the one-file-system boundary, replacing the former manual recursion.
+    try removeDirectoryWithWalker(allocator, io, dir_path, stdout_writer, stderr_writer, options);
 }
 
 /// Get the device ID for a path. Uses the cross-platform
@@ -377,128 +364,242 @@ fn getDeviceId(io: std.Io, path: []const u8) !u64 {
     return info.dev;
 }
 
-/// Depth-first recursive directory removal with per-entry verbose/interactive support.
-fn removeDirectoryRecursive(allocator: Allocator, io: std.Io, dir_path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: RmOptions, root_dev: ?u64) anyerror!void {
-    // -x: skip directories on different filesystems
-    if (options.no_cross_device) {
-        if (root_dev) |rd| {
-            const dev = getDeviceId(io, dir_path) catch 0;
-            if (dev != rd) return;
-        }
-    }
+/// Drives the bounded directory walker to remove a directory tree. Visits
+/// each entry pre-order (interactive prompt + prune) and post-order
+/// (deleteDir once empty), preserving the prior depth-first post-order
+/// deletion semantics without recursion.
+fn removeDirectoryWithWalker(
+    allocator: Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !void {
+    std.debug.assert(dir_path.len > 0);
+    std.debug.assert(stdout_writer != stderr_writer);
 
-    // Open directory for iteration
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| switch (err) {
-        error.AccessDenied => return error.AccessDenied,
-        error.FileNotFound => return error.FileNotFound,
-        else => return err,
+    const config = common.walker.WalkConfig{
+        .order = .both,
+        .symlinks = .no_follow,
+        .stay_on_filesystem = options.no_cross_device,
     };
+
+    var walker = try common.walker.Walker.init(allocator, config);
+    defer walker.deinit(io);
+    try walker.addRoot(dir_path);
+
+    // Paths of directories that must survive: declined directories and the
+    // parent directories of declined entries. Bounded by the walk entry cap.
+    var cancelled: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (cancelled.items) |path| allocator.free(path);
+        cancelled.deinit(allocator);
+    }
 
     var had_errors = false;
-
-    // Collect entries first to avoid iterator invalidation during deletion
-    var entries: std.ArrayListUnmanaged(Entry) = .empty;
-    defer {
-        for (entries.items) |entry| {
-            allocator.free(entry.name);
-        }
-        entries.deinit(allocator);
-    }
-
-    {
-        var iterator = dir.iterate();
-        while (iterator.next(io) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot read directory '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
-            dir.close(io);
-            return err;
-        }) |entry| {
-            const name_copy = try allocator.dupe(u8, entry.name);
-            try entries.append(allocator, .{ .name = name_copy, .kind = entry.kind });
-        }
-    }
-
-    // Close directory handle before modifying contents
-    dir.close(io);
-
-    // Process entries depth-first
-    for (entries.items) |entry| {
-        const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot construct path: {s}", .{common.posixErrorString(err)});
+    while (try walker.next(io)) |entry| {
+        std.debug.assert(entry.path.len > 0);
+        const failed = try handleWalkEntry(
+            allocator,
+            io,
+            entry,
+            &walker,
+            &cancelled,
+            stdout_writer,
+            stderr_writer,
+            options,
+        );
+        if (failed) {
             had_errors = true;
-            continue;
-        };
-        defer allocator.free(full_path);
+        }
+    }
 
-        if (entry.kind == .directory) {
-            // Recurse into subdirectory first (depth-first)
-            if (removeDirectoryRecursive(allocator, io, full_path, stdout_writer, stderr_writer, options, root_dev)) {
-                // Success - continue
-            } else |err| switch (err) {
-                error.InteractiveUserCancelled => {},
-                else => had_errors = true,
+    std.debug.assert(dir_path.len > 0);
+    if (had_errors) {
+        return error.AccessDenied; // Generic error to signal failure.
+    }
+}
+
+/// Handles a single walker entry. Returns true when the entry's removal
+/// failed in a way that should mark the overall operation as errored.
+/// Records cancelled directories so their ancestors are preserved.
+fn handleWalkEntry(
+    allocator: Allocator,
+    io: std.Io,
+    entry: common.walker.Entry,
+    walker: *common.walker.Walker,
+    cancelled: *std.ArrayList([]const u8),
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !bool {
+    std.debug.assert(entry.path.len > 0);
+    std.debug.assert(entry.basename.len > 0);
+
+    const is_directory = entry.kind == .directory;
+    if (is_directory and entry.visit == .pre) {
+        return handleDirectoryPre(io, entry, walker, allocator, cancelled, stderr_writer, options);
+    }
+    if (is_directory and entry.visit == .post) {
+        return handleDirectoryPost(allocator, io, entry, cancelled, stdout_writer, stderr_writer, options);
+    }
+
+    // Regular file or symlink: always a single pre-order visit.
+    removeItem(allocator, io, entry.path, stdout_writer, stderr_writer, options) catch |err| {
+        return handleFileError(allocator, entry, cancelled, stderr_writer, options, err);
+    };
+    return false;
+}
+
+/// Maps an error from removing a file/symlink entry onto the had-errors
+/// signal, recording the parent directory when the user declines.
+fn handleFileError(
+    allocator: Allocator,
+    entry: common.walker.Entry,
+    cancelled: *std.ArrayList([]const u8),
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+    err: anyerror,
+) !bool {
+    std.debug.assert(entry.path.len > 0);
+    switch (err) {
+        error.InteractiveUserCancelled => {
+            // Declined: keep this entry's parent directory.
+            try recordCancelledParent(allocator, cancelled, entry.path);
+            return false;
+        },
+        error.UserCancelled => return true,
+        error.FileNotFound => {
+            if (!options.force) {
+                common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{entry.path});
+                return true;
             }
-        } else {
-            // Remove file entry with interactive/verbose support
-            removeItem(allocator, io, full_path, stdout_writer, stderr_writer, options) catch |err| switch (err) {
-                error.InteractiveUserCancelled => continue,
-                error.UserCancelled => {
-                    had_errors = true;
-                    continue;
-                },
-                error.FileNotFound => {
-                    if (!options.force) {
-                        common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': No such file or directory", .{full_path});
-                        had_errors = true;
-                    }
-                    continue;
-                },
-                error.AccessDenied => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{full_path});
-                    had_errors = true;
-                    continue;
-                },
-                else => {
-                    common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ full_path, common.posixErrorString(err) });
-                    had_errors = true;
-                    continue;
-                },
-            };
-        }
-    }
-
-    // Now remove the (should-be-empty) directory itself
-    // Prompt if interactive
-    if (!options.force and options.interactive) {
-        if (!try askYesNo(io, stderr_writer, .directory, dir_path)) {
-            return error.InteractiveUserCancelled;
-        }
-    }
-
-    std.Io.Dir.cwd().deleteDir(io, dir_path) catch |err| switch (err) {
-        error.DirNotEmpty => {
-            // Some entries may have been skipped (interactive cancel, errors)
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{dir_path});
-            had_errors = true;
+            return false;
         },
         error.AccessDenied => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{dir_path});
-            had_errors = true;
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{entry.path});
+            return true;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ dir_path, common.posixErrorString(err) });
-            had_errors = true;
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry.path, common.posixErrorString(err) });
+            return true;
+        },
+    }
+}
+
+/// Pre-order directory visit: prompt before descent under -i, pruning and
+/// recording the directory when the user declines.
+fn handleDirectoryPre(
+    io: std.Io,
+    entry: common.walker.Entry,
+    walker: *common.walker.Walker,
+    allocator: Allocator,
+    cancelled: *std.ArrayList([]const u8),
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !bool {
+    std.debug.assert(entry.kind == .directory);
+    std.debug.assert(entry.visit == .pre);
+
+    if (options.force or !options.interactive) {
+        return false;
+    }
+    if (try askYesNo(io, stderr_writer, .directory, entry.path)) {
+        return false;
+    }
+
+    // Declined: skip the whole subtree and keep this directory.
+    walker.pruneCurrent();
+    try recordCancelled(allocator, cancelled, entry.path);
+    return false;
+}
+
+/// Post-order directory visit: delete the now-empty directory unless a
+/// descendant was preserved by an interactive decline.
+fn handleDirectoryPost(
+    allocator: Allocator,
+    io: std.Io,
+    entry: common.walker.Entry,
+    cancelled: *std.ArrayList([]const u8),
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: RmOptions,
+) !bool {
+    std.debug.assert(entry.kind == .directory);
+    std.debug.assert(entry.visit == .post);
+
+    if (directoryHasCancelledChild(cancelled.items, entry.path)) {
+        return false;
+    }
+
+    std.Io.Dir.cwd().deleteDir(io, entry.path) catch |err| switch (err) {
+        error.DirNotEmpty => {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Directory not empty", .{entry.path});
+            return true;
+        },
+        error.AccessDenied => {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': Permission denied", .{entry.path});
+            return true;
+        },
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, "rm", "cannot remove '{s}': {s}", .{ entry.path, common.posixErrorString(err) });
+            return true;
         },
     };
 
-    if (!had_errors) {
-        if (options.verbose) {
-            try stdout_writer.print("removed directory '{s}'\n", .{dir_path});
+    if (options.verbose) {
+        try stdout_writer.print("removed directory '{s}'\n", .{entry.path});
+    }
+    return false;
+}
+
+/// Records the parent directory of a path as needing preservation.
+fn recordCancelledParent(
+    allocator: Allocator,
+    cancelled: *std.ArrayList([]const u8),
+    path: []const u8,
+) !void {
+    std.debug.assert(path.len > 0);
+    const parent = std.fs.path.dirname(path) orelse path;
+    std.debug.assert(parent.len > 0);
+    try recordCancelled(allocator, cancelled, parent);
+}
+
+/// Records a directory path as needing preservation. Duplicates the path
+/// because the walker reuses the entry buffer after each step.
+fn recordCancelled(
+    allocator: Allocator,
+    cancelled: *std.ArrayList([]const u8),
+    path: []const u8,
+) !void {
+    std.debug.assert(path.len > 0);
+    const owned = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned);
+    try cancelled.append(allocator, owned);
+    std.debug.assert(cancelled.items.len > 0);
+}
+
+/// Returns true when any preserved path equals dir_path or lies beneath it,
+/// meaning dir_path is an ancestor of a declined entry and must survive.
+fn directoryHasCancelledChild(
+    cancelled_paths: []const []const u8,
+    dir_path: []const u8,
+) bool {
+    std.debug.assert(dir_path.len > 0);
+    var found = false;
+    for (cancelled_paths) |candidate| {
+        std.debug.assert(candidate.len > 0);
+        if (std.mem.eql(u8, candidate, dir_path)) {
+            found = true;
+        } else if (candidate.len > dir_path.len and
+            std.mem.startsWith(u8, candidate, dir_path) and
+            candidate[dir_path.len] == std.fs.path.sep)
+        {
+            found = true;
         }
     }
-
-    if (had_errors) {
-        return error.AccessDenied; // Generic error to signal failure
-    }
+    return found;
 }
 
 /// Check if a basename is "." or ".." (OpenBSD ISDOT macro equivalent).
