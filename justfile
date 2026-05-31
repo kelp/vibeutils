@@ -35,9 +35,8 @@ test:
 test-util util:
     @echo "Testing {{util}} utility..."
     @echo "----------------------------------------"
-    @echo "Note: Unit tests require the full build system."
-    @echo "Running: zig build test 2>&1 | grep {{util}}"
-    @{{test_cmd}} 2>&1 | grep -E "{{util}}\.zig|All.*tests passed" || echo "See full output with: just test"
+    @echo "Running: zig build test -Dtest-util={{util}}"
+    @{{test_cmd}} -Dtest-util={{util}}
     @echo "----------------------------------------"
     @echo "Binary smoke test:"
     @if [ -f zig-out/bin/{{util}} ]; then \
