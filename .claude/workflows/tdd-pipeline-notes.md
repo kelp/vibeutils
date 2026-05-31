@@ -88,6 +88,43 @@ Still open to revisit after a green-phase run: whether to add
 a separate haiku "runner" between writer and review (vs the
 implementer self-checking), measured against reload cost.
 
+## APPLIED after rm green — gate restructure (scoped loop + full final)
+
+The rm green phase exposed a gate gap: the verify gate and final
+verify ran `zig build test` (full unit) + `just test-privileged`
+(full privileged) but NEVER the integration suite — so the
+walker-driver `rm -ri` bug (which lived in integration tests) passed
+green and was caught only by manual local verification. Compounding
+it, those full suites are slow and ran on every fix iteration.
+
+Build constraint that shapes the fix: `zig build test` has NO
+per-utility filter (the regular test step wires none; only privileged
+uses `.filters = &.{"privileged:"}`, still all-utilities). So unit
+and privileged are NOT per-util scopable; only integration is
+(`just it-util <u>` vs `just it`).
+
+Restructure:
+- **Verify gate (per-iteration LOOP) is now SCOPED + FAST:** runs
+  `util_test_cmd` (scoped unit) + `it_cmd` (scoped integration —
+  THE fix) + `fmt_cmd` + recursion grep. Dropped the full unit and
+  full privileged suites from the loop. Schema: `unit_pass` +
+  `integration_pass` + `lint_clean` + `recursion_removed`.
+- **Final verify (ONCE, after review APPROVED) is the authoritative
+  FULL gate:** full unit (`test_cmd`) + full privileged
+  (`privileged_test_cmd`) + FULL integration (`just it`, override via
+  `full_it_cmd`). The full integration run is deliberate — it catches
+  cross-utility regressions from shared changes (exactly the class of
+  the prompt.zig fix that touched cp/ln, not just rm).
+- **RED green-check** now also runs `it_cmd` so the integration
+  baseline is checked before committing RED.
+- `ready_to_commit_green` now keys off the scoped gate + review
+  APPROVED + the full final gate's three booleans.
+
+Privileged is not per-util scopable, so chmod/chown-style privileged
+characterization tests are only re-checked at the final gate during
+green; the scoped loop relies on unit+integration. Acceptable: a
+broken privileged behavior surfaces at the final gate and re-loops.
+
 ## APPLIED before chown green (scorecard tuning)
 
 Two edits to the code-review stage in `tdd-pipeline.js`

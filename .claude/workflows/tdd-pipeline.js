@@ -11,9 +11,9 @@ export const meta = {
     { title: 'Prove teeth', detail: 'sabotage impl to confirm tests can fail, then restore (sonnet)' },
     { title: 'Green check', detail: 'tests green on restored real code, compiles (haiku)' },
     { title: 'Implement', detail: 'rewire onto walker, remove recursion (opus, tdd-pipeline:implementer)' },
-    { title: 'Verify gate', detail: 'full+privileged suites green, lint clean, recursion gone (haiku)' },
-    { title: 'Code review', detail: 'loop code-reviewer until APPROVED (sonnet)' },
-    { title: 'Final verify', detail: 'full suite green once more (haiku)' },
+    { title: 'Verify gate', detail: 'SCOPED: util unit + util integration + lint + recursion gone (haiku)' },
+    { title: 'Code review', detail: 'loop code-reviewer until APPROVED (opus)' },
+    { title: 'Final verify', detail: 'ONCE: full unit + full privileged + full integration (haiku)' },
   ],
 };
 
@@ -143,12 +143,19 @@ const GREEN_CHECK_SCHEMA = {
   },
 };
 
+// Per-iteration verify gate — SCOPED and FAST. It runs only the tests for the
+// utility under change so the implementer fix-loop stays quick (unit and
+// privileged suites are NOT per-util filterable in this build, so they are
+// deferred to the once-only final gate; integration IS per-util scopable via
+// it-util). Integration coverage here is the fix for the gap that let a real
+// rm bug pass green — the old gate ran unit+privileged but never integration.
 const VERIFY_GATE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['all_pass', 'lint_clean', 'recursion_removed', 'summary', 'output_excerpt'],
+  required: ['unit_pass', 'integration_pass', 'lint_clean', 'recursion_removed', 'summary', 'output_excerpt'],
   properties: {
-    all_pass: { type: 'boolean', description: 'true if the full and privileged suites both pass' },
+    unit_pass: { type: 'boolean', description: 'true if the scoped util_test_cmd unit check passes' },
+    integration_pass: { type: 'boolean', description: 'true if the scoped it_cmd integration suite passes' },
     lint_clean: { type: 'boolean', description: 'true if fmt-check passes' },
     recursion_removed: {
       type: 'boolean',
@@ -159,12 +166,19 @@ const VERIFY_GATE_SCHEMA = {
   },
 };
 
+// Final gate — runs ONCE, after code review APPROVES. The authoritative,
+// full-suite check the scoped per-iteration gate cannot give: full unit, full
+// privileged, AND full integration (just it, not it-util). The full
+// integration run is deliberate — it catches cross-utility regressions a
+// shared change can cause (e.g. a common/ fix that breaks another utility).
 const FINAL_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['all_pass', 'summary', 'output_excerpt'],
+  required: ['unit_pass', 'privileged_pass', 'integration_pass', 'summary', 'output_excerpt'],
   properties: {
-    all_pass: { type: 'boolean' },
+    unit_pass: { type: 'boolean', description: 'true if the FULL unit suite (test_cmd) passes' },
+    privileged_pass: { type: 'boolean', description: 'true if the FULL privileged suite passes' },
+    integration_pass: { type: 'boolean', description: 'true if the FULL integration suite (just it) passes' },
     summary: { type: 'string' },
     output_excerpt: { type: 'string' },
   },
@@ -517,8 +531,10 @@ async function runRed() {
     [
       '## YOUR TASK (green check — run and report only)',
       `Run, EXACTLY as given, the ${a.utility} tests on the real (restored) code:`,
-      `${a.privileged_test_cmd} and ${a.util_test_cmd}. Confirm the build compiles and ALL tests pass`,
-      '(the newly-added characterization tests included). Report facts only.',
+      `${a.privileged_test_cmd}, ${a.util_test_cmd}, and ${a.it_cmd}. Confirm the build compiles and`,
+      'report whether all tests pass (the newly-added characterization tests included). For a HYBRID',
+      'migration with intentionally-RED tests (a real behavior change, not a pure refactor), some new',
+      'tests are expected to FAIL here until green — report all_pass honestly. Report facts only.',
     ].join('\n'),
     { label: `green-check:${a.utility}`, phase: 'Green check', model: 'haiku', schema: GREEN_CHECK_SCHEMA },
   );
@@ -591,18 +607,23 @@ async function runGreen() {
   while (vfix <= GATE_FIX_MAX) {
     verify = await agent(
       [
-        '## YOUR TASK (verify gate — run and report only)',
-        `Run, EXACTLY as given: full suite "${a.test_cmd}", privileged "${a.privileged_test_cmd}", lint "${a.fmt_cmd}".`,
+        '## YOUR TASK (verify gate — SCOPED, run and report only)',
+        'Run ONLY the fast, scoped checks for the utility under change — the full unit and privileged',
+        'suites are deferred to the once-only final gate, so do NOT run them here:',
+        `  - scoped unit:        "${a.util_test_cmd}"`,
+        `  - scoped integration: "${a.it_cmd}"`,
+        `  - lint:               "${a.fmt_cmd}"`,
         `Then grep ${a.target_file} for "${a.recursion_fn}" to confirm the recursive function is gone.`,
-        'Report facts only. all_pass = both suites green; lint_clean = fmt passes; recursion_removed = grep finds nothing.',
+        'Report facts only. unit_pass = scoped unit green; integration_pass = scoped integration green;',
+        'lint_clean = fmt passes; recursion_removed = grep finds no function definition.',
       ].join('\n'),
       { label: `verify-gate:${a.utility}`, phase: 'Verify gate', model: 'haiku', schema: VERIFY_GATE_SCHEMA },
     );
-    const ok = verify.all_pass && verify.lint_clean && verify.recursion_removed;
+    const ok = verify.unit_pass && verify.integration_pass && verify.lint_clean && verify.recursion_removed;
     if (ok) break;
     if (vfix === GATE_FIX_MAX) break;
     vfix += 1;
-    log(`verify gate failed (pass=${verify.all_pass} lint=${verify.lint_clean} recursionGone=${verify.recursion_removed}) — re-dispatching implementer.`);
+    log(`verify gate failed (unit=${verify.unit_pass} integration=${verify.integration_pass} lint=${verify.lint_clean} recursionGone=${verify.recursion_removed}) — re-dispatching implementer.`);
     const vimpl = await runImplementer(
       [
         brief,
@@ -679,15 +700,27 @@ async function runGreen() {
     log(`WARNING: code review hit the ${REVIEW_ROUND_MAX}-round backstop without APPROVED — surfacing for human review.`);
   }
 
-  // Final full-suite confirmation (CLAUDE.md: full suite before declaring success).
+  // Final full-suite confirmation, ONCE (CLAUDE.md: full suite before declaring
+  // success). This is the authoritative gate the scoped per-iteration gate
+  // cannot give: full unit + full privileged + FULL integration (just it). The
+  // full integration run catches cross-utility regressions from shared changes.
+  const fullItCmd = a.full_it_cmd || 'just it';
   phase('Final verify');
   const finalCheck = await agent(
     [
-      '## YOUR TASK (final verify — run and report only)',
-      `Run the FULL suite "${a.test_cmd}" and "${a.privileged_test_cmd}" EXACTLY as given. Report whether everything is green.`,
+      '## YOUR TASK (final verify — FULL suite, run and report only)',
+      'Run all three FULL suites EXACTLY as given (this is the once-only authoritative gate):',
+      `  - full unit:        "${a.test_cmd}"`,
+      `  - full privileged:  "${a.privileged_test_cmd}"`,
+      `  - full integration: "${fullItCmd}"`,
+      'Report facts only: unit_pass, privileged_pass, integration_pass. The integration run covers the',
+      'whole suite (not just this utility) so a shared/common change that broke another utility is caught.',
     ].join('\n'),
     { label: `final-verify:${a.utility}`, phase: 'Final verify', model: 'haiku', schema: FINAL_SCHEMA },
   );
+  const finalAllPass =
+    !!finalCheck && finalCheck.unit_pass && finalCheck.privileged_pass && finalCheck.integration_pass;
+  log(`final verify: unit=${finalCheck && finalCheck.unit_pass} privileged=${finalCheck && finalCheck.privileged_pass} integration=${finalCheck && finalCheck.integration_pass}`);
 
   return {
     phase: 'green',
@@ -697,10 +730,11 @@ async function runGreen() {
     verify_gate: verify,
     code_review: codeReview,
     final_verify: finalCheck,
+    final_all_pass: finalAllPass,
     ready_to_commit_green:
-      !!(verify && verify.all_pass && verify.lint_clean && verify.recursion_removed) &&
+      !!(verify && verify.unit_pass && verify.integration_pass && verify.lint_clean && verify.recursion_removed) &&
       codeReview.assessment === 'APPROVED' &&
-      !!(finalCheck && finalCheck.all_pass),
+      finalAllPass,
   };
 }
 
