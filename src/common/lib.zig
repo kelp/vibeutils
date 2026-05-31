@@ -576,4 +576,5 @@ test {
     // All common module tests are included via individual test blocks
     _ = @import("git.zig");
     _ = @import("walker.zig");
+    _ = @import("prompt.zig");
 }
