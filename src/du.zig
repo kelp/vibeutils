@@ -2321,3 +2321,559 @@ test "du -S subdirectory shows sum of its own direct files" {
     // Our implementation reports dir_own_size for subdirectory too.
     try testing.expectEqual(@as(u64, 10), sub_size);
 }
+
+// ============================================================================
+// CHARACTERIZATION TESTS for the calculateDu -> bounded-walker migration.
+//
+// These lock in the externally observable behavior the walker rewrite must
+// preserve. They run against the CURRENT recursive implementation and must
+// PASS today; a later sabotage step proves each can go RED.
+//
+// All sizes are exercised with `-b` (apparent-size, block-size=1) so the
+// reported numbers are exact file content lengths, independent of the
+// filesystem's block size. Directory metadata contributes 0 in apparent-size
+// mode (see F23), so a directory's reported total is purely the sum of the
+// file bytes it contains (recursively, unless -S).
+// ============================================================================
+
+/// Parse the size for the line whose path field equals `path` EXACTLY.
+/// du prints "<size>\t<path>\n"; matching the whole path (tab before, newline
+/// after) avoids the prefix-collision bug where a parent path is a substring of
+/// a child's path (e.g. "/root" matches the "/root/sub" line printed earlier in
+/// post-order). Returns null when no exact-path line is found.
+fn extractSizeForExactPath(output: []const u8, path: []const u8) ?u64 {
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        const tab_pos = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        if (!std.mem.eql(u8, line[tab_pos + 1 ..], path)) continue;
+        return std.fmt.parseInt(u64, line[0..tab_pos], 10) catch null;
+    }
+    return null;
+}
+
+/// Count the number of output lines that mention the given path substring.
+/// Used to assert that a path is emitted exactly once (dedup) or N times
+/// (e.g. -L following a symlink to an already-seen subtree).
+fn countLinesWithPath(output: []const u8, path: []const u8) usize {
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, output, '\n');
+    while (it.next()) |line| {
+        if (line.len == 0) continue;
+        if (std.mem.find(u8, line, path) != null) count += 1;
+    }
+    return count;
+}
+
+test "du subtree size accumulates onto the post-order unwind (parent = own + children)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Two files directly under the root, exactly 10 + 25 = 35 bytes.
+    const f1 = try tmp_dir.dir.createFile(io, "a.txt", .{});
+    try f1.writeStreamingAll(io, "AAAAAAAAAA"); // 10 bytes
+    f1.close(io);
+    const f2 = try tmp_dir.dir.createFile(io, "b.txt", .{});
+    try f2.writeStreamingAll(io, "BBBBBBBBBBBBBBBBBBBBBBBBB"); // 25 bytes
+    f2.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &path_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-b", "-s", dir_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    // In apparent-size mode the directory metadata is 0, so the total must be
+    // exactly the sum of the two files. A wrong accumulation (drop a child,
+    // double-count, etc.) would not yield 35.
+    const total = extractLastLineSize(out.writer.buffered()) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u64, 35), total);
+}
+
+test "du multi-level tree rolls descendant sizes into every ancestor" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // root/top.txt (3) + root/mid/m.txt (5) + root/mid/deep/d.txt (7)
+    const ft = try tmp_dir.dir.createFile(io, "top.txt", .{});
+    try ft.writeStreamingAll(io, "TTT"); // 3
+    ft.close(io);
+    try tmp_dir.dir.createDir(io, "mid", .default_dir);
+    const fm = try tmp_dir.dir.createFile(io, "mid/m.txt", .{});
+    try fm.writeStreamingAll(io, "MMMMM"); // 5
+    fm.close(io);
+    try tmp_dir.dir.createDir(io, "mid/deep", .default_dir);
+    const fd = try tmp_dir.dir.createFile(io, "mid/deep/d.txt", .{});
+    try fd.writeStreamingAll(io, "DDDDDDD"); // 7
+    fd.close(io);
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+    var mid_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const mid_path = mid_buf[0..(try tmp_dir.dir.realPathFile(io, "mid", &mid_buf))];
+    var deep_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const deep_path = deep_buf[0..(try tmp_dir.dir.realPathFile(io, "mid/deep", &deep_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-b", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // deep = 7; mid = 5 + 7 = 12; root = 3 + 12 = 15.
+    try testing.expectEqual(@as(?u64, 7), extractSizeForExactPath(buf, deep_path));
+    try testing.expectEqual(@as(?u64, 12), extractSizeForExactPath(buf, mid_path));
+    try testing.expectEqual(@as(?u64, 15), extractSizeForExactPath(buf, root_path));
+}
+
+test "du -c grand total equals sum across multiple operands" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(io, "one", .default_dir);
+    const f1 = try tmp_dir.dir.createFile(io, "one/x.txt", .{});
+    try f1.writeStreamingAll(io, "XXXXXXXXXXXX"); // 12
+    f1.close(io);
+    try tmp_dir.dir.createDir(io, "two", .default_dir);
+    const f2 = try tmp_dir.dir.createFile(io, "two/y.txt", .{});
+    try f2.writeStreamingAll(io, "YYYYYYYY"); // 8
+    f2.close(io);
+
+    var one_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const one_path = one_buf[0..(try tmp_dir.dir.realPathFile(io, "one", &one_buf))];
+    var two_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const two_path = two_buf[0..(try tmp_dir.dir.realPathFile(io, "two", &two_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-c", "-b", one_path, two_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // The "total" line is the last line and must equal 12 + 8 = 20.
+    const grand_total = extractLastLineSize(buf) orelse return error.TestUnexpectedResult;
+    try testing.expect(std.mem.find(u8, buf, "total") != null);
+    try testing.expectEqual(@as(u64, 20), grand_total);
+}
+
+test "du counts a hard-linked file once across the whole walk" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A 40-byte file plus a hard link to it in the same directory.
+    const f = try tmp_dir.dir.createFile(io, "original.txt", .{});
+    const data = [_]u8{'Z'} ** 40;
+    try f.writeStreamingAll(io, &data);
+    f.close(io);
+
+    var orig_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const orig_abs = orig_buf[0..(try tmp_dir.dir.realPathFile(io, "original.txt", &orig_buf))];
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_abs = dir_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &dir_buf))];
+
+    const link_abs = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{dir_abs});
+    defer testing.allocator.free(link_abs);
+    std.Io.Dir.hardLink(std.Io.Dir.cwd(), orig_abs, std.Io.Dir.cwd(), link_abs, io, .{}) catch |err| {
+        if (err == error.AccessDenied) return; // skip where hard links are unsupported
+        return err;
+    };
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-b", "-s", dir_abs };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    // Dedup by (dev,ino): the 40 bytes are counted once, not twice.
+    const total = extractLastLineSize(out.writer.buffered()) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u64, 40), total);
+}
+
+test "du -l counts a hard-linked file every time it is encountered" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f = try tmp_dir.dir.createFile(io, "original.txt", .{});
+    const data = [_]u8{'Z'} ** 40;
+    try f.writeStreamingAll(io, &data);
+    f.close(io);
+
+    var orig_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const orig_abs = orig_buf[0..(try tmp_dir.dir.realPathFile(io, "original.txt", &orig_buf))];
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_abs = dir_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &dir_buf))];
+
+    const link_abs = try std.fmt.allocPrint(testing.allocator, "{s}/hardlink.txt", .{dir_abs});
+    defer testing.allocator.free(link_abs);
+    std.Io.Dir.hardLink(std.Io.Dir.cwd(), orig_abs, std.Io.Dir.cwd(), link_abs, io, .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // -l disables dedup: both links count, total = 40 + 40 = 80.
+    const args = &[_][]const u8{ "-l", "-b", "-s", dir_abs };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const total = extractLastLineSize(out.writer.buffered()) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u64, 80), total);
+}
+
+test "du -S directory total excludes subdirectory subtrees but root total still rolls up" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // root has one direct file (11 bytes) and a subdir holding a 30-byte file.
+    const ft = try tmp_dir.dir.createFile(io, "direct.txt", .{});
+    try ft.writeStreamingAll(io, "DDDDDDDDDDD"); // 11
+    ft.close(io);
+    try tmp_dir.dir.createDir(io, "sub", .default_dir);
+    const fs = try tmp_dir.dir.createFile(io, "sub/inner.txt", .{});
+    const data = [_]u8{'I'} ** 30;
+    try fs.writeStreamingAll(io, &data); // 30
+    fs.close(io);
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+    var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const sub_path = sub_buf[0..(try tmp_dir.dir.realPathFile(io, "sub", &sub_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-S", "-b", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // With -S the root counts only its direct file (11), NOT the 30-byte
+    // subtree; the sub directory counts its own direct file (30).
+    try testing.expectEqual(@as(?u64, 11), extractSizeForExactPath(buf, root_path));
+    try testing.expectEqual(@as(?u64, 30), extractSizeForExactPath(buf, sub_path));
+}
+
+test "du -d 1 hides deep entries but still accumulates their sizes upward" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // root/mid/deep/d.txt = 50 bytes; nothing else.
+    try tmp_dir.dir.createDir(io, "mid", .default_dir);
+    try tmp_dir.dir.createDir(io, "mid/deep", .default_dir);
+    const fd = try tmp_dir.dir.createFile(io, "mid/deep/d.txt", .{});
+    const data = [_]u8{'X'} ** 50;
+    try fd.writeStreamingAll(io, &data);
+    fd.close(io);
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+    var mid_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const mid_path = mid_buf[0..(try tmp_dir.dir.realPathFile(io, "mid", &mid_buf))];
+    var deep_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const deep_path = deep_buf[0..(try tmp_dir.dir.realPathFile(io, "mid/deep", &deep_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // --max-depth=1: print root (depth 0) and mid (depth 1); hide deep (depth 2).
+    const args = &[_][]const u8{ "-d", "1", "-b", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // deep is a DISPLAY filter only: its line is suppressed...
+    try testing.expectEqual(@as(usize, 0), countLinesWithPath(buf, deep_path));
+    // ...but its 50 bytes still roll up into mid (depth 1) and root (depth 0).
+    try testing.expectEqual(@as(?u64, 50), extractSizeForExactPath(buf, mid_path));
+    try testing.expectEqual(@as(?u64, 50), extractSizeForExactPath(buf, root_path));
+}
+
+test "du -a prints every file while default prints only directories" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const f1 = try tmp_dir.dir.createFile(io, "leaf_one.txt", .{});
+    try f1.writeStreamingAll(io, "one\n");
+    f1.close(io);
+    const f2 = try tmp_dir.dir.createFile(io, "leaf_two.txt", .{});
+    try f2.writeStreamingAll(io, "two\n");
+    f2.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &path_buf))];
+
+    // Default (no -a): individual files are NOT printed.
+    var out_default: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out_default.deinit();
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-b", dir_path }, &out_default.writer, common.null_writer));
+    try testing.expect(std.mem.find(u8, out_default.writer.buffered(), "leaf_one.txt") == null);
+    try testing.expect(std.mem.find(u8, out_default.writer.buffered(), "leaf_two.txt") == null);
+
+    // -a: every file IS printed.
+    var out_all: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out_all.deinit();
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-a", "-b", dir_path }, &out_all.writer, common.null_writer));
+    try testing.expect(std.mem.find(u8, out_all.writer.buffered(), "leaf_one.txt") != null);
+    try testing.expect(std.mem.find(u8, out_all.writer.buffered(), "leaf_two.txt") != null);
+}
+
+test "du default (-P) reports symlink size, not its target's subtree" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A real dir with a 1000-byte file, plus a symlink to it inside root.
+    try tmp_dir.dir.createDir(io, "real", .default_dir);
+    const fr = try tmp_dir.dir.createFile(io, "real/big.txt", .{});
+    const data = [_]u8{'R'} ** 1000;
+    try fr.writeStreamingAll(io, &data);
+    fr.close(io);
+    tmp_dir.dir.symLink(io, "real", "alias", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // Default policy (-P): do not follow symlinks. The 1000-byte file is
+    // counted exactly once (via real/), never a second time via alias/.
+    const args = &[_][]const u8{ "-a", "-b", "-P", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // The target file appears once (under real/), proving alias was not traversed.
+    try testing.expectEqual(@as(usize, 1), countLinesWithPath(buf, "big.txt"));
+    // Root total = the file (1000) + the symlink's own tiny size; it must be
+    // far below 2000, which would indicate the target subtree was followed.
+    try testing.expect((extractSizeForExactPath(buf, root_path) orelse 0) < 2000);
+}
+
+test "du -L follows symlinked directory and counts the target subtree" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDir(io, "real", .default_dir);
+    const fr = try tmp_dir.dir.createFile(io, "real/inside.txt", .{});
+    try fr.writeStreamingAll(io, "INSIDE-DATA\n");
+    fr.close(io);
+    tmp_dir.dir.symLink(io, "real", "alias", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // -L follows all symlinks, so inside.txt is reachable via BOTH real/ and
+    // alias/ and thus appears twice (the dir target itself has nlink>1 only
+    // for dirs; the file is not deduped because it is reached through two
+    // distinct directory paths).
+    const args = &[_][]const u8{ "-a", "-b", "-L", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    try testing.expectEqual(@as(usize, 2), countLinesWithPath(buf, "inside.txt"));
+}
+
+test "du -H follows an operand symlink but not symlinks discovered during the walk" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // operand_link -> realtop; realtop/inner -> realtop/sub (an internal link).
+    try tmp_dir.dir.createDir(io, "realtop", .default_dir);
+    try tmp_dir.dir.createDir(io, "realtop/sub", .default_dir);
+    const fr = try tmp_dir.dir.createFile(io, "realtop/sub/leaf.txt", .{});
+    try fr.writeStreamingAll(io, "LEAFDATA\n");
+    fr.close(io);
+    tmp_dir.dir.symLink(io, "realtop", "operand_link", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+    tmp_dir.dir.symLink(io, "sub", "realtop/inner", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var base_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const base_path = base_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &base_buf))];
+    const operand = try std.fmt.allocPrint(testing.allocator, "{s}/operand_link", .{base_path});
+    defer testing.allocator.free(operand);
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // -H follows the operand symlink (so we descend into realtop) but does NOT
+    // follow the internal "inner" symlink, so leaf.txt appears exactly once.
+    const args = &[_][]const u8{ "-a", "-b", "-H", operand };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // Operand was followed: we reached leaf.txt at all.
+    try testing.expect(std.mem.find(u8, buf, "leaf.txt") != null);
+    // Internal symlink was NOT followed: leaf.txt counted once, not twice.
+    try testing.expectEqual(@as(usize, 1), countLinesWithPath(buf, "leaf.txt"));
+}
+
+test "du -b apparent size differs from default disk usage for a sub-block file" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A 1-byte file: apparent size is 1; disk usage rounds up to a block.
+    const f = try tmp_dir.dir.createFile(io, "one_byte", .{});
+    try f.writeStreamingAll(io, "Z");
+    f.close(io);
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const file_path = path_buf[0..(try tmp_dir.dir.realPathFile(io, "one_byte", &path_buf))];
+
+    // Apparent size in bytes: exactly 1.
+    var out_apparent: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out_apparent.deinit();
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-b", file_path }, &out_apparent.writer, common.null_writer));
+    try testing.expectEqual(@as(?u64, 1), extractLastLineSize(out_apparent.writer.buffered()));
+
+    // Disk usage with --block-size=1: allocated bytes, rounded to >= 512.
+    var out_disk: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out_disk.deinit();
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, &[_][]const u8{ "-B", "1", file_path }, &out_disk.writer, common.null_writer));
+    const disk = extractLastLineSize(out_disk.writer.buffered()) orelse return error.TestUnexpectedResult;
+    try testing.expect(disk >= 512);
+}
+
+test "du survives a symlink cycle without infinite recursion (-L)" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // dir_a/loop -> dir_a (a self-referential cycle). Under -L a naive walker
+    // would recurse forever; du must terminate (the walker's cycle detection /
+    // depth bound, or the dedup on the directory inode, must stop it).
+    try tmp_dir.dir.createDir(io, "dir_a", .default_dir);
+    const f = try tmp_dir.dir.createFile(io, "dir_a/file.txt", .{});
+    try f.writeStreamingAll(io, "CYCLE\n");
+    f.close(io);
+    tmp_dir.dir.symLink(io, ".", "dir_a/loop", .{}) catch |err| {
+        if (err == error.AccessDenied) return;
+        return err;
+    };
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_path = path_buf[0..(try tmp_dir.dir.realPathFile(io, "dir_a", &path_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // Must not hang. Exit code may be 0 or 1 (it may report the loop), but it
+    // must terminate and produce output for the directory operand.
+    const args = &[_][]const u8{ "-b", "-L", dir_path };
+    const exit_code = try runDu(testing.allocator, io, args, &out.writer, common.null_writer);
+    _ = exit_code;
+    try testing.expect(std.mem.find(u8, out.writer.buffered(), dir_path) != null);
+}
+
+test "du emits directory operand in post-order: children printed before their parent" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // root/child/leaf.txt — verify the child line precedes the root line, the
+    // hallmark of post-order accumulation the walker must preserve.
+    try tmp_dir.dir.createDir(io, "child", .default_dir);
+    const f = try tmp_dir.dir.createFile(io, "child/leaf.txt", .{});
+    try f.writeStreamingAll(io, "LEAF\n");
+    f.close(io);
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+    var child_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const child_path = child_buf[0..(try tmp_dir.dir.realPathFile(io, "child", &child_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-b", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // The child directory's line: "<size>\t<child_path>\n".
+    const child_idx = std.mem.find(u8, buf, child_path) orelse return error.TestUnexpectedResult;
+    // The root's own line ends with "\t<root_path>\n". Because root_path is a
+    // prefix of child_path, match the exact "<tab><root_path><newline>" marker
+    // so we find the root's line and not the child line.
+    const root_marker = try std.fmt.allocPrint(testing.allocator, "\t{s}\n", .{root_path});
+    defer testing.allocator.free(root_marker);
+    const root_idx = std.mem.find(u8, buf, root_marker) orelse return error.TestUnexpectedResult;
+    // child appears strictly before the root's line: post-order accumulation.
+    try testing.expect(child_idx < root_idx);
+}
+
+test "du -x stays on one filesystem and fully traverses the single-device tree" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A multi-level tree that lives entirely on one filesystem (testing.tmpDir
+    // does not span a mount boundary). With -x active, every descendant shares
+    // the root's device, so all of them MUST still be traversed and rolled up.
+    //
+    // Teeth: the walker migration replaces the old `dev != root_dev` check with
+    // the walker's stay_on_filesystem device tracking. A regression that prunes
+    // descent for same-device children (e.g. an inverted comparison, a stale
+    // root device, or descending only the root) would drop the deep file's
+    // bytes and the total would fall below the full sum. We assert the EXACT
+    // full sum in apparent-size mode, where directory metadata contributes 0,
+    // so the total equals precisely the sum of the file bytes.
+    //
+    // True CROSS-device pruning requires a real mount and is covered by
+    // integration tests; this locks in that -x does not break the common
+    // single-filesystem case (matches the chown -x privileged-test pattern).
+    const top = try tmp_dir.dir.createFile(io, "top.txt", .{});
+    try top.writeStreamingAll(io, "TTTT"); // 4
+    top.close(io);
+    try tmp_dir.dir.createDir(io, "sub", .default_dir);
+    const mid = try tmp_dir.dir.createFile(io, "sub/mid.txt", .{});
+    try mid.writeStreamingAll(io, "MMMMMM"); // 6
+    mid.close(io);
+    try tmp_dir.dir.createDir(io, "sub/deep", .default_dir);
+    const deep = try tmp_dir.dir.createFile(io, "sub/deep/d.txt", .{});
+    try deep.writeStreamingAll(io, "DDDDDDDD"); // 8
+    deep.close(io);
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+    var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const sub_path = sub_buf[0..(try tmp_dir.dir.realPathFile(io, "sub", &sub_buf))];
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    const args = &[_][]const u8{ "-x", "-b", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const buf = out.writer.buffered();
+    // sub = 6 + 8 = 14 (deep descendant rolled up despite -x).
+    try testing.expectEqual(@as(?u64, 14), extractSizeForExactPath(buf, sub_path));
+    // root = 4 + 14 = 18 (whole single-device tree accounted for).
+    try testing.expectEqual(@as(?u64, 18), extractSizeForExactPath(buf, root_path));
+}
