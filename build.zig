@@ -216,8 +216,13 @@ fn buildTests(
 
         // WORKAROUND: The --listen=- flag breaks under fakeroot
         // See: https://github.com/ziglang/zig/issues/15091
-        // Run tests directly without the server mode
-        const install_util_tests = b.addInstallArtifact(util_tests, .{});
+        // Run tests directly without the server mode.
+        // Install to test-bin/ (not the default bin/) so these test binaries
+        // never land beside the real utilities — the integration test runner
+        // scans zig-out/bin/ and would otherwise treat each as a utility.
+        const install_util_tests = b.addInstallArtifact(util_tests, .{
+            .dest_dir = .{ .override = .{ .custom = "test-bin" } },
+        });
         const run_util_tests = b.addSystemCommand(&.{
             b.getInstallPath(install_util_tests.dest_dir.?, util_tests.out_filename),
         });
@@ -244,8 +249,11 @@ fn buildTests(
     });
     common_tests_priv.root_module.addImport("build_options", build_options_module);
 
-    // Same workaround as above for common library tests
-    const install_common_tests_priv = b.addInstallArtifact(common_tests_priv, .{});
+    // Same workaround as above for common library tests; same test-bin/
+    // destination so it stays out of the utility bin dir.
+    const install_common_tests_priv = b.addInstallArtifact(common_tests_priv, .{
+        .dest_dir = .{ .override = .{ .custom = "test-bin" } },
+    });
     const run_common_tests_priv = b.addSystemCommand(&.{
         b.getInstallPath(install_common_tests_priv.dest_dir.?, common_tests_priv.out_filename),
     });
