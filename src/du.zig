@@ -11,6 +11,7 @@ const common = @import("common");
 const testing = std.testing;
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const c = std.c;
 
@@ -408,145 +409,332 @@ fn getFileSize(stat_buf: StatResult, apparent_size: bool, is_dir: bool) u64 {
 // Directory traversal and size computation
 // ============================================================================
 
-/// Calculate disk usage for a path, recursively for directories.
-/// Returns the total size in bytes. Outputs lines as it goes.
-fn calculateDu(
+/// Safety cap on traversal depth, shared with the walker's max_depth. The
+/// parallel accumulation stacks are sized one larger so they can be indexed by
+/// any depth the walker can emit (0..max_walk_depth inclusive). This is a hard
+/// recursion-free bound, NOT du's user-facing --max-depth display filter.
+const max_walk_depth: u16 = 1024;
+const accumulation_stack_len: usize = @as(usize, max_walk_depth) + 1;
+
+comptime {
+    // The accumulation stacks must hold every depth the walker can emit, which
+    // is 0..max_walk_depth inclusive; assert the sizing relationship up front.
+    assert(accumulation_stack_len == @as(usize, max_walk_depth) + 1);
+    assert(max_walk_depth > 0);
+}
+
+/// Map du's resolved dereference mode onto the walker's symlink policy.
+/// -P/none never follow; -H/args_only follow only command-line operands;
+/// -L/all follow every symlink (subject to the depth/path safety bounds).
+fn symlinkPolicyFromMode(mode: DereferenceMode) common.walker.SymlinkPolicy {
+    return switch (mode) {
+        .none => .no_follow,
+        .args_only => .follow_cmdline,
+        .all => .follow_all,
+    };
+}
+
+/// Per-entry follow decision for du's own stat call, independent of the walker.
+/// -L follows all; -H follows only the operand (depth 0); -P never follows.
+fn shouldFollowAtDepth(mode: DereferenceMode, depth: u16) bool {
+    return switch (mode) {
+        .all => true,
+        .args_only => depth == 0,
+        .none => false,
+    };
+}
+
+/// Mutable state threaded through the walker driver loop. Holds the explicit,
+/// depth-indexed accumulation stacks that replace the recursion's call stack.
+/// All storage is fixed-size and stack-allocated; nothing is allocated per
+/// entry, satisfying Tiger Style's static-memory rule for the hot loop.
+const WalkState = struct {
+    /// Running subtree total (own size + all descendants) for the directory at
+    /// each active depth. Initialized on a directory's pre-order visit and
+    /// rolled into the parent on its post-order visit.
+    subtree_sizes: [accumulation_stack_len]u64,
+    /// Sum of the DIRECT file children of the directory at each depth. Used only
+    /// for -S, where a directory reports its direct files but excludes
+    /// subdirectory subtrees. Subtree roll-up still uses subtree_sizes.
+    direct_file_sizes: [accumulation_stack_len]u64,
+};
+
+/// Compute disk usage for a single operand, printing as it goes and returning
+/// the operand's total subtree size for grand-total accumulation. Non-directory
+/// operands (plain files, or symlinks not followed under the active policy) are
+/// handled directly as leaves; directories are driven through the bounded
+/// walker so no recursion remains.
+fn processOperand(
     allocator: Allocator,
     io: std.Io,
     path: []const u8,
     config: DuConfig,
-    depth: u64,
-    root_dev: ?u64,
     seen_inodes: *std.AutoHashMap(u128, void),
     stdout: *std.Io.Writer,
     style: anytype,
     stderr: *std.Io.Writer,
     has_error: *bool,
 ) u64 {
-    // Determine whether to follow symlinks for this path based on mode and depth
-    const follow_symlinks = switch (config.dereference_mode) {
-        .all => true,
-        .args_only => depth == 0,
-        .none => false,
-    };
-
-    const stat_buf = doStat(path, follow_symlinks) catch |err| {
+    assert(path.len > 0);
+    // Resolve the operand itself with the operand-level follow policy so a -P
+    // symlink stays a leaf and an -H/-L symlink resolves to its target.
+    const follow_operand = shouldFollowAtDepth(config.dereference_mode, 0);
+    const stat_buf = doStat(path, follow_operand) catch |err| {
         printStatError(allocator, stderr, path, err);
         has_error.* = true;
         return 0;
     };
+    // A symlink can only persist as a leaf here when the policy does not follow
+    // it; under a follow policy doStat resolved through it to the target.
+    assert(!(stat_buf.is_symlink and follow_operand));
 
-    const is_dir = stat_buf.is_dir;
-    const is_symlink = stat_buf.is_symlink;
-
-    // Skip symlinks when not following them during recursive traversal
-    if (is_symlink and !follow_symlinks and depth > 0) {
-        // Report symlink itself if -a
-        const link_size = getFileSize(stat_buf, config.apparent_size, false);
-        if (config.all and shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, style, link_size, config, path, false, true);
+    if (!stat_buf.is_dir) {
+        // Leaf operand: always printed (depth 0) regardless of -a; the operand
+        // is never deduped because it is the explicit argument.
+        const leaf_size = getFileSize(stat_buf, config.apparent_size, false);
+        if (shouldPrintAtDepth(0, config)) {
+            printEntry(stdout, style, leaf_size, config, path, false, stat_buf.is_symlink);
         }
-        return link_size;
+        return leaf_size;
     }
 
-    // One-file-system check
-    const dev: u64 = @intCast(stat_buf.dev);
-    if (config.one_file_system) {
-        if (root_dev) |rd| {
-            if (dev != rd) return 0;
-        }
-    }
+    return walkDirectoryOperand(
+        allocator,
+        io,
+        path,
+        config,
+        seen_inodes,
+        stdout,
+        style,
+        stderr,
+        has_error,
+    );
+}
 
-    // Track inodes to avoid counting hardlinks twice (unless -l is set).
-    // When dereferencing all symlinks (-L), multiple paths can resolve to the
-    // same inode even when nlink == 1 (symlink + target), so track
-    // unconditionally in that mode.
-    const ino: u64 = stat_buf.ino;
-    const nlink: u64 = @intCast(stat_buf.nlink);
-    const should_dedup = !is_dir and !config.count_links and
-        (nlink > 1 or config.dereference_mode == .all);
-    var is_duplicate = false;
-    if (should_dedup) {
-        // Combine dev and ino into a u128 key for uniqueness
-        const key: u128 = (@as(u128, dev) << 64) | @as(u128, ino);
-        if (seen_inodes.contains(key)) {
-            is_duplicate = true;
-        } else {
-            seen_inodes.put(key, {}) catch {};
-        }
-    }
-
-    if (!is_dir) {
-        const file_size = if (is_duplicate) 0 else getFileSize(stat_buf, config.apparent_size, false);
-        // Always print top-level arguments (depth == 0); print children only with -a
-        if ((depth == 0 or config.all) and shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, style, file_size, config, path, false, false);
-        }
-        return file_size;
-    }
-
-    // Directory: recurse into it
-    const effective_root_dev = root_dev orelse dev;
-
-    const dir_own_size = getFileSize(stat_buf, config.apparent_size, true);
-    var subtree_size: u64 = 0;
-    var direct_files_size: u64 = 0;
-
-    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
-        printDirError(allocator, stderr, path, err);
-        has_error.* = true;
-        // Still report the directory entry size itself
-        if (shouldPrintAtDepth(depth, config)) {
-            printEntry(stdout, style, dir_own_size, config, path, true, false);
-        }
-        return dir_own_size;
+/// Drive the bounded walker over a directory operand, accumulating sizes via the
+/// depth-indexed stacks and printing each entry per du's display rules. Returns
+/// the operand's full subtree size (subtree_sizes[0] after the root post-order
+/// emit). One walker instance per operand keeps cycle/state isolated per tree.
+fn walkDirectoryOperand(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    config: DuConfig,
+    seen_inodes: *std.AutoHashMap(u128, void),
+    stdout: *std.Io.Writer,
+    style: anytype,
+    stderr: *std.Io.Writer,
+    has_error: *bool,
+) u64 {
+    assert(path.len > 0);
+    const walk_config = common.walker.WalkConfig{
+        .order = .both,
+        .symlinks = symlinkPolicyFromMode(config.dereference_mode),
+        .stay_on_filesystem = config.one_file_system,
+        // Cycle dedup is intentionally OFF: du counts a file reached via two
+        // distinct directory paths (e.g. -L through both real/ and a symlink to
+        // it) once per path, matching the recursion. Termination on genuine
+        // symlink loops comes from the depth/path bounds instead.
+        .detect_cycles = false,
+        .max_depth = max_walk_depth,
+        .max_entries = 1 << 24,
     };
-    defer dir.close(io);
+    var dir_walker = common.walker.Walker.init(allocator, walk_config) catch {
+        has_error.* = true;
+        return 0;
+    };
+    defer dir_walker.deinit(io);
+    dir_walker.addRoot(path) catch {
+        has_error.* = true;
+        return 0;
+    };
 
-    var iterator = dir.iterate();
+    var state = WalkState{
+        .subtree_sizes = [_]u64{0} ** accumulation_stack_len,
+        .direct_file_sizes = [_]u64{0} ** accumulation_stack_len,
+    };
+
+    // Under -L/-H the walker resolves every followed symlink as a directory and
+    // tries to openDir it; a symlink pointing at a non-directory therefore
+    // surfaces as error.NotDir. That is benign (the recursion counted the target
+    // once, and an aliased target is deduped to zero anyway), so it must not set
+    // the error flag. NotDir under -P is a genuine error and is reported.
+    const follow_any = config.dereference_mode != .none;
+
+    var root_total: u64 = 0;
     while (true) {
-        const maybe_entry = iterator.next(io) catch |err| {
-            printIterError(allocator, stderr, path, err);
-            has_error.* = true;
-            break;
+        const maybe_entry = dir_walker.next(io) catch |err| switch (err) {
+            error.DepthLimitExceeded, error.EntryLimitExceeded => {
+                printDirError(allocator, stderr, path, err);
+                has_error.* = true;
+                break;
+            },
+            error.NotDir => {
+                if (!follow_any) {
+                    printIterError(allocator, stderr, path, err);
+                    has_error.* = true;
+                }
+                continue;
+            },
+            else => {
+                printIterError(allocator, stderr, path, err);
+                has_error.* = true;
+                continue;
+            },
         };
         const entry = maybe_entry orelse break;
-
-        const child_path = std.fs.path.join(allocator, &.{ path, entry.name }) catch {
-            has_error.* = true;
-            continue;
-        };
-        defer allocator.free(child_path);
-
-        const child_size = calculateDu(
-            allocator,
-            io,
-            child_path,
-            config,
-            depth + 1,
-            effective_root_dev,
-            seen_inodes,
-            stdout,
-            style,
-            stderr,
-            has_error,
-        );
-        subtree_size += child_size;
-
-        // Track direct file sizes for -S (separate_dirs) mode.
-        // Directory children are excluded from the reported size.
-        if (config.separate_dirs and entry.kind != .directory) {
-            direct_files_size += child_size;
+        assert(entry.depth < accumulation_stack_len);
+        processWalkEntry(entry, config, &state, seen_inodes, stdout, style, has_error);
+        if (entry.depth == 0 and entry.visit == .post) {
+            root_total = state.subtree_sizes[0];
         }
     }
 
-    const total_size = if (config.separate_dirs) dir_own_size + direct_files_size else dir_own_size + subtree_size;
+    return root_total;
+}
 
+/// Process one walker entry: maintain the accumulation stacks and print per du's
+/// rules. Directories are handled on both their pre (initialize) and post
+/// (print + roll up) visits; everything else is a leaf accounted into its
+/// parent. Centralizes the branching so the helpers stay branch-light.
+fn processWalkEntry(
+    entry: common.walker.Entry,
+    config: DuConfig,
+    state: *WalkState,
+    seen_inodes: *std.AutoHashMap(u128, void),
+    stdout: *std.Io.Writer,
+    style: anytype,
+    has_error: *bool,
+) void {
+    const depth = entry.depth;
+    assert(depth < accumulation_stack_len);
+    if (entry.kind == .directory) {
+        if (entry.visit == .pre) {
+            handleDirPre(entry, config, state, has_error);
+        } else {
+            handleDirPost(entry, config, state, stdout, style);
+        }
+        return;
+    }
+    handleLeafEntry(entry, config, state, seen_inodes, stdout, style);
+}
+
+/// Pre-order directory visit: reset this depth's accumulators and seed the
+/// subtree with the directory's own size (0 in apparent-size mode, matching GNU
+/// du's treatment of directory metadata). A failed stat is reported but does not
+/// abort the walk, mirroring the recursion's per-entry error handling.
+fn handleDirPre(
+    entry: common.walker.Entry,
+    config: DuConfig,
+    state: *WalkState,
+    has_error: *bool,
+) void {
+    const depth = entry.depth;
+    assert(entry.kind == .directory);
+    assert(depth < accumulation_stack_len);
+    state.subtree_sizes[depth] = 0;
+    state.direct_file_sizes[depth] = 0;
+    const follow = shouldFollowAtDepth(config.dereference_mode, depth);
+    const stat_buf = doStat(entry.path, follow) catch {
+        has_error.* = true;
+        return;
+    };
+    const dir_own_size = getFileSize(stat_buf, config.apparent_size, true);
+    state.subtree_sizes[depth] = dir_own_size;
+    // Seed the direct-file tally with the directory's own size so the -S printed
+    // value includes its inode block allocation (GNU du -S counts the directory's
+    // own blocks plus its direct file children, excluding subdirectory subtrees).
+    // In apparent-size mode dir_own_size is 0, so this is a no-op there.
+    state.direct_file_sizes[depth] = dir_own_size;
+}
+
+/// Post-order directory visit: print this directory (subject to the -d display
+/// filter and -S adjustment) and roll its FULL subtree into the parent. The
+/// roll-up always uses the full subtree even under -S, so ancestor totals stay
+/// complete while the printed value reflects only direct files.
+fn handleDirPost(
+    entry: common.walker.Entry,
+    config: DuConfig,
+    state: *WalkState,
+    stdout: *std.Io.Writer,
+    style: anytype,
+) void {
+    const depth = entry.depth;
+    assert(entry.kind == .directory);
+    assert(depth < accumulation_stack_len);
+    const full_subtree = state.subtree_sizes[depth];
+    const printed_size = if (config.separate_dirs)
+        state.direct_file_sizes[depth]
+    else
+        full_subtree;
     if (shouldPrintAtDepth(depth, config)) {
-        printEntry(stdout, style, total_size, config, path, true, false);
+        printEntry(stdout, style, printed_size, config, entry.path, true, false);
+    }
+    if (depth > 0) {
+        // Propagate the full subtree (never the -S-adjusted value) upward.
+        state.subtree_sizes[depth - 1] += full_subtree;
+    }
+}
+
+/// Leaf visit (regular file, symlink not followed, or other non-directory):
+/// stat it, apply hard-link/inode dedup, account its size into the parent
+/// directory's subtree, and print it when -a selects files. Leaves always have
+/// depth >= 1 here because directory operands enter via the walker root.
+fn handleLeafEntry(
+    entry: common.walker.Entry,
+    config: DuConfig,
+    state: *WalkState,
+    seen_inodes: *std.AutoHashMap(u128, void),
+    stdout: *std.Io.Writer,
+    style: anytype,
+) void {
+    const depth = entry.depth;
+    assert(depth >= 1);
+    assert(depth < accumulation_stack_len);
+    const follow = shouldFollowAtDepth(config.dereference_mode, depth);
+    const stat_buf = doStat(entry.path, follow) catch return;
+
+    const is_duplicate = checkAndRecordInode(stat_buf, config, seen_inodes);
+    const file_size = if (is_duplicate)
+        0
+    else
+        getFileSize(stat_buf, config.apparent_size, false);
+
+    // Account into the parent directory's running subtree and, for -S, into the
+    // parent's direct-file tally.
+    const parent_depth = depth - 1;
+    state.subtree_sizes[parent_depth] += file_size;
+    if (config.separate_dirs) {
+        state.direct_file_sizes[parent_depth] += file_size;
     }
 
-    return dir_own_size + subtree_size;
+    const is_link = entry.kind == .sym_link;
+    if (config.all and shouldPrintAtDepth(depth, config)) {
+        printEntry(stdout, style, file_size, config, entry.path, false, is_link);
+    }
+}
+
+/// Hard-link dedup: returns true when this (dev,inode) was already counted, so
+/// the caller charges it zero bytes. Mirrors the recursion: only non-directories
+/// are deduped, -l disables dedup entirely, and -L tracks unconditionally
+/// because a symlink and its target share an inode even at nlink == 1.
+fn checkAndRecordInode(
+    stat_buf: StatResult,
+    config: DuConfig,
+    seen_inodes: *std.AutoHashMap(u128, void),
+) bool {
+    const should_dedup = !stat_buf.is_dir and !config.count_links and
+        (stat_buf.nlink > 1 or config.dereference_mode == .all);
+    if (!should_dedup) return false;
+    // Directories are never deduped; reaching here means a non-directory leaf.
+    assert(!stat_buf.is_dir);
+    assert(!config.count_links);
+    const key: u128 = (@as(u128, stat_buf.dev) << 64) | @as(u128, stat_buf.ino);
+    if (seen_inodes.contains(key)) {
+        return true;
+    }
+    seen_inodes.put(key, {}) catch {};
+    return false;
 }
 
 fn shouldPrintAtDepth(depth: u64, config: DuConfig) bool {
@@ -729,13 +917,11 @@ pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     defer seen_inodes.deinit();
 
     for (paths) |path| {
-        const size = calculateDu(
+        const size = processOperand(
             allocator,
             io,
             path,
             config,
-            0,
-            null,
             &seen_inodes,
             stdout,
             style,
@@ -2561,6 +2747,51 @@ test "du -S directory total excludes subdirectory subtrees but root total still 
     // subtree; the sub directory counts its own direct file (30).
     try testing.expectEqual(@as(?u64, 11), extractSizeForExactPath(buf, root_path));
     try testing.expectEqual(@as(?u64, 30), extractSizeForExactPath(buf, sub_path));
+}
+
+test "du -S in disk-usage mode includes the directory's own block allocation" {
+    // Regression: under -S the printed value must include the directory's OWN
+    // block allocation plus its direct files, not just the direct files. Every
+    // other -S test uses -b (apparent size), where a directory's own size is 0
+    // and so masks a dropped dir_own_size. Here we run disk-usage mode with
+    // -B 1 (byte-exact, no rounding) and assert the printed value equals
+    // dir_own_blocks*512 + direct_file_blocks*512 computed straight from stat.
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const ft = try tmp_dir.dir.createFile(io, "direct.txt", .{});
+    const data = [_]u8{'D'} ** 4096;
+    try ft.writeStreamingAll(io, &data); // big enough to occupy real blocks
+    ft.close(io);
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = root_buf[0..(try tmp_dir.dir.realPathFile(io, ".", &root_buf))];
+    var file_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const file_path = file_buf[0..(try tmp_dir.dir.realPathFile(io, "direct.txt", &file_buf))];
+
+    // Compute the expected disk-usage -S value directly from stat: the
+    // directory's own blocks plus its single direct file's blocks.
+    const dir_stat = try doStat(root_path, true);
+    const file_stat = try doStat(file_path, true);
+    const dir_own_bytes: u64 = @as(u64, @intCast(@max(0, dir_stat.blocks))) * 512;
+    const file_bytes: u64 = @as(u64, @intCast(@max(0, file_stat.blocks))) * 512;
+    const expected = dir_own_bytes + file_bytes;
+
+    var out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+
+    // -S separate-dirs, -B 1 byte-exact, disk-usage mode (NO -b).
+    const args = &[_][]const u8{ "-S", "-B", "1", root_path };
+    try testing.expectEqual(@as(u8, 0), try runDu(testing.allocator, io, args, &out.writer, common.null_writer));
+
+    const printed = extractSizeForExactPath(out.writer.buffered(), root_path) orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u64, expected), printed);
+    // The directory's own block allocation must be non-zero in disk-usage mode,
+    // so this assertion has teeth: dropping dir_own_size would make printed
+    // equal file_bytes only, which is strictly less than expected.
+    try testing.expect(dir_own_bytes > 0);
 }
 
 test "du -d 1 hides deep entries but still accumulates their sizes upward" {
