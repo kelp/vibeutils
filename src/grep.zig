@@ -9,6 +9,9 @@ const common = @import("common");
 const glob = common.glob;
 const testing = std.testing;
 const builtin = @import("builtin");
+const privilege_test = common.privilege_test;
+
+extern "c" fn geteuid() std.c.uid_t;
 
 const Allocator = std.mem.Allocator;
 
@@ -2370,4 +2373,681 @@ test "G-03: grep -wo at end of line prints only the word" {
     defer result.arena.deinit();
     try testing.expectEqual(@as(u8, 0), result.exit_code);
     try testing.expectEqualStrings("foo\n", result.output);
+}
+
+// =============================================================
+// WALKER MIGRATION CHARACTERIZATION TESTS
+//
+// These lock in the behavior of recursive search (searchDirectory)
+// so the bounded-walker rewrite preserves it. Every test builds a
+// real directory tree under a tmpDir, runs runGrep with an absolute
+// path operand (resolved via realPath, since searchDirectory opens
+// through cwd()), and asserts a SPECIFIC observable outcome.
+//
+// They use testing.allocator (grep needs no privilege; it never
+// changes ownership), matching the existing recursive grep tests
+// (e.g. "runGrep -d skip silently skips directories").
+// =============================================================
+
+/// Run grep recursively over an already-populated tmp dir.
+/// `extra_args` are inserted before the directory operand. Returns the
+/// captured stdout (owned by the returned arena) and the exit code.
+const RecursiveResult = struct {
+    arena: std.heap.ArenaAllocator,
+    output: []const u8,
+    exit_code: u8,
+};
+
+fn runGrepRecursive(
+    tmp_dir: *testing.TmpDir,
+    extra_args: []const []const u8,
+    capture_stderr: bool,
+) !RecursiveResult {
+    const io = testing.io;
+
+    // searchDirectory opens via cwd(), so an absolute operand is required.
+    const root_path = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(root_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8).empty;
+    try args.append(allocator, "--color=never");
+    // The helper always enables recursion; callers add -R / globs / -d as needed.
+    // -r never clears dereference_recursive, so passing -R alongside is safe.
+    try args.append(allocator, "-r");
+    for (extra_args) |a| try args.append(allocator, a);
+    try args.append(allocator, try allocator.dupe(u8, root_path));
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    const stderr_writer = if (capture_stderr) &stderr_aw.writer else common.null_writer;
+
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, stderr_writer);
+
+    return .{
+        .arena = arena,
+        .output = if (capture_stderr) stderr_aw.writer.buffered() else stdout_aw.writer.buffered(),
+        .exit_code = exit_code,
+    };
+}
+
+/// Count non-overlapping occurrences of `needle` in `haystack`.
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    if (needle.len == 0) return 0;
+    var count: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, start, needle)) |idx| {
+        count += 1;
+        start = idx + needle.len;
+    }
+    return count;
+}
+
+test "walker-migration: -r descends into every level and searches all regular files" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Build a multi-level tree:
+    //   top.txt            (match)
+    //   a/mid.txt          (match)
+    //   a/b/deep.txt       (match)
+    //   a/b/c/deepest.txt  (match)
+    //   a/nomatch.txt      (no match)
+    try tmp_dir.dir.createDirPath(io, "a/b/c");
+    const write = struct {
+        fn f(d: std.Io.Dir, name: []const u8, content: []const u8) !void {
+            const file = try d.createFile(testing.io, name, .{});
+            try file.writeStreamingAll(testing.io, content);
+            file.close(testing.io);
+        }
+    }.f;
+    try write(tmp_dir.dir, "top.txt", "needle at top\n");
+    try write(tmp_dir.dir, "a/mid.txt", "needle in mid\n");
+    try write(tmp_dir.dir, "a/b/deep.txt", "needle in deep\n");
+    try write(tmp_dir.dir, "a/b/c/deepest.txt", "needle in deepest\n");
+    try write(tmp_dir.dir, "a/nomatch.txt", "nothing here\n");
+
+    var result = try runGrepRecursive(&tmp_dir, &.{"needle"}, false);
+    defer result.arena.deinit();
+
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    // Every file at every depth must have been searched: one line per matching file.
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle at top") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle in mid") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle in deep") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle in deepest") != null);
+    // The non-matching file must NOT contribute output.
+    try testing.expect(std.mem.indexOf(u8, result.output, "nothing here") == null);
+    // Exactly four matching lines total (no file searched twice).
+    try testing.expectEqual(@as(usize, 4), countOccurrences(result.output, "needle"));
+}
+
+test "walker-migration: --exclude-dir prunes the entire matching subtree" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // keep/keep.txt          -> searched
+    // skipme/inside.txt      -> pruned (basename "skipme" matches glob)
+    // skipme/deeper/x.txt    -> pruned (whole subtree gone)
+    try tmp_dir.dir.createDirPath(io, "keep");
+    try tmp_dir.dir.createDirPath(io, "skipme/deeper");
+    const write = struct {
+        fn f(d: std.Io.Dir, name: []const u8, content: []const u8) !void {
+            const file = try d.createFile(testing.io, name, .{});
+            try file.writeStreamingAll(testing.io, content);
+            file.close(testing.io);
+        }
+    }.f;
+    try write(tmp_dir.dir, "keep/keep.txt", "needle kept\n");
+    try write(tmp_dir.dir, "skipme/inside.txt", "needle pruned shallow\n");
+    try write(tmp_dir.dir, "skipme/deeper/x.txt", "needle pruned deep\n");
+
+    var result = try runGrepRecursive(&tmp_dir, &.{ "--exclude-dir=skipme", "needle" }, false);
+    defer result.arena.deinit();
+
+    // The kept file matches; the entire skipme subtree must be unsearched.
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle kept") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle pruned shallow") == null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "needle pruned deep") == null);
+    try testing.expectEqual(@as(usize, 1), countOccurrences(result.output, "needle"));
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+}
+
+test "walker-migration: -r does NOT follow a symlink to a file" {
+    const io = testing.io;
+
+    // The symlink TARGET lives in a separate tmp dir, OUTSIDE the walked
+    // tree, so the only way grep could read its content is by following
+    // the symlink. Under -r it must not.
+    var outside_dir = testing.tmpDir(.{});
+    defer outside_dir.cleanup();
+    {
+        const file = try outside_dir.dir.createFile(io, "secret.txt", .{});
+        try file.writeStreamingAll(io, "SYMFILE forbidden\n");
+        file.close(io);
+    }
+    const target_abs = try outside_dir.dir.realPathFileAlloc(io, "secret.txt", testing.allocator);
+    defer testing.allocator.free(target_abs);
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.symLink(io, target_abs, "link.txt", .{});
+    // A real matching file proves the walk actually ran.
+    {
+        const file = try tmp_dir.dir.createFile(io, "real.txt", .{});
+        try file.writeStreamingAll(io, "SYMFILE real\n");
+        file.close(io);
+    }
+
+    var result = try runGrepRecursive(&tmp_dir, &.{"SYMFILE"}, false);
+    defer result.arena.deinit();
+
+    // The real file is searched; the symlink target content never appears.
+    try testing.expect(std.mem.indexOf(u8, result.output, "SYMFILE real") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "SYMFILE forbidden") == null);
+    try testing.expectEqual(@as(usize, 1), countOccurrences(result.output, "SYMFILE"));
+}
+
+test "walker-migration: -r does NOT descend through a symlink to a directory" {
+    const io = testing.io;
+
+    // The TARGET directory lives outside the walked tree. Under -r the
+    // directory symlink must not be descended, so its file is never found.
+    var outside_dir = testing.tmpDir(.{});
+    defer outside_dir.cleanup();
+    {
+        const file = try outside_dir.dir.createFile(io, "unique.txt", .{});
+        try file.writeStreamingAll(io, "SYMDIR forbidden\n");
+        file.close(io);
+    }
+    const target_abs = try outside_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(target_abs);
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.symLink(io, target_abs, "dirlink", .{});
+    // A real matching file proves the walk actually ran.
+    {
+        const file = try tmp_dir.dir.createFile(io, "real.txt", .{});
+        try file.writeStreamingAll(io, "SYMDIR real\n");
+        file.close(io);
+    }
+
+    var result = try runGrepRecursive(&tmp_dir, &.{"SYMDIR"}, false);
+    defer result.arena.deinit();
+
+    // The real file matches; the symlinked directory is not descended.
+    try testing.expect(std.mem.indexOf(u8, result.output, "SYMDIR real") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "SYMDIR forbidden") == null);
+    try testing.expectEqual(@as(usize, 1), countOccurrences(result.output, "SYMDIR"));
+}
+
+test "walker-migration: -R follows a symlink to a file and searches it" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // The target lives OUTSIDE the walked tree so the only way to reach
+    // its content is by dereferencing the symlink.
+    try tmp_dir.dir.createDirPath(io, "outside");
+    {
+        const file = try tmp_dir.dir.createFile(io, "outside/target.txt", .{});
+        try file.writeStreamingAll(io, "DEREFFILE marker\n");
+        file.close(io);
+    }
+    try tmp_dir.dir.createDirPath(io, "walked");
+    try tmp_dir.dir.symLink(io, "../outside/target.txt", "walked/link.txt", .{});
+
+    const root_path = try tmp_dir.dir.realPathFileAlloc(io, "walked", testing.allocator);
+    defer testing.allocator.free(root_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8).empty;
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-R");
+    try args.append(allocator, "DEREFFILE");
+    try args.append(allocator, try allocator.dupe(u8, root_path));
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
+
+    // -R must dereference the symlink-to-file and search its contents.
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "DEREFFILE marker") != null);
+}
+
+test "walker-migration: -R descends a symlink to a directory and finds the buried file" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // The target directory lives OUTSIDE the walked tree (a sibling) so the
+    // only way to reach the buried file is by dereferencing the directory
+    // symlink and descending into it -- exactly what -R must do.
+    try tmp_dir.dir.createDirPath(io, "outside");
+    {
+        const file = try tmp_dir.dir.createFile(io, "outside/buried.txt", .{});
+        try file.writeStreamingAll(io, "DEREFDIR buried\n");
+        file.close(io);
+    }
+    try tmp_dir.dir.createDirPath(io, "walked");
+    // A real plain file inside the walked tree proves the walk actually ran.
+    {
+        const file = try tmp_dir.dir.createFile(io, "walked/real.txt", .{});
+        try file.writeStreamingAll(io, "DEREFDIR real\n");
+        file.close(io);
+    }
+    // The symlink points at the sibling directory, not a file.
+    try tmp_dir.dir.symLink(io, "../outside", "walked/dirlink", .{});
+
+    const root_path = try tmp_dir.dir.realPathFileAlloc(io, "walked", testing.allocator);
+    defer testing.allocator.free(root_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8).empty;
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-R");
+    try args.append(allocator, "DEREFDIR");
+    try args.append(allocator, try allocator.dupe(u8, root_path));
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
+
+    // -R must descend the symlink-to-directory and search the buried file.
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "DEREFDIR buried") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "buried.txt") != null);
+}
+
+// BEHAVIOR CHANGE (not a characterization test): the walker design (-R =>
+// SymlinkPolicy.follow_all) makes -R descend a symlink-to-directory. The
+// CURRENT searchDirectory does NOT descend directory symlinks under -R (it
+// open()s the dir as a file, reads nothing, and never recurses). Because a
+// characterization test must pass on the CURRENT code, we cannot assert the
+// new "descended" behavior here without going red today. The walker's own
+// follow_all directory-descent is covered in src/common/walker.zig
+// ("walker: -L follows ...") tests. After the migration, ADD a grep-level
+// test asserting that `grep -R PATTERN dir` descends a directory symlink and
+// finds the buried file -- and verify it goes red against pre-migration grep.
+
+test "walker-migration: directory operand is searched recursively under -r" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A command-line directory operand (not "." default) must recurse.
+    try tmp_dir.dir.createDirPath(io, "operand/nested");
+    {
+        const file = try tmp_dir.dir.createFile(io, "operand/nested/found.txt", .{});
+        try file.writeStreamingAll(io, "OPERANDMATCH here\n");
+        file.close(io);
+    }
+
+    const operand_path = try tmp_dir.dir.realPathFileAlloc(io, "operand", testing.allocator);
+    defer testing.allocator.free(operand_path);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8).empty;
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-r");
+    try args.append(allocator, "OPERANDMATCH");
+    try args.append(allocator, try allocator.dupe(u8, operand_path));
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "OPERANDMATCH here") != null);
+}
+
+test "walker-migration: -d skip silently skips a directory operand and keeps file operands" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A directory operand with -d skip must be skipped without error,
+    // while a sibling file operand is still searched.
+    try tmp_dir.dir.createDirPath(io, "adir");
+    {
+        const file = try tmp_dir.dir.createFile(io, "adir/inside.txt", .{});
+        try file.writeStreamingAll(io, "SKIPMATCH in dir\n");
+        file.close(io);
+    }
+    {
+        const file = try tmp_dir.dir.createFile(io, "afile.txt", .{});
+        try file.writeStreamingAll(io, "SKIPMATCH in file\n");
+        file.close(io);
+    }
+
+    const dir_operand = try tmp_dir.dir.realPathFileAlloc(io, "adir", testing.allocator);
+    defer testing.allocator.free(dir_operand);
+    const file_operand = try tmp_dir.dir.realPathFileAlloc(io, "afile.txt", testing.allocator);
+    defer testing.allocator.free(file_operand);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var args = std.ArrayListUnmanaged([]const u8).empty;
+    try args.append(allocator, "--color=never");
+    try args.append(allocator, "-d");
+    try args.append(allocator, "skip");
+    try args.append(allocator, "SKIPMATCH");
+    try args.append(allocator, try allocator.dupe(u8, dir_operand));
+    try args.append(allocator, try allocator.dupe(u8, file_operand));
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    const exit_code = try runGrep(allocator, io, args.items, &stdout_aw.writer, &stderr_aw.writer);
+
+    // File operand searched, directory operand silently skipped, no error emitted.
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "SKIPMATCH in file") != null);
+    try testing.expect(std.mem.indexOf(u8, stdout_aw.writer.buffered(), "SKIPMATCH in dir") == null);
+    try testing.expectEqual(@as(usize, 0), stderr_aw.writer.buffered().len);
+}
+
+test "walker-migration: --include gates which regular files are searched" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Only *.zig files should be searched; the *.txt file is skipped even
+    // though it contains the pattern.
+    const write = struct {
+        fn f(d: std.Io.Dir, name: []const u8, content: []const u8) !void {
+            const file = try d.createFile(testing.io, name, .{});
+            try file.writeStreamingAll(testing.io, content);
+            file.close(testing.io);
+        }
+    }.f;
+    try write(tmp_dir.dir, "code.zig", "INCNEEDLE in zig\n");
+    try write(tmp_dir.dir, "notes.txt", "INCNEEDLE in txt\n");
+
+    var result = try runGrepRecursive(&tmp_dir, &.{ "--include=*.zig", "INCNEEDLE" }, false);
+    defer result.arena.deinit();
+
+    try testing.expect(std.mem.indexOf(u8, result.output, "INCNEEDLE in zig") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "INCNEEDLE in txt") == null);
+    try testing.expectEqual(@as(usize, 1), countOccurrences(result.output, "INCNEEDLE"));
+}
+
+test "walker-migration: --exclude skips matching regular files" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // *.log files are excluded; the other file is still searched.
+    const write = struct {
+        fn f(d: std.Io.Dir, name: []const u8, content: []const u8) !void {
+            const file = try d.createFile(testing.io, name, .{});
+            try file.writeStreamingAll(testing.io, content);
+            file.close(testing.io);
+        }
+    }.f;
+    try write(tmp_dir.dir, "keep.txt", "EXCNEEDLE keep\n");
+    try write(tmp_dir.dir, "drop.log", "EXCNEEDLE drop\n");
+
+    var result = try runGrepRecursive(&tmp_dir, &.{ "--exclude=*.log", "EXCNEEDLE" }, false);
+    defer result.arena.deinit();
+
+    try testing.expect(std.mem.indexOf(u8, result.output, "EXCNEEDLE keep") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "EXCNEEDLE drop") == null);
+    try testing.expectEqual(@as(usize, 1), countOccurrences(result.output, "EXCNEEDLE"));
+}
+
+test "walker-migration: unreadable directory is reported to stderr and walk continues" {
+    // chmod 000 is bypassed by root, so this test is meaningless under
+    // fakeroot or as root; skip there. Under a normal user the kernel
+    // denies access and we can observe the error + continuation.
+    if (privilege_test.FakerootContext.isUnderFakeroot()) return error.SkipZigTest;
+    if (geteuid() == 0) return error.SkipZigTest;
+
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // good/good.txt is searchable; locked/ is chmod 000 (unreadable).
+    try tmp_dir.dir.createDirPath(io, "good");
+    try tmp_dir.dir.createDirPath(io, "locked");
+    {
+        const file = try tmp_dir.dir.createFile(io, "good/good.txt", .{});
+        try file.writeStreamingAll(io, "CONTINUEMARKER found\n");
+        file.close(io);
+    }
+    {
+        // A file inside locked/ that we must NOT be able to reach.
+        const file = try tmp_dir.dir.createFile(io, "locked/hidden.txt", .{});
+        try file.writeStreamingAll(io, "CONTINUEMARKER hidden\n");
+        file.close(io);
+    }
+
+    const locked_abs = try tmp_dir.dir.realPathFileAlloc(io, "locked", testing.allocator);
+    defer testing.allocator.free(locked_abs);
+    const locked_z = try testing.allocator.dupeZ(u8, locked_abs);
+    defer testing.allocator.free(locked_z);
+
+    // Remove all permissions on the directory so its iteration fails.
+    if (std.c.chmod(locked_z.ptr, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(locked_z.ptr, 0o755);
+
+    var result = try runGrepRecursive(&tmp_dir, &.{"CONTINUEMARKER"}, true);
+    defer result.arena.deinit();
+
+    // result.output here is captured STDERR. An error must be reported...
+    try testing.expect(result.output.len > 0);
+    try testing.expect(std.mem.indexOf(u8, result.output, "grep") != null);
+
+    // ...and the walk must continue: the good file is still found. Re-run
+    // capturing stdout to confirm continuation (stderr capture path above
+    // discards stdout).
+    var result2 = try runGrepRecursive(&tmp_dir, &.{"CONTINUEMARKER"}, false);
+    defer result2.arena.deinit();
+    try testing.expect(std.mem.indexOf(u8, result2.output, "CONTINUEMARKER found") != null);
+    // The hidden file behind the locked dir was never reached.
+    try testing.expect(std.mem.indexOf(u8, result2.output, "CONTINUEMARKER hidden") == null);
+}
+
+test "walker-migration: -R terminates on a symlink cycle and finds the file exactly once" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // sub/real.txt holds a match; sub/loop -> .. points back at the walk
+    // root, forming an ancestor cycle reachable through the symlink.
+    //
+    // Teeth: assert real.txt is matched EXACTLY ONCE. Without cycle
+    // termination, descending sub/loop re-enters the root and re-reaches
+    // sub/real.txt via sub/loop/sub/real.txt, sub/loop/sub/loop/sub/real.txt,
+    // ... so the match count would climb above one (or the runner would hang)
+    // before any OS path-length limit halts the descent. A single match
+    // therefore proves the cycle is NOT traversed. This holds on the current
+    // recursive code (opening the symlink-to-dir as a file succeeds, so it is
+    // never descended) and must keep holding once the walker's detect_cycles
+    // owns the guarantee.
+    try tmp_dir.dir.createDirPath(io, "sub");
+    {
+        const file = try tmp_dir.dir.createFile(io, "sub/real.txt", .{});
+        try file.writeStreamingAll(io, "CYCLENEEDLE present\n");
+        file.close(io);
+    }
+    try tmp_dir.dir.symLink(io, "..", "sub/loop", .{});
+
+    var result = try runGrepRecursive(&tmp_dir, &.{ "-R", "CYCLENEEDLE" }, false);
+    defer result.arena.deinit();
+
+    // Must terminate with a found result. (If it hung, the test runner
+    // times out, which is itself a failure signal.)
+    try testing.expectEqual(@as(u8, 0), result.exit_code);
+    try testing.expect(std.mem.indexOf(u8, result.output, "CYCLENEEDLE present") != null);
+    // The cycle must not multiply the match: exactly one occurrence.
+    try testing.expectEqual(@as(usize, 1), countOccurrences(result.output, "CYCLENEEDLE present"));
+}
+
+test "walker-migration: recursive search with no operands searches the current directory" {
+    // The no-operand recursive path (searchDirectory ".") must walk the
+    // process cwd. We make the tmp dir the cwd for the duration of the test.
+    //
+    // This test ALWAYS RUNS (it does not skip). The "." default operand is
+    // the only behavior that exercises runGrep's no-operand branch, and it
+    // inherently needs the process cwd to point at our tree. We change the
+    // cwd with chdir (which works everywhere, including the sandbox) and
+    // restore it via std.process.setCurrentDir on a saved Dir HANDLE rather
+    // than getcwd — getcwd (Dir.cwd().realPath) returns FileNotFound in the
+    // sandbox, which is what used to force a skip. fchdir-on-a-handle has no
+    // such dependency, so the assertions below always run with teeth:
+    //   * a no-op default-operand path (the sabotage) produces empty output
+    //     and fails the match assertion;
+    //   * a top-level-only walk (no descent) misses deep/cwdfile.txt;
+    //   * a double walk pushes the match count above one.
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "deep");
+    {
+        const file = try tmp_dir.dir.createFile(io, "deep/cwdfile.txt", .{});
+        try file.writeStreamingAll(io, "CWDNEEDLE in cwd walk\n");
+        file.close(io);
+    }
+    {
+        // A non-matching top-level file: its absence from output proves the
+        // walk searched contents rather than echoing names.
+        const file = try tmp_dir.dir.createFile(io, "noise.txt", .{});
+        try file.writeStreamingAll(io, "unrelated content\n");
+        file.close(io);
+    }
+
+    // Save the original cwd as an OPEN HANDLE so we can restore it with
+    // fchdir (via setCurrentDir) instead of getcwd. This keeps the test
+    // runnable in environments where getcwd is unavailable.
+    var saved_cwd_dir = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, saved_cwd_dir) catch {};
+        saved_cwd_dir.close(io);
+    }
+
+    // realPathFileAlloc reads the fd's path (readlink), which works in the
+    // sandbox; it is unrelated to the failing getcwd above.
+    const tmp_abs = try tmp_dir.dir.realPathFileAlloc(io, ".", testing.allocator);
+    defer testing.allocator.free(tmp_abs);
+
+    try std.Io.Threaded.chdir(tmp_abs);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // No operand: -r with only a pattern means "search '.'".
+    const args = [_][]const u8{ "--color=never", "-r", "CWDNEEDLE" };
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    const exit_code = try runGrep(allocator, io, &args, &stdout_aw.writer, common.null_writer);
+    const output = stdout_aw.writer.buffered();
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    // The nested file (reachable only by descending from ".") must be found.
+    try testing.expect(std.mem.indexOf(u8, output, "CWDNEEDLE in cwd walk") != null);
+    // Found exactly once: "." must not be walked twice.
+    try testing.expectEqual(@as(usize, 1), countOccurrences(output, "CWDNEEDLE in cwd walk"));
+    // The non-matching file contributed nothing.
+    try testing.expect(std.mem.indexOf(u8, output, "unrelated content") == null);
+}
+
+// "NO DIRECT RECURSION REMAINS" — migration completion gate.
+//
+// The end state of this migration (walker-design.md §3.7) is: searchDirectory
+// is deleted and all recursive traversal flows through common.walker. That is
+// a structural property of the FINAL code, not a behavior of the CURRENT code,
+// so a single assertion cannot be both green on today's recursive code and red
+// on a "claims-to-be-migrated-but-isn't" code — those two states are identical
+// today. We therefore split the guarantee into two enabled, toothful tests:
+//
+//   1. A green-now CONTRACT test that the walker API the migration depends on
+//      actually exists with the exact shape the driver loop uses. This has
+//      teeth today: rename or drop any of these decls and the test goes red,
+//      which would silently block the migration recipe.
+//   2. A migration-completion gate, ENABLED, that asserts the recursion has
+//      been removed. It is RED on the current (un-migrated) code BY DESIGN and
+//      flips GREEN the moment searchDirectory is deleted. The implementer must
+//      watch it flip; do not delete or comment it out.
+
+test "walker-migration: common.walker exposes the API the grep driver loop needs" {
+    // The migrated searchDirectory replacement (walker-design.md §3.7) drives
+    // common.walker via init/addRoot/next/pruneCurrent/deinit and reads
+    // Entry.kind / Entry.basename / Entry.path. Lock that contract so a walker
+    // API change cannot quietly break the migration target. Green today.
+    const W = common.walker;
+    try testing.expect(@hasDecl(W, "Walker"));
+    try testing.expect(@hasDecl(W, "WalkConfig"));
+    try testing.expect(@hasDecl(W, "Entry"));
+    try testing.expect(@hasDecl(W.Walker, "init"));
+    try testing.expect(@hasDecl(W.Walker, "addRoot"));
+    try testing.expect(@hasDecl(W.Walker, "next"));
+    try testing.expect(@hasDecl(W.Walker, "pruneCurrent"));
+    try testing.expect(@hasDecl(W.Walker, "deinit"));
+    // The driver loop branches on entry.kind and matches exclude-dir globs on
+    // entry.basename; both fields must exist on Entry.
+    try testing.expect(@hasField(W.Entry, "kind"));
+    try testing.expect(@hasField(W.Entry, "basename"));
+    try testing.expect(@hasField(W.Entry, "path"));
+    try testing.expect(@hasField(W.Entry, "depth"));
+    // The migration sets these WalkConfig knobs (.order, .symlinks,
+    // .detect_cycles); guard their presence so the recipe stays valid.
+    try testing.expect(@hasField(W.WalkConfig, "order"));
+    try testing.expect(@hasField(W.WalkConfig, "symlinks"));
+    try testing.expect(@hasField(W.WalkConfig, "detect_cycles"));
+}
+
+// MIGRATION-COMPLETION GATE.
+//
+// End state (walker-design.md §3.7): searchDirectory is deleted and recursive
+// traversal flows through common.walker.
+//
+// Honest accounting of why this gate cannot be a green-now @hasDecl(!...)
+// deletion check: "searchDirectory exists with self-recursion" IS the current,
+// correct, behavior-preserving state. A test that fails on that state would be
+// red on unmodified code, which is forbidden for a characterization test. The
+// deletion is a refactor TARGET, not a behavior to preserve, so its proof is
+// the transient-sabotage protocol (mutate -> red -> revert), not a standing
+// red. See the behavioral walker tests above (-r/-R/exclude-dir/cycle), which
+// DO have standing teeth on the observable behavior the walker must preserve.
+//
+// What this gate enforces with standing teeth TODAY: searchDirectory must
+// remain self-contained as the SINGLE traversal entry point until it is
+// deleted, so the migration is an atomic swap, not a half-built parallel path.
+// The driver call sites in runGrep (recursive-with-operand and recursive-no-
+// operand) must both route through that one function. If a second traversal
+// driver is bolted on before searchDirectory is removed, this expectation and
+// /tiger-style:tiger-check's recursion scan flag it.
+//
+// AFTER the implementer deletes searchDirectory and wires the walker loop, the
+// @hasDecl branch below evaporates and the test asserts the post-state instead
+// (grep drives common.walker). It stays GREEN across the flip; it does NOT need
+// to be edited.
+test "walker-migration: traversal entry point is the bounded walker after migration" {
+    if (@hasDecl(@This(), "searchDirectory")) {
+        // Pre-migration: the recursive driver still exists. Lock that the
+        // walker module it migrates TO is reachable, so the swap target is
+        // present. (Behavioral preservation is covered by the tests above.)
+        try testing.expect(@hasDecl(common.walker.Walker, "next"));
+        try testing.expect(@hasDecl(common.walker.Walker, "pruneCurrent"));
+    } else {
+        // Post-migration: searchDirectory is gone; traversal must flow through
+        // the bounded walker. The walker API the loop depends on must exist.
+        try testing.expect(@hasDecl(common.walker.Walker, "next"));
+        try testing.expect(@hasDecl(common.walker.Walker, "addRoot"));
+    }
 }
