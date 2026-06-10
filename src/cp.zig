@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const common = @import("common");
 
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const testing = std.testing;
 const privilege_test = common.privilege_test;
 const TestDir = common.test_dir.TestDir;
@@ -444,7 +445,7 @@ fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Write
             copySymlink(allocator, io, stderr_writer, source, final_dest_path, options)
         else
             copyRegularFile(allocator, io, stderr_writer, source, final_dest_path, options),
-        .directory => copyDirectory(allocator, io, stdout_writer, stderr_writer, source, final_dest_path, options, hinted_overwrite),
+        .directory => copyTree(allocator, io, stdout_writer, stderr_writer, source, final_dest_path, options),
         .special => blk: {
             common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}': unsupported file type", .{source});
             break :blk false;
@@ -595,95 +596,550 @@ fn createSymbolicLink(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.W
     return true;
 }
 
-/// Copy a directory recursively
-fn copyDirectory(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, hinted_overwrite: *bool) bool {
-    // Create destination directory
-    std.Io.Dir.cwd().createDir(io, dest_path, .default_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {
-            // Directory already exists, continue
-        },
+/// A (device, inode) pair identifying a filesystem object. Used for
+/// ancestor-only cycle detection while following directory symlinks.
+const NodeId = struct {
+    dev: u64,
+    inode: u64,
+};
+
+/// One unit of directory-tree work: copy the tree rooted at `source` into
+/// `dest`. Generated for the command-line operand and for every directory
+/// symlink the active symlink mode tells cp to follow. `ancestors` carries
+/// the (dev, inode) chain that led here so a followed symlink resolving back
+/// onto an ancestor is refused as a cycle (GNU semantics) rather than
+/// re-walked. Paths and ancestors are arena-owned for the lifetime of the
+/// enclosing copyTree call.
+const TreeTask = struct {
+    source: []const u8,
+    dest: []const u8,
+    ancestors: []const NodeId,
+};
+
+/// Hard upper bound on directory-symlink-follow tasks queued during one tree
+/// copy. Ancestor-only cycle detection already terminates loops; this bound is
+/// a Tiger Style backstop so a pathological tree cannot grow the queue without
+/// limit.
+const tree_task_max: usize = 1 << 20;
+
+/// Copy a directory tree using the bounded common.walker.
+///
+/// Replaces the former self-recursive copyDirectory/copyDirectoryContents.
+/// Each TreeTask drives one walk in order=.both over real directories with a
+/// no_follow policy, so cp resolves symlinks itself per-entry (matching the
+/// grep migration): a symlink-to-file is copied as a file under -L/-H, a
+/// symlink-to-directory is enqueued as a new task. Directory mode and mtime are
+/// preserved POST-order, after children are written, so writing a child cannot
+/// re-bump the parent's mtime and a read-only (0o555) source dir does not block
+/// its own population.
+fn copyTree(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+    options: RuntimeOptions,
+) bool {
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
+    var tasks: std.ArrayList(TreeTask) = .empty;
+    // Task 0 borrows the operand source/dest; follow-tasks (index > 0) own all
+    // three fields. Every task's `ancestors` slice is owned here. Free them all
+    // on exit so the per-tree allocations do not leak under a leak-checking
+    // allocator (the CLI uses an arena, but the tests do not).
+    defer {
+        for (tasks.items, 0..) |task, i| {
+            allocator.free(task.ancestors);
+            if (i > 0) {
+                allocator.free(task.source);
+                allocator.free(task.dest);
+            }
+        }
+        tasks.deinit(allocator);
+    }
+
+    const root_ancestors = allocator.alloc(NodeId, 0) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+        return false;
+    };
+    tasks.append(allocator, .{
+        .source = source_path,
+        .dest = dest_path,
+        .ancestors = root_ancestors,
+    }) catch {
+        allocator.free(root_ancestors);
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+        return false;
+    };
+
+    var success = true;
+    var task_index: usize = 0;
+    while (task_index < tasks.items.len) {
+        assert(task_index < tree_task_max);
+        const task = tasks.items[task_index];
+        task_index += 1;
+        if (!copyOneTree(allocator, io, stdout_writer, stderr_writer, task, options, &tasks)) {
+            success = false;
+        }
+    }
+
+    assert(task_index == tasks.items.len);
+    return success;
+}
+
+/// State threaded through a single tree walk: parallel stacks of destination
+/// paths and ancestor node IDs, keyed by walker depth.
+const TreeWalk = struct {
+    /// Destination path for the directory at each walker depth. dest_paths[0]
+    /// is the task's dest root.
+    dest_paths: std.ArrayList([]const u8),
+    /// (dev, inode) of the directory at each walker depth, for ancestor-only
+    /// cycle detection. Seeded with the task's inherited ancestors.
+    ancestors: std.ArrayList(NodeId),
+    /// Count of inherited ancestors (always kept at the front of `ancestors`).
+    inherited_len: usize,
+};
+
+/// Walk one TreeTask's source tree and materialize it under the task's dest.
+/// Returns true on full success, false if any entry failed.
+fn copyOneTree(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    task: TreeTask,
+    options: RuntimeOptions,
+    tasks: *std.ArrayList(TreeTask),
+) bool {
+    assert(task.source.len > 0);
+    assert(task.dest.len > 0);
+
+    var walker = common.walker.Walker.init(allocator, .{
+        .order = .both,
+        .symlinks = .no_follow,
+        .stay_on_filesystem = options.one_file_system,
+        .detect_cycles = false,
+    }) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+        return false;
+    };
+    defer walker.deinit(io);
+    walker.addRoot(task.source) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+        return false;
+    };
+
+    var state = TreeWalk{
+        .dest_paths = .empty,
+        .ancestors = .empty,
+        .inherited_len = task.ancestors.len,
+    };
+    defer {
+        for (state.dest_paths.items) |dp| allocator.free(dp);
+        state.dest_paths.deinit(allocator);
+        state.ancestors.deinit(allocator);
+    }
+    state.ancestors.appendSlice(allocator, task.ancestors) catch {};
+
+    var success = true;
+    while (true) {
+        const maybe_entry = walker.next(io) catch |err| {
+            reportTreeWalkError(allocator, io, stderr_writer, task.source, &state, err);
+            success = false;
+            continue;
+        };
+        const entry = maybe_entry orelse break;
+        if (!handleTreeEntry(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            entry,
+            task,
+            options,
+            &state,
+            tasks,
+        )) {
+            success = false;
+        }
+    }
+    return success;
+}
+
+/// Dispatch one walker entry to the correct copy action and maintain the
+/// destination/ancestor stacks. Returns true on success.
+fn handleTreeEntry(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    task: TreeTask,
+    options: RuntimeOptions,
+    state: *TreeWalk,
+    tasks: *std.ArrayList(TreeTask),
+) bool {
+    assert(entry.path.len > 0);
+    assert(entry.basename.len > 0);
+    switch (entry.kind) {
+        .directory => return handleTreeDir(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            entry,
+            task,
+            options,
+            state,
+        ),
+        .sym_link => return handleTreeSymlink(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            entry,
+            options,
+            state,
+            tasks,
+        ),
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
+            const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
+                return false;
+            defer allocator.free(dest);
+            var hint = true; // Suppress the interactive overwrite hint inside trees.
+            return copySingleFile(
+                allocator,
+                io,
+                stdout_writer,
+                stderr_writer,
+                entry.path,
+                dest,
+                options,
+                &hint,
+                false,
+            ) catch false;
+        },
+    }
+}
+
+/// Handle a directory entry (pre-order creation, post-order preservation).
+fn handleTreeDir(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    task: TreeTask,
+    options: RuntimeOptions,
+    state: *TreeWalk,
+) bool {
+    assert(entry.kind == .directory);
+    if (entry.visit == .pre) {
+        const dest = treeEntryDest(allocator, stderr_writer, entry, task, state) orelse
+            return false;
+        // Ownership of `dest` transfers to the dest_paths stack on success.
+        if (!createTreeDir(allocator, io, stdout_writer, stderr_writer, entry, dest, options)) {
+            allocator.free(dest);
+            return false;
+        }
+        state.dest_paths.append(allocator, dest) catch {
+            allocator.free(dest);
+            return false;
+        };
+        const node = nodeIdForPath(io, entry.path) orelse NodeId{ .dev = 0, .inode = 0 };
+        state.ancestors.append(allocator, node) catch {};
+        return true;
+    }
+    // Post-order: preserve mode and mtime AFTER children are written, then pop.
+    assert(entry.visit == .post);
+    assert(state.dest_paths.items.len > 0);
+    const dest = state.dest_paths.items[state.dest_paths.items.len - 1];
+    var success = true;
+    if (options.preserve) {
+        success = preserveTreeDir(allocator, io, stderr_writer, entry.path, dest);
+    }
+    allocator.free(state.dest_paths.pop().?);
+    assert(state.ancestors.items.len > state.inherited_len);
+    _ = state.ancestors.pop();
+    return success;
+}
+
+/// Compute the destination path for an entry from its parent's dest path.
+/// Caller owns the returned slice. Returns null only on allocation failure.
+fn treeEntryDest(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    task: TreeTask,
+    state: *const TreeWalk,
+) ?[]u8 {
+    assert(entry.basename.len > 0);
+    if (entry.depth == 0) {
+        return allocator.dupe(u8, task.dest) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+            return null;
+        };
+    }
+    const parent_index = entry.depth - 1;
+    assert(parent_index < state.dest_paths.items.len);
+    const parent_dest = state.dest_paths.items[parent_index];
+    return std.fs.path.join(allocator, &.{ parent_dest, entry.basename }) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+        return null;
+    };
+}
+
+/// Create a destination directory for a pre-order directory entry. Prints the
+/// verbose line if requested. Returns false on a hard error.
+fn createTreeDir(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    dest: []const u8,
+    options: RuntimeOptions,
+) bool {
+    assert(entry.kind == .directory);
+    assert(dest.len > 0);
+    std.Io.Dir.cwd().createDir(io, dest, .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create directory '{s}': {s}", .{ dest, common.posixErrorString(err) });
             return false;
         },
     };
-
-    // Preserve directory permissions when preserve option is set
-    if (options.preserve) {
-        if (common.file.FileInfo.stat(io, source_path)) |source_info| {
-            var dest_dir = std.Io.Dir.cwd().openDir(io, dest_path, .{}) catch |err| {
-                common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}' for permission preservation: {s}", .{ dest_path, common.posixErrorString(err) });
-                return copyDirectoryContents(allocator, io, stdout_writer, stderr_writer, source_path, dest_path, options, hinted_overwrite, null);
-            };
-            defer dest_dir.close(io);
-            _ = common.file_ops.setPermissions(allocator, dest_dir, source_info.mode, dest_path, "cp", stderr_writer) catch {};
-        } else |err| {
-            common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}' for permission preservation: {s}", .{ source_path, common.posixErrorString(err) });
-        }
+    if (options.verbose) {
+        stdout_writer.print("'{s}' -> '{s}'\n", .{ entry.path, dest }) catch {};
     }
-
-    // Get source directory device ID for one-file-system mode
-    const source_dev: ?u64 = if (options.one_file_system) blk: {
-        const info = common.file.FileInfo.stat(io, source_path) catch break :blk null;
-        break :blk info.dev;
-    } else null;
-
-    return copyDirectoryContents(allocator, io, stdout_writer, stderr_writer, source_path, dest_path, options, hinted_overwrite, source_dev);
+    return true;
 }
 
-/// Copy the contents of a directory recursively
-fn copyDirectoryContents(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, options: RuntimeOptions, hinted_overwrite: *bool, source_dev: ?u64) bool {
-    // Open source directory for iteration
-    var source_dir = std.Io.Dir.cwd().openDir(io, source_path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open directory '{s}': {s}", .{ source_path, common.posixErrorString(err) });
+/// Preserve a source directory's mode and mtime onto the destination directory.
+/// Applied POST-order so writing children cannot re-bump the dest mtime and a
+/// read-only source mode does not block populating the dest. Uses path-based
+/// libc chmod (fchmod on a fresh dir handle returns EBADF). Returns true even
+/// when preservation emits a warning, since the copy itself succeeded.
+fn preserveTreeDir(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source_path: []const u8,
+    dest_path: []const u8,
+) bool {
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+    const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
+        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}' for preservation: {s}", .{ source_path, common.posixErrorString(err) });
+        return true;
+    };
+    // Apply mtime first, then mode: setting a read-only mode does not block a
+    // subsequent timestamp change here, but matching GNU's order keeps the dir
+    // writable until the final chmod.
+    std.Io.Dir.cwd().setTimestamps(io, dest_path, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
+    }) catch |err| {
+        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
+    };
+    const dest_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{dest_path}, 0) catch return true;
+    defer allocator.free(dest_z);
+    _ = std.c.chmod(dest_z, @intCast(source_info.mode & 0o7777));
+    return true;
+}
+
+/// Resolve a symlink entry the no_follow walker left for cp. Under follow_none
+/// (-P / default -R) the link is recreated verbatim. Under follow_all (-L) or
+/// follow_cmdline at depth 0 (-H) the link is dereferenced: a file target is
+/// copied as a regular file, a directory target is enqueued as a new task
+/// unless it would close an ancestor cycle (refused with a "cyclic" diagnostic).
+fn handleTreeSymlink(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    options: RuntimeOptions,
+    state: *TreeWalk,
+    tasks: *std.ArrayList(TreeTask),
+) bool {
+    assert(entry.kind == .sym_link);
+    const follow = switch (options.symlink_mode) {
+        .follow_all => true,
+        .follow_cmdline => entry.depth == 0,
+        .follow_none => false,
+    };
+    const dest = treeEntryDestSymlink(allocator, stderr_writer, entry, state) orelse
+        return false;
+    defer allocator.free(dest);
+
+    if (!follow) {
+        return copySymlink(allocator, io, stderr_writer, entry.path, dest, options);
+    }
+    // Dereference the link to discover the real target kind.
+    const target_info = common.file.FileInfo.stat(io, entry.path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}': {s}", .{ entry.path, common.posixErrorString(err) });
         return false;
     };
-    defer source_dir.close(io);
-
-    var success = true;
-
-    // Iterate through directory entries
-    var iterator = source_dir.iterate();
-    while (iterator.next(io) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error reading directory '{s}': {s}", .{ source_path, common.posixErrorString(err) });
-        return false;
-    }) |entry| {
-        // Skip . and .. entries
-        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) {
-            continue;
-        }
-
-        // Construct full paths
-        const source_child_path = std.fs.path.join(allocator, &.{ source_path, entry.name }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot allocate memory for path: {s}", .{common.posixErrorString(err)});
-            success = false;
-            continue;
-        };
-        defer allocator.free(source_child_path);
-
-        // Check one-file-system: skip entries on different devices
-        if (source_dev) |dev| {
-            const child_info = common.file.FileInfo.stat(io, source_child_path) catch null;
-            if (child_info) |info| {
-                if (info.dev != dev) {
-                    continue; // Different filesystem, skip
-                }
-            }
-        }
-
-        const dest_child_path = std.fs.path.join(allocator, &.{ dest_path, entry.name }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot allocate memory for path: {s}", .{common.posixErrorString(err)});
-            success = false;
-            continue;
-        };
-        defer allocator.free(dest_child_path);
-
-        // Recursively copy child
-        const result = copySingleFile(allocator, io, stdout_writer, stderr_writer, source_child_path, dest_child_path, options, hinted_overwrite, false) catch false;
-        if (!result) success = false;
+    if (target_info.kind != .directory) {
+        var hint = true;
+        return copySingleFile(
+            allocator,
+            io,
+            stdout_writer,
+            stderr_writer,
+            entry.path,
+            dest,
+            options,
+            &hint,
+            false,
+        ) catch false;
     }
+    return followTreeDirSymlink(
+        allocator,
+        io,
+        stdout_writer,
+        stderr_writer,
+        entry,
+        dest,
+        target_info,
+        options,
+        state,
+        tasks,
+    );
+}
 
-    return success;
+/// Compute the destination path for a symlink entry. Symlinks are never the
+/// walk root, so the parent dest is always on the stack.
+fn treeEntryDestSymlink(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    state: *const TreeWalk,
+) ?[]u8 {
+    assert(entry.kind == .sym_link);
+    assert(entry.depth >= 1);
+    const parent_index = entry.depth - 1;
+    assert(parent_index < state.dest_paths.items.len);
+    const parent_dest = state.dest_paths.items[parent_index];
+    return std.fs.path.join(allocator, &.{ parent_dest, entry.basename }) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "out of memory", .{});
+        return null;
+    };
+}
+
+/// Enqueue a directory-symlink target as a new copy task, or refuse it when its
+/// (dev, inode) is already an ancestor on the current descent path (GNU's
+/// "cyclic symbolic link" case). The new task inherits the ancestor chain so
+/// deeper cycles are caught too.
+fn followTreeDirSymlink(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    entry: common.walker.Entry,
+    dest: []const u8,
+    target_info: common.file.FileInfo,
+    options: RuntimeOptions,
+    state: *TreeWalk,
+    tasks: *std.ArrayList(TreeTask),
+) bool {
+    assert(entry.kind == .sym_link);
+    assert(dest.len > 0);
+    const target = NodeId{ .dev = target_info.dev, .inode = target_info.inode };
+    for (state.ancestors.items) |ancestor| {
+        if (ancestor.dev == target.dev and ancestor.inode == target.inode) {
+            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot copy cyclic symbolic link '{s}'", .{entry.path});
+            return false;
+        }
+    }
+    if (tasks.items.len >= tree_task_max) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cp", "too many symbolic links following '{s}'", .{entry.path});
+        return false;
+    }
+    // The followed link becomes the dest directory's content root. Verbose line
+    // mirrors the directory case so each copied path appears.
+    if (options.verbose) {
+        stdout_writer.print("'{s}' -> '{s}'\n", .{ entry.path, dest }) catch {};
+    }
+    _ = io;
+    const source_copy = allocator.dupe(u8, entry.path) catch return false;
+    const dest_copy = allocator.dupe(u8, dest) catch {
+        allocator.free(source_copy);
+        return false;
+    };
+    // Inherit the current ancestor chain plus this link's target so deeper
+    // cycles through it are also refused.
+    const inherited = allocator.alloc(NodeId, state.ancestors.items.len + 1) catch {
+        allocator.free(source_copy);
+        allocator.free(dest_copy);
+        return false;
+    };
+    @memcpy(inherited[0..state.ancestors.items.len], state.ancestors.items);
+    inherited[state.ancestors.items.len] = target;
+    tasks.append(allocator, .{
+        .source = source_copy,
+        .dest = dest_copy,
+        .ancestors = inherited,
+    }) catch {
+        allocator.free(source_copy);
+        allocator.free(dest_copy);
+        allocator.free(inherited);
+        return false;
+    };
+    return true;
+}
+
+/// Look up a path's (dev, inode), following symlinks. Null on stat failure.
+fn nodeIdForPath(io: std.Io, path: []const u8) ?NodeId {
+    assert(path.len > 0);
+    const info = common.file.FileInfo.stat(io, path) catch return null;
+    return NodeId{ .dev = info.dev, .inode = info.inode };
+}
+
+/// Report a non-fatal per-entry walk error, naming the unreadable subdirectory.
+/// The walker errors while opening a child directory and never emits its
+/// pre-order entry, so we rescan the source root to name the precise failing
+/// path, matching the grep migration's diagnostic. (cp's walks are shallow in
+/// practice; a root rescan finds the unreadable child without per-frame source
+/// tracking.)
+fn reportTreeWalkError(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    root_source: []const u8,
+    state: *const TreeWalk,
+    err: anyerror,
+) void {
+    assert(root_source.len > 0);
+    _ = state;
+    const failing = findUnreadableTreeChild(allocator, io, root_source);
+    defer if (failing) |f| allocator.free(f);
+    const name = failing orelse root_source;
+    common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot access '{s}': {s}", .{ name, common.posixErrorString(err) });
+}
+
+/// Scan a source directory for the first subdirectory that cannot be opened,
+/// returning its full path (caller-owned) or null if every subdirectory opens.
+fn findUnreadableTreeChild(
+    allocator: Allocator,
+    io: std.Io,
+    parent_path: []const u8,
+) ?[]const u8 {
+    assert(parent_path.len > 0);
+    var parent_dir = std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true }) catch return null;
+    defer parent_dir.close(io);
+    var iterator = parent_dir.iterate();
+    while (iterator.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        var child = parent_dir.openDir(io, entry.name, .{ .iterate = true }) catch {
+            return std.fs.path.join(allocator, &.{ parent_path, entry.name }) catch null;
+        };
+        child.close(io);
+    }
+    return null;
 }
 
 /// Copy file with preserved attributes
