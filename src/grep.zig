@@ -14,6 +14,7 @@ const privilege_test = common.privilege_test;
 extern "c" fn geteuid() std.c.uid_t;
 
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const c = @cImport({
     @cInclude("regex.h");
@@ -1016,11 +1017,49 @@ fn shouldExcludeDir(dirname: []const u8, opts: *const GrepOptions) bool {
     return false;
 }
 
-/// Recursively search a directory
-fn searchDirectory(
+/// Mutable state threaded through one recursive search: the bounded walker
+/// plus the visited-inode set grep uses to terminate symlink cycles under -R.
+const TreeSearch = struct {
+    /// Arena allocator shared with runGrep; used for the duped last_dir_path.
+    allocator: Allocator,
+    walker: common.walker.Walker,
+    /// Device/inode of every directory grep actually descends: the root, each
+    /// real subdirectory the walker enters, and each followed directory
+    /// symlink. Used to break -R symlink loops AND to deduplicate a directory
+    /// symlink that points back at a real subdirectory already walked (GNU
+    /// grep dedups by dev/inode for every directory it enters). null when -R
+    /// is off (no symlink following, so no cycle is possible).
+    visited_dirs: ?common.directory.FileSystemIdSet,
+    /// Full path of the directory whose children the walker is currently
+    /// iterating: the most recent pre-order .directory entry. When next()
+    /// surfaces a per-entry I/O error (the walker cannot carry the failing
+    /// child path), grep scans this directory to name the exact unreadable
+    /// subdirectory in the error message, matching GNU grep. null before the
+    /// first directory is emitted (an error there names the root operand).
+    last_dir_path: ?[]const u8,
+};
+
+/// Recursively search a directory tree using the bounded common.walker.
+///
+/// Replaces the former self-recursive searchDirectory. The walker owns the
+/// real-directory traversal (pre-order, depth-bounded, iterative); grep
+/// decides which emitted entries to search and which directories to prune.
+///
+/// Symlink policy is grep's responsibility, not the walker's. We drive the
+/// walker in `no_follow` so symlinks arrive as `.sym_link` entries with their
+/// path intact. Under -r grep ignores them. Under -R grep follows them: a
+/// symlink-to-file is opened and searched; a symlink-to-directory is enqueued
+/// as a fresh root on the SAME walker, gated by grep's own visited-inode set
+/// so symlink loops terminate. The walker's follow_all mode cannot serve grep,
+/// because it openDir()s every symlink and so loses a symlink-to-file as an
+/// error; and its no_follow cycle pre-registration would block the intended
+/// descent through a directory symlink. A no_follow walk over real directories
+/// cannot itself cycle (directory hardlinks are disallowed), so walker-level
+/// cycle detection is unnecessary here.
+fn searchTree(
     allocator: Allocator,
     io: std.Io,
-    dir_path: []const u8,
+    root_path: []const u8,
     patterns: []const CompiledPattern,
     opts: *const GrepOptions,
     stdout_writer: *std.Io.Writer,
@@ -1028,60 +1067,291 @@ fn searchDirectory(
     use_color: bool,
     found_any: *bool,
 ) void {
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
+    assert(root_path.len > 0);
+    assert(opts.recursive or opts.skip_dirs);
+
+    var search = TreeSearch{
+        .allocator = allocator,
+        .walker = common.walker.Walker.init(allocator, .{
+            .order = .pre,
+            .symlinks = .no_follow,
+            .detect_cycles = false,
+        }) catch return,
+        .visited_dirs = if (opts.dereference_recursive)
+            common.directory.FileSystemIdSet.init(allocator)
+        else
+            null,
+        .last_dir_path = null,
+    };
+    defer search.walker.deinit(io);
+    defer if (search.visited_dirs) |*set| set.deinit();
+
+    // Seed the visited set with the root so a symlink pointing back at it stops.
+    if (search.visited_dirs != null) registerDir(io, root_path, &search);
+    search.walker.addRoot(root_path) catch return;
+
+    while (true) {
+        const maybe_entry = search.walker.next(io) catch |err| {
+            // An unreadable directory (or other per-entry I/O failure) is
+            // non-fatal: report it and let the walker resume at siblings.
+            reportWalkError(io, root_path, err, opts, stderr_writer, &search);
+            continue;
+        };
+        const entry = maybe_entry orelse break;
+        searchTreeEntry(
+            allocator,
+            io,
+            entry,
+            patterns,
+            opts,
+            stdout_writer,
+            stderr_writer,
+            use_color,
+            found_any,
+            &search,
+        );
+    }
+}
+
+/// Report a non-fatal per-entry walk error, naming the exact failing path.
+///
+/// The bounded walker surfaces an I/O error from next() without the child path
+/// that triggered it (the failing directory's pre-order entry is never emitted,
+/// because the walker errors while opening it). To match GNU grep, which names
+/// the precise unreadable path, grep rescans the directory currently being
+/// iterated (last_dir_path, the most recent pre-order .directory entry) and
+/// reports the first subdirectory it cannot open. Falling back to the iterated
+/// directory, then the root operand, keeps the message useful when the scan
+/// finds nothing (e.g. a transient or non-EACCES failure).
+fn reportWalkError(
+    io: std.Io,
+    root_path: []const u8,
+    err: anyerror,
+    opts: *const GrepOptions,
+    stderr_writer: *std.Io.Writer,
+    search: *TreeSearch,
+) void {
+    assert(root_path.len > 0);
+    if (opts.no_messages) return;
+    // last_dir_path, when set, is a non-empty arena-duped directory path; the
+    // root operand fallback is likewise non-empty (asserted by the caller).
+    const parent_path = search.last_dir_path orelse root_path;
+    assert(parent_path.len > 0);
+    const failing_path =
+        findUnreadableChildDir(search.allocator, io, parent_path) orelse parent_path;
+    common.printErrorWithProgram(
+        search.allocator,
+        stderr_writer,
+        prog_name,
+        "{s}: {s}",
+        .{ failing_path, common.posixErrorString(err) },
+    );
+}
+
+/// Scan a directory for the first immediate subdirectory that cannot be opened,
+/// returning its full path (arena-owned) or null if every subdirectory opens.
+/// Used to name the exact unreadable path behind a walker error.
+fn findUnreadableChildDir(
+    allocator: Allocator,
+    io: std.Io,
+    parent_path: []const u8,
+) ?[]const u8 {
+    assert(parent_path.len > 0);
+    assert(parent_path[0] != 0);
+    var parent_dir =
+        std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true }) catch return null;
+    defer parent_dir.close(io);
+    var iterator = parent_dir.iterate();
+    while (iterator.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        var child = parent_dir.openDir(io, entry.name, .{ .iterate = true }) catch {
+            // This is the subdirectory the walker failed to open. Name it.
+            return std.fs.path.join(allocator, &.{ parent_path, entry.name }) catch null;
+        };
+        child.close(io);
+    }
+    return null;
+}
+
+/// Record a directory's device/inode in the visited set, if -R is active.
+/// A directory grep cannot open is simply not recorded (it will not be
+/// descended either), so the omission is harmless.
+fn registerDir(io: std.Io, path: []const u8, search: *TreeSearch) void {
+    assert(path.len > 0);
+    // registerDir is only meaningful when -R installed the visited set.
+    assert(search.visited_dirs != null);
+    const set = if (search.visited_dirs) |*s| s else return;
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return;
+    defer dir.close(io);
+    const fs_id = common.directory.FileSystemId.fromDir(dir) catch return;
+    _ = set.getOrPut(fs_id) catch {};
+}
+
+/// Handle one walker entry: search regular files, prune excluded directories,
+/// and (under -R) follow symlinks the no_follow walker left for grep to resolve.
+fn searchTreeEntry(
+    allocator: Allocator,
+    io: std.Io,
+    entry: common.walker.Entry,
+    patterns: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    use_color: bool,
+    found_any: *bool,
+    search: *TreeSearch,
+) void {
+    assert(entry.path.len > 0);
+    assert(entry.basename.len > 0);
+    switch (entry.kind) {
+        .directory => enterDir(io, entry, opts, search),
+        .file => searchOneFile(
+            allocator,
+            io,
+            entry.path,
+            entry.basename,
+            patterns,
+            opts,
+            stdout_writer,
+            stderr_writer,
+            use_color,
+            found_any,
+        ),
+        .sym_link => {
+            // Under -r symlinks are never followed; under -R grep follows now.
+            if (!opts.dereference_recursive) return;
+            followSymlinkEntry(
+                allocator,
+                io,
+                entry,
+                patterns,
+                opts,
+                stdout_writer,
+                stderr_writer,
+                use_color,
+                found_any,
+                search,
+            );
+        },
+        else => {},
+    }
+}
+
+/// Process a pre-order directory entry: prune excluded directories, otherwise
+/// remember it as the directory the walker is now iterating (for precise error
+/// reporting) and, under -R, record its device/inode so a directory symlink
+/// pointing back at it is recognized as already-visited (GNU-style dedup).
+fn enterDir(
+    io: std.Io,
+    entry: common.walker.Entry,
+    opts: *const GrepOptions,
+    search: *TreeSearch,
+) void {
+    assert(entry.path.len > 0);
+    assert(entry.kind == .directory);
+    // Pruning an excluded directory drops its whole subtree; the pruned dir is
+    // not iterated, so it must not become last_dir_path.
+    if (shouldExcludeDir(entry.basename, opts)) {
+        search.walker.pruneCurrent();
+        return;
+    }
+    // Remember the directory now being iterated so a child-open failure can be
+    // named precisely. Duped into the arena: entry.path dies on the next next().
+    search.last_dir_path = search.allocator.dupe(u8, entry.path) catch search.last_dir_path;
+    // Under -R, record every real directory grep enters so a directory symlink
+    // resolving to an already-walked subtree is not re-walked.
+    if (search.visited_dirs != null) registerDir(io, entry.path, search);
+}
+
+/// Open and search a single regular file reached during a recursive walk.
+fn searchOneFile(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    basename: []const u8,
+    patterns: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    use_color: bool,
+    found_any: *bool,
+) void {
+    assert(path.len > 0);
+    assert(basename.len > 0);
+    if (!shouldIncludeFile(basename, opts)) return;
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         if (!opts.no_messages) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ dir_path, common.posixErrorString(err) });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "{s}: {s}",
+                .{ path, common.posixErrorString(err) },
+            );
         }
         return;
     };
-    defer dir.close(io);
-
-    var iter = dir.iterate();
-    while (iter.next(io) catch null) |entry| {
-        // Build full path
-        const full_path = std.fs.path.join(allocator, &.{ dir_path, entry.name }) catch continue;
-
-        switch (entry.kind) {
-            .directory => {
-                if (!shouldExcludeDir(entry.name, opts)) {
-                    searchDirectory(allocator, io, full_path, patterns, opts, stdout_writer, stderr_writer, use_color, found_any);
-                }
-            },
-            .file => {
-                if (shouldIncludeFile(entry.name, opts)) {
-                    const file = std.Io.Dir.cwd().openFile(io, full_path, .{}) catch |err| {
-                        if (!opts.no_messages) {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ full_path, common.posixErrorString(err) });
-                        }
-                        continue;
-                    };
-                    defer file.close(io);
-                    if (processFile(allocator, io, file, full_path, patterns, opts, stdout_writer, true, use_color)) {
-                        found_any.* = true;
-                    }
-                }
-            },
-            .sym_link => {
-                if (opts.dereference_recursive) {
-                    // Follow symlink - try as file first, then as directory
-                    if (shouldIncludeFile(entry.name, opts)) {
-                        const file = std.Io.Dir.cwd().openFile(io, full_path, .{}) catch {
-                            // Might be a directory symlink
-                            if (!shouldExcludeDir(entry.name, opts)) {
-                                searchDirectory(allocator, io, full_path, patterns, opts, stdout_writer, stderr_writer, use_color, found_any);
-                            }
-                            continue;
-                        };
-                        defer file.close(io);
-                        if (processFile(allocator, io, file, full_path, patterns, opts, stdout_writer, true, use_color)) {
-                            found_any.* = true;
-                        }
-                    }
-                }
-            },
-            else => {},
-        }
+    defer file.close(io);
+    if (processFile(allocator, io, file, path, patterns, opts, stdout_writer, true, use_color)) {
+        found_any.* = true;
     }
+}
+
+/// Follow a symlink under -R. statFile resolves the link: a directory target
+/// is enqueued as a new walker root (once, gated by the visited-inode set so
+/// loops terminate); any other target is searched as a regular file.
+fn followSymlinkEntry(
+    allocator: Allocator,
+    io: std.Io,
+    entry: common.walker.Entry,
+    patterns: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    use_color: bool,
+    found_any: *bool,
+    search: *TreeSearch,
+) void {
+    assert(entry.path.len > 0);
+    assert(opts.dereference_recursive);
+    // statFile follows the link, revealing the real target kind.
+    const target_stat = std.Io.Dir.cwd().statFile(io, entry.path, .{}) catch return;
+    if (target_stat.kind == .directory) {
+        followDirSymlink(io, entry, opts, search);
+        return;
+    }
+    searchOneFile(
+        allocator,
+        io,
+        entry.path,
+        entry.basename,
+        patterns,
+        opts,
+        stdout_writer,
+        stderr_writer,
+        use_color,
+        found_any,
+    );
+}
+
+/// Enqueue a directory symlink's target for walking, unless it is excluded or
+/// already visited. Recording the target before enqueuing breaks symlink loops.
+fn followDirSymlink(
+    io: std.Io,
+    entry: common.walker.Entry,
+    opts: *const GrepOptions,
+    search: *TreeSearch,
+) void {
+    assert(entry.path.len > 0);
+    assert(opts.dereference_recursive);
+    if (shouldExcludeDir(entry.basename, opts)) return;
+    var dir = std.Io.Dir.cwd().openDir(io, entry.path, .{}) catch return;
+    defer dir.close(io);
+    const fs_id = common.directory.FileSystemId.fromDir(dir) catch return;
+    const set = if (search.visited_dirs) |*s| s else return;
+    const gop = set.getOrPut(fs_id) catch return;
+    if (gop.found_existing) return; // Already walked this directory: stop the loop.
+    search.walker.addRoot(entry.path) catch {};
 }
 
 // ============================================================================
@@ -1223,7 +1493,7 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         }
     } else if (opts.files.items.len == 0 and opts.recursive) {
         // Recursive with no files means search current directory
-        searchDirectory(allocator, io, ".", compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
+        searchTree(allocator, io, ".", compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
     } else {
         for (opts.files.items) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
@@ -1245,7 +1515,7 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
                 };
                 if (stat.kind == .directory) {
                     if (opts.skip_dirs) continue; // -d skip: silently skip
-                    searchDirectory(allocator, io, file_path, compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
+                    searchTree(allocator, io, file_path, compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
                     continue;
                 }
             }
