@@ -1767,3 +1767,617 @@ test "cp: -c flag accepted silently (no-op)" {
     try testing.expectEqual(@as(u8, 0), exit_code);
     try test_dir.expectFileContent("dest.txt", "content");
 }
+
+// ===========================================================================
+// Characterization tests for the walker migration (copyDirectory removal).
+//
+// These tests lock in the externally observable behavior the bounded-walker
+// rewrite must preserve. They run against the current recursive code and must
+// PASS today. A later step will sabotage the implementation to prove each test
+// has teeth. Each assertion targets a value a wrong traversal would change
+// (specific file content at depth, symlink target strings, mtime equality,
+// nonzero exit on error) -- never a default falsy/zero value.
+// ===========================================================================
+
+test "cp -r replicates a multi-level tree with files at every depth and empty subdirs" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Build a three-level tree with a file at each depth and one empty leaf dir.
+    // The walker must create every parent before any child it contains, and it
+    // must copy content at depth 2 and reproduce the empty directory.
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/top.txt", "depth0", null);
+    try test_dir.createDir("src/mid");
+    try test_dir.createFile("src/mid/middle.txt", "depth1", null);
+    try test_dir.createDir("src/mid/deep");
+    try test_dir.createFile("src/mid/deep/leaf.txt", "depth2", null);
+    try test_dir.createDir("src/mid/empty");
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Files at every depth must arrive with exact content.
+    try test_dir.expectFileContent("dst/top.txt", "depth0");
+    try test_dir.expectFileContent("dst/mid/middle.txt", "depth1");
+    try test_dir.expectFileContent("dst/mid/deep/leaf.txt", "depth2");
+
+    // The empty subdirectory must be reproduced as a real directory.
+    const empty_stat = try test_dir.getFileStat("dst/mid/empty");
+    try testing.expectEqual(std.Io.File.Kind.directory, empty_stat.kind);
+}
+
+test "cp of a directory without -r fails naming the directory and nonzero exit" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("a_directory");
+    try test_dir.createFile("a_directory/inside.txt", "x", null);
+
+    const source_path = try test_dir.getPath("a_directory");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/copy_target", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    // Nonzero exit and a diagnostic that names the directory operand.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "a_directory") != null);
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "directory") != null);
+    // The destination must not have been created.
+    try testing.expect(!test_dir.fileExists("copy_target"));
+}
+
+test "cp -r default does not follow symlinks: file-link and dir-link recreated as symlinks" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // A directory containing a real file, a real subdir, a symlink to the file,
+    // and a symlink to the subdir. The follow_none default must reproduce both
+    // links as links, not materialize them.
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/real.txt", "real file", null);
+    try test_dir.createDir("src/realdir");
+    try test_dir.createFile("src/realdir/nested.txt", "nested", null);
+    try test_dir.createSymlink("real.txt", "src/file_link");
+    try test_dir.createSymlink("realdir", "src/dir_link");
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Both symlinks must be preserved as symlinks pointing at the original targets.
+    try testing.expect(try test_dir.isSymlink("dst/file_link"));
+    const file_target = try test_dir.getSymlinkTarget("dst/file_link");
+    defer testing.allocator.free(file_target);
+    try testing.expectEqualStrings("real.txt", file_target);
+
+    // isSymlink confirms the dest entry is itself a link (not a materialized
+    // tree), and the target string proves it was reproduced verbatim rather
+    // than followed.
+    try testing.expect(try test_dir.isSymlink("dst/dir_link"));
+    const dir_target = try test_dir.getSymlinkTarget("dst/dir_link");
+    defer testing.allocator.free(dir_target);
+    try testing.expectEqualStrings("realdir", dir_target);
+}
+
+test "cp -rL materializes file-link as a regular file and dir-link as a real directory" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/real.txt", "materialize me", null);
+    try test_dir.createDir("src/realdir");
+    try test_dir.createFile("src/realdir/nested.txt", "through the link", null);
+    try test_dir.createSymlink("real.txt", "src/file_link");
+    try test_dir.createSymlink("realdir", "src/dir_link");
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-L", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // file_link becomes a regular file holding the target's content.
+    try testing.expect(!(try test_dir.isSymlink("dst/file_link")));
+    try test_dir.expectFileContent("dst/file_link", "materialize me");
+
+    // dir_link becomes a real directory whose contents were copied through it.
+    try testing.expect(!(try test_dir.isSymlink("dst/dir_link")));
+    const dir_stat = try test_dir.getFileStat("dst/dir_link");
+    try testing.expectEqual(std.Io.File.Kind.directory, dir_stat.kind);
+    try test_dir.expectFileContent("dst/dir_link/nested.txt", "through the link");
+}
+
+test "cp -rL with two sibling links to the same dir copies its contents twice (no dedup)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Two distinct symlinks both point at the same real directory. A legitimate
+    // duplicate follow is NOT a cycle, so both must be materialized fully.
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/shared");
+    try test_dir.createFile("src/shared/payload.txt", "shared payload", null);
+    try test_dir.createSymlink("shared", "src/link_a");
+    try test_dir.createSymlink("shared", "src/link_b");
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-L", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Both follows must materialize the shared directory's content independently.
+    try test_dir.expectFileContent("dst/link_a/payload.txt", "shared payload");
+    try test_dir.expectFileContent("dst/link_b/payload.txt", "shared payload");
+}
+
+test "cp -rH follows the operand link but preserves inner links" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // A real directory with a file plus an inner symlink, reached via a
+    // command-line symlink operand. -H follows only the operand.
+    try test_dir.createFile("outside.txt", "outside target", null);
+    try test_dir.createDir("real_dir");
+    try test_dir.createFile("real_dir/data.txt", "inner data", null);
+    try test_dir.createSymlink("../outside.txt", "real_dir/inner_link");
+    try test_dir.createSymlink("real_dir", "operand_link");
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const link_path = try std.fmt.allocPrint(testing.allocator, "{s}/operand_link", .{base_path});
+    defer testing.allocator.free(link_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-H", link_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Operand link was followed and MATERIALIZED: dst must be a real directory,
+    // not a symlink recreating the operand. isSymlink does not dereference, so
+    // this fails if -H regressed to follow_none and recreated dst as a link to
+    // real_dir (in which case every dereferencing assertion below would still
+    // pass through the link, hiding the regression).
+    try testing.expect(!(try test_dir.isSymlink("dst")));
+    const dst_stat = try test_dir.getFileStat("dst");
+    try testing.expectEqual(std.Io.File.Kind.directory, dst_stat.kind);
+    try test_dir.expectFileContent("dst/data.txt", "inner data");
+
+    // The inner link must be preserved, not followed.
+    try testing.expect(try test_dir.isSymlink("dst/inner_link"));
+    const inner_target = try test_dir.getSymlinkTarget("dst/inner_link");
+    defer testing.allocator.free(inner_target);
+    try testing.expectEqualStrings("../outside.txt", inner_target);
+}
+
+test "cp -r reports an unreadable subdirectory, copies siblings, exits nonzero" {
+    // Root bypasses read permissions, so the unreadable directory would be read
+    // fine and the error path never triggers. Skip when effective uid is root.
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/readable.txt", "i am copyable", null);
+    try test_dir.createDir("src/locked");
+    try test_dir.createFile("src/locked/secret.txt", "unreachable", null);
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    // Remove all permissions on the locked subdir so opening it for iteration
+    // fails. chmod by absolute path (via libc) reliably persists to the inode;
+    // restore perms in defer so TmpDir cleanup can recurse into it. If the
+    // platform refuses to make the directory unreadable (e.g. some CI sandboxes
+    // ignore chmod), skip rather than assert a behavior we could not provoke.
+    const locked_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/src/locked", .{base_path}, 0);
+    defer testing.allocator.free(locked_path_z);
+    if (std.c.chmod(locked_path_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(locked_path_z, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    // Overall exit code is nonzero because one subtree failed.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    // The sibling that was readable must still have been copied.
+    try test_dir.expectFileContent("dst/readable.txt", "i am copyable");
+    // The failure must be reported to stderr naming the locked directory.
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "locked") != null);
+}
+
+test "cp -rv prints each copied path to stdout" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/alpha.txt", "a", null);
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/beta.txt", "b", null);
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-v", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, &stdout_aw.writer, common.null_writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Verbose output must mention the specific files copied at each depth.
+    const out = stdout_aw.written();
+    const alpha_index = std.mem.find(u8, out, "alpha.txt");
+    const beta_index = std.mem.find(u8, out, "beta.txt");
+    try testing.expect(alpha_index != null);
+    try testing.expect(beta_index != null);
+
+    // Pre-order creation is externally observable only through the verbose
+    // stream: a parent directory's line must precede its children's lines. The
+    // nested subdirectory "sub" is the destination parent of "beta.txt", so its
+    // dest line ('.../dst/sub') must appear before the line for beta.txt. We
+    // anchor on the dest path "/sub'" (trailing quote excludes "/sub/beta...")
+    // rather than the source, since the source basename "sub" also appears
+    // inside the source side of the beta.txt line. This fails if the walker
+    // emits a child before creating its parent (post-order or unordered).
+    const sub_dir_index = std.mem.find(u8, out, "/sub'");
+    try testing.expect(sub_dir_index != null);
+    try testing.expect(sub_dir_index.? < beta_index.?);
+}
+
+test "cp -r refuses to copy a directory onto itself (same-file guard)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // Lay out src/sub with a child so a completed copy would be observable.
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/file.txt", "content", null);
+
+    // Copy src/sub INTO its own parent src. resolveFinalDestination sees that
+    // dest (src) exists as a directory and appends the source basename "sub",
+    // so the resolved destination is src/sub -- the source itself. This is the
+    // canonical "directory into itself" case the current code refuses cleanly
+    // via the isSameFile guard (src/cp.zig:367), which the walker migration
+    // keeps in the per-entry action path. We pin the exact diagnostic so the
+    // test fails if the guard is dropped and the copy silently proceeds.
+    //
+    // NOTE FOR GREEN PHASE: the OTHER into-itself shape -- dest strictly inside
+    // source, e.g. `cp -r src src/sub` -- does NOT hit isSameFile today; the
+    // current code runs away creating src/sub/src/sub/... until a path-length
+    // error. The migration must refuse that case cleanly via
+    // walker.pruneCurrent() on a pre-order dir whose (dev,inode) matches the
+    // destination. That clean refusal is NEW behavior, so its test belongs with
+    // the migrated code, not here -- characterizing the current runaway would be
+    // slow and brittle (depends on PATH_MAX).
+    const source_path = try test_dir.getPath("src/sub");
+    defer testing.allocator.free(source_path);
+    const dest_path = try test_dir.getPath("src");
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    // Refused with a nonzero exit and the specific same-file diagnostic naming
+    // the directory. Asserting the exact message (not just stderr.len > 0)
+    // distinguishes a real same-file refusal from any unrelated failure mode.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    const err = stderr_aw.written();
+    try testing.expect(std.mem.find(u8, err, "are the same file") != null);
+    try testing.expect(std.mem.find(u8, err, "src/sub") != null);
+}
+
+test "cp -rp preserves regular file mode and mtime on copied files" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // The behavior under test is FILE attribute preservation, so the source is a
+    // single regular file copied directly. Sourcing a directory here would route
+    // through the directory-preserve path, which currently panics (fchmod EBADF on
+    // a freshly-opened dir handle) and crashes the process before any assertion is
+    // reached — making the test toothless. Directory-preserve is a SEPARATE broken
+    // behavior fixed in the green phase; this test must isolate the working file
+    // path so it can actually go red when file preservation regresses. The -r flag
+    // is harmless for a single-file source and keeps the "cp -rp" scenario name.
+    //
+    // Mode 0o700 (not 0o600): a non-preserving copy produces a user triad of
+    // 0o6xx (default_file 0o666 masked by umask), so 0o700 cannot be reproduced
+    // by accident. This gives the mode-preservation assertion independent teeth.
+    try test_dir.createFile("data.txt", "preserve me", 0o700);
+
+    // Backdate the source file's mtime to a fixed point well in the past so a
+    // non-preserving copy (which stamps "now") would visibly differ.
+    const src_file_path = try test_dir.getPath("data.txt");
+    defer testing.allocator.free(src_file_path);
+    const past_ns: i128 = 1_000_000_000 * 1_000_000_000; // 2001-09-09T01:46:40Z.
+    {
+        const file = try std.Io.Dir.cwd().openFile(testing.io, src_file_path, .{ .mode = .read_write });
+        defer file.close(testing.io);
+        try file.setTimestamps(testing.io, .{
+            .access_timestamp = .{ .new = .{ .nanoseconds = past_ns } },
+            .modify_timestamp = .{ .new = .{ .nanoseconds = past_ns } },
+        });
+    }
+
+    const source_path = src_file_path;
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst.txt", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-p", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const dst_file_path = dest_path;
+    const source_info = try common.file.FileInfo.stat(testing.io, src_file_path);
+    const dest_info = try common.file.FileInfo.stat(testing.io, dst_file_path);
+
+    // User-mode bits must match (full bits need root; user bits suffice here).
+    try testing.expectEqual(source_info.mode & 0o700, dest_info.mode & 0o700);
+    // The mtime must be preserved: the destination must carry the SOURCE's mtime,
+    // not the copy time. Comparing dest to the source's stat (rather than the
+    // hardcoded past_ns) round-trips through the identical stat path, so the
+    // assertion holds even on filesystems that truncate sub-second granularity.
+    // The backdating above still gives the test teeth: a non-preserving copy
+    // would stamp ~2026, far from the source's 2001 mtime.
+    try testing.expectEqual(source_info.mtime, dest_info.mtime);
+    // Sanity: the source really is backdated, so "preserved == now" cannot
+    // sneak through. This keeps the teeth even if the FS coarsened past_ns.
+    try testing.expect(source_info.mtime < past_ns + 1_000_000_000);
+    try testing.expect(source_info.mtime > past_ns - 1_000_000_000);
+}
+
+// ===========================================================================
+// Intended-RED behavior-fix tests for the walker migration.
+//
+// Unlike the characterization tests above, these pin GNU cp behavior the
+// CURRENT recursive code gets WRONG. Each must FAIL today on its KEY assertion
+// (not on a compile error or crash) and go GREEN after the bounded-walker
+// rewrite. The bugs are verified against GNU cp and the built binary on Linux:
+//   A. -rp on a read-only (0o555) source dir does not preserve the dir mode,
+//      because preservation runs PRE-order via fchmod on a fresh dir handle
+//      (EBADF, swallowed). The fix preserves POST-order, after children write.
+//   B. -rp does not preserve directory mtimes (dest dirs get now-time); GNU
+//      preserves them, applied post-order so writing children does not re-bump.
+//   C. -rL on a symlink cycle runs away ~40 levels (kernel ELOOP) instead of
+//      reporting "cyclic symbolic link", copying the rest, and stopping.
+// ===========================================================================
+
+test "walker-migration: -rp preserves directory mode post-order (read-only source dir)" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // A source directory holding one regular file. The directory itself is made
+    // read-only (0o555) AFTER the file exists, so the file is still copyable;
+    // only the final dest-dir mode is under test. chmod by absolute path via
+    // libc reliably persists to the inode (mirrors the unreadable-subdir test).
+    try test_dir.createDir("src");
+    try test_dir.createFile("src/inside.txt", "read only dir content", null);
+
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const src_path_z = try std.fmt.allocPrintSentinel(testing.allocator, "{s}/src", .{base_path}, 0);
+    defer testing.allocator.free(src_path_z);
+
+    // Make the source dir read-only. Restore 0o755 in defer so TmpDir cleanup
+    // can recurse in and delete it. If the platform refuses the chmod, skip.
+    if (std.c.chmod(src_path_z, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(src_path_z, 0o755);
+
+    const source_path = try std.fmt.allocPrint(testing.allocator, "{s}/src", .{base_path});
+    defer testing.allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-p", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    // The copy succeeds and the child arrives: post-order preservation makes the
+    // dest dir read-only only AFTER its children are written, so this holds even
+    // once the mode is 0o555. (Under fakeroot/root 0o555 would not block writes
+    // anyway, so this test never depends on EACCES.)
+    try testing.expectEqual(@as(u8, 0), exit_code);
+    try test_dir.expectFileContent("dst/inside.txt", "read only dir content");
+
+    // KEY RED ASSERTION: the destination directory must carry the source's
+    // 0o555 permission bits. Today preservation runs pre-order via fchmod on a
+    // freshly-opened directory handle (EBADF, swallowed), so the dest dir keeps
+    // the default mode (0o775/0o755) -- this assertion fails on that default.
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o555), dest_info.mode & 0o777);
+
+    // No diagnostic should reach the captured stderr on success. (The current
+    // pre-order failure dumps an "unexpected errno: 9" trace to the process's
+    // debug stderr, NOT this captured writer, so this passes today; the mode
+    // assertion above is the RED one.)
+    try testing.expectEqualStrings("", stderr_aw.written());
+}
+
+test "walker-migration: -rp preserves directory mtime" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // A nested source directory with a child file. The behavior under test is
+    // DIRECTORY mtime preservation, so we backdate src/sub specifically.
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/leaf.txt", "leaf", null);
+
+    // Backdate src/sub's mtime to a fixed past instant. We set it on the
+    // directory entry by path through the TmpDir handle so it persists to the
+    // inode; a non-preserving copy would stamp the dest dir with "now".
+    const past_ns: i128 = 1_000_000_000 * 1_000_000_000; // 2001-09-09T01:46:40Z.
+    try test_dir.tmp_dir.dir.setTimestamps(testing.io, "src/sub", .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = past_ns } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = past_ns } },
+    });
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const args = [_][]const u8{ "-r", "-p", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The source dir's recorded mtime, round-tripped through the same stat path,
+    // is the spec value (handles filesystems that coarsen sub-second precision).
+    const sub_src_path = try test_dir.getPath("src/sub");
+    defer testing.allocator.free(sub_src_path);
+    const source_info = try common.file.FileInfo.stat(testing.io, sub_src_path);
+    const dest_sub_path = try std.fmt.allocPrint(testing.allocator, "{s}/sub", .{dest_path});
+    defer testing.allocator.free(dest_sub_path);
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_sub_path);
+
+    // Sanity: the source dir really is backdated (well before ~2026), so a
+    // "preserved == now" copy cannot sneak past the assertion below.
+    try testing.expect(source_info.mtime < past_ns + 1_000_000_000);
+    try testing.expect(source_info.mtime > past_ns - 1_000_000_000);
+
+    // KEY RED ASSERTION: the dest dir must carry the SOURCE's mtime, compared at
+    // seconds granularity (the API stores ns; whole-second equality survives FS
+    // truncation). Today the dest dir is stamped at copy time (~2026), so it
+    // differs from the source's 2001 mtime by ~25 years and this fails.
+    const source_mtime_s = @divFloor(source_info.mtime, std.time.ns_per_s);
+    const dest_mtime_s = @divFloor(dest_info.mtime, std.time.ns_per_s);
+    try testing.expectEqual(source_mtime_s, dest_mtime_s);
+}
+
+test "walker-migration: -rL reports symlink cycle without materializing junk" {
+    var test_dir = TestDir.init(testing.allocator);
+    defer test_dir.deinit();
+
+    // src/sub holds a real file plus a symlink that points back up at src,
+    // forming a cycle when -L follows it: src/sub/loop -> ../../src re-enters
+    // src, then src/sub, then loop again. GNU detects the cycle, reports it,
+    // copies the rest, and does NOT materialize the loop. Current code follows
+    // until the kernel's ~40-deep ELOOP limit, materializing junk nesting.
+    try test_dir.createDir("src");
+    try test_dir.createDir("src/sub");
+    try test_dir.createFile("src/sub/f.txt", "sibling content", null);
+    try test_dir.createSymlink("../../src", "src/sub/loop");
+
+    const source_path = try test_dir.getPath("src");
+    defer testing.allocator.free(source_path);
+    const base_path = try test_dir.getBasePath();
+    defer testing.allocator.free(base_path);
+    const dest_path = try std.fmt.allocPrint(testing.allocator, "{s}/dst", .{base_path});
+    defer testing.allocator.free(dest_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -rL terminates in finite time today via kernel ELOOP after ~40 levels, so
+    // there is no hang risk; it WILL create junk nesting under dst on current
+    // code (TmpDir cleanup removes it).
+    const args = [_][]const u8{ "-r", "-L", source_path, dest_path };
+    const exit_code = try run(testing.allocator, testing.io, &args, common.null_writer, &stderr_aw.writer);
+
+    // Nonzero exit: passes today via ELOOP, so this is NOT the RED assertion.
+    try testing.expect(exit_code != 0);
+
+    // KEY RED ASSERTION 1: the diagnostic must name the cycle ("cyclic"). Today
+    // the kernel error surfaces as "Too many levels of symbolic links", which
+    // does not contain "cyclic", so this fails.
+    const err = stderr_aw.written();
+    try testing.expect(std.mem.find(u8, err, "cyclic") != null);
+
+    // KEY RED ASSERTION 2: the loop must not be materialized. After detecting
+    // the cycle, no nesting below dst/sub/loop should exist. Today ~40 levels
+    // (dst/sub/loop/sub/loop/...) are created, so dst/sub/loop/sub exists and
+    // this fails. Probing via FileInfo.lstat avoids following any link.
+    const junk_path = try std.fmt.allocPrint(testing.allocator, "{s}/sub/loop/sub", .{dest_path});
+    defer testing.allocator.free(junk_path);
+    try testing.expectError(error.FileNotFound, common.file.FileInfo.lstat(junk_path));
+
+    // KEY RED ASSERTION 3: the sibling file is still copied (GNU copies the rest
+    // of the tree even after refusing the cyclic link). If current code aborts
+    // before copying f.txt due to iteration order, the summary notes it rather
+    // than weakening this assertion -- GNU semantics is the spec.
+    try test_dir.expectFileContent("dst/sub/f.txt", "sibling content");
+}
