@@ -1456,3 +1456,595 @@ test "mv: -f -n flag combination should let no-clobber win (last flag)" {
     // Source should still exist (move was skipped)
     try testing.expect(test_dir.fileExists(source_name));
 }
+
+// ===========================================================================
+// Characterization tests for the cross-filesystem copy fallback.
+//
+// These lock in the behavior that the walker migration must preserve when it
+// deletes copyDirectoryRecursive. They call crossFilesystemMove DIRECTLY: that
+// signature is the stable unit boundary and survives the migration. No real
+// EXDEV is needed because rename never fails cross-device inside one tmpDir;
+// driving the fallback by hand exercises the exact copy-then-delete logic.
+//
+// These tests must PASS on the current (recursive) code and STAY GREEN after
+// the walker rewrite. They are privileged (fakeroot) because they create and
+// chmod directory trees; under fakeroot we get stable mode/timestamp behavior.
+// ===========================================================================
+
+const privilege_test = common.privilege_test;
+
+test "privileged: crossFilesystemMove copies a multi-level tree then deletes source" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // Build a tree with files at depth 1, 2, and 3 plus an empty subdirectory.
+    // A correct copy must reproduce every file at every depth and create the
+    // empty directory; a wrong walk (e.g. dropping leaves or empty dirs) breaks
+    // at least one of the assertions below.
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/top.txt", "depth1", null);
+    try test_dir.inner.createDir("src/sub");
+    try test_dir.inner.createFile("src/sub/mid.txt", "depth2", null);
+    try test_dir.inner.createDir("src/sub/deep");
+    try test_dir.inner.createFile("src/sub/deep/leaf.txt", "depth3", null);
+    try test_dir.inner.createDir("src/empty");
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // Every file at every depth must be present in the destination with content
+    // intact. expectFileContent fails loudly on a missing or corrupted copy.
+    try test_dir.inner.expectFileContent("dst/top.txt", "depth1");
+    try test_dir.inner.expectFileContent("dst/sub/mid.txt", "depth2");
+    try test_dir.inner.expectFileContent("dst/sub/deep/leaf.txt", "depth3");
+
+    // The empty subdirectory must be reproduced as a directory.
+    const empty_info = try common.file.FileInfo.stat(testing.io, try std.fmt.allocPrint(allocator, "{s}/dst/empty", .{base_path}));
+    try testing.expectEqual(std.Io.File.Kind.directory, empty_info.kind);
+
+    // The source tree must be gone after a successful move.
+    try testing.expect(!test_dir.fileExists("src"));
+}
+
+test "privileged: fallback preserves regular file mode and mtime" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // A file with a distinctive non-default mode (0o741) so a copy that drops
+    // permissions (e.g. createFile with default 0o644) fails the mode check.
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/file.txt", "preserve me", 0o741);
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    // Capture source mtime before the move so we can compare it on the dest.
+    const src_file_path = try std.fmt.allocPrint(allocator, "{s}/src/file.txt", .{base_path});
+    const source_info = try common.file.FileInfo.stat(testing.io, src_file_path);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    const dest_file_path = try std.fmt.allocPrint(allocator, "{s}/dst/file.txt", .{base_path});
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_file_path);
+
+    // The source's permission bits must carry over to the destination file.
+    try testing.expectEqual(@as(std.posix.mode_t, 0o741), dest_info.mode & 0o777);
+
+    // The modification timestamp must be preserved (copyFileCross calls
+    // setTimestamps). Compare to second resolution to tolerate filesystem
+    // timestamp granularity while still catching a "now()" or zero mtime.
+    const source_mtime_s = @divFloor(source_info.mtime, std.time.ns_per_s);
+    const dest_mtime_s = @divFloor(dest_info.mtime, std.time.ns_per_s);
+    try testing.expectEqual(source_mtime_s, dest_mtime_s);
+}
+
+test "privileged: fallback recreates inner symlinks verbatim without following" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // src/link points at "real_target" (a relative, possibly-dangling target).
+    // The fallback must recreate the link with the SAME target string and must
+    // NOT dereference it (no target content copied, the dest entry is a link).
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/real_target", "target body", null);
+    try test_dir.inner.tmp_dir.dir.symLink(testing.io, "real_target", "src/link", .{});
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // The destination entry must itself be a symlink (lstat does not follow),
+    // proving the link was recreated rather than dereferenced into a regular
+    // file copy of the target body.
+    const dest_link_path = try std.fmt.allocPrint(allocator, "{s}/dst/link", .{base_path});
+    const link_info = try common.file.FileInfo.lstat(dest_link_path);
+    try testing.expectEqual(std.Io.File.Kind.sym_link, link_info.kind);
+
+    // The recreated link must carry the identical target string, verbatim.
+    var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const target_len = try std.Io.Dir.cwd().readLink(testing.io, dest_link_path, &target_buf);
+    try testing.expectEqualStrings("real_target", target_buf[0..target_len]);
+}
+
+test "privileged: fallback preserves writable directory mode" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // A writable subdirectory with a distinctive mode (0o750). The copy must
+    // reproduce that mode on the destination directory. This must stay green
+    // when the green phase moves mode application to post-order via
+    // preserveDirAttributes. 0o750 is writable by the owner, so populating
+    // children works regardless of pre- vs post-order timing.
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createDir("src/sub");
+    try test_dir.inner.createFile("src/sub/child.txt", "child", null);
+    // Set the distinctive mode via libc so it reliably persists to the inode.
+    const sub_path_z = try std.fmt.allocPrintSentinel(allocator, "{s}/src/sub", .{try test_dir.inner.getBasePath()}, 0);
+    if (std.c.chmod(sub_path_z, 0o750) != 0) return error.SkipZigTest;
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    const dest_sub_path = try std.fmt.allocPrint(allocator, "{s}/dst/sub", .{base_path});
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_sub_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o750), dest_info.mode & 0o777);
+
+    // The child must still be copied so we know the mode did not block writes.
+    try test_dir.inner.expectFileContent("dst/sub/child.txt", "child");
+}
+
+test "privileged: verbose fallback prints source and dest for each copied item" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/alpha.txt", "a", null);
+    try test_dir.inner.createDir("src/sub");
+    try test_dir.inner.createFile("src/sub/beta.txt", "b", null);
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{ .verbose = true },
+        &stdout_aw.writer,
+        &stderr_aw.writer,
+    );
+
+    // Loose pin: verbose output must mention both copied files by name and emit
+    // a per-item dest path for each, without pinning exact phrasing. A silent
+    // (or stdout-empty) copy fails these. We assert the full per-file DEST
+    // paths (not just the dest root prefix, which the unconditional header line
+    // already prints) so a regression that drops per-file verbose lines but
+    // keeps the header is caught here too.
+    const out = stdout_aw.written();
+    const dest_alpha = try std.fmt.allocPrint(allocator, "{s}/alpha.txt", .{dest_path});
+    const dest_beta = try std.fmt.allocPrint(allocator, "{s}/sub/beta.txt", .{dest_path});
+    try testing.expect(std.mem.find(u8, out, "alpha.txt") != null);
+    try testing.expect(std.mem.find(u8, out, "beta.txt") != null);
+    try testing.expect(std.mem.find(u8, out, source_path) != null);
+    try testing.expect(std.mem.find(u8, out, dest_alpha) != null);
+    try testing.expect(std.mem.find(u8, out, dest_beta) != null);
+}
+
+test "privileged: fallback copies a single regular file and removes the source" {
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try privilege_test.requiresPrivilege(testing.io);
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // Drive the non-directory branch of crossFilesystemMove directly. The file
+    // must arrive at the destination with its content and mode, and the source
+    // must be removed (copy-then-delete).
+    try test_dir.inner.createFile("only.txt", "single file body", 0o640);
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/only.txt", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/moved.txt", .{base_path});
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    try test_dir.inner.expectFileContent("moved.txt", "single file body");
+
+    const dest_info = try common.file.FileInfo.stat(testing.io, dest_path);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o640), dest_info.mode & 0o777);
+
+    // The source file must be gone.
+    try testing.expect(!test_dir.fileExists("only.txt"));
+}
+
+test "privileged: failed copy leaves source tree intact and reports an error" {
+    // Root bypasses read permissions, so a chmod-000 subdir would still open
+    // and the failure path never triggers. Skip when effective uid is root
+    // (mirrors cp's root-skip pattern; fakeroot reports root euid).
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // One readable file plus an unreadable subdirectory. Opening the locked
+    // directory for iteration fails, forcing the copy to error out somewhere.
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createFile("src/readable.txt", "i am readable", null);
+    try test_dir.inner.createDir("src/locked");
+    try test_dir.inner.createFile("src/locked/secret.txt", "blocked", null);
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    // chmod 000 by absolute path via libc so it reliably persists to the inode;
+    // restore in defer so TmpDir cleanup can recurse in. Skip if the platform
+    // refuses to make it unreadable (some CI sandboxes ignore chmod).
+    const locked_path_z = try std.fmt.allocPrintSentinel(allocator, "{s}/src/locked", .{base_path}, 0);
+    if (std.c.chmod(locked_path_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(locked_path_z, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    const result = crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // An error must be reported: crossFilesystemMove returns SOME error AND
+    // writes a diagnostic to stderr. We assert ONLY the error-reported and
+    // source-intact invariants. We deliberately do NOT pin the error variant
+    // (the green phase's GNU-style continue-with-siblings driver, mirroring
+    // cp, catches per-entry walker errors and returns an aggregate/sentinel
+    // rather than propagating AccessDenied verbatim), nor that dest is absent
+    // or that the copy aborted at the first failure. This test must stay green
+    // across that change. On current recursive code the only possible error in
+    // this tree is AccessDenied from openDir, so "any error" keeps full teeth.
+    try testing.expect(std.meta.isError(result));
+    try testing.expect(stderr_aw.written().len > 0);
+
+    // DATA SAFETY: the entire source tree must remain intact. A move that
+    // deleted any source on a failed copy would lose data. Restore the locked
+    // directory's permissions first so this test can read back its contents;
+    // the bytes-on-disk are what we verify, not the chmod we imposed.
+    _ = std.c.chmod(locked_path_z, 0o755);
+    try test_dir.inner.expectFileContent("src/readable.txt", "i am readable");
+    try test_dir.inner.expectFileContent("src/locked/secret.txt", "blocked");
+}
+
+// ===========================================================================
+// Intended-RED behavior-fix tests for the cross-filesystem copy fallback.
+//
+// These pin GNU mv semantics that the CURRENT recursive fallback gets WRONG;
+// the walker rewrite fixes them. Unlike the characterization tests above
+// (which stay green throughout), each of these is expected to FAIL on today's
+// code at a specific KEY assertion and go GREEN after the migration. They
+// follow the same boundary (crossFilesystemMove called directly) and the same
+// root-skip idiom as the privileged characterization tests.
+//
+// Backdated mtime sentinel: 2020-01-02 00:00:00 UTC. A "now()" or zeroed dest
+// mtime differs from this by years, so a second-granularity compare has teeth.
+// ===========================================================================
+
+const backdated_mtime_s: i128 = 1577923200; // 2020-01-02 00:00:00 UTC
+const backdated_mtime_ns: i128 = backdated_mtime_s * std.time.ns_per_s;
+
+test "walker-migration: cross-device fallback completes copy of read-only source subdir" {
+    // Root bypasses the read-only-directory write block, so the GNU-vs-current
+    // divergence on the removal side never triggers. Skip when euid is root
+    // (mirrors the characterization tests; fakeroot reports root euid).
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // src/sub holds f.txt and carries a backdated mtime and a read-only (0o555)
+    // mode. GNU mv COMPLETES the copy (dest/sub = 0o555, f.txt present, mtime
+    // carried) and only then fails on the REMOVAL side (unlink inside a
+    // read-only source dir needs write perm). Current code instead applies
+    // 0o555 to dest/sub PRE-order, so createFile inside it fails AccessDenied
+    // and the errdefer wipes the partial dest.
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createDir("src/sub");
+    try test_dir.inner.createFile("src/sub/f.txt", "read only body", null);
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    // Backdate src/sub's mtime so we can verify dest/sub carries it forward.
+    const sub_src_path = try std.fmt.allocPrint(allocator, "{s}/src/sub", .{base_path});
+    std.Io.Dir.cwd().setTimestamps(testing.io, sub_src_path, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(backdated_mtime_ns) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(backdated_mtime_ns) } },
+    }) catch return error.SkipZigTest;
+
+    // Make src/sub read-only via libc so the bits persist; restore u+w in defer
+    // so TmpDir cleanup can recurse in and unlink f.txt. Skip if the sandbox
+    // refuses to honor the chmod.
+    const sub_src_z = try std.fmt.allocPrintSentinel(allocator, "{s}/src/sub", .{base_path}, 0);
+    if (std.c.chmod(sub_src_z, 0o555) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(sub_src_z, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    const result = crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // Post-fix the copy completes and the REMOVAL side fails (read-only source
+    // dir): GNU exits nonzero, so an error return is expected. Today the COPY
+    // side fails, which is ALSO an error return — so the error itself is NOT
+    // the discriminating signal. The dest-side assertions below are.
+    try testing.expect(std.meta.isError(result));
+
+    // KEY RED ASSERTIONS (dest-side). Today the errdefer wipes the partial dest
+    // after the copy aborts, so each of these fails. Post-fix the copy is
+    // complete: dest/sub is a 0o555 directory, f.txt has its content, and
+    // dest/sub carries the backdated mtime.
+    const dest_sub_path = try std.fmt.allocPrint(allocator, "{s}/dst/sub", .{base_path});
+    const dest_sub_info = try common.file.FileInfo.stat(testing.io, dest_sub_path);
+    try testing.expectEqual(std.Io.File.Kind.directory, dest_sub_info.kind);
+    try testing.expectEqual(@as(std.posix.mode_t, 0o555), dest_sub_info.mode & 0o777);
+
+    try test_dir.inner.expectFileContent("dst/sub/f.txt", "read only body");
+
+    const dest_sub_mtime_s = @divFloor(dest_sub_info.mtime, std.time.ns_per_s);
+    try testing.expectEqual(backdated_mtime_s, dest_sub_mtime_s);
+
+    // DATA SAFETY (green today, must stay green): the source must never be lost.
+    // The removal side fails on a read-only source dir, so src/sub survives.
+    try testing.expect(test_dir.fileExists("src/sub/f.txt"));
+}
+
+test "walker-migration: cross-device fallback preserves directory mtime" {
+    // Fully writable, no chmod/ownership: this runs as a normal user under the
+    // standard test step, so testing.allocator catches leaks. No root-skip and
+    // no fakeroot needed — the divergence is mtime preservation, not perms.
+    const allocator = testing.allocator;
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // A fully writable tree so the copy succeeds end to end. src/sub carries a
+    // backdated mtime; GNU mv's dest/sub carries it forward, current code stamps
+    // now-time (mv prints "directory timestamp preservation not implemented").
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createDir("src/sub");
+    try test_dir.inner.createFile("src/sub/f.txt", "writable body", null);
+
+    const base_path = try test_dir.inner.getBasePath();
+    defer allocator.free(base_path);
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    defer allocator.free(source_path);
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+    defer allocator.free(dest_path);
+
+    // Backdate src/sub's mtime AFTER writing the child, since writing a child
+    // bumps the parent's mtime.
+    const sub_src_path = try std.fmt.allocPrint(allocator, "{s}/src/sub", .{base_path});
+    defer allocator.free(sub_src_path);
+    std.Io.Dir.cwd().setTimestamps(testing.io, sub_src_path, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(backdated_mtime_ns) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(backdated_mtime_ns) } },
+    }) catch return error.SkipZigTest;
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    // Fully writable tree: the move must SUCCEED (no error).
+    try crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // KEY RED ASSERTION: dest/sub must carry the source dir's backdated mtime.
+    // Today the dest dir is stamped now-time, so this fails by years.
+    const dest_sub_path = try std.fmt.allocPrint(allocator, "{s}/dst/sub", .{base_path});
+    defer allocator.free(dest_sub_path);
+    const dest_sub_info = try common.file.FileInfo.stat(testing.io, dest_sub_path);
+    const dest_sub_mtime_s = @divFloor(dest_sub_info.mtime, std.time.ns_per_s);
+    try testing.expectEqual(backdated_mtime_s, dest_sub_mtime_s);
+
+    // Green today: the success path deletes the source after copying.
+    try testing.expect(!test_dir.fileExists("src"));
+}
+
+test "walker-migration: cross-device fallback continues past unreadable subdir (GNU semantics)" {
+    // Root bypasses read permissions, so a chmod-000 subdir would still open and
+    // the continue-past-error divergence never triggers. Skip when euid is root.
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    var arena = privilege_test.TestArena.init();
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var test_dir = TestDir.init(allocator);
+    defer test_dir.deinit();
+
+    // src/locked (chmod 000) is unreadable; src/open/f.txt is a readable sibling.
+    // GNU mv reports "cannot access .../locked", CONTINUES, materializes
+    // dest/locked as an empty dir and dest/open/f.txt, exits 1, source retained.
+    // Current code aborts at the first error and the errdefer wipes dest
+    // entirely (dest absent afterward).
+    try test_dir.inner.createDir("src");
+    try test_dir.inner.createDir("src/locked");
+    try test_dir.inner.createDir("src/open");
+    try test_dir.inner.createFile("src/open/f.txt", "open body", null);
+
+    const base_path = try test_dir.inner.getBasePath();
+    const source_path = try std.fmt.allocPrint(allocator, "{s}/src", .{base_path});
+    const dest_path = try std.fmt.allocPrint(allocator, "{s}/dst", .{base_path});
+
+    // chmod 000 src/locked via libc so the bits persist; restore in defer so
+    // TmpDir cleanup can recurse in. Skip if the sandbox ignores the chmod.
+    const locked_path_z = try std.fmt.allocPrintSentinel(allocator, "{s}/src/locked", .{base_path}, 0);
+    if (std.c.chmod(locked_path_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(locked_path_z, 0o755);
+
+    var stderr_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer stderr_aw.deinit();
+
+    const result = crossFilesystemMove(
+        allocator,
+        testing.io,
+        source_path,
+        dest_path,
+        .{},
+        common.null_writer,
+        &stderr_aw.writer,
+    );
+
+    // An error return is expected BOTH today and post-fix (GNU exits 1). So the
+    // error itself is not the discriminating signal; the dest-side assertions
+    // below are.
+    try testing.expect(std.meta.isError(result));
+
+    // KEY RED ASSERTIONS (dest-side). Today the errdefer wipes dest entirely, so
+    // both fail. Post-fix the walker continues past the unreadable subdir:
+    // dest/open/f.txt is materialized with content and dest/locked exists as a
+    // directory (mode unspecified, so not pinned).
+    try test_dir.inner.expectFileContent("dst/open/f.txt", "open body");
+
+    const dest_locked_path = try std.fmt.allocPrint(allocator, "{s}/dst/locked", .{base_path});
+    const dest_locked_info = try common.file.FileInfo.stat(testing.io, dest_locked_path);
+    try testing.expectEqual(std.Io.File.Kind.directory, dest_locked_info.kind);
+
+    // Green today, stays green: a diagnostic mentioning the locked entry, and
+    // the full source tree intact (no data loss on partial failure). Restore
+    // locked's perms first so we can read its contents back.
+    try testing.expect(std.mem.find(u8, stderr_aw.written(), "locked") != null);
+    _ = std.c.chmod(locked_path_z, 0o755);
+    try testing.expect(test_dir.fileExists("src/locked"));
+    try test_dir.inner.expectFileContent("src/open/f.txt", "open body");
+}
