@@ -481,7 +481,7 @@ fn copyRegularFile(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writ
     }
 
     if (options.preserve) {
-        copyFileWithAttributes(allocator, io, stderr_writer, source_path, dest_path, source_info) catch {
+        common.file_ops.copyFileWithAttributes(allocator, io, stderr_writer, "cp", source_path, dest_path, source_info) catch {
             return false;
         };
     } else if (!dest_unlinked and fileExists(io, dest_path)) {
@@ -935,19 +935,18 @@ fn preserveTreeDir(
         common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot stat '{s}' for preservation: {s}", .{ source_path, common.posixErrorString(err) });
         return true;
     };
-    // Apply mtime first, then mode: setting a read-only mode does not block a
-    // subsequent timestamp change here, but matching GNU's order keeps the dir
-    // writable until the final chmod.
-    std.Io.Dir.cwd().setTimestamps(io, dest_path, .{
-        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
-        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
-    }) catch |err| {
-        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
-    };
-    const dest_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{dest_path}, 0) catch return true;
-    defer allocator.free(dest_z);
-    _ = std.c.chmod(dest_z, @intCast(source_info.mode & 0o7777));
-    return true;
+    // The post-order timing and path-based chmod rationale lives in the shared
+    // leaf; cp owns only the source stat that feeds it.
+    return common.file_ops.preserveDirAttributes(
+        allocator,
+        io,
+        stderr_writer,
+        "cp",
+        dest_path,
+        source_info.mode,
+        source_info.atime,
+        source_info.mtime,
+    );
 }
 
 /// Resolve a symlink entry the no_follow walker left for cp. Under follow_none
@@ -1140,52 +1139,6 @@ fn findUnreadableTreeChild(
         child.close(io);
     }
     return null;
-}
-
-/// Copy file with preserved attributes
-fn copyFileWithAttributes(allocator: Allocator, io: std.Io, stderr_writer: *std.Io.Writer, source_path: []const u8, dest_path: []const u8, source_info: common.file.FileInfo) !void {
-    // Open source file
-    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot open '{s}': {s}", .{ source_path, common.posixErrorString(err) });
-        return error.SourceNotReadable;
-    };
-    defer source_file.close(io);
-
-    // Create destination file with source mode
-    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
-    }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
-        return error.DestinationNotWritable;
-    };
-    defer dest_file.close(io);
-
-    // Copy file contents
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "cp", "error copying '{s}' to '{s}': {s}", .{ source_path, dest_path, common.posixErrorString(err) });
-        return error.SourceNotReadable;
-    };
-
-    // Preserve timestamps
-    dest_file.setTimestamps(io, .{
-        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
-        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
-    }) catch |err| {
-        common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve timestamps for '{s}': {s}", .{ dest_path, common.posixErrorString(err) });
-    };
-
-    // Preserve ownership (uid/gid) — GNU cp -p is --preserve=mode,ownership,timestamps.
-    // Silently ignore EPERM (non-root cannot chown to other users).
-    const fchown_result = std.c.fchown(dest_file.handle, source_info.uid, source_info.gid);
-    if (fchown_result != 0) {
-        const errno = std.c._errno().*;
-        switch (errno) {
-            @intFromEnum(std.c.E.PERM) => {}, // Non-root; silently ignore
-            else => {
-                common.printWarningWithProgram(allocator, stderr_writer, "cp", "cannot preserve ownership for '{s}'", .{dest_path});
-            },
-        }
-    }
 }
 
 /// Get file type atomically to avoid race conditions

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const lib = @import("lib.zig");
 const env = @import("env.zig");
+const assert = std.debug.assert;
 
 /// Set file permissions using the most reliable method available
 ///
@@ -177,6 +178,115 @@ pub fn copyFileContents(io: std.Io, source_file: std.Io.File, dest_file: std.Io.
         if (bytes_read == 0) break;
         try dest_file.writeStreamingAll(io, buffer[0..bytes_read]);
     }
+}
+
+/// Copy one regular file preserving mode, timestamps, and ownership.
+///
+/// Shared so cp and mv's EXDEV fallback (which copies+unlinks across
+/// filesystems) preserve attributes identically rather than duplicating this
+/// leaf. The destination is created with the source mode, contents are copied,
+/// then atime/mtime and uid/gid are restored. The program_name parameter routes
+/// diagnostics to the caller's name (cp vs mv), matching setPermissions's
+/// convention. Timestamp and ownership failures only warn, since the data copy
+/// itself succeeded; EPERM on chown is silent because a non-root user cannot
+/// chown to another owner.
+pub fn copyFileWithAttributes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stderr_writer: anytype,
+    program_name: []const u8,
+    source_path: []const u8,
+    dest_path: []const u8,
+    source_info: lib.file.FileInfo,
+) !void {
+    // A shared leaf must self-guard its inputs for both the cp and mv callers:
+    // an empty program_name would mislabel diagnostics, and empty paths would
+    // name no file in the open/create errors below.
+    assert(program_name.len > 0);
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
+    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
+        lib.printErrorWithProgram(allocator, stderr_writer, program_name, "cannot open '{s}': {s}", .{ source_path, lib.posixErrorString(err) });
+        return error.SourceNotReadable;
+    };
+    defer source_file.close(io);
+
+    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
+        .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
+    }) catch |err| {
+        lib.printErrorWithProgram(allocator, stderr_writer, program_name, "cannot create '{s}': {s}", .{ dest_path, lib.posixErrorString(err) });
+        return error.DestinationNotWritable;
+    };
+    defer dest_file.close(io);
+
+    copyFileContents(io, source_file, dest_file) catch |err| {
+        lib.printErrorWithProgram(allocator, stderr_writer, program_name, "error copying '{s}' to '{s}': {s}", .{ source_path, dest_path, lib.posixErrorString(err) });
+        return error.SourceNotReadable;
+    };
+
+    // Preserve timestamps.
+    dest_file.setTimestamps(io, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
+    }) catch |err| {
+        lib.printWarningWithProgram(allocator, stderr_writer, program_name, "cannot preserve timestamps for '{s}': {s}", .{ dest_path, lib.posixErrorString(err) });
+    };
+
+    // Preserve ownership (uid/gid) — GNU cp -p is --preserve=mode,ownership,timestamps.
+    // Silently ignore EPERM (non-root cannot chown to other users).
+    const fchown_result = std.c.fchown(dest_file.handle, source_info.uid, source_info.gid);
+    if (fchown_result != 0) {
+        const errno = std.c._errno().*;
+        switch (errno) {
+            @intFromEnum(std.c.E.PERM) => {}, // Non-root; silently ignore.
+            else => {
+                lib.printWarningWithProgram(allocator, stderr_writer, program_name, "cannot preserve ownership for '{s}'", .{dest_path});
+            },
+        }
+    }
+}
+
+/// Preserve a copied directory's timestamps and mode onto the destination dir.
+///
+/// Shared so cp's tree walk and mv's EXDEV directory fallback apply the same
+/// post-order preservation leaf. Callers MUST invoke this POST-order (after the
+/// directory's children are written): writing a child bumps the parent's mtime,
+/// and a read-only (e.g. 0o555) source mode applied too early would block
+/// populating the dest. The mode is applied with a path-based libc chmod rather
+/// than fchmod, because fchmod on a freshly created directory handle returns
+/// EBADF on Linux. Returns true even when a step only warns, since the copy
+/// itself already succeeded; the program_name routes diagnostics to the caller.
+pub fn preserveDirAttributes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    stderr_writer: anytype,
+    program_name: []const u8,
+    dest_path: []const u8,
+    mode: std.posix.mode_t,
+    atime_ns: i128,
+    mtime_ns: i128,
+) bool {
+    // Self-guard the leaf for both callers: cp reaches it through preserveTreeDir
+    // (which already asserts), but mv's EXDEV fallback calls it directly. An empty
+    // dest_path would name no directory in chmod/setTimestamps, and an empty
+    // program_name would mislabel the warning below.
+    assert(dest_path.len > 0);
+    assert(program_name.len > 0);
+
+    // Apply mtime first, then mode: setting a read-only mode does not block a
+    // subsequent timestamp change here, but matching GNU's order keeps the dir
+    // writable until the final chmod.
+    std.Io.Dir.cwd().setTimestamps(io, dest_path, .{
+        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(atime_ns) } },
+        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(mtime_ns) } },
+    }) catch |err| {
+        lib.printWarningWithProgram(allocator, stderr_writer, program_name, "cannot preserve timestamps for '{s}': {s}", .{ dest_path, lib.posixErrorString(err) });
+    };
+    const dest_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{dest_path}, 0) catch return true;
+    defer allocator.free(dest_z);
+    _ = std.c.chmod(dest_z, @intCast(mode & 0o7777));
+    return true;
 }
 
 test "isSameFile" {
