@@ -12,6 +12,7 @@ const glob = common.glob;
 const testing = std.testing;
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const c = std.c;
 
@@ -2578,176 +2579,606 @@ fn flagNameToMask(name: []const u8) u32 {
 // Directory walking
 // ============================================================================
 
-fn walkPath(
+const Walker = common.walker.Walker;
+
+/// One ancestor directory in the current follow chain. Tracks (dev, inode) for
+/// -L loop detection and the path for the GNU loop diagnostic. The path is
+/// arena-owned and lives for the whole walk.
+const AncestorDir = struct {
+    dev: i64,
+    inode: u64,
+    path: []const u8,
+};
+
+/// A pending symlink-to-directory follow under -L. The main walk emits these
+/// without descending (the walker runs in no_follow); drainSymlinkHops walks
+/// each target afterward with a fresh sub-walker. All slices are arena-owned.
+const SymlinkHop = struct {
+    /// Path to the symlink (the sub-walk root). openDir follows the final
+    /// component, so the sub-walk traverses the target's real children.
+    path: []const u8,
+    /// effective_depth of the symlink in the parent walk; the sub-walk's own
+    /// depth-0 entry maps back to this depth (its root is skipped, children
+    /// land at base_depth + 1).
+    base_depth: u32,
+    /// Ancestor chain up to and including this symlink, for nested loop checks.
+    ancestors: []const AncestorDir,
+};
+
+/// The directory whose children the walker is currently iterating. Saved on
+/// every pre-order directory emit so a later next() error (an unreadable child)
+/// can be attributed, and so the -depth post-order evaluate can still fire for
+/// an unreadable directory using its already-captured stat.
+const LastDir = struct {
+    path: []const u8,
+    stat: StatInfo,
+    kind: FileType,
+    effective_depth: u32,
+};
+
+/// Mutable state threaded through one operand's walk and its symlink hops.
+/// Writers stay out of the struct so callers keep the `anytype` writer
+/// flexibility used across this file.
+const WalkState = struct {
     io: std.Io,
     allocator: Allocator,
-    path: []const u8,
-    depth: u32,
     config: *const FindConfig,
-    stdout: anytype,
-    stderr: anytype,
     had_error: *bool,
     now: i64,
-    root_dev: ?i64,
     batch_ctx: ?*BatchContext,
+    walker: *Walker,
+
+    /// Current follow chain of open directories (for -L loop detection).
+    ancestors: std.ArrayListUnmanaged(AncestorDir),
+    /// Pending symlink follows discovered during this walk.
+    hops: *std.ArrayListUnmanaged(SymlinkHop),
+    /// Device of the operand root, captured at effective_depth 0 (for -xdev).
+    root_dev: ?i64,
+    /// Most recent pre-order directory (for error attribution / -depth).
+    last_dir: ?LastDir,
+    /// Added to entry.depth to recover the find-visible depth. Non-zero only in
+    /// symlink-hop sub-walks.
+    base_depth: u32,
+    /// When true, the next depth-0 entry is a hop's already-evaluated root and
+    /// must be skipped for evaluation/filtering (but still seed ancestors/dev).
+    skip_hop_root: bool,
+};
+
+// ============================================================================
+// Walker-based driver (replaces the former recursive walkPath)
+// ============================================================================
+
+/// Walk one operand tree with a bounded walker, dispatching each entry to
+/// findVisitEntry. Walker errors (unreadable child dirs) are reported and the
+/// walk resumes at siblings; the walker is re-entrant after an error.
+fn findWalkTree(
+    state: *WalkState,
+    root_path: []const u8,
+    stdout: anytype,
+    stderr: anytype,
 ) void {
-    // Check maxdepth
-    if (config.maxdepth) |max| {
-        if (depth > max) return;
-    }
-
-    // Determine whether to follow symlinks
-    const follow = config.follow_symlinks or (depth == 0 and config.follow_cmdline_symlinks);
-
-    // Stat the entry
-    const stat_buf = doStat(path, follow) catch |err| {
-        switch (err) {
-            error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
-            },
-            error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': No such file or directory", .{path});
-            },
-            error.SymLinkLoop => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Too many levels of symbolic links", .{path});
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) });
-            },
-        }
-        had_error.* = true;
+    assert(root_path.len > 0);
+    assert(state.walker.roots.items.len == 0);
+    state.walker.addRoot(root_path) catch {
+        state.had_error.* = true;
         return;
     };
+    var steps: u64 = 0;
+    const steps_max: u64 = 1 << 30;
+    while (steps < steps_max) : (steps += 1) {
+        const maybe_entry = state.walker.next(state.io) catch |err| {
+            reportWalkNextError(state, root_path, err, stdout, stderr);
+            if (err == error.DepthLimitExceeded or err == error.EntryLimitExceeded) return;
+            continue;
+        };
+        const entry = maybe_entry orelse break;
+        findVisitEntry(state, entry, stdout, stderr);
+    }
+    assert(steps < steps_max);
+}
 
-    const kind = getFileKind(stat_buf.mode);
+/// Report a walker next() error. An unreadable child directory makes next()
+/// fail without emitting the failing path, so attribute it to last_dir and, if
+/// that directory exists, rescan for the exact unreadable subdirectory. Under
+/// -depth the unreadable directory itself is still evaluated using its saved
+/// stat (mirrors the old openDir-failure contract).
+fn reportWalkNextError(
+    state: *WalkState,
+    root_path: []const u8,
+    err: anyerror,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    assert(root_path.len > 0);
+    state.had_error.* = true;
+    const parent_path = if (state.last_dir) |ld| ld.path else root_path;
+    assert(parent_path.len > 0);
+    const failing = findUnreadableChildDir(state.allocator, state.io, parent_path) orelse parent_path;
+    common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': {s}", .{ failing, common.posixErrorString(err) });
+    if (state.config.depth_first and failing.ptr != parent_path.ptr) {
+        evaluateUnreadableDir(state, parent_path, failing, stdout, stderr);
+    }
+}
+
+/// Under -depth, evaluate the unreadable child directory itself so its
+/// -print/-delete still fire (the old find.zig:2680 openDir-failure contract).
+/// The directory's pre-order entry was never emitted (the walker errored while
+/// opening it), so re-stat it here. -delete then fails rmdir loudly because the
+/// directory is non-empty, matching GNU. Its find-visible depth is the parent's
+/// plus one.
+fn evaluateUnreadableDir(
+    state: *WalkState,
+    parent_path: []const u8,
+    failing_path: []const u8,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    assert(state.config.depth_first);
+    assert(failing_path.len > parent_path.len);
+    const parent_depth = if (state.last_dir) |ld| ld.effective_depth else state.base_depth;
+    const child_depth = parent_depth + 1;
+    if (child_depth < state.config.mindepth) return;
+    if (state.config.maxdepth) |max| {
+        if (child_depth > max) return;
+    }
+    const stat_buf = doStat(failing_path, true) catch return;
+    findEvaluatePath(state, failing_path, stat_buf, .directory, child_depth, stdout, stderr);
+}
+
+/// Scan a directory for the first immediate subdirectory that cannot be opened,
+/// returning its full path (arena-owned) or null. Lifted from grep.zig: names
+/// the exact unreadable path behind a walker error.
+fn findUnreadableChildDir(
+    allocator: Allocator,
+    io: std.Io,
+    parent_path: []const u8,
+) ?[]const u8 {
+    assert(parent_path.len > 0);
+    assert(parent_path[0] != 0);
+    var parent_dir =
+        std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true }) catch return null;
+    defer parent_dir.close(io);
+    var iterator = parent_dir.iterate();
+    while (iterator.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        var child = parent_dir.openDir(io, entry.name, .{ .iterate = true }) catch {
+            return std.fs.path.join(allocator, &.{ parent_path, entry.name }) catch null;
+        };
+        child.close(io);
+    }
+    return null;
+}
+
+/// Collapse the redundant slash the walker emits when a parent path ends in
+/// '/' (notably the root operand "/", which yields "//child"). GNU find's path
+/// join produces a single slash, so match it. The operand itself (depth 0) is
+/// printed verbatim, so only depth > 0 paths are normalized. Returns an
+/// arena-owned path, or the original slice when no change is needed.
+fn normalizeWalkerPath(allocator: Allocator, path: []const u8) []const u8 {
+    assert(path.len > 0);
+    if (std.mem.find(u8, path, "//") == null) return path;
+    var out = std.ArrayListUnmanaged(u8).initCapacity(allocator, path.len) catch return path;
+    var prev_slash = false;
+    for (path) |ch| {
+        if (ch == '/' and prev_slash) continue;
+        out.append(allocator, ch) catch return path;
+        prev_slash = (ch == '/');
+    }
+    assert(out.items.len <= path.len);
+    return out.items;
+}
+
+/// Dispatch one walker entry. Re-stats with find's own follow flag (entry.stat
+/// and entry.kind are never trusted for predicate evaluation), computes the
+/// find-visible depth, and routes to the directory / leaf / symlink handlers.
+fn findVisitEntry(state: *WalkState, raw_entry: common.walker.Entry, stdout: anytype, stderr: anytype) void {
+    assert(raw_entry.path.len > 0);
+    var entry = raw_entry;
+    if (entry.depth > 0) entry.path = normalizeWalkerPath(state.allocator, raw_entry.path);
+    const effective_depth: u32 = state.base_depth + entry.depth;
+    if (entry.kind == .directory) {
+        if (entry.visit == .pre) {
+            findVisitDirPre(state, entry, effective_depth, stdout, stderr);
+        } else {
+            findVisitDirPost(state, entry, effective_depth, stdout, stderr);
+        }
+        return;
+    }
+    assert(entry.visit == .pre);
+    const follow_symlinks = state.config.follow_symlinks or
+        (effective_depth == 0 and state.config.follow_cmdline_symlinks);
+    if (entry.kind == .sym_link and follow_symlinks) {
+        findVisitFollowedSymlink(state, entry, effective_depth, stdout, stderr);
+        return;
+    }
+    findVisitLeaf(state, entry.path, effective_depth, stdout, stderr);
+}
+
+/// Handle a pre-order directory: maintain the ancestor chain, capture the root
+/// device, apply -X / -xdev / -prune / -maxdepth, and (when not -depth)
+/// evaluate it. Pruning here suppresses the matching .post and the whole
+/// subtree.
+fn findVisitDirPre(
+    state: *WalkState,
+    entry: common.walker.Entry,
+    effective_depth: u32,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    assert(entry.kind == .directory);
+    assert(entry.visit == .pre);
+    const basename = std.fs.path.basename(entry.path);
+    const is_hop_root = state.skip_hop_root and entry.depth == 0;
+    state.skip_hop_root = false;
+    if (!is_hop_root and state.config.xargs_safe and effective_depth > 0 and isXargsUnsafe(basename)) {
+        common.printErrorWithProgram(state.allocator, stderr, prog_name, "warning: file name '{s}' is not safe for use with xargs", .{basename});
+        state.walker.pruneCurrent();
+        return;
+    }
+    // Re-stat with find's own follow policy. The walker opened this path as a
+    // directory (openDir follows a final symlink component), but under -P/-H a
+    // symlink operand at depth 0 must be evaluated AS a symlink and never
+    // descended. When find's policy resolves it to a non-directory, treat it as
+    // a leaf and prune the walker's descent.
+    const follow = state.config.follow_symlinks or
+        (effective_depth == 0 and state.config.follow_cmdline_symlinks);
+    const stat_buf = doStat(entry.path, follow) catch |err| {
+        reportStatError(state, entry.path, err, stderr);
+        state.walker.pruneCurrent();
+        return;
+    };
+    if (getFileKind(stat_buf.mode) != .directory) {
+        if (!is_hop_root and effective_depth >= state.config.mindepth) {
+            findEvaluatePath(state, entry.path, stat_buf, getFileKind(stat_buf.mode), effective_depth, stdout, stderr);
+        }
+        state.walker.pruneCurrent();
+        return;
+    }
+    if (effective_depth == 0 and state.config.xdev) state.root_dev = @intCast(stat_buf.dev);
+    if (findDirCrossesDevice(state, stat_buf, entry.path, effective_depth, stdout, stderr)) return;
+    const dup_path = state.allocator.dupe(u8, entry.path) catch {
+        state.had_error.* = true;
+        state.walker.pruneCurrent();
+        return;
+    };
+    state.last_dir = .{ .path = dup_path, .stat = stat_buf, .kind = .directory, .effective_depth = effective_depth };
+    // Push onto the -L follow chain ONLY when this directory will actually be
+    // descended (its .post will fire, balancing the pop). A directory pruned by
+    // -prune or the -maxdepth boundary emits no .post, so pushing it here would
+    // leak it and misalign the LIFO chain, tripping a false loop diagnostic on a
+    // later sibling symlink. So decide the prunes first, then push.
+    if (findDirPreEvaluate(state, dup_path, stat_buf, effective_depth, is_hop_root, stdout, stderr)) return;
+    if (findDirMaxdepthBoundary(state, dup_path, stat_buf, effective_depth, is_hop_root, stdout, stderr)) return;
+    pushAncestor(state, stat_buf, dup_path);
+}
+
+/// -xdev: when a directory's device differs from the operand root, GNU emits
+/// the mount point then skips descent. Returns true when descent was pruned.
+fn findDirCrossesDevice(
+    state: *WalkState,
+    stat_buf: StatInfo,
+    path: []const u8,
+    effective_depth: u32,
+    stdout: anytype,
+    stderr: anytype,
+) bool {
+    assert(path.len > 0);
+    const root_dev = state.root_dev orelse return false;
+    const entry_dev: i64 = @intCast(stat_buf.dev);
+    if (entry_dev == root_dev) return false;
+    if (effective_depth >= state.config.mindepth) {
+        findEvaluatePath(state, path, stat_buf, .directory, effective_depth, stdout, stderr);
+    }
+    state.walker.pruneCurrent();
+    return true;
+}
+
+/// Pre-order (non -depth) evaluation. Returns true when the subtree was pruned
+/// (by -prune) and the caller must stop.
+fn findDirPreEvaluate(
+    state: *WalkState,
+    path: []const u8,
+    stat_buf: StatInfo,
+    effective_depth: u32,
+    is_hop_root: bool,
+    stdout: anytype,
+    stderr: anytype,
+) bool {
+    assert(path.len > 0);
+    if (state.config.depth_first) return false;
+    if (is_hop_root) return false;
+    if (effective_depth < state.config.mindepth) return false;
+    var pruned = false;
+    _ = evaluate(
+        state.io,
+        state.config.expr,
+        path,
+        std.fs.path.basename(path),
+        stat_buf,
+        .directory,
+        state.now,
+        effective_depth,
+        state.allocator,
+        stdout,
+        stderr,
+        state.had_error,
+        &pruned,
+        state.batch_ctx,
+    );
+    if (pruned) state.walker.pruneCurrent();
+    return pruned;
+}
+
+/// -maxdepth boundary: at the limit, descend no further. Under -depth, evaluate
+/// the boundary directory inline here (pruneCurrent suppresses its later .post,
+/// and no children intervene, so pre/post timing is observationally identical).
+/// Returns true when the boundary fired and descent was pruned.
+fn findDirMaxdepthBoundary(
+    state: *WalkState,
+    path: []const u8,
+    stat_buf: StatInfo,
+    effective_depth: u32,
+    is_hop_root: bool,
+    stdout: anytype,
+    stderr: anytype,
+) bool {
+    assert(path.len > 0);
+    const maxdepth = state.config.maxdepth orelse return false;
+    if (effective_depth < maxdepth) return false;
+    if (state.config.depth_first and !is_hop_root and effective_depth >= state.config.mindepth) {
+        findEvaluatePath(state, path, stat_buf, .directory, effective_depth, stdout, stderr);
+    }
+    state.walker.pruneCurrent();
+    return true;
+}
+
+/// Handle a post-order directory (only reached under -depth, since boundary
+/// dirs were pruned before any .post). This is the -depth / -delete site.
+fn findVisitDirPost(
+    state: *WalkState,
+    entry: common.walker.Entry,
+    effective_depth: u32,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    assert(entry.kind == .directory);
+    assert(entry.visit == .post);
+    popAncestor(state, effective_depth);
+    if (!state.config.depth_first) return;
+    if (effective_depth < state.config.mindepth) return;
+    const stat_buf = doStat(entry.path, true) catch |err| {
+        reportStatError(state, entry.path, err, stderr);
+        return;
+    };
+    findEvaluatePath(state, entry.path, stat_buf, .directory, effective_depth, stdout, stderr);
+}
+
+/// Handle a non-directory leaf (file, or symlink under -P/-H-at-depth>0).
+/// Re-stats with find's follow flag and evaluates, gated by -mindepth and -X.
+fn findVisitLeaf(state: *WalkState, path: []const u8, effective_depth: u32, stdout: anytype, stderr: anytype) void {
+    assert(path.len > 0);
     const basename = std.fs.path.basename(path);
-    const is_depth_first = config.depth_first;
-
-    // -xdev: skip entries on different filesystems
-    if (root_dev) |rd| {
-        const entry_dev: i64 = @intCast(stat_buf.dev);
-        if (entry_dev != rd) return;
-    }
-
-    // -X: warn about and skip xargs-unsafe filenames
-    if (config.xargs_safe and depth > 0) {
-        if (isXargsUnsafe(basename)) {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "warning: file name '{s}' is not safe for use with xargs", .{basename});
-            return;
-        }
-    }
-
-    // Non-directory: evaluate and return
-    if (kind != .directory) {
-        if (depth >= config.mindepth) {
-            var dummy_pruned = false;
-            _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
-        }
+    if (state.config.xargs_safe and effective_depth > 0 and isXargsUnsafe(basename)) {
+        common.printErrorWithProgram(state.allocator, stderr, prog_name, "warning: file name '{s}' is not safe for use with xargs", .{basename});
         return;
     }
-
-    // Directory: evaluate before traversal (breadth-first)
-    var was_pruned = false;
-    if (!is_depth_first and depth >= config.mindepth) {
-        _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &was_pruned, batch_ctx);
-    }
-
-    // If -prune was triggered, do not descend into this directory
-    if (was_pruned) return;
-
-    // Check maxdepth before descending
-    if (config.maxdepth) |max| {
-        if (depth >= max) {
-            if (is_depth_first and depth >= config.mindepth) {
-                var dummy_pruned = false;
-                _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
-            }
-            return;
-        }
-    }
-
-    // Descend into directory
-    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
-        switch (err) {
-            error.AccessDenied => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': Permission denied", .{path});
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) });
-            },
-        }
-        had_error.* = true;
-        if (is_depth_first and depth >= config.mindepth) {
-            var dummy_pruned = false;
-            _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
-        }
+    const follow = state.config.follow_symlinks or
+        (effective_depth == 0 and state.config.follow_cmdline_symlinks);
+    const stat_buf = doStat(path, follow) catch |err| {
+        reportStatError(state, path, err, stderr);
         return;
     };
-    defer dir.close(io);
+    const kind = getFileKind(stat_buf.mode);
+    if (effective_depth < state.config.mindepth) return;
+    findEvaluatePath(state, path, stat_buf, kind, effective_depth, stdout, stderr);
+}
 
-    if (config.sorted) {
-        // Collect all entries, sort by name, then walk
-        var names = std.ArrayListUnmanaged([]const u8).empty;
-        defer {
-            for (names.items) |n| allocator.free(n);
-            names.deinit(allocator);
+/// Handle a symlink under -L (or an operand symlink under -H). Resolves the
+/// target; dangling links report an error; non-dir targets evaluate as their
+/// target type; dir targets either trip loop detection or are evaluated and
+/// queued as a hop for drainSymlinkHops to descend.
+fn findVisitFollowedSymlink(
+    state: *WalkState,
+    entry: common.walker.Entry,
+    effective_depth: u32,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    assert(entry.kind == .sym_link);
+    const stat_buf = doStat(entry.path, true) catch |err| {
+        reportStatError(state, entry.path, err, stderr);
+        return;
+    };
+    const kind = getFileKind(stat_buf.mode);
+    if (kind != .directory) {
+        if (effective_depth >= state.config.mindepth) {
+            findEvaluatePath(state, entry.path, stat_buf, kind, effective_depth, stdout, stderr);
         }
-        var iterator = dir.iterate();
-        while (true) {
-            const maybe_entry = iterator.next(io) catch |err| {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) });
-                had_error.* = true;
-                break;
-            };
-            const entry = maybe_entry orelse break;
-            const name_copy = allocator.dupe(u8, entry.name) catch {
-                had_error.* = true;
-                continue;
-            };
-            names.append(allocator, name_copy) catch {
-                allocator.free(name_copy);
-                had_error.* = true;
-                continue;
-            };
-        }
-        std.mem.sort([]const u8, names.items, {}, struct {
-            fn cmp(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.cmp);
-        for (names.items) |name| {
-            const child_path = std.fs.path.join(allocator, &.{ path, name }) catch {
-                had_error.* = true;
-                continue;
-            };
-            defer allocator.free(child_path);
-            walkPath(io, allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
-        }
-    } else {
-        var iterator = dir.iterate();
-        while (true) {
-            const maybe_entry = iterator.next(io) catch |err| {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) });
-                had_error.* = true;
-                break;
-            };
-            const entry = maybe_entry orelse break;
-
-            const child_path = std.fs.path.join(allocator, &.{ path, entry.name }) catch {
-                had_error.* = true;
-                continue;
-            };
-            defer allocator.free(child_path);
-
-            walkPath(io, allocator, child_path, depth + 1, config, stdout, stderr, had_error, now, root_dev, batch_ctx);
-        }
+        return;
     }
-
-    // Depth-first: evaluate directory after children
-    if (is_depth_first and depth >= config.mindepth) {
-        var dummy_pruned = false;
-        _ = evaluate(io, config.expr, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, &dummy_pruned, batch_ctx);
+    const target_inode = stat_buf.ino;
+    const target_dev: i64 = @intCast(stat_buf.dev);
+    if (findAncestorLoop(state, target_dev, target_inode, entry.path, stderr)) return;
+    if (effective_depth >= state.config.mindepth) {
+        findEvaluatePath(state, entry.path, stat_buf, .directory, effective_depth, stdout, stderr);
     }
+    enqueueSymlinkHop(state, entry.path, effective_depth, target_dev, target_inode, stderr);
+}
+
+/// Detect a -L filesystem loop: the symlink target matches an ancestor in the
+/// current follow chain. Emits the GNU diagnostic, sets had_error, and returns
+/// true (the caller must not descend).
+fn findAncestorLoop(
+    state: *WalkState,
+    target_dev: i64,
+    target_inode: u64,
+    link_path: []const u8,
+    stderr: anytype,
+) bool {
+    assert(link_path.len > 0);
+    for (state.ancestors.items) |anc| {
+        if (anc.dev != target_dev or anc.inode != target_inode) continue;
+        common.printErrorWithProgram(
+            state.allocator,
+            stderr,
+            prog_name,
+            "File system loop detected; '{s}' is part of the same file system loop as '{s}'.",
+            .{ link_path, anc.path },
+        );
+        state.had_error.* = true;
+        return true;
+    }
+    return false;
+}
+
+/// Queue a symlink-to-directory follow. Captures the ancestor chain (plus the
+/// symlink itself) so nested follows can detect deeper loops.
+fn enqueueSymlinkHop(
+    state: *WalkState,
+    link_path: []const u8,
+    effective_depth: u32,
+    target_dev: i64,
+    target_inode: u64,
+    stderr: anytype,
+) void {
+    assert(link_path.len > 0);
+    const dup_path = state.allocator.dupe(u8, link_path) catch {
+        state.had_error.* = true;
+        return;
+    };
+    var chain = state.allocator.alloc(AncestorDir, state.ancestors.items.len + 1) catch {
+        state.had_error.* = true;
+        return;
+    };
+    @memcpy(chain[0..state.ancestors.items.len], state.ancestors.items);
+    chain[state.ancestors.items.len] = .{ .dev = target_dev, .inode = target_inode, .path = dup_path };
+    state.hops.append(state.allocator, .{ .path = dup_path, .base_depth = effective_depth, .ancestors = chain }) catch {
+        state.had_error.* = true;
+    };
+    _ = stderr;
+}
+
+/// Drain all queued symlink hops with fresh sub-walkers. Nested hops append to
+/// the same queue and are processed in turn; the queue is bounded by
+/// max_entries on each sub-walker plus an outer iteration cap.
+fn drainSymlinkHops(
+    state: *WalkState,
+    hops: *std.ArrayListUnmanaged(SymlinkHop),
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    var index: usize = 0;
+    const hops_max: usize = 1 << 24;
+    while (index < hops.items.len and index < hops_max) : (index += 1) {
+        const hop = hops.items[index];
+        walkOneSymlinkHop(state, hop, stdout, stderr);
+    }
+    assert(index <= hops_max);
+}
+
+/// Walk one symlink hop's target with a dedicated sub-walker. The hop root (the
+/// target directory) was already evaluated in the parent walk, so skip_hop_root
+/// suppresses its re-evaluation; its real children land at base_depth + 1.
+fn walkOneSymlinkHop(state: *WalkState, hop: SymlinkHop, stdout: anytype, stderr: anytype) void {
+    assert(hop.path.len > 0);
+    var sub_walker = Walker.init(state.allocator, walkerConfig(state.config)) catch {
+        state.had_error.* = true;
+        return;
+    };
+    defer sub_walker.deinit(state.io);
+    var sub_state = state.*;
+    sub_state.walker = &sub_walker;
+    sub_state.base_depth = hop.base_depth;
+    sub_state.skip_hop_root = true;
+    sub_state.last_dir = null;
+    sub_state.ancestors = .empty;
+    defer sub_state.ancestors.deinit(state.allocator);
+    sub_state.ancestors.appendSlice(state.allocator, hop.ancestors) catch {
+        state.had_error.* = true;
+        return;
+    };
+    findWalkTree(&sub_state, hop.path, stdout, stderr);
+}
+
+/// Push a directory onto the follow chain for -L loop detection.
+fn pushAncestor(state: *WalkState, stat_buf: StatInfo, dup_path: []const u8) void {
+    assert(dup_path.len > 0);
+    state.ancestors.append(state.allocator, .{ .dev = @intCast(stat_buf.dev), .inode = stat_buf.ino, .path = dup_path }) catch {
+        state.had_error.* = true;
+    };
+    assert(state.ancestors.items.len > 0);
+}
+
+/// Pop the deepest directory from the follow chain on post-order. The walker
+/// emits .post in strict LIFO order for descended directories, so the top of
+/// the chain is always the one unwinding.
+fn popAncestor(state: *WalkState, effective_depth: u32) void {
+    assert(effective_depth >= state.base_depth);
+    if (state.ancestors.items.len == 0) return;
+    const before = state.ancestors.items.len;
+    _ = state.ancestors.pop();
+    assert(state.ancestors.items.len == before - 1);
+}
+
+/// Evaluate one path against the expression (a single, non-pruning evaluate).
+/// Always dupes nothing here — callers pass arena-stable paths — but the path
+/// must already outlive any -exec/-execdir batching that retains it.
+fn findEvaluatePath(
+    state: *WalkState,
+    path: []const u8,
+    stat_buf: StatInfo,
+    kind: FileType,
+    effective_depth: u32,
+    stdout: anytype,
+    stderr: anytype,
+) void {
+    assert(path.len > 0);
+    var pruned = false;
+    _ = evaluate(
+        state.io,
+        state.config.expr,
+        path,
+        std.fs.path.basename(path),
+        stat_buf,
+        kind,
+        state.now,
+        effective_depth,
+        state.allocator,
+        stdout,
+        stderr,
+        state.had_error,
+        &pruned,
+        state.batch_ctx,
+    );
+}
+
+/// Report a doStat failure on an entry, matching the old per-error messages.
+fn reportStatError(state: *WalkState, path: []const u8, err: anyerror, stderr: anytype) void {
+    assert(path.len > 0);
+    switch (err) {
+        error.AccessDenied => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': Permission denied", .{path}),
+        error.FileNotFound => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': No such file or directory", .{path}),
+        error.SymLinkLoop => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': Too many levels of symbolic links", .{path}),
+        else => common.printErrorWithProgram(state.allocator, stderr, prog_name, "'{s}': {s}", .{ path, common.posixErrorString(err) }),
+    }
+    state.had_error.* = true;
+}
+
+/// Build the WalkConfig for find. Order is always .both so the driver controls
+/// pre/post timing. -xdev and loop detection are driver-side, so the walker's
+/// stay_on_filesystem and detect_cycles stay off. -L uses no_follow (NOT
+/// follow_all) so symlinks arrive as .sym_link and the driver re-stats them.
+fn walkerConfig(config: *const FindConfig) common.walker.WalkConfig {
+    const symlinks: common.walker.SymlinkPolicy =
+        if (config.follow_cmdline_symlinks and !config.follow_symlinks) .follow_cmdline else .no_follow;
+    return .{
+        .order = .both,
+        .symlinks = symlinks,
+        .sort_children = config.sorted,
+        .stay_on_filesystem = false,
+        .detect_cycles = false,
+        .max_depth = 1024,
+    };
 }
 
 // ============================================================================
@@ -2780,14 +3211,34 @@ pub fn runFind(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
     var batch_ctx = BatchContext{};
 
     for (config.start_paths) |path| {
-        // Get root device for -xdev enforcement
-        var root_dev: ?i64 = null;
-        if (config.xdev) {
-            if (doStat(path, config.follow_symlinks)) |sb| {
-                root_dev = @intCast(sb.dev);
-            } else |_| {}
-        }
-        walkPath(io, allocator, path, 0, &config, stdout, stderr, &had_error, now, root_dev, &batch_ctx);
+        var walker = Walker.init(allocator, walkerConfig(&config)) catch {
+            had_error = true;
+            continue;
+        };
+        defer walker.deinit(io);
+
+        var hops: std.ArrayListUnmanaged(SymlinkHop) = .empty;
+        defer hops.deinit(allocator);
+
+        var state = WalkState{
+            .io = io,
+            .allocator = allocator,
+            .config = &config,
+            .had_error = &had_error,
+            .now = now,
+            .batch_ctx = &batch_ctx,
+            .walker = &walker,
+            .ancestors = .empty,
+            .hops = &hops,
+            .root_dev = null,
+            .last_dir = null,
+            .base_depth = 0,
+            .skip_hop_root = false,
+        };
+        defer state.ancestors.deinit(allocator);
+
+        findWalkTree(&state, path, stdout, stderr);
+        drainSymlinkHops(&state, &hops, stdout, stderr);
     }
 
     // Flush batch exec/execdir commands
