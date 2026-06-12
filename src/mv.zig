@@ -4,6 +4,7 @@ const std = @import("std");
 const testing = std.testing;
 const common = @import("common");
 const test_utils = common.test_utils;
+const assert = std.debug.assert;
 
 /// Command line arguments for mv utility
 const MvArgs = struct {
@@ -425,40 +426,57 @@ test "mv: empty file" {
     try testing.expectEqualStrings("", content);
 }
 
-/// Move across filesystems using copy-then-delete
+/// Move across filesystems using copy-then-delete.
+///
+/// The copy stage uses the bounded common.walker (no recursion). The source is
+/// only deleted when EVERY entry copied cleanly; on any failure we report all
+/// errors, keep BOTH dest and source intact (data safety), and return an error.
 fn crossFilesystemMove(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    assert(source.len > 0);
+    assert(dest.len > 0);
+
     if (options.verbose) {
         try stdout_writer.print("mv: moving '{s}' to '{s}' (cross-filesystem)\n", .{ source, dest });
     }
 
-    // Get source stat to determine if it's a directory
+    // Determine if the source is a directory; this selects the copy strategy.
     const source_info = common.file.FileInfo.stat(io, source) catch |err| {
         common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat '{s}': {}", .{ source, err });
         return err;
     };
+    const is_directory = (source_info.kind == .directory);
 
-    errdefer {
-        if (source_info.kind == .directory) {
-            std.Io.Dir.cwd().deleteTree(io, dest) catch {};
-        } else {
-            std.Io.Dir.cwd().deleteFile(io, dest) catch {};
-        }
-    }
-
-    if (source_info.kind == .directory) {
-        // Handle directory recursively
-        try copyDirectoryRecursive(allocator, io, source, dest, options, stdout_writer, stderr_writer);
+    // Copy stage. On a SINGLE-file copy failure the dest is incomplete, so we
+    // wipe the partial dest before returning (errdefer below). For a directory
+    // tree we must NOT blanket-wipe: the partial dest is kept for data safety
+    // and the removal stage is skipped, so no errdefer covers the tree branch.
+    if (is_directory) {
+        try copyDirectoryTree(allocator, io, source, dest, options, stdout_writer, stderr_writer);
     } else {
-        // Handle regular file
-        try copyFileCross(allocator, io, source, dest, source_info, options, stdout_writer, stderr_writer);
+        errdefer std.Io.Dir.cwd().deleteFile(io, dest) catch {};
+        try common.file_ops.copyFileWithAttributes(allocator, io, stderr_writer, "mv", source, dest, source_info);
     }
 
-    // If copy succeeded, remove the source
+    // Copy succeeded for every entry. Remove the source (copy-then-delete).
+    // No errdefer that wipes dest is in scope here: a removal-stage failure
+    // leaves the completed dest in place and surfaces an error.
     if (options.verbose) {
         try stdout_writer.print("mv: removing source '{s}'\n", .{source});
     }
+    try removeSourceAfterCopy(allocator, io, source, is_directory, stderr_writer);
 
-    if (source_info.kind == .directory) {
+    if (options.verbose) {
+        try stdout_writer.print("mv: completed cross-filesystem move\n", .{});
+    }
+}
+
+/// Remove the source after a successful copy. A failure here leaves the source
+/// in place (e.g. a read-only source directory blocks unlink) and reports it;
+/// the dest is already complete, so it is never touched.
+fn removeSourceAfterCopy(allocator: std.mem.Allocator, io: std.Io, source: []const u8, is_directory: bool, stderr_writer: anytype) !void {
+    assert(source.len > 0);
+
+    if (is_directory) {
         std.Io.Dir.cwd().deleteTree(io, source) catch |del_err| {
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "failed to remove source directory '{s}': {}", .{ source, del_err });
             common.printErrorWithProgram(allocator, stderr_writer, "mv", "copy completed successfully but source directory remains - please remove manually", .{});
@@ -471,141 +489,206 @@ fn crossFilesystemMove(allocator: std.mem.Allocator, io: std.Io, source: []const
             return del_err;
         };
     }
-
-    if (options.verbose) {
-        try stdout_writer.print("mv: completed cross-filesystem move\n", .{});
-    }
 }
 
-/// Copy a single file across filesystems with attribute preservation
-fn copyFileCross(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, source_info: common.file.FileInfo, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
-    if (options.verbose) {
-        try stdout_writer.print("mv: copying file '{s}' to '{s}'\n", .{ source_path, dest_path });
+/// Copy a directory tree across filesystems using the bounded common.walker.
+///
+/// Order is `.both`: a directory is materialized on its pre-order visit (with a
+/// WRITABLE mode so children can be written) and has its real mode + timestamps
+/// applied on its post-order visit (after children are written, which would
+/// otherwise bump the parent mtime). Per-entry errors are reported and the walk
+/// CONTINUES with siblings (GNU semantics); any failure means the source tree is
+/// kept and an error is returned.
+fn copyDirectoryTree(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    assert(source.len > 0);
+    assert(dest.len > 0);
+
+    const walk_config = common.walker.WalkConfig{
+        .order = .both,
+        .symlinks = .no_follow,
+        .detect_cycles = true,
+    };
+    var dir_walker = try common.walker.Walker.init(allocator, walk_config);
+    defer dir_walker.deinit(io);
+    try dir_walker.addRoot(source);
+
+    var had_copy_error = false;
+    while (true) {
+        const maybe_entry = dir_walker.next(io) catch |err| {
+            // A per-entry error (e.g. opening an unreadable subdir) is reported
+            // and the walk continues with siblings. The walker discards the
+            // failing child path on error, so recover it from the parent.
+            recoverDescendError(allocator, io, &dir_walker, source, dest, stderr_writer, err);
+            had_copy_error = true;
+            continue;
+        };
+        const entry = maybe_entry orelse break;
+        handleWalkEntry(allocator, io, entry, source, dest, options, stdout_writer, stderr_writer) catch {
+            had_copy_error = true;
+        };
     }
 
-    // Open source file
-    const source_file = std.Io.Dir.cwd().openFile(io, source_path, .{}) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source file '{s}': {}", .{ source_path, err });
-        return err;
-    };
-    defer source_file.close(io);
-
-    // Create destination file with same permissions as source
-    const dest_file = std.Io.Dir.cwd().createFile(io, dest_path, .{
-        .permissions = std.Io.File.Permissions.fromMode(source_info.mode),
-    }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination file '{s}': {}", .{ dest_path, err });
-        return err;
-    };
-    defer dest_file.close(io);
-
-    // Copy file contents
-    common.file_ops.copyFileContents(io, source_file, dest_file) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "error copying '{s}' to '{s}': {}", .{ source_path, dest_path, err });
-        return err;
-    };
-
-    // Preserve timestamps if possible
-    dest_file.setTimestamps(io, .{
-        .access_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.atime) } },
-        .modify_timestamp = .{ .new = .{ .nanoseconds = @intCast(source_info.mtime) } },
-    }) catch |err| {
-        // Non-critical error - log but continue
-        if (options.verbose) {
-            try stdout_writer.print("mv: warning: could not preserve timestamps for '{s}': {}\n", .{ dest_path, err });
-        }
-    };
+    // Keep dest AND source on any failure; the caller skips source removal.
+    if (had_copy_error) return error.SomeCopyFailed;
 }
 
-/// Recursively copy directory across filesystems
-fn copyDirectoryRecursive(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
-    if (options.verbose) {
-        try stdout_writer.print("mv: copying directory '{s}' to '{s}'\n", .{ source_path, dest_path });
-    }
+/// Map a source entry path onto its destination path by replacing the source
+/// root prefix with the dest root prefix. Caller owns the returned buffer.
+fn destPathFor(allocator: std.mem.Allocator, source_root: []const u8, dest_root: []const u8, entry_path: []const u8) ![]u8 {
+    assert(source_root.len > 0);
+    assert(dest_root.len > 0);
+    assert(entry_path.len >= source_root.len);
+    assert(std.mem.startsWith(u8, entry_path, source_root));
+    const suffix = entry_path[source_root.len..];
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ dest_root, suffix });
+}
 
-    // Get source directory stat for permissions
-    const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat source directory '{s}': {}", .{ source_path, err });
-        return err;
-    };
+/// Dispatch a single walker entry to the matching copy action. Errors are
+/// surfaced to the driver loop, which records them and continues with siblings.
+fn handleWalkEntry(allocator: std.mem.Allocator, io: std.Io, entry: common.walker.Entry, source: []const u8, dest: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    assert(source.len > 0);
+    assert(dest.len > 0);
 
-    // Create destination directory with same permissions
-    std.Io.Dir.cwd().createDir(io, dest_path, std.Io.File.Permissions.fromMode(source_info.mode)) catch |err| switch (err) {
-        error.PathAlreadyExists => {
-            // Directory already exists, check if it's actually a directory
-            const dest_info = common.file.FileInfo.stat(io, dest_path) catch |stat_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat existing destination '{s}': {}", .{ dest_path, stat_err });
-                return stat_err;
-            };
-            if (dest_info.kind != .directory) {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "destination '{s}' exists but is not a directory", .{dest_path});
-                return error.NotDir;
+    const dest_path = try destPathFor(allocator, source, dest, entry.path);
+    defer allocator.free(dest_path);
+
+    switch (entry.kind) {
+        .directory => switch (entry.visit) {
+            .pre => try materializeDestDir(allocator, io, dest_path, stderr_writer),
+            .post => try preserveCopiedDir(allocator, io, entry.path, dest_path, options, stdout_writer, stderr_writer),
+        },
+        .file => try copyTreeFile(allocator, io, entry.path, dest_path, options, stdout_writer, stderr_writer),
+        .sym_link => try recreateSymlink(allocator, io, entry.path, dest_path, stderr_writer),
+        // Skip block/char/pipe/socket nodes, matching the prior behavior.
+        else => {
+            if (options.verbose) {
+                try stdout_writer.print("mv: skipping special file '{s}'\n", .{entry.path});
             }
         },
+    }
+}
+
+/// Create the destination directory with a WRITABLE mode (0o755) so child
+/// entries can be written even when the source directory is read-only. The real
+/// source mode is reapplied post-order by preserveCopiedDir.
+fn materializeDestDir(allocator: std.mem.Allocator, io: std.Io, dest_path: []const u8, stderr_writer: anytype) !void {
+    assert(dest_path.len > 0);
+    const writable_mode = std.Io.File.Permissions.fromMode(0o755);
+    std.Io.Dir.cwd().createDir(io, dest_path, writable_mode) catch |err| switch (err) {
+        // An existing directory is fine (re-running into a prepared dest).
+        error.PathAlreadyExists => return,
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create destination directory '{s}': {}", .{ dest_path, err });
+            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create directory '{s}': {}", .{ dest_path, err });
             return err;
         },
     };
+}
 
-    // Open source directory for iteration
-    var source_dir = std.Io.Dir.cwd().openDir(io, source_path, .{ .iterate = true }) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot open source directory '{s}': {}", .{ source_path, err });
+/// Apply the source directory's mode and timestamps to the destination on its
+/// post-order visit (after children are written). Also prints the verbose line.
+fn preserveCopiedDir(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
+    const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat directory '{s}': {}", .{ source_path, err });
         return err;
     };
-    defer source_dir.close(io);
+    _ = common.file_ops.preserveDirAttributes(allocator, io, stderr_writer, "mv", dest_path, source_info.mode, source_info.atime, source_info.mtime);
 
-    // Iterate through directory entries
-    var iterator = source_dir.iterate();
-    while (iterator.next(io) catch |err| {
-        common.printErrorWithProgram(allocator, stderr_writer, "mv", "error reading directory '{s}': {}", .{ source_path, err });
-        return err;
-    }) |entry| {
-        // Build full paths for source and destination
-        const entry_source = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ source_path, entry.name });
-        defer allocator.free(entry_source);
-        const entry_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest_path, entry.name });
-        defer allocator.free(entry_dest);
-
-        switch (entry.kind) {
-            .file => {
-                const entry_info = common.file.FileInfo.stat(io, entry_source) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat file '{s}': {}", .{ entry_source, err });
-                    return err;
-                };
-                try copyFileCross(allocator, io, entry_source, entry_dest, entry_info, options, stdout_writer, stderr_writer);
-            },
-            .directory => {
-                try copyDirectoryRecursive(allocator, io, entry_source, entry_dest, options, stdout_writer, stderr_writer);
-            },
-            .sym_link => {
-                // Copy symlink by reading target and creating new symlink
-                var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-                const target_len = std.Io.Dir.cwd().readLink(io, entry_source, &target_buf) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot read symlink '{s}': {}", .{ entry_source, err });
-                    return err;
-                };
-                const target = target_buf[0..target_len];
-
-                std.Io.Dir.cwd().symLink(io, target, entry_dest, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create symlink '{s}': {}", .{ entry_dest, err });
-                    return err;
-                };
-            },
-            else => {
-                // Skip other file types (block devices, character devices, etc.)
-                if (options.verbose) {
-                    try stdout_writer.print("mv: skipping special file '{s}'\n", .{entry_source});
-                }
-            },
-        }
-    }
-
-    // Preserve directory timestamps if possible
-    // Note: On some systems, directory timestamp preservation may not be supported
     if (options.verbose) {
-        try stdout_writer.print("mv: note: directory timestamp preservation not implemented for cross-filesystem moves\n", .{});
+        try stdout_writer.print("'{s}' -> '{s}'\n", .{ source_path, dest_path });
     }
+}
+
+/// Copy a single regular file with attribute preservation, then print the
+/// verbose line. Stat first so copyFileWithAttributes carries mode/mtime/owner.
+fn copyTreeFile(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, options: MoveOptions, stdout_writer: anytype, stderr_writer: anytype) !void {
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
+    const source_info = common.file.FileInfo.stat(io, source_path) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot stat file '{s}': {}", .{ source_path, err });
+        return err;
+    };
+    try common.file_ops.copyFileWithAttributes(allocator, io, stderr_writer, "mv", source_path, dest_path, source_info);
+
+    if (options.verbose) {
+        try stdout_writer.print("'{s}' -> '{s}'\n", .{ source_path, dest_path });
+    }
+}
+
+/// Recreate a symlink verbatim: read its target and create the same link at the
+/// destination. The link is never followed (no_follow policy).
+fn recreateSymlink(allocator: std.mem.Allocator, io: std.Io, source_path: []const u8, dest_path: []const u8, stderr_writer: anytype) !void {
+    assert(source_path.len > 0);
+    assert(dest_path.len > 0);
+
+    var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const target_len = std.Io.Dir.cwd().readLink(io, source_path, &target_buf) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot read symlink '{s}': {}", .{ source_path, err });
+        return err;
+    };
+    const target = target_buf[0..target_len];
+    std.Io.Dir.cwd().symLink(io, target, dest_path, .{}) catch |err| {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create symlink '{s}': {}", .{ dest_path, err });
+        return err;
+    };
+}
+
+/// Recover the failing child after a walker descend error. The walker resets its
+/// path buffer to the PARENT on a descend failure, so the failing child name is
+/// lost. We re-scan the parent for a directory child whose dest does not yet
+/// exist and that cannot be opened: that child is the culprit. We materialize
+/// its (empty) dest directory and report it, matching GNU's continue-past-an-
+/// unreadable-subdir behavior. Diagnostics only; never returns an error.
+fn recoverDescendError(allocator: std.mem.Allocator, io: std.Io, dir_walker: *common.walker.Walker, source: []const u8, dest: []const u8, stderr_writer: anytype, walk_err: anyerror) void {
+    assert(source.len > 0);
+    assert(dest.len > 0);
+
+    const parent_path = dir_walker.path_buf.items;
+    if (parent_path.len < source.len) {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot access '{s}': {}", .{ source, walk_err });
+        return;
+    }
+    var parent_dir = std.Io.Dir.cwd().openDir(io, parent_path, .{ .iterate = true }) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot access '{s}': {}", .{ parent_path, walk_err });
+        return;
+    };
+    defer parent_dir.close(io);
+
+    var iterator = parent_dir.iterate();
+    while (iterator.next(io) catch null) |child| {
+        if (child.kind != .directory) continue;
+        recoverChild(allocator, io, parent_path, child.name, source, dest, stderr_writer, walk_err);
+    }
+}
+
+/// Inspect one parent child during descend-error recovery. If its dest is
+/// missing and it cannot be opened, it is the unreadable culprit: materialize
+/// the empty dest dir and report it.
+fn recoverChild(allocator: std.mem.Allocator, io: std.Io, parent_path: []const u8, child_name: []const u8, source: []const u8, dest: []const u8, stderr_writer: anytype, walk_err: anyerror) void {
+    assert(parent_path.len > 0);
+    assert(child_name.len > 0);
+
+    const child_source = std.fmt.allocPrint(allocator, "{s}/{s}", .{ parent_path, child_name }) catch return;
+    defer allocator.free(child_source);
+    const child_dest = destPathFor(allocator, source, dest, child_source) catch return;
+    defer allocator.free(child_dest);
+
+    // A child whose dest already exists was (or will be) handled by the walker.
+    if (std.Io.Dir.cwd().access(io, child_dest, .{})) |_| return else |_| {}
+
+    // A readable child is not the culprit; the walker reaches it normally.
+    if (std.Io.Dir.cwd().openDir(io, child_source, .{ .iterate = true })) |opened| {
+        var d = opened;
+        d.close(io);
+        return;
+    } else |_| {}
+
+    // Unreadable child: materialize its empty dest dir and report it.
+    std.Io.Dir.cwd().createDir(io, child_dest, std.Io.File.Permissions.fromMode(0o755)) catch {};
+    common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot access '{s}': {}", .{ child_source, walk_err });
 }
 
 /// Rename wrapper that handles EINVAL instead of panicking.
