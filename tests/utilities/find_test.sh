@@ -1068,4 +1068,44 @@ test_find() {
             "Expected exit 0, got $exit_code, err: '$err'"
     fi
     rm -rf "$execdir_batch_dir"
+
+    # ================================================================
+    # Behavior-fix (intended RED before walker migration):
+    # -xdev emits mount-point entries without descending them.
+    #
+    # GNU find PRINTS a mount point that lives on a different device
+    # (it just does not descend into it). Current vibeutils find skips
+    # cross-device entries entirely, so the mount point never appears.
+    # The presence assertion is the RED one; it flips to PASS after the
+    # walker migration. -maxdepth 1 keeps the scan to a single level so
+    # this stays fast even though the start path is the filesystem root.
+    # ================================================================
+    echo -e "${CYAN}Testing -xdev emits mount points (behavior-fix)...${NC}"
+
+    # Pick a mount point that is reliably a separate device on this OS.
+    local xdev_mount xdev_label
+    case "$(uname -s)" in
+        Darwin)
+            # /dev is devfs on macOS, a distinct device from /.
+            xdev_mount="/dev"
+            xdev_label="/dev"
+            ;;
+        *)
+            # /proc is always a separate device on Linux.
+            xdev_mount="/proc"
+            xdev_label="/proc"
+            ;;
+    esac
+
+    run_command cmd out err exit_code \
+        "$binary" "/" "-maxdepth" "1" "-xdev"
+    # KEY RED: the mount point entry itself must be emitted. Match it as a
+    # whole line so a substring like "/dev" cannot accidentally match
+    # "/devel" or similar siblings.
+    if printf '%s\n' "$out" | grep -qx "$xdev_mount"; then
+        print_test_result "find -xdev emits $xdev_label mount point" "PASS"
+    else
+        print_test_result "find -xdev emits $xdev_label mount point" "FAIL" \
+            "Expected $xdev_label in output of find / -maxdepth 1 -xdev"
+    fi
 }

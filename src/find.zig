@@ -5618,3 +5618,826 @@ test "find: -a and -and operators combine predicates" {
         try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "world.txt") == null);
     }
 }
+
+// ============================================================================
+// Walker-migration characterization tests
+//
+// These lock in the traversal behavior that the bounded common.walker rewrite
+// must preserve when walkPath is deleted. Each asserts a SPECIFIC ordering,
+// depth, symlink, error, or filtering behavior that a wrong driver loop would
+// break. They run at the runFind level, the same as the existing 98 tests.
+//
+// These are behavior-PRESERVING: they must pass GREEN on the current recursive
+// walkPath AND on the walker driver that replaces it. Teeth are proven later by
+// transient sabotage of the implementation.
+// ============================================================================
+
+test "find: walker: multi-level pre-order prints parents before their contents" {
+    // Guards behavior #7 of walkPath (pre-order directory evaluate before
+    // descent). The default order is pre-order: a directory's own line must
+    // appear BEFORE any line for an entry inside it, at every level. A
+    // post-order regression would flip the relative positions and fail this.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{a.txt, sub/{b.txt, deeper/{c.txt}}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    (try root.createFile(testing.io, "a.txt", .{})).close(testing.io);
+    try root.createDir(testing.io, "sub", .default_dir);
+    var sub = try root.openDir(testing.io, "sub", .{});
+    defer sub.close(testing.io);
+    (try sub.createFile(testing.io, "b.txt", .{})).close(testing.io);
+    try sub.createDir(testing.io, "deeper", .default_dir);
+    var deeper = try sub.openDir(testing.io, "deeper", .{});
+    defer deeper.close(testing.io);
+    (try deeper.createFile(testing.io, "c.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{root_path}, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // Every depth must be reached.
+    const a_pos = std.mem.find(u8, out, "a.txt") orelse return error.MissingA;
+    const b_pos = std.mem.find(u8, out, "b.txt") orelse return error.MissingB;
+    const c_pos = std.mem.find(u8, out, "c.txt") orelse return error.MissingC;
+    // The directory's OWN line ends in a newline after the dir name (the dir is
+    // never a path prefix of itself plus "\n"), so anchor on "<name>\n".
+    const root_line = try std.fmt.allocPrint(allocator, "{s}\n", .{root_path});
+    const root_pos = std.mem.find(u8, out, root_line) orelse return error.MissingRoot;
+    const sub_pos = std.mem.find(u8, out, "sub\n") orelse return error.MissingSub;
+    const deeper_pos = std.mem.find(u8, out, "deeper\n") orelse return error.MissingDeeper;
+
+    // Pre-order: each directory precedes its own descendants.
+    try testing.expect(root_pos < a_pos);
+    try testing.expect(root_pos < sub_pos);
+    try testing.expect(sub_pos < b_pos);
+    try testing.expect(sub_pos < deeper_pos);
+    try testing.expect(deeper_pos < c_pos);
+}
+
+test "find: walker: multiple path operands are each fully walked in argument order" {
+    // Guards behavior C (multiple start operands drained in argument order) and
+    // the runFind per-operand loop. Two distinct trees passed as operands must
+    // BOTH be walked to completion, and the first operand's output must precede
+    // the second's. A driver that dropped the second operand, or reordered
+    // them, would fail.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // alpha/{inside_alpha.txt}  and  beta/{inside_beta.txt}
+    try tmp.dir.createDir(testing.io, "alpha", .default_dir);
+    var alpha = try tmp.dir.openDir(testing.io, "alpha", .{});
+    defer alpha.close(testing.io);
+    (try alpha.createFile(testing.io, "inside_alpha.txt", .{})).close(testing.io);
+
+    try tmp.dir.createDir(testing.io, "beta", .default_dir);
+    var beta = try tmp.dir.openDir(testing.io, "beta", .{});
+    defer beta.close(testing.io);
+    (try beta.createFile(testing.io, "inside_beta.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const alpha_path = try std.fs.path.join(allocator, &.{ base, "alpha" });
+    const beta_path = try std.fs.path.join(allocator, &.{ base, "beta" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // beta is listed first to prove order follows the ARGUMENT order, not the
+    // lexicographic order of the names (alpha < beta).
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ beta_path, alpha_path }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    const beta_child_pos = std.mem.find(u8, out, "inside_beta.txt") orelse return error.MissingBetaChild;
+    const alpha_child_pos = std.mem.find(u8, out, "inside_alpha.txt") orelse return error.MissingAlphaChild;
+    // Both operands fully walked, and the FIRST operand (beta) comes first.
+    try testing.expect(beta_child_pos < alpha_child_pos);
+}
+
+test "find: walker: -maxdepth 0 evaluates only the start operand" {
+    // Guards the maxdepth boundary at depth 0 (behavior #1/#8). With -maxdepth
+    // 0, ONLY the operand itself is evaluated; not even its immediate children
+    // appear. Existing tests only cover maxdepth 1, so this exercises the
+    // pruneCurrent()-at-the-root path of the driver.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    (try tmp.dir.createFile(testing.io, "child.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ base, "-maxdepth", "0" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // The operand itself is printed.
+    try testing.expect(std.mem.find(u8, out, base) != null);
+    // Its children are NOT (depth 1 > maxdepth 0).
+    try testing.expect(std.mem.find(u8, out, "child.txt") == null);
+}
+
+test "find: walker: -maxdepth N under -depth evaluates depth N, never N+1" {
+    // Guards behavior #8 in the post-order (-depth) path: entries AT the
+    // maxdepth boundary are still evaluated, entries past it never appear. The
+    // briefing flags this combination as untested. Under -depth the driver must
+    // evaluate the boundary directory yet not descend.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{lvl1.txt, sub/{lvl2.txt}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    (try root.createFile(testing.io, "lvl1.txt", .{})).close(testing.io);
+    try root.createDir(testing.io, "sub", .default_dir);
+    var sub = try root.openDir(testing.io, "sub", .{});
+    defer sub.close(testing.io);
+    (try sub.createFile(testing.io, "lvl2.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // root is depth 0, lvl1.txt and sub are depth 1, lvl2.txt is depth 2.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-depth", "-maxdepth", "1" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // Depth 1 entries are evaluated.
+    try testing.expect(std.mem.find(u8, out, "lvl1.txt") != null);
+    try testing.expect(std.mem.find(u8, out, "sub\n") != null);
+    // Depth 2 entry never appears.
+    try testing.expect(std.mem.find(u8, out, "lvl2.txt") == null);
+    // Under -depth the boundary dir "sub" is still printed AFTER its sibling
+    // file (post-order at the same level keeps children-before-parent only for
+    // deeper levels; here sub is a leaf of the walk because we do not descend).
+}
+
+test "find: walker: -mindepth under -depth descends through shallow entries but suppresses them" {
+    // Guards behavior #6/#7 mindepth filtering combined with post-order. The
+    // mindepth filter must suppress OUTPUT for shallow entries while still
+    // descending through them, even under -depth. Briefing flags this as
+    // untested.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{shallow.txt, sub/{deep.txt}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    (try root.createFile(testing.io, "shallow.txt", .{})).close(testing.io);
+    try root.createDir(testing.io, "sub", .default_dir);
+    var sub = try root.openDir(testing.io, "sub", .{});
+    defer sub.close(testing.io);
+    (try sub.createFile(testing.io, "deep.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // mindepth 2: depth-0 root and depth-1 entries suppressed; deep.txt (depth
+    // 2) must still be reached, proving the walk descended through the shallow,
+    // suppressed levels.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-depth", "-mindepth", "2" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // The deep entry, reachable only by descending past suppressed levels, appears.
+    try testing.expect(std.mem.find(u8, out, "deep.txt") != null);
+    // Shallow entries are suppressed.
+    try testing.expect(std.mem.find(u8, out, "shallow.txt") == null);
+    try testing.expect(std.mem.find(u8, out, "sub\n") == null);
+}
+
+test "find: walker: -depth -delete empties then removes a matched directory" {
+    // Guards behavior: -delete forces depth-first and, because contents are
+    // visited before the directory, an empty-able directory is removed after
+    // its children. The existing -delete test only deletes a single file. Here
+    // a populated directory must end up gone, proving children were deleted
+    // first (post-order) and the now-empty dir removed.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // victim/{a.txt, b.txt}
+    try tmp.dir.createDir(testing.io, "victim", .default_dir);
+    var victim = try tmp.dir.openDir(testing.io, "victim", .{});
+    (try victim.createFile(testing.io, "a.txt", .{})).close(testing.io);
+    (try victim.createFile(testing.io, "b.txt", .{})).close(testing.io);
+    victim.close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const victim_path = try std.fs.path.join(allocator, &.{ base, "victim" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ victim_path, "-delete" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // The whole directory, including its files, must be gone. If children were
+    // not deleted before the dir (wrong order), rmdir on a non-empty dir would
+    // fail and victim would survive.
+    const victim_stat = tmp.dir.statFile(testing.io, "victim", .{});
+    try testing.expect(victim_stat == error.FileNotFound);
+}
+
+test "find: walker: unreadable subdirectory errors, siblings still processed, exit 1" {
+    // Guards behavior #9 (dir open failure path). When a child directory cannot
+    // be opened, find must report the error to stderr naming the directory,
+    // continue processing sibling entries, and exit nonzero. Root bypasses read
+    // permissions, so skip when euid is root (mirrors the cp unreadable-subdir
+    // test).
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{readable_sibling.txt, locked/{secret.txt}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    (try root.createFile(testing.io, "readable_sibling.txt", .{})).close(testing.io);
+    try root.createDir(testing.io, "locked", .default_dir);
+    var locked = try root.openDir(testing.io, "locked", .{});
+    (try locked.createFile(testing.io, "secret.txt", .{})).close(testing.io);
+    locked.close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    // chmod by absolute path (libc) reliably persists; restore in defer so
+    // TmpDir cleanup can recurse in. Skip if the platform refuses chmod 000.
+    const locked_z = try std.fmt.allocPrintSentinel(allocator, "{s}/locked", .{root_path}, 0);
+    if (std.c.chmod(locked_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(locked_z, 0o755);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{root_path}, &stdout_aw.writer, &stderr_aw.writer);
+
+    // Nonzero exit because one subtree could not be read.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    // The readable sibling is still processed despite the failed sibling.
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "readable_sibling.txt") != null);
+    // The error names the unreadable directory.
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "locked") != null);
+}
+
+test "find: walker: under -depth an unreadable directory is itself still evaluated" {
+    // Guards the find.zig:2680 contract (behavior #9 under depth_first): when
+    // depth_first is active and openDir fails, the failed directory is STILL
+    // evaluated (its -print fires) even though descent failed. The walker driver
+    // must restat the failed path and call evaluate() in its error path.
+    if (std.c.geteuid() == 0) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{locked/{secret.txt}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    try root.createDir(testing.io, "locked", .default_dir);
+    var locked = try root.openDir(testing.io, "locked", .{});
+    (try locked.createFile(testing.io, "secret.txt", .{})).close(testing.io);
+    locked.close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    const locked_z = try std.fmt.allocPrintSentinel(allocator, "{s}/locked", .{root_path}, 0);
+    if (std.c.chmod(locked_z, 0o000) != 0) return error.SkipZigTest;
+    defer _ = std.c.chmod(locked_z, 0o755);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-depth" }, &stdout_aw.writer, &stderr_aw.writer);
+
+    // Nonzero exit because the descent failed.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    // The contract: the unreadable directory's OWN line still prints under -depth.
+    const locked_line = try std.fmt.allocPrint(allocator, "{s}/locked\n", .{root_path});
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), locked_line) != null);
+    // Its child was never reached (descent failed).
+    try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "secret.txt") == null);
+}
+
+test "find: walker: -prune on a matched directory suppresses its whole subtree" {
+    // Guards behavior #7 + pruneCurrent(): a directory matched by -prune is
+    // emitted but its subtree is not descended. Distinct from the existing
+    // -prune test (which uses the -o filtering form): here we assert the pruned
+    // directory ITSELF prints while everything beneath it is absent.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{prune_me/{deep/{burrowed.txt}}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    try root.createDir(testing.io, "prune_me", .default_dir);
+    var prune_me = try root.openDir(testing.io, "prune_me", .{});
+    defer prune_me.close(testing.io);
+    try prune_me.createDir(testing.io, "deep", .default_dir);
+    var deep = try prune_me.openDir(testing.io, "deep", .{});
+    defer deep.close(testing.io);
+    (try deep.createFile(testing.io, "burrowed.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ root_path, "-name", "prune_me", "-prune" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // The pruned directory itself is still emitted.
+    try testing.expect(std.mem.find(u8, out, "prune_me\n") != null);
+    // Nothing beneath it was descended.
+    try testing.expect(std.mem.find(u8, out, "deep\n") == null);
+    try testing.expect(std.mem.find(u8, out, "burrowed.txt") == null);
+}
+
+test "find: walker: -prune is a no-op under -depth (subtree still appears)" {
+    // Guards invariant B: under -depth, -prune is a documented no-op because the
+    // post-order walk has already descended before the directory is evaluated.
+    // The whole subtree must still appear. A driver that honored prune under
+    // post-order would wrongly drop the subtree.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{prune_me/{burrowed.txt}}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    try root.createDir(testing.io, "prune_me", .default_dir);
+    var prune_me = try root.openDir(testing.io, "prune_me", .{});
+    defer prune_me.close(testing.io);
+    (try prune_me.createFile(testing.io, "burrowed.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    // The classic prune-or-print expression. WITHOUT -depth this prunes the
+    // subtree, so burrowed.txt is absent — establishing that the expression
+    // really does prune when prune is honored.
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+            root_path, "-name", "prune_me", "-prune", "-o", "-print",
+        }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // Pre-order: prune is honored, so the subtree is suppressed.
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "burrowed.txt") == null);
+    }
+
+    // WITH -depth the very same expression must NOT suppress the subtree: prune
+    // is a documented no-op under post-order because the walk already descended
+    // before the directory is evaluated. So burrowed.txt reappears.
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+            root_path, "-depth", "-name", "prune_me", "-prune", "-o", "-print",
+        }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // Post-order: prune is a no-op, so the file beneath the "pruned" dir appears.
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "burrowed.txt") != null);
+    }
+}
+
+test "find: walker: -s emits each directory's children in lexicographic order" {
+    // Guards the sorted-children behavior. The existing -s test only verifies
+    // the flag parses; this asserts the actual lexicographic ordering of
+    // siblings within a directory. The walker rewrite uses sort_children=true.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create children OUT of lexicographic order so a no-sort regression would
+    // likely emit them in readdir (creation/inode) order and fail.
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    (try root.createFile(testing.io, "charlie.txt", .{})).close(testing.io);
+    (try root.createFile(testing.io, "alpha.txt", .{})).close(testing.io);
+    (try root.createFile(testing.io, "bravo.txt", .{})).close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-s", root_path }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    const alpha_pos = std.mem.find(u8, out, "alpha.txt") orelse return error.MissingAlpha;
+    const bravo_pos = std.mem.find(u8, out, "bravo.txt") orelse return error.MissingBravo;
+    const charlie_pos = std.mem.find(u8, out, "charlie.txt") orelse return error.MissingCharlie;
+    // Lexicographic: alpha < bravo < charlie.
+    try testing.expect(alpha_pos < bravo_pos);
+    try testing.expect(bravo_pos < charlie_pos);
+}
+
+test "find: walker: -P does not descend a symlink-to-directory start operand" {
+    // Guards the -P (default) policy at depth 0: a symlink-to-directory passed
+    // AS the operand is printed as a symlink and NOT followed. -type l matches
+    // it; -type f does not; and the file behind it is unreachable through the
+    // link. The existing "-P global option accepted as no-op" test does not
+    // verify this.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // target/{behind.txt}, and operand_link -> target
+    try tmp.dir.createDir(testing.io, "target", .default_dir);
+    var target = try tmp.dir.openDir(testing.io, "target", .{});
+    defer target.close(testing.io);
+    (try target.createFile(testing.io, "behind.txt", .{})).close(testing.io);
+    tmp.dir.symLink(testing.io, "target", "operand_link", .{ .is_directory = true }) catch return error.SkipZigTest;
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const link_path = try std.fs.path.join(allocator, &.{ base, "operand_link" });
+
+    // -P is the default; pass the symlink operand and list with -type l.
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ link_path, "-type", "l" }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // The operand is evaluated as a symlink: -type l matches it.
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "operand_link") != null);
+    }
+
+    // The link is not followed: the file behind it is unreachable, and -type d
+    // does not match the symlink operand.
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{link_path}, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // No descent through the symlink operand.
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "behind.txt") == null);
+    }
+}
+
+test "find: walker: -H follows operand symlink but evaluates inner symlinks as links" {
+    // Guards the -H (.follow_cmdline) policy: a symlink-to-directory START
+    // operand is followed and descended, while a symlink ENCOUNTERED INSIDE the
+    // tree is evaluated as a symlink (-type l matches) and not followed. The
+    // existing -H test covers operand-following but not the inner-link part.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // inner_target/{deep.txt} reachable only by following an inner symlink.
+    try tmp.dir.createDir(testing.io, "inner_target", .default_dir);
+    var inner_target = try tmp.dir.openDir(testing.io, "inner_target", .{});
+    defer inner_target.close(testing.io);
+    (try inner_target.createFile(testing.io, "deep.txt", .{})).close(testing.io);
+
+    // operand_target/{op_file.txt, inner_link -> ../inner_target}
+    try tmp.dir.createDir(testing.io, "operand_target", .default_dir);
+    var operand_target = try tmp.dir.openDir(testing.io, "operand_target", .{});
+    defer operand_target.close(testing.io);
+    (try operand_target.createFile(testing.io, "op_file.txt", .{})).close(testing.io);
+    operand_target.symLink(testing.io, "../inner_target", "inner_link", .{ .is_directory = true }) catch return error.SkipZigTest;
+
+    // The operand itself is a symlink to operand_target.
+    tmp.dir.symLink(testing.io, "operand_target", "operand_link", .{ .is_directory = true }) catch return error.SkipZigTest;
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const operand_link = try std.fs.path.join(allocator, &.{ base, "operand_link" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-H", operand_link }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // Operand symlink followed: the file inside the target is reached.
+    try testing.expect(std.mem.find(u8, out, "op_file.txt") != null);
+    // The inner symlink is NOT followed: the file behind it is unreachable.
+    try testing.expect(std.mem.find(u8, out, "deep.txt") == null);
+
+    // The inner symlink itself is evaluated as a symlink: -type l matches it.
+    var stdout2: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout2.deinit();
+    var stderr2: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr2.deinit();
+    const exit2 = try runFind(allocator, testing.io, &[_][]const u8{ "-H", operand_link, "-type", "l" }, &stdout2.writer, &stderr2.writer);
+    try testing.expectEqual(@as(u8, 0), exit2);
+    try testing.expect(std.mem.find(u8, stdout2.writer.buffered(), "inner_link") != null);
+}
+
+test "find: walker: -L evaluates an inner symlink-to-file as its target type" {
+    // Guards the -L (.follow_all) policy for a symlink-to-FILE inside the tree:
+    // the link is evaluated as its target kind, so -type f matches the link path
+    // and -type l does not. Briefing flags this as untested.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/{real.txt, link_to_file -> real.txt}
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    (try root.createFile(testing.io, "real.txt", .{})).close(testing.io);
+    root.symLink(testing.io, "real.txt", "link_to_file", .{}) catch return error.SkipZigTest;
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    // With -L, -type f matches BOTH the real file and the link (resolved type).
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path, "-type", "f" }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // The link path is reported as a regular file under -L.
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link_to_file") != null);
+    }
+
+    // With -L, -type l matches NEITHER (the link is resolved away).
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path, "-type", "l" }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+        // No symlinks are visible under -L.
+        try testing.expect(std.mem.find(u8, stdout_aw.writer.buffered(), "link_to_file") == null);
+    }
+}
+
+test "find: walker: -L descends two sibling symlinks pointing at the same directory" {
+    // Guards invariant: under -L, two sibling symlinks to the SAME target
+    // directory must BOTH be descended (legitimate duplicate follows). Only true
+    // ancestor cycles are blocked; the cycle detector must not suppress these.
+    // The file beneath the shared target must be reachable through BOTH link
+    // names. Briefing flags this as untested.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // shared/{found.txt}, root/{link_a -> ../shared, link_b -> ../shared}
+    try tmp.dir.createDir(testing.io, "shared", .default_dir);
+    var shared = try tmp.dir.openDir(testing.io, "shared", .{});
+    defer shared.close(testing.io);
+    (try shared.createFile(testing.io, "found.txt", .{})).close(testing.io);
+
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    root.symLink(testing.io, "../shared", "link_a", .{ .is_directory = true }) catch return error.SkipZigTest;
+    root.symLink(testing.io, "../shared", "link_b", .{ .is_directory = true }) catch return error.SkipZigTest;
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path, "-name", "found.txt" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // found.txt must be reached through BOTH link names (two distinct hits).
+    const out = stdout_aw.writer.buffered();
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, out, pos, "found.txt")) |idx| {
+        count += 1;
+        pos = idx + 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "find: walker: -X never filters the depth-0 start operand" {
+    // Guards behavior #5: the -X xargs-unsafe filter applies only at depth > 0.
+    // A start operand whose own basename is xargs-unsafe must NOT be filtered.
+    // Briefing flags this as untested.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A directory whose own name contains a space (xargs-unsafe).
+    try tmp.dir.createDir(testing.io, "un safe", .default_dir);
+    var unsafe_dir = try tmp.dir.openDir(testing.io, "un safe", .{});
+    (try unsafe_dir.createFile(testing.io, "inside.txt", .{})).close(testing.io);
+    unsafe_dir.close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const operand_path = try std.fs.path.join(allocator, &.{ base, "un safe" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ operand_path, "-X" }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // The unsafe-named operand itself is NOT filtered (depth 0 is exempt): it is
+    // printed and its contents are reached.
+    try testing.expect(std.mem.find(u8, out, "un safe") != null);
+    try testing.expect(std.mem.find(u8, out, "inside.txt") != null);
+}
+
+// ============================================================================
+// Walker-migration BEHAVIOR-FIX test (intended RED on current code)
+//
+// Unlike the characterization tests above, this one pins GNU findutils
+// behavior that the CURRENT recursive walkPath gets WRONG. It must FAIL now at
+// the assertion matching the bug, and pass after the bounded walker migration
+// adds filesystem-loop detection. Do NOT relax it to match today's output.
+// ============================================================================
+
+test "find: walker-migration: -L reports filesystem loop without descending it" {
+    // GNU `find -L` detects an ancestor symlink cycle, emits a diagnostic naming
+    // both the loop link and the ancestor it loops back to, prints the siblings
+    // it can, refuses to descend the loop, and exits 1. Current vibeutils find
+    // instead follows the loop ~40 levels deep (output is littered with
+    // "up/sub/up/sub/...") and never prints the loop diagnostic. The KEY RED
+    // assertions are (a) the "File system loop detected" diagnostic is present
+    // and (b) the junk descent path ".../sub/up/sub" is absent.
+    //
+    // Methodology: build T/sub/{f.txt, up -> ..} where `up` is a relative
+    // symlink looping back to the tmp root, then run `find -L T` and inspect the
+    // captured stdout/stderr. An arena backs allocations so the hundreds of junk
+    // lines today's code emits cannot trip a fixed-size buffer.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // root/sub/{f.txt, up -> ..}  ("up" loops back to root, an ancestor).
+    try tmp.dir.createDir(testing.io, "root", .default_dir);
+    var root = try tmp.dir.openDir(testing.io, "root", .{});
+    defer root.close(testing.io);
+    try root.createDir(testing.io, "sub", .default_dir);
+    var sub = try root.openDir(testing.io, "sub", .{});
+    defer sub.close(testing.io);
+    (try sub.createFile(testing.io, "f.txt", .{})).close(testing.io);
+    sub.symLink(testing.io, "..", "up", .{ .is_directory = true }) catch return error.SkipZigTest;
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const root_path = try std.fs.path.join(allocator, &.{ base, "root" });
+    const loop_link_path = try std.fs.path.join(allocator, &.{ base, "root", "sub", "up" });
+    // The path the junk descent produces: <root>/sub/up/sub. Its presence proves
+    // the loop was followed instead of being detected and skipped.
+    const junk_descent_path = try std.fs.path.join(allocator, &.{ base, "root", "sub", "up", "sub" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{ "-L", root_path }, &stdout_aw.writer, &stderr_aw.writer);
+
+    const out = stdout_aw.writer.buffered();
+    const err = stderr_aw.writer.buffered();
+
+    // KEY RED (a): the loop diagnostic must be emitted. Today: absent. The quote
+    // glyphs are locale-dependent, so assert only the stable English substring.
+    try testing.expect(std.mem.find(u8, err, "File system loop detected") != null);
+
+    // KEY RED (b): the loop must NOT be descended. Today the output contains
+    // <root>/sub/up/sub (and far deeper). After the fix it never appears.
+    try testing.expect(std.mem.find(u8, out, junk_descent_path) == null);
+
+    // Supporting: the diagnostic names BOTH the loop link and the ancestor it
+    // loops back to (GNU phrases it "<link> is part of the same file system loop
+    // as <ancestor>"). The ancestor here is the root operand.
+    try testing.expect(std.mem.find(u8, err, loop_link_path) != null);
+    try testing.expect(std.mem.find(u8, err, root_path) != null);
+
+    // Supporting: reachable siblings are still emitted before the loop is hit.
+    try testing.expect(std.mem.find(u8, out, "f.txt") != null);
+
+    // Supporting: the loop makes the walk fail, so the exit code is 1.
+    try testing.expectEqual(@as(u8, 1), exit_code);
+}
