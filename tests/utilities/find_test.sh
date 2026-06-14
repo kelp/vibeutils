@@ -1108,4 +1108,54 @@ test_find() {
         print_test_result "find -xdev emits $xdev_label mount point" "FAIL" \
             "Expected $xdev_label in output of find / -maxdepth 1 -xdev"
     fi
+
+    # ================================================================
+    # Behavior-fix (intended RED before iterative-evaluator migration):
+    # find deep expression does not overflow the stack.
+    #
+    # An implicitly-ANDed chain of N -true primaries builds a depth-N
+    # left-leaning expression tree. parseAnd is iterative, so the parser
+    # survives, but the RECURSIVE evaluate() then recurses to that depth
+    # and overflows the stack: the process aborts with SIGABRT (exit
+    # 134) and produces no output. GNU find returns 0 and applies the
+    # implicit -print. The upcoming iterative-evaluator refactor fixes
+    # this; both assertions below flip to PASS afterward.
+    #
+    # This is depth-driven, not OS-specific: it runs identically on
+    # macOS and Linux, so no uname branch is needed.
+    # ================================================================
+    echo -e "${CYAN}Testing deep expression does not overflow the stack (behavior-fix)...${NC}"
+
+    local deep_dir
+    deep_dir=$(create_temp_dir)
+    create_temp_file "content" "$deep_dir/leaf.txt"
+
+    # Build a depth-20000 expression: 20000 implicitly-ANDed -true
+    # primaries. 20000 short tokens is well under ARG_MAX.
+    local deep=()
+    local deep_i
+    for ((deep_i = 0; deep_i < 20000; deep_i++)); do
+        deep+=(-true)
+    done
+
+    run_command cmd out err exit_code "$binary" "$deep_dir" "${deep[@]}"
+
+    # KEY RED 1: the evaluator must run to completion (exit 0), not
+    # abort with SIGABRT (134) on a deeply-nested expression.
+    if [[ $exit_code -eq 0 ]]; then
+        print_test_result "find deep expression exits cleanly" "PASS"
+    else
+        print_test_result "find deep expression exits cleanly" "FAIL" \
+            "Expected exit 0, got $exit_code (134 = SIGABRT stack overflow)"
+    fi
+
+    # KEY RED 2: the implicit -print must fire, proving the expression
+    # evaluated to completion rather than merely avoiding the crash.
+    if [[ "$out" =~ leaf.txt ]]; then
+        print_test_result "find deep expression applies implicit -print" "PASS"
+    else
+        print_test_result "find deep expression applies implicit -print" "FAIL" \
+            "Expected leaf.txt in output (implicit -print), got: '$out'"
+    fi
+    rm -rf "$deep_dir"
 }

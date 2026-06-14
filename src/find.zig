@@ -6892,3 +6892,225 @@ test "find: walker-migration: -L reports filesystem loop without descending it" 
     // Supporting: the loop makes the walk fail, so the exit code is 1.
     try testing.expectEqual(@as(u8, 1), exit_code);
 }
+
+// === Characterization tests for the evaluate() recursion-removal refactor ===
+//
+// These pin the order-sensitive, side-effecting boolean semantics of the
+// expression-tree evaluator (and_expr / or_expr / not_expr) so the planned
+// iterative (de-recursion) rewrite preserves them exactly. Each test drives a
+// SIDE EFFECT (-print emitting a basename) through a short-circuit boundary so
+// that a wrong rewrite -- one that evaluates a right operand it should have
+// suppressed, or skips one it should have run, or mis-inverts -not -- changes
+// the observable output. They must PASS on the current recursive code.
+
+test "find: evaluate: AND short-circuit suppresses right-side -print for non-matches" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // One file matches the -name test, one does not. Both exist on disk.
+    const matchf = try tmp.dir.createFile(testing.io, "match_aaa.txt", .{});
+    matchf.close(testing.io);
+    const otherf = try tmp.dir.createFile(testing.io, "other_bbb.txt", .{});
+    otherf.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // and(name "match_*", print). For the non-matching file -name returns
+    // false, so the right operand -print MUST be suppressed (stop-on-false).
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "match_*", "-print",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // The matching file is printed.
+    try testing.expect(std.mem.find(u8, out, "match_aaa.txt") != null);
+    // KEY: the non-matching file is NOT printed. A rewrite that evaluates the
+    // right operand even when the left is false would emit "other_bbb.txt".
+    try testing.expect(std.mem.find(u8, out, "other_bbb.txt") == null);
+}
+
+test "find: evaluate: OR short-circuit suppresses side-effecting right -print on left-true" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A file matching the left -name, and one that does not.
+    const matchf = try tmp.dir.createFile(testing.io, "left_zzz.txt", .{});
+    matchf.close(testing.io);
+    const otherf = try tmp.dir.createFile(testing.io, "right_yyy.txt", .{});
+    otherf.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // or(name "left_*", print). The whole expression is an action, so there is
+    // no implicit print. For the matching file the left is true, so -o stops
+    // (stop-on-true) and the right -print is suppressed -> matching file is NOT
+    // printed. For the non-matching file the left is false, so the right -print
+    // fires -> it IS printed. This is the inverse of the AND case and catches a
+    // rewrite that flips OR's short-circuit polarity.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "left_*", "-o", "-print",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // KEY: the left-matching file is suppressed (right -print never reached).
+    try testing.expect(std.mem.find(u8, out, "left_zzz.txt") == null);
+    // KEY: the non-matching file falls through to the right -print and appears.
+    try testing.expect(std.mem.find(u8, out, "right_yyy.txt") != null);
+}
+
+test "find: evaluate: -not inverts its operand and drives the following AND short-circuit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const matchf = try tmp.dir.createFile(testing.io, "skip_ccc.txt", .{});
+    matchf.close(testing.io);
+    const otherf = try tmp.dir.createFile(testing.io, "keep_ddd.txt", .{});
+    otherf.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // and(not(name "skip_*"), print). For the matching file: not(true)=false ->
+    // AND short-circuits and -print is suppressed. For the non-matching file:
+    // not(false)=true -> -print fires. A rewrite that mis-inverts -not, or
+    // fires the not_result frame at the wrong time, swaps these two outcomes.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-not", "-name", "skip_*", "-print",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // The matched-and-negated file is excluded.
+    try testing.expect(std.mem.find(u8, out, "skip_ccc.txt") == null);
+    // The non-matching file survives the negation and is printed.
+    try testing.expect(std.mem.find(u8, out, "keep_ddd.txt") != null);
+}
+
+test "find: evaluate: implicit -print obeys flat -true and is suppressed by flat -false" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A file AND a directory, so we prove -true prints non-file entries too --
+    // distinct from the existing "-type f -true" test which filters to files.
+    const f = try tmp.dir.createFile(testing.io, "flat_eee.txt", .{});
+    f.close(testing.io);
+    try tmp.dir.createDir(testing.io, "flat_dir", .default_dir);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    // -true wraps to and(true, print): everything (file and dir) is printed.
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+            dir_path, "-true",
+        }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        const out = stdout_aw.writer.buffered();
+        try testing.expect(std.mem.find(u8, out, "flat_eee.txt") != null);
+        // The directory must appear too (no -type filter narrows the walk).
+        try testing.expect(std.mem.find(u8, out, "flat_dir") != null);
+    }
+
+    // -false wraps to and(false, print): AND short-circuits, nothing printed.
+    {
+        var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stdout_aw.deinit();
+        var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer stderr_aw.deinit();
+
+        const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+            dir_path, "-false",
+        }, &stdout_aw.writer, &stderr_aw.writer);
+        try testing.expectEqual(@as(u8, 0), exit_code);
+
+        // KEY: a false top-level expression suppresses the implicit -print.
+        try testing.expectEqual(@as(usize, 0), stdout_aw.writer.buffered().len);
+    }
+}
+
+test "find: evaluate: prune via out-param composed with -o suppresses pruned dir's own -print" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A directory to prune (with a child) and a sibling file. Existing tests at
+    // ~3943 and the walker prune tests use "-type f -print" on the right of -o;
+    // here the right operand is a BARE -print, which also prints directories.
+    // That makes the assertion below ("the pruned dir's own name is absent")
+    // load-bearing: it can only be absent because -o short-circuited on the
+    // left (name+prune both true), never reaching the right -print for that dir.
+    try tmp.dir.createDir(testing.io, "prune_fff", .default_dir);
+    var pdir = try tmp.dir.openDir(testing.io, "prune_fff", .{});
+    const child = try pdir.createFile(testing.io, "buried_ggg.txt", .{});
+    child.close(testing.io);
+    pdir.close(testing.io);
+
+    const sib = try tmp.dir.createFile(testing.io, "sibling_hhh.txt", .{});
+    sib.close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // or(and(name "prune_fff", prune), print). For prune_fff the left subtree
+    // is true (name matches, -prune returns true and sets pruned), so -o stops
+    // and the right bare -print is suppressed -> prune_fff itself is NOT
+    // printed. Its child is never descended into -> buried_ggg.txt absent.
+    // The sibling: left and() is false (name mismatch) -> right -print fires.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "prune_fff", "-prune", "-o", "-print",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // KEY: the pruned dir's child is never reached (prune stopped descent).
+    try testing.expect(std.mem.find(u8, out, "buried_ggg.txt") == null);
+    // KEY: the pruned dir's OWN name is absent: -o short-circuited on left-true,
+    // so the bare right -print never ran for it.
+    try testing.expect(std.mem.find(u8, out, "prune_fff") == null);
+    // The sibling falls through to the right -print and appears.
+    try testing.expect(std.mem.find(u8, out, "sibling_hhh.txt") != null);
+}
