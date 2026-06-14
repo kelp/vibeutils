@@ -254,7 +254,21 @@ Roughly ordered by impact-per-effort:
     and formatScientific unbounded loops
   - `cc57c2a` + `456a1de` — dd rejects unsupported
     conv=sparse / conv=par* / files= operands at parse time
-- ⬜ Phase 2 — shared bounded walker.
+- ✅ **Phase 2 — shared bounded walker.** All 8 recursive
+  tree-walkers migrated onto `src/common/walker.zig`; no direct
+  filesystem-walk recursion remains.
+  - `64ab8dc` + `4a551f8` — du walker migration (RED/GREEN)
+  - `cdf07f6` + `a5eee53` — grep `searchDirectory` → walker
+    (fixes `-R` symlink-to-dir descent)
+  - `b32624a` + `3081228` — cp recursive copy → walker
+    (fixes `-rp` dir mode/mtime, `-rL` cycle diagnostic)
+  - `1bef185` — extract shared copy leaves into `common/file_ops`
+  - `fe45fe6` + `97db36a` — mv EXDEV fallback → walker
+    (fixes read-only-subdir copy, dir mtime, error continuation)
+  - `99ee975` + `ea4eca4` — find `walkPath` → walker
+    (fixes `-xdev` mount-point emission, `-L` loop diagnostic)
+  - Carve-out, tracked separately: find's expression
+    parser/evaluator recursion (Pratt refactor).
 - ⬜ Phase 3 — function-length splits.
 - ⬜ Phase 4 — assertion sweep.
 - ⬜ Phase 5 — mechanical cleanups.

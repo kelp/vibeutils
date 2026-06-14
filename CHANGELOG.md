@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Fixed
+- **grep `-R` now descends symbolic links to directories.**
+  Following a directory symlink under `-R` previously did nothing
+  (opening the symlink read-only succeeded, so grep treated it as a
+  file and never recursed); it now descends and searches the target,
+  matching GNU.
+- **cp `-p`/`-a` now preserves directory modes and timestamps.**
+  Directory permission/mtime preservation was silently dropped
+  (`fchmod` on a fresh dir handle failed `EBADF`, swallowed). Modes
+  and mtimes are now applied post-order, so even a read-only `0555`
+  source directory copies its contents and lands the right mode.
+- **cp `-L` no longer runs away on symlink cycles.** A directory
+  symlink cycle under `-L` previously recursed to the kernel symlink
+  limit, materializing dozens of junk levels; cp now reports
+  `cannot copy cyclic symbolic link` and skips it, matching GNU.
+- **mv cross-device moves preserve directory mode and mtime and
+  continue past errors.** The EXDEV copy fallback no longer breaks
+  on a read-only source subdirectory, now carries directory mtimes,
+  and reports per-entry errors while continuing with siblings
+  instead of aborting; a failed copy never deletes the source.
+- **find `-xdev` now emits mount-point entries.** Cross-device
+  directories were skipped entirely; they are now reported (without
+  descending), matching GNU.
+- **find `-L` detects filesystem loops.** A symlink loop under `-L`
+  previously walked ~40 junk levels until the kernel symlink limit;
+  find now prints `File system loop detected`, skips the loop, and
+  continues with siblings.
+
 ### Infrastructure
 - Make the release workflow's GitHub-release steps idempotent
   so the `release` job can be safely re-run to recover a failed
@@ -19,6 +47,11 @@
   honors for the Node 20 to 24 cutover, replacing the
   ineffective `ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION` and
   silencing the `setup-zig` Node 20 deprecation warning.
+- **Tiger Style Phase 2: bounded directory walker.** All eight
+  recursive tree-walkers (chmod, chown, rm, du, grep, cp, mv, find)
+  now run on the shared bounded, iterative `common.walker`; no
+  direct filesystem-walk recursion remains. Shared per-file copy
+  leaves were extracted into `common/file_ops` for cp and mv.
 
 ## v0.10.2 — 2026-06-15
 
@@ -54,7 +87,6 @@
   few calls `free` needs (`host_statistics64`,
   `mach_host_self`, `vm_statistics64_data_t`). These track
   the stable kernel ABI and are immune to SDK header churn.
->>>>>>> origin/main
 
 ## v0.10.0 — 2026-05-26
 
