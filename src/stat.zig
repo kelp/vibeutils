@@ -73,6 +73,10 @@ const StatOptions = struct {
 // Argument parsing (manual, like date.zig, for --format=FMT and --printf=FMT)
 // ============================================================================
 
+/// Result of handling one option argument: an error message (if any) and
+/// whether the parent dispatch loop must stop processing further arguments.
+const ParseStep = struct { err: ?[]const u8, stop: bool };
+
 fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: StatOptions, err: ?[]const u8 } {
     var opts = StatOptions{};
     var err_msg: ?[]const u8 = null;
@@ -106,80 +110,15 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: Stat
 
         // Long options
         if (arg.len > 1 and arg[1] == '-') {
-            if (std.mem.eql(u8, arg, "--help")) {
-                opts.help = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--version")) {
-                opts.version = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--dereference")) {
-                opts.dereference = true;
-            } else if (std.mem.eql(u8, arg, "--file-system")) {
-                opts.file_system = true;
-            } else if (std.mem.eql(u8, arg, "--terse")) {
-                opts.terse = true;
-            } else if (std.mem.startsWith(u8, arg, "--format=")) {
-                opts.format = arg["--format=".len..];
-            } else if (std.mem.eql(u8, arg, "--format")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.format = args[i];
-                } else {
-                    err_msg = "option '--format' requires an argument";
-                    break;
-                }
-            } else if (std.mem.startsWith(u8, arg, "--printf=")) {
-                opts.printf_fmt = arg["--printf=".len..];
-            } else if (std.mem.eql(u8, arg, "--printf")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.printf_fmt = args[i];
-                } else {
-                    err_msg = "option '--printf' requires an argument";
-                    break;
-                }
-            } else {
-                err_msg = "unrecognized option";
-                break;
-            }
+            const step = parseArgs_longOption(&opts, args, &i);
+            err_msg = step.err;
+            if (step.stop) break;
             continue;
         }
 
         // Short options
-        var j: usize = 1;
-        while (j < arg.len) : (j += 1) {
-            switch (arg[j]) {
-                'L' => opts.dereference = true,
-                'f' => opts.file_system = true,
-                't' => opts.terse = true,
-                'h' => {
-                    opts.help = true;
-                    break;
-                },
-                'V' => {
-                    opts.version = true;
-                    break;
-                },
-                'c' => {
-                    // -c FORMAT: value is the rest of this arg or next arg
-                    if (j + 1 < arg.len) {
-                        opts.format = arg[j + 1 ..];
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.format = args[i];
-                    } else {
-                        err_msg = "option '-c' requires an argument";
-                    }
-                    // Done with this arg either way
-                    j = arg.len;
-                    break;
-                },
-                else => {
-                    err_msg = "unrecognized option";
-                    break;
-                },
-            }
-        }
+        const step = parseArgs_shortOption(&opts, args, &i, arg);
+        err_msg = step.err;
         if (err_msg != null) break;
     }
 
@@ -191,6 +130,101 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: Stat
     };
 
     return .{ .opts = opts, .err = err_msg };
+}
+
+/// Handle one long option (arg starting with "--"). May advance `i` to
+/// consume a space-separated value. Returns whether the outer loop stops.
+fn parseArgs_longOption(
+    opts: *StatOptions,
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch slice index into args
+) ParseStep {
+    std.debug.assert(i.* < args.len);
+    const arg = args[i.*];
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[1] == '-');
+
+    if (std.mem.eql(u8, arg, "--help")) {
+        opts.help = true;
+        return .{ .err = null, .stop = true };
+    } else if (std.mem.eql(u8, arg, "--version")) {
+        opts.version = true;
+        return .{ .err = null, .stop = true };
+    } else if (std.mem.eql(u8, arg, "--dereference")) {
+        opts.dereference = true;
+    } else if (std.mem.eql(u8, arg, "--file-system")) {
+        opts.file_system = true;
+    } else if (std.mem.eql(u8, arg, "--terse")) {
+        opts.terse = true;
+    } else if (std.mem.startsWith(u8, arg, "--format=")) {
+        opts.format = arg["--format=".len..];
+    } else if (std.mem.eql(u8, arg, "--format")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.format = args[i.*];
+        } else {
+            return .{ .err = "option '--format' requires an argument", .stop = true };
+        }
+    } else if (std.mem.startsWith(u8, arg, "--printf=")) {
+        opts.printf_fmt = arg["--printf=".len..];
+    } else if (std.mem.eql(u8, arg, "--printf")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.printf_fmt = args[i.*];
+        } else {
+            return .{ .err = "option '--printf' requires an argument", .stop = true };
+        }
+    } else {
+        return .{ .err = "unrecognized option", .stop = true };
+    }
+    return .{ .err = null, .stop = false };
+}
+
+/// Handle one clustered short-option argument (e.g. "-Lf"). May advance `i`
+/// to consume a space-separated value for `-c`. Returns any error message;
+/// `-h`/`-V` set opts without an error (caller continues to next arg).
+fn parseArgs_shortOption(
+    opts: *StatOptions,
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch slice index into args
+    arg: []const u8,
+) ParseStep {
+    std.debug.assert(arg.len >= 1);
+    std.debug.assert(arg[0] == '-');
+
+    var j: usize = 1; // tiger:allow:usize-arch slice index into arg
+    while (j < arg.len) : (j += 1) {
+        switch (arg[j]) {
+            'L' => opts.dereference = true,
+            'f' => opts.file_system = true,
+            't' => opts.terse = true,
+            'h' => {
+                opts.help = true;
+                break;
+            },
+            'V' => {
+                opts.version = true;
+                break;
+            },
+            'c' => {
+                // -c FORMAT: value is the rest of this arg or next arg
+                if (j + 1 < arg.len) {
+                    opts.format = arg[j + 1 ..];
+                } else if (i.* + 1 < args.len) {
+                    i.* += 1;
+                    opts.format = args[i.*];
+                } else {
+                    return .{ .err = "option '-c' requires an argument", .stop = true };
+                }
+                // Done with this arg either way
+                break;
+            },
+            else => {
+                return .{ .err = "unrecognized option", .stop = true };
+            },
+        }
+    }
+    return .{ .err = null, .stop = false };
 }
 
 // ============================================================================
@@ -225,70 +259,90 @@ fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
     const c_path = buf[0..path.len :0];
 
     if (builtin.os.tag == .linux) {
-        const linux = std.os.linux;
-        const at_flags: u32 = if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW;
-        var stx: linux.Statx = undefined;
-        const statx_mask: linux.STATX = @bitCast(@as(u32, 0xfff)); // BASIC_STATS | BTIME
-        const rc = linux.statx(c.AT.FDCWD, c_path, at_flags, statx_mask, &stx);
-        switch (linux.errno(rc)) {
-            .SUCCESS => {},
-            .ACCES => return error.AccessDenied,
+        return doStat_linux(c_path, follow_symlinks);
+    } else {
+        return doStat_darwin(c_path, follow_symlinks);
+    }
+}
+
+/// Linux statx-backed stat. Maps errno to errors and composes dev/rdev ids.
+fn doStat_linux(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
+    const linux = std.os.linux;
+    const at_flags: u32 = if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW;
+    // The only two flag values this helper ever issues; assert positive and
+    // negative space so a future caller cannot smuggle in an unexpected bit.
+    std.debug.assert(follow_symlinks == (at_flags == 0));
+    std.debug.assert((!follow_symlinks) == (at_flags == linux.AT.SYMLINK_NOFOLLOW));
+
+    var stx: linux.Statx = undefined;
+    const statx_mask: linux.STATX = @bitCast(@as(u32, 0xfff)); // BASIC_STATS | BTIME
+    const rc = linux.statx(c.AT.FDCWD, c_path, at_flags, statx_mask, &stx);
+    switch (linux.errno(rc)) {
+        .SUCCESS => {},
+        .ACCES => return error.AccessDenied,
+        .NOENT => return error.FileNotFound,
+        .NOTDIR => return error.NotDir,
+        .NAMETOOLONG => return error.NameTooLong,
+        .LOOP => return error.SymLinkLoop,
+        else => return error.SystemResources,
+    }
+    const dev_id = (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
+    const rdev_id = (@as(u64, stx.rdev_major) << 32) | stx.rdev_minor;
+    return StatResult{
+        .dev = dev_id,
+        .ino = stx.ino,
+        .mode = stx.mode,
+        .nlink = stx.nlink,
+        .uid = stx.uid,
+        .gid = stx.gid,
+        .rdev = rdev_id,
+        .size = @intCast(stx.size),
+        .blksize = @intCast(stx.blksize),
+        .blocks = @intCast(stx.blocks),
+        .atim = .{ .sec = stx.atime.sec, .nsec = @intCast(stx.atime.nsec) },
+        .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
+        .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
+        .btim = .{ .sec = stx.btime.sec, .nsec = @intCast(stx.btime.nsec) },
+    };
+}
+
+/// macOS/BSD fstatat-backed stat. Maps errno to errors.
+fn doStat_darwin(c_path: [*:0]const u8, follow_symlinks: bool) !StatResult {
+    var stat_buf: c.Stat = undefined;
+    const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
+    // The only two flag values this helper ever issues; assert positive and
+    // negative space so a future caller cannot smuggle in an unexpected bit.
+    std.debug.assert(follow_symlinks == (flags == 0));
+    std.debug.assert((!follow_symlinks) == (flags == c.AT.SYMLINK_NOFOLLOW));
+
+    const result = c.fstatat(c.AT.FDCWD, c_path, &stat_buf, flags);
+    if (result != 0) {
+        const errno = std.posix.errno(result);
+        return switch (errno) {
+            .ACCES => error.AccessDenied,
             .NOENT => return error.FileNotFound,
             .NOTDIR => return error.NotDir,
             .NAMETOOLONG => return error.NameTooLong,
             .LOOP => return error.SymLinkLoop,
             else => return error.SystemResources,
-        }
-        const dev_id = (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
-        const rdev_id = (@as(u64, stx.rdev_major) << 32) | stx.rdev_minor;
-        return StatResult{
-            .dev = dev_id,
-            .ino = stx.ino,
-            .mode = stx.mode,
-            .nlink = stx.nlink,
-            .uid = stx.uid,
-            .gid = stx.gid,
-            .rdev = rdev_id,
-            .size = @intCast(stx.size),
-            .blksize = @intCast(stx.blksize),
-            .blocks = @intCast(stx.blocks),
-            .atim = .{ .sec = stx.atime.sec, .nsec = @intCast(stx.atime.nsec) },
-            .mtim = .{ .sec = stx.mtime.sec, .nsec = @intCast(stx.mtime.nsec) },
-            .ctim = .{ .sec = stx.ctime.sec, .nsec = @intCast(stx.ctime.nsec) },
-            .btim = .{ .sec = stx.btime.sec, .nsec = @intCast(stx.btime.nsec) },
-        };
-    } else {
-        var stat_buf: c.Stat = undefined;
-        const flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
-        const result = c.fstatat(c.AT.FDCWD, c_path, &stat_buf, flags);
-        if (result != 0) {
-            const errno = std.posix.errno(result);
-            return switch (errno) {
-                .ACCES => error.AccessDenied,
-                .NOENT => return error.FileNotFound,
-                .NOTDIR => return error.NotDir,
-                .NAMETOOLONG => return error.NameTooLong,
-                .LOOP => return error.SymLinkLoop,
-                else => return error.SystemResources,
-            };
-        }
-        return StatResult{
-            .dev = @intCast(stat_buf.dev),
-            .ino = @intCast(stat_buf.ino),
-            .mode = @intCast(stat_buf.mode),
-            .nlink = @intCast(stat_buf.nlink),
-            .uid = @intCast(stat_buf.uid),
-            .gid = @intCast(stat_buf.gid),
-            .rdev = @intCast(stat_buf.rdev),
-            .size = @intCast(stat_buf.size),
-            .blksize = @intCast(stat_buf.blksize),
-            .blocks = @intCast(stat_buf.blocks),
-            .atim = .{ .sec = stat_buf.atimespec.sec, .nsec = stat_buf.atimespec.nsec },
-            .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
-            .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
-            .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
         };
     }
+    return StatResult{
+        .dev = @intCast(stat_buf.dev),
+        .ino = @intCast(stat_buf.ino),
+        .mode = @intCast(stat_buf.mode),
+        .nlink = @intCast(stat_buf.nlink),
+        .uid = @intCast(stat_buf.uid),
+        .gid = @intCast(stat_buf.gid),
+        .rdev = @intCast(stat_buf.rdev),
+        .size = @intCast(stat_buf.size),
+        .blksize = @intCast(stat_buf.blksize),
+        .blocks = @intCast(stat_buf.blocks),
+        .atim = .{ .sec = stat_buf.atimespec.sec, .nsec = stat_buf.atimespec.nsec },
+        .mtim = .{ .sec = stat_buf.mtimespec.sec, .nsec = stat_buf.mtimespec.nsec },
+        .ctim = .{ .sec = stat_buf.ctimespec.sec, .nsec = stat_buf.ctimespec.nsec },
+        .btim = .{ .sec = stat_buf.birthtimespec.sec, .nsec = stat_buf.birthtimespec.nsec },
+    };
 }
 
 // ============================================================================
@@ -417,243 +471,242 @@ fn expandFormatDirective(
     writer: anytype,
 ) !void {
     const mode: u32 = stat_buf.mode;
+    // Each directive maps to one emit step; the per-directive meaning matches
+    // the format table in printHelp (e.g. %a = access rights in octal).
     switch (directive) {
-        'a' => {
-            // Access rights in octal
-            try writer.print("{o}", .{mode & 0o7777});
-        },
-        'A' => {
-            // Access rights in human readable form
-            var perm_buf: [10]u8 = undefined;
-            const perms = formatPermissions(mode, &perm_buf);
-            try writer.writeAll(perms);
-        },
-        'b' => {
-            // Number of blocks allocated
-            try writer.print("{d}", .{stat_buf.blocks});
-        },
-        'B' => {
-            // Block size for allocation (always 512 on most systems)
-            try writer.print("512", .{});
-        },
-        'd' => {
-            // Device number in decimal
-            try writer.print("{d}", .{stat_buf.dev});
-        },
-        'D' => {
-            // Device number in hex
-            try writer.print("{x}", .{stat_buf.dev});
-        },
-        'f' => {
-            // Raw mode in hex
-            try writer.print("{x}", .{mode});
-        },
-        'F' => {
-            // File type
-            const size: i64 = @intCast(stat_buf.size);
-            if ((mode & c.S.IFMT) == c.S.IFREG and size == 0) {
-                try writer.writeAll("regular empty file");
-            } else {
-                try writer.writeAll(fileTypeString(mode));
-            }
-        },
-        'g' => {
-            // Group ID
-            try writer.print("{d}", .{stat_buf.gid});
-        },
-        'G' => {
-            // Group name
-            const gid: u32 = @intCast(stat_buf.gid);
-            const group_info = common.user_group.getGroupById(gid, allocator) catch {
-                try writer.print("{d}", .{gid});
-                return;
-            };
-            defer allocator.free(group_info.name);
-            try writer.writeAll(group_info.name);
-        },
-        'h' => {
-            // Number of hard links
-            try writer.print("{d}", .{stat_buf.nlink});
-        },
-        'i' => {
-            // Inode number
-            try writer.print("{d}", .{stat_buf.ino});
-        },
-        'm' => {
-            // Mount point -- requires statfs or /proc/self/mountinfo
-            if (builtin.os.tag == .linux) {
-                var mount_buf: [1024]u8 = undefined;
-                var dev_buf: [1024]u8 = undefined;
-                const info = lookupMountInfo(path, &mount_buf, &dev_buf);
-                try writer.writeAll(info.mount);
-            } else {
-                var path_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
-                if (path.len > std.fs.max_path_bytes) {
-                    try writer.writeAll("?");
-                    return;
-                }
-                @memcpy(path_buf2[0..path.len], path);
-                path_buf2[path.len] = 0;
-                const c_path2 = path_buf2[0..path.len :0];
-
-                var fs_buf2: StatFs = undefined;
-                if (statfs(c_path2, &fs_buf2) == 0) {
-                    const mntonname = std.mem.sliceTo(&fs_buf2.f_mntonname, 0);
-                    try writer.writeAll(mntonname);
-                } else {
-                    try writer.writeAll("?");
-                }
-            }
-        },
-        'n' => {
-            // File name
-            try writer.writeAll(path);
-        },
-        'N' => {
-            // Quoted file name with symlink target
-            if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
-                var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-                var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
-                if (path.len <= std.fs.max_path_bytes) {
-                    @memcpy(path_zbuf[0..path.len], path);
-                    path_zbuf[path.len] = 0;
-                    const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
-                    const n = c.readlink(path_z, &link_buf, link_buf.len);
-                    if (n > 0) {
-                        const target = link_buf[0..@intCast(n)];
-                        try writer.print("'{s}' -> '{s}'", .{ path, target });
-                    } else {
-                        try writer.print("'{s}'", .{path});
-                    }
-                } else {
-                    try writer.print("'{s}'", .{path});
-                }
-            } else {
-                try writer.print("'{s}'", .{path});
-            }
-        },
-        'o' => {
-            // Optimal I/O transfer size.
-            try writer.print("{d}", .{stat_buf.blksize});
-        },
-        's' => {
-            // Total size in bytes
-            try writer.print("{d}", .{stat_buf.size});
-        },
-        't' => {
-            // Major device type in hex (for device files)
-            // On macOS, use the major() macro equivalent
-            if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-                const rdev: u32 = @intCast(stat_buf.rdev);
-                const major_val = (rdev >> 24) & 0xff;
-                try writer.print("{x}", .{major_val});
-            } else {
-                const rdev: u64 = @intCast(stat_buf.rdev);
-                const major_val = (rdev >> 8) & 0xfff;
-                try writer.print("{x}", .{major_val});
-            }
-        },
-        'T' => {
-            // Minor device type in hex (for device files)
-            if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
-                const rdev: u32 = @intCast(stat_buf.rdev);
-                const minor_val = rdev & 0xffffff;
-                try writer.print("{x}", .{minor_val});
-            } else {
-                const rdev: u64 = @intCast(stat_buf.rdev);
-                const minor_val = rdev & 0xff;
-                try writer.print("{x}", .{minor_val});
-            }
-        },
-        'u' => {
-            // User ID
-            try writer.print("{d}", .{stat_buf.uid});
-        },
-        'U' => {
-            // User name
-            const uid: u32 = @intCast(stat_buf.uid);
-            const user_info = common.user_group.getUserById(uid, allocator) catch {
-                try writer.print("{d}", .{uid});
-                return;
-            };
-            defer allocator.free(user_info.name);
-            try writer.writeAll(user_info.name);
-        },
-        'w' => {
-            // Time of birth (- if unknown)
-            const btime_sec = getTimespecSec(stat_buf, .btime);
-            if (btime_sec == 0) {
-                try writer.writeAll("-");
-            } else {
-                var fmt_buf: [64]u8 = undefined;
-                const btime_nsec = getTimespecNsec(stat_buf, .btime);
-                const formatted = formatTimestamp(btime_sec, btime_nsec, &fmt_buf) catch {
-                    try writer.writeAll("-");
-                    return;
-                };
-                try writer.writeAll(formatted);
-            }
-        },
-        'W' => {
-            // Time of birth as seconds since epoch
-            const btime_sec = getTimespecSec(stat_buf, .btime);
-            if (btime_sec == 0) {
-                try writer.writeAll("0");
-            } else {
-                try writer.print("{d}", .{btime_sec});
-            }
-        },
-        'x' => {
-            // Time of last access
-            const atime_sec = getTimespecSec(stat_buf, .atime);
-            const atime_nsec = getTimespecNsec(stat_buf, .atime);
-            var fmt_buf: [64]u8 = undefined;
-            const formatted = formatTimestamp(atime_sec, atime_nsec, &fmt_buf) catch {
-                try writer.writeAll("-");
-                return;
-            };
-            try writer.writeAll(formatted);
-        },
-        'X' => {
-            // Time of last access as seconds since epoch
-            try writer.print("{d}", .{getTimespecSec(stat_buf, .atime)});
-        },
-        'y' => {
-            // Time of last modification
-            const mtime_sec = getTimespecSec(stat_buf, .mtime);
-            const mtime_nsec = getTimespecNsec(stat_buf, .mtime);
-            var fmt_buf: [64]u8 = undefined;
-            const formatted = formatTimestamp(mtime_sec, mtime_nsec, &fmt_buf) catch {
-                try writer.writeAll("-");
-                return;
-            };
-            try writer.writeAll(formatted);
-        },
-        'Y' => {
-            // Time of last modification as seconds since epoch
-            try writer.print("{d}", .{getTimespecSec(stat_buf, .mtime)});
-        },
-        'z' => {
-            // Time of last status change
-            const ctime_sec = getTimespecSec(stat_buf, .ctime);
-            const ctime_nsec = getTimespecNsec(stat_buf, .ctime);
-            var fmt_buf: [64]u8 = undefined;
-            const formatted = formatTimestamp(ctime_sec, ctime_nsec, &fmt_buf) catch {
-                try writer.writeAll("-");
-                return;
-            };
-            try writer.writeAll(formatted);
-        },
-        'Z' => {
-            // Time of last status change as seconds since epoch
-            try writer.print("{d}", .{getTimespecSec(stat_buf, .ctime)});
-        },
+        'a' => try writer.print("{o}", .{mode & 0o7777}),
+        'A' => try expandFormatDirective_permString(mode, writer),
+        'b' => try writer.print("{d}", .{stat_buf.blocks}),
+        'B' => try writer.print("512", .{}),
+        'd' => try writer.print("{d}", .{stat_buf.dev}),
+        'D' => try writer.print("{x}", .{stat_buf.dev}),
+        'f' => try writer.print("{x}", .{mode}),
+        'F' => try expandFormatDirective_fileType(stat_buf, mode, writer),
+        'g' => try writer.print("{d}", .{stat_buf.gid}),
+        'G' => try expandFormatDirective_groupName(allocator, stat_buf, writer),
+        'h' => try writer.print("{d}", .{stat_buf.nlink}),
+        'i' => try writer.print("{d}", .{stat_buf.ino}),
+        'm' => try expandFormatDirective_mountPoint(path, writer),
+        'n' => try writer.writeAll(path),
+        'N' => try expandFormatDirective_quotedName(stat_buf, path, follow_symlinks, writer),
+        'o' => try writer.print("{d}", .{stat_buf.blksize}),
+        's' => try writer.print("{d}", .{stat_buf.size}),
+        't' => try expandFormatDirective_deviceType(stat_buf, .major, writer),
+        'T' => try expandFormatDirective_deviceType(stat_buf, .minor, writer),
+        'u' => try writer.print("{d}", .{stat_buf.uid}),
+        'U' => try expandFormatDirective_userName(allocator, stat_buf, writer),
+        'w' => try expandFormatDirective_birthTime(stat_buf, writer),
+        'W' => try expandFormatDirective_birthEpoch(stat_buf, writer),
+        'x' => try expandFormatDirective_humanTime(stat_buf, .atime, writer),
+        'X' => try writer.print("{d}", .{getTimespecSec(stat_buf, .atime)}),
+        'y' => try expandFormatDirective_humanTime(stat_buf, .mtime, writer),
+        'Y' => try writer.print("{d}", .{getTimespecSec(stat_buf, .mtime)}),
+        'z' => try expandFormatDirective_humanTime(stat_buf, .ctime, writer),
+        'Z' => try writer.print("{d}", .{getTimespecSec(stat_buf, .ctime)}),
         else => {
-            // Unknown directive, print literal
+            // Unknown directive, print literal.
             try writer.writeByte('%');
             try writer.writeByte(directive);
         },
     }
+}
+
+/// %A: access rights in the human-readable "-rwxr-xr-x" form.
+fn expandFormatDirective_permString(mode: u32, writer: anytype) !void {
+    std.debug.assert(mode != 0);
+    std.debug.assert((mode & 0o7777) <= 0o7777);
+    var perm_buf: [10]u8 = undefined;
+    const perms = formatPermissions(mode, &perm_buf);
+    try writer.writeAll(perms);
+}
+
+/// %F: the file type, reporting "regular empty file" for a zero-length file.
+fn expandFormatDirective_fileType(stat_buf: StatResult, mode: u32, writer: anytype) !void {
+    std.debug.assert(stat_buf.mode == mode);
+    std.debug.assert(mode != 0);
+    const size: i64 = @intCast(stat_buf.size);
+    if ((mode & c.S.IFMT) == c.S.IFREG and size == 0) {
+        try writer.writeAll("regular empty file");
+    } else {
+        try writer.writeAll(fileTypeString(mode));
+    }
+}
+
+/// %G: the group name, falling back to the numeric gid on lookup failure.
+fn expandFormatDirective_groupName(
+    allocator: Allocator,
+    stat_buf: StatResult,
+    writer: anytype,
+) !void {
+    const gid: u32 = @intCast(stat_buf.gid);
+    std.debug.assert(gid == stat_buf.gid);
+    std.debug.assert(gid <= std.math.maxInt(u32));
+    const group_info = common.user_group.getGroupById(gid, allocator) catch {
+        try writer.print("{d}", .{gid});
+        return;
+    };
+    defer allocator.free(group_info.name);
+    try writer.writeAll(group_info.name);
+}
+
+/// %U: the user name, falling back to the numeric uid on lookup failure.
+fn expandFormatDirective_userName(
+    allocator: Allocator,
+    stat_buf: StatResult,
+    writer: anytype,
+) !void {
+    const uid: u32 = @intCast(stat_buf.uid);
+    std.debug.assert(uid == stat_buf.uid);
+    std.debug.assert(uid <= std.math.maxInt(u32));
+    const user_info = common.user_group.getUserById(uid, allocator) catch {
+        try writer.print("{d}", .{uid});
+        return;
+    };
+    defer allocator.free(user_info.name);
+    try writer.writeAll(user_info.name);
+}
+
+/// %W: the birth time as seconds since the epoch, "0" when unknown.
+fn expandFormatDirective_birthEpoch(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(getTimespecSec(stat_buf, .btime) == stat_buf.btim.sec);
+    const btime_sec = getTimespecSec(stat_buf, .btime);
+    if (btime_sec == 0) {
+        try writer.writeAll("0");
+    } else {
+        try writer.print("{d}", .{btime_sec});
+    }
+}
+
+/// %m: emit the mount point for `path` (Linux: /proc/self/mountinfo;
+/// macOS: statfs f_mntonname), or "?" when it cannot be determined.
+fn expandFormatDirective_mountPoint(path: []const u8, writer: anytype) !void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(@intFromPtr(path.ptr) != 0);
+    if (builtin.os.tag == .linux) {
+        var mount_buf: [1024]u8 = undefined;
+        var dev_buf: [1024]u8 = undefined;
+        const info = lookupMountInfo(path, &mount_buf, &dev_buf);
+        try writer.writeAll(info.mount);
+    } else {
+        var path_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (path.len > std.fs.max_path_bytes) {
+            try writer.writeAll("?");
+            return;
+        }
+        @memcpy(path_buf2[0..path.len], path);
+        path_buf2[path.len] = 0;
+        const c_path2 = path_buf2[0..path.len :0];
+
+        var fs_buf2: StatFs = undefined;
+        if (statfs(c_path2, &fs_buf2) == 0) {
+            const mntonname = std.mem.sliceTo(&fs_buf2.f_mntonname, 0);
+            try writer.writeAll(mntonname);
+        } else {
+            try writer.writeAll("?");
+        }
+    }
+}
+
+/// %N: emit the quoted file name, appending " -> 'TARGET'" for an
+/// unfollowed symbolic link.
+fn expandFormatDirective_quotedName(
+    stat_buf: StatResult,
+    path: []const u8,
+    follow_symlinks: bool,
+    writer: anytype,
+) !void {
+    const mode: u32 = stat_buf.mode;
+    std.debug.assert(stat_buf.mode != 0);
+    if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
+        std.debug.assert(path.len > 0);
+        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var path_zbuf: [std.fs.max_path_bytes + 1]u8 = undefined;
+        if (path.len <= std.fs.max_path_bytes) {
+            @memcpy(path_zbuf[0..path.len], path);
+            path_zbuf[path.len] = 0;
+            const path_z: [*:0]const u8 = @ptrCast(&path_zbuf);
+            const n = c.readlink(path_z, &link_buf, link_buf.len);
+            if (n > 0) {
+                const target = link_buf[0..@intCast(n)];
+                try writer.print("'{s}' -> '{s}'", .{ path, target });
+            } else {
+                try writer.print("'{s}'", .{path});
+            }
+        } else {
+            try writer.print("'{s}'", .{path});
+        }
+    } else {
+        try writer.print("'{s}'", .{path});
+    }
+}
+
+/// %t / %T: emit the major or minor device number of rdev in hex, using
+/// the platform's documented bit layout.
+fn expandFormatDirective_deviceType(
+    stat_buf: StatResult,
+    comptime part: enum { major, minor },
+    writer: anytype,
+) !void {
+    if (builtin.os.tag == .macos or builtin.os.tag.isDarwin()) {
+        const rdev: u32 = @intCast(stat_buf.rdev);
+        const val = switch (part) {
+            .major => (rdev >> 24) & 0xff,
+            .minor => rdev & 0xffffff,
+        };
+        std.debug.assert(val <= 0xffffff);
+        try writer.print("{x}", .{val});
+    } else {
+        const rdev: u64 = @intCast(stat_buf.rdev);
+        const val = switch (part) {
+            .major => (rdev >> 8) & 0xfff,
+            .minor => rdev & 0xff,
+        };
+        std.debug.assert(val <= 0xfff);
+        try writer.print("{x}", .{val});
+    }
+}
+
+/// %w: emit the birth time in human-readable form, or "-" when unknown
+/// (sec == 0) or formatting fails.
+fn expandFormatDirective_birthTime(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(getTimespecSec(stat_buf, .btime) == stat_buf.btim.sec);
+    std.debug.assert(getTimespecNsec(stat_buf, .btime) == stat_buf.btim.nsec);
+    const btime_sec = getTimespecSec(stat_buf, .btime);
+    if (btime_sec == 0) {
+        try writer.writeAll("-");
+    } else {
+        var fmt_buf: [64]u8 = undefined;
+        const btime_nsec = getTimespecNsec(stat_buf, .btime);
+        const formatted = formatTimestamp(btime_sec, btime_nsec, &fmt_buf) catch {
+            try writer.writeAll("-");
+            return;
+        };
+        try writer.writeAll(formatted);
+    }
+}
+
+/// %x / %y / %z: emit the selected timestamp in human-readable form,
+/// falling back to "-" when formatting fails.
+fn expandFormatDirective_humanTime(
+    stat_buf: StatResult,
+    comptime which: enum { atime, mtime, ctime },
+    writer: anytype,
+) !void {
+    std.debug.assert(@intFromEnum(which) <= 2);
+    const field = comptime switch (which) {
+        .atime => .atime,
+        .mtime => .mtime,
+        .ctime => .ctime,
+    };
+    const sec = getTimespecSec(stat_buf, field);
+    const nsec = getTimespecNsec(stat_buf, field);
+    std.debug.assert(sec == getTimespecSec(stat_buf, field));
+    var fmt_buf: [64]u8 = undefined;
+    const formatted = formatTimestamp(sec, nsec, &fmt_buf) catch {
+        try writer.writeAll("-");
+        return;
+    };
+    try writer.writeAll(formatted);
 }
 
 // ============================================================================
@@ -724,10 +777,25 @@ fn printDefaultFormat(
     writer: anytype,
 ) !void {
     const mode: u32 = stat_buf.mode;
+    try printDefaultFormat_fileLine(stat_buf, path, follow_symlinks, writer);
+    try printDefaultFormat_sizeLine(stat_buf, mode, writer);
+    try printDefaultFormat_deviceLine(stat_buf, writer);
+    try printDefaultFormat_accessLine(allocator, stat_buf, mode, writer);
+    try printDefaultFormat_timeLines(stat_buf, writer);
+}
 
-    // Line 1: File name
+/// Line 1: "  File: NAME" with " -> TARGET" for unfollowed symlinks.
+fn printDefaultFormat_fileLine(
+    stat_buf: StatResult,
+    path: []const u8,
+    follow_symlinks: bool,
+    writer: anytype,
+) !void {
+    const mode: u32 = stat_buf.mode;
+    std.debug.assert(mode != 0);
     try writer.writeAll("  File: ");
     if ((mode & c.S.IFMT) == c.S.IFLNK and !follow_symlinks) {
+        std.debug.assert(path.len > 0);
         var link_buf: [std.fs.max_path_bytes]u8 = undefined;
         var path_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
         if (path.len <= std.fs.max_path_bytes) {
@@ -747,8 +815,10 @@ fn printDefaultFormat(
     } else {
         try writer.print("{s}\n", .{path});
     }
+}
 
-    // Line 2: Size, Blocks, IO Block, file type
+/// Line 2: "  Size: ... Blocks: ... IO Block: ... <file type>".
+fn printDefaultFormat_sizeLine(stat_buf: StatResult, mode: u32, writer: anytype) !void {
     const size: i64 = @intCast(stat_buf.size);
     const file_type = if ((mode & c.S.IFMT) == c.S.IFREG and size == 0)
         "regular empty file"
@@ -768,8 +838,10 @@ fn printDefaultFormat(
         blksize_u,
         file_type,
     });
+}
 
-    // Line 3: Device, Inode, Links (GNU format: decimal major,minor)
+/// Line 3: "Device: MAJ,MIN\tInode: ...\tLinks: ..." (GNU decimal major,minor).
+fn printDefaultFormat_deviceLine(stat_buf: StatResult, writer: anytype) !void {
     const dev: u64 = @intCast(stat_buf.dev);
     const dev_major: u64 = if (builtin.os.tag == .macos or builtin.os.tag.isDarwin())
         (dev >> 24) & 0xff
@@ -779,17 +851,29 @@ fn printDefaultFormat(
         dev & 0xffffff
     else
         dev & 0xff;
+    // Masks above bound major/minor to the platform's documented widths.
+    std.debug.assert(dev_major <= 0xffffff);
+    std.debug.assert(dev_minor <= 0xffffff);
     try writer.print("Device: {d},{d}\tInode: {d: <12}Links: {d}\n", .{
         dev_major,
         dev_minor,
         stat_buf.ino,
         stat_buf.nlink,
     });
+}
 
-    // Line 4: Access permissions, Uid, Gid
+/// Line 4: "Access: (MODE/PERMS)  Uid: (...)   Gid: (...)".
+fn printDefaultFormat_accessLine(
+    allocator: Allocator,
+    stat_buf: StatResult,
+    mode: u32,
+    writer: anytype,
+) !void {
     var perm_buf: [10]u8 = undefined;
     const perms = formatPermissions(mode, &perm_buf);
     const octal_mode = mode & 0o7777;
+    std.debug.assert(perms.len == 10);
+    std.debug.assert(octal_mode <= 0o7777);
 
     // User name
     const uid: u32 = @intCast(stat_buf.uid);
@@ -825,6 +909,12 @@ fn printDefaultFormat(
         gid,
         group_name,
     });
+}
+
+/// Lines 5-8: Access, Modify, Change, and Birth timestamps.
+fn printDefaultFormat_timeLines(stat_buf: StatResult, writer: anytype) !void {
+    std.debug.assert(getTimespecSec(stat_buf, .atime) == stat_buf.atim.sec);
+    std.debug.assert(getTimespecSec(stat_buf, .mtime) == stat_buf.mtim.sec);
 
     // Line 5: Access time
     {
@@ -967,48 +1057,22 @@ fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) s
         return .{ .mount = "?", .dev = "?" };
     defer _ = std.c.close(fd);
 
-    // Resolve the path to an absolute path for matching
     var abs_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     var path_z_buf2: [std.fs.max_path_bytes + 1]u8 = undefined;
-    const abs_path: []const u8 = blk: {
-        if (path.len <= std.fs.max_path_bytes) {
-            @memcpy(path_z_buf2[0..path.len], path);
-            path_z_buf2[path.len] = 0;
-            const path_z: [*:0]const u8 = @ptrCast(&path_z_buf2);
-            if (c.realpath(path_z, &abs_buf)) |resolved| {
-                break :blk std.mem.sliceTo(resolved, 0);
-            }
-        }
-        break :blk path;
-    };
+    const abs_path = lookupMountInfo_resolvePath(path, &abs_buf, &path_z_buf2);
 
-    // Read /proc/self/mountinfo into a buffer
     var content_buf: [32768]u8 = undefined;
-    var total: usize = 0;
-    while (total < content_buf.len) {
-        const n = std.posix.read(fd, content_buf[total..]) catch break;
-        if (n == 0) break;
-        total += n;
-    }
-    const bytes_read = total;
-    const content = content_buf[0..bytes_read];
+    const content = lookupMountInfo_readContent(fd, &content_buf);
 
     var best_mount: []const u8 = "/";
     var best_dev: []const u8 = "?";
-    var best_len: usize = 0;
+    var best_len: usize = 0; // tiger:allow:usize-arch compared against slice .len
 
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |line| {
         // mountinfo format: id parent major:minor root mount_point ...
         var fields: [10][]const u8 = undefined;
-        var count: usize = 0;
-        var iter = std.mem.splitScalar(u8, line, ' ');
-        while (iter.next()) |field| {
-            if (count < 10) {
-                fields[count] = field;
-                count += 1;
-            }
-        }
+        const count = lookupMountInfo_splitFields(line, &fields);
         if (count < 5) continue;
 
         const mount_point = fields[4];
@@ -1026,22 +1090,83 @@ fn lookupMountInfo(path: []const u8, mount_buf: *[1024]u8, dev_buf: *[1024]u8) s
                 @memcpy(mount_buf[0..mount_point.len], mount_point);
                 best_mount = mount_buf[0..mount_point.len];
             }
-            // Find device name after the " - " separator
-            if (std.mem.find(u8, line, " - ")) |sep_pos| {
-                const after_sep = line[sep_pos + 3 ..];
-                // Format: fstype device options
-                var dev_iter = std.mem.splitScalar(u8, after_sep, ' ');
-                _ = dev_iter.next(); // fstype
-                if (dev_iter.next()) |device| {
-                    if (device.len <= dev_buf.len) {
-                        @memcpy(dev_buf[0..device.len], device);
-                        best_dev = dev_buf[0..device.len];
-                    }
-                }
-            }
+            best_dev = lookupMountInfo_copyDevice(line, dev_buf, best_dev);
         }
     }
     return .{ .mount = best_mount, .dev = best_dev };
+}
+
+/// Resolve `path` to an absolute path for prefix matching, falling back to
+/// the original path when realpath fails or the path is too long.
+fn lookupMountInfo_resolvePath(
+    path: []const u8,
+    abs_buf: *[std.fs.max_path_bytes + 1]u8,
+    path_z_buf: *[std.fs.max_path_bytes + 1]u8,
+) []const u8 {
+    std.debug.assert(@intFromPtr(abs_buf) != 0);
+    std.debug.assert(@intFromPtr(path_z_buf) != 0);
+    if (path.len <= std.fs.max_path_bytes) {
+        @memcpy(path_z_buf[0..path.len], path);
+        path_z_buf[path.len] = 0;
+        const path_z: [*:0]const u8 = @ptrCast(path_z_buf);
+        if (c.realpath(path_z, abs_buf)) |resolved| {
+            return std.mem.sliceTo(resolved, 0);
+        }
+    }
+    return path;
+}
+
+/// Drain `fd` into `content_buf` with a bounded read loop, returning the
+/// filled slice. Stops at EOF, a read error, or a full buffer.
+fn lookupMountInfo_readContent(fd: std.posix.fd_t, content_buf: *[32768]u8) []const u8 {
+    var total: usize = 0; // tiger:allow:usize-arch slice indexing requires usize
+    while (total < content_buf.len) {
+        const n = std.posix.read(fd, content_buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    std.debug.assert(total <= content_buf.len);
+    const result = content_buf[0..total];
+    std.debug.assert(result.len == total);
+    return result;
+}
+
+/// Split a mountinfo line on spaces into at most 10 fields, returning the
+/// field count.
+fn lookupMountInfo_splitFields(line: []const u8, fields: *[10][]const u8) u32 {
+    std.debug.assert(@intFromPtr(fields) != 0);
+    var count: u32 = 0;
+    var iter = std.mem.splitScalar(u8, line, ' ');
+    while (iter.next()) |field| {
+        if (count < 10) {
+            fields[count] = field;
+            count += 1;
+        }
+    }
+    std.debug.assert(count <= 10);
+    return count;
+}
+
+/// Extract the device name (the field after " - " then fstype) from a
+/// mountinfo line into `dev_buf`, returning it; otherwise return `prior`.
+fn lookupMountInfo_copyDevice(line: []const u8, dev_buf: *[1024]u8, prior: []const u8) []const u8 {
+    std.debug.assert(@intFromPtr(dev_buf) != 0);
+    std.debug.assert(prior.len <= dev_buf.len);
+    // Find device name after the " - " separator.
+    if (std.mem.find(u8, line, " - ")) |sep_pos| {
+        const after_sep = line[sep_pos + 3 ..];
+        // Format: fstype device options
+        var dev_iter = std.mem.splitScalar(u8, after_sep, ' ');
+        _ = dev_iter.next(); // fstype
+        if (dev_iter.next()) |device| {
+            if (device.len <= dev_buf.len) {
+                @memcpy(dev_buf[0..device.len], device);
+                std.debug.assert(device.len <= dev_buf.len);
+                return dev_buf[0..device.len];
+            }
+        }
+    }
+    return prior;
 }
 
 fn printFileSystemInfo(
