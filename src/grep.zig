@@ -135,292 +135,26 @@ fn parseArgs(allocator: Allocator, io: std.Io, args: []const []const u8, stderr_
             // Long option
             const flag = arg[2..];
 
-            if (std.mem.eql(u8, flag, "help")) {
-                opts.help = true;
-            } else if (std.mem.eql(u8, flag, "version")) {
-                opts.version = true;
-            } else if (std.mem.eql(u8, flag, "extended-regexp")) {
-                opts.regex_mode = .extended;
-            } else if (std.mem.eql(u8, flag, "fixed-strings")) {
-                opts.regex_mode = .fixed;
-            } else if (std.mem.eql(u8, flag, "basic-regexp")) {
-                opts.regex_mode = .basic;
-            } else if (std.mem.eql(u8, flag, "ignore-case")) {
-                opts.ignore_case = true;
-            } else if (std.mem.eql(u8, flag, "invert-match")) {
-                opts.invert_match = true;
-            } else if (std.mem.eql(u8, flag, "count")) {
-                opts.count = true;
-            } else if (std.mem.eql(u8, flag, "files-with-matches")) {
-                opts.files_with_matches = true;
-            } else if (std.mem.eql(u8, flag, "files-without-match")) {
-                opts.files_without_match = true;
-            } else if (std.mem.eql(u8, flag, "line-number")) {
-                opts.line_number = true;
-            } else if (std.mem.eql(u8, flag, "with-filename")) {
-                opts.with_filename = true;
-            } else if (std.mem.eql(u8, flag, "no-filename")) {
-                opts.no_filename = true;
-            } else if (std.mem.eql(u8, flag, "only-matching")) {
-                opts.only_matching = true;
-            } else if (std.mem.eql(u8, flag, "quiet") or std.mem.eql(u8, flag, "silent")) {
-                opts.quiet = true;
-            } else if (std.mem.eql(u8, flag, "no-messages")) {
-                opts.no_messages = true;
-            } else if (std.mem.eql(u8, flag, "word-regexp")) {
-                opts.word_regexp = true;
-            } else if (std.mem.eql(u8, flag, "line-regexp")) {
-                opts.line_regexp = true;
-            } else if (std.mem.eql(u8, flag, "byte-offset")) {
-                opts.byte_offset = true;
-            } else if (std.mem.eql(u8, flag, "text")) {
-                // No-op: treat binary as text (no binary detection yet)
-            } else if (std.mem.eql(u8, flag, "binary")) {
-                // No-op: Unix treats all files as binary by default
-            } else if (std.mem.eql(u8, flag, "null")) {
-                opts.null_data = true;
-            } else if (std.mem.eql(u8, flag, "recursive")) {
-                opts.recursive = true;
-            } else if (std.mem.eql(u8, flag, "dereference-recursive")) {
-                opts.dereference_recursive = true;
-                opts.recursive = true;
-            } else if (std.mem.startsWith(u8, flag, "regexp=")) {
-                try opts.patterns.append(allocator, flag["regexp=".len..]);
-            } else if (std.mem.startsWith(u8, flag, "file=")) {
-                const pattern_file = flag["file=".len..];
-                try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, pattern_file, stderr_writer);
-            } else if (std.mem.startsWith(u8, flag, "max-count=")) {
-                const val_str = flag["max-count=".len..];
-                opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{val_str});
+            if (parseArgs_longFlag(&opts, flag)) {
+                // Consumed by a boolean/mode flag.
+            } else switch (try parseArgs_longValued(allocator, io, &opts, flag, stderr_writer)) {
+                .consumed_ok => {},
+                .consumed_error => return null,
+                .not_mine => {
+                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'", .{flag}); // tiger:allow:long-line
                     return null;
-                };
-            } else if (std.mem.startsWith(u8, flag, "after-context=")) {
-                const val_str = flag["after-context=".len..];
-                opts.after_context = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
-                    return null;
-                };
-            } else if (std.mem.startsWith(u8, flag, "before-context=")) {
-                const val_str = flag["before-context=".len..];
-                opts.before_context = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
-                    return null;
-                };
-            } else if (std.mem.startsWith(u8, flag, "context=")) {
-                const val_str = flag["context=".len..];
-                const ctx = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
-                    return null;
-                };
-                opts.before_context = ctx;
-                opts.after_context = ctx;
-            } else if (std.mem.eql(u8, flag, "color") or std.mem.eql(u8, flag, "colour")) {
-                opts.color = .on;
-            } else if (std.mem.startsWith(u8, flag, "color=") or std.mem.startsWith(u8, flag, "colour=")) {
-                const eq_pos = std.mem.findScalar(u8, flag, '=').?;
-                const when = flag[eq_pos + 1 ..];
-                if (std.mem.eql(u8, when, "auto")) {
-                    // Keep resolved value (TTY-dependent)
-                } else if (std.mem.eql(u8, when, "always")) {
-                    opts.color = .on;
-                } else if (std.mem.eql(u8, when, "never")) {
-                    opts.color = .off;
-                } else {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--color'", .{when});
-                    return null;
-                }
-            } else if (std.mem.startsWith(u8, flag, "include=")) {
-                try opts.include_globs.append(allocator, flag["include=".len..]);
-            } else if (std.mem.startsWith(u8, flag, "exclude=")) {
-                try opts.exclude_globs.append(allocator, flag["exclude=".len..]);
-            } else if (std.mem.startsWith(u8, flag, "exclude-dir=")) {
-                try opts.exclude_dirs.append(allocator, flag["exclude-dir=".len..]);
-            } else if (std.mem.startsWith(u8, flag, "label=")) {
-                opts.stdin_label = flag["label=".len..];
-            } else if (std.mem.eql(u8, flag, "line-buffered")) {
-                // No-op: we flush appropriately already
-            } else if (std.mem.startsWith(u8, flag, "binary-files=")) {
-                // Stub: accept silently (we treat all files as text)
-            } else if (std.mem.eql(u8, flag, "mmap")) {
-                // No-op: deprecated, accept silently
-            } else if (std.mem.startsWith(u8, flag, "include-dir=")) {
-                // No-op stub: accept with value, silently ignore
-            } else if (std.mem.eql(u8, flag, "null-data")) {
-                opts.null_line_sep = true;
-            } else {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'", .{flag});
-                return null;
+                },
             }
         } else if (arg.len > 1 and arg[0] == '-') {
             // Short options
-            var j: usize = 1;
+            var j: usize = 1; // tiger:allow:usize-arch arg index, slice-index-forced
             while (j < arg.len) : (j += 1) {
                 const ch = arg[j];
-                switch (ch) {
-                    'E' => opts.regex_mode = .extended,
-                    'F' => opts.regex_mode = .fixed,
-                    'G' => opts.regex_mode = .basic,
-                    'i' => opts.ignore_case = true,
-                    'v' => opts.invert_match = true,
-                    'c' => opts.count = true,
-                    'l' => opts.files_with_matches = true,
-                    'L' => opts.files_without_match = true,
-                    'n' => opts.line_number = true,
-                    'H' => opts.with_filename = true,
-                    'h' => opts.no_filename = true,
-                    'o' => opts.only_matching = true,
-                    'q' => opts.quiet = true,
-                    's' => opts.no_messages = true,
-                    'w' => opts.word_regexp = true,
-                    'x' => opts.line_regexp = true,
-                    'b' => opts.byte_offset = true,
-                    'Z' => opts.null_data = true,
-                    'a' => {}, // --text: treat binary as text (no-op, no binary detection yet)
-                    'I' => {}, // ignore binary files (no-op, no binary detection yet)
-                    'U' => {}, // --binary: Unix no-op
-                    'J' => {}, // macOS: decompress bzip2 (no-op stub)
-                    'M' => {}, // macOS: force mmap (no-op stub)
-                    'O' => {}, // macOS: follow symlinks on cmdline only (no-op stub)
-                    'p' => {}, // macOS: don't follow symlinks (no-op stub)
-                    'S' => {}, // macOS: follow all symlinks (no-op stub)
-                    'u' => {}, // macOS: report unmatched files (no-op stub)
-                    'X' => {}, // macOS: legacy exclude-from (no-op stub)
-                    'V' => opts.version = true,
-                    'y' => opts.ignore_case = true, // legacy alias for -i
-                    'z' => opts.null_line_sep = true,
-                    'P' => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-P (Perl regex) not supported", .{});
-                        return null;
-                    },
-                    'r' => opts.recursive = true,
-                    'R' => {
-                        opts.dereference_recursive = true;
-                        opts.recursive = true;
-                    },
-                    'e' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'e'", .{});
-                            return null;
-                        };
-                        try opts.patterns.append(allocator, value);
-                        break; // consumed rest of this arg
-                    },
-                    'f' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'f'", .{});
-                            return null;
-                        };
-                        try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, value, stderr_writer);
-                        break;
-                    },
-                    'm' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'm'", .{});
-                            return null;
-                        };
-                        opts.max_count = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{value});
-                            return null;
-                        };
-                        break;
-                    },
-                    'A' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'A'", .{});
-                            return null;
-                        };
-                        opts.after_context = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
-                            return null;
-                        };
-                        break;
-                    },
-                    'B' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'B'", .{});
-                            return null;
-                        };
-                        opts.before_context = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
-                            return null;
-                        };
-                        break;
-                    },
-                    'C' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'C'", .{});
-                            return null;
-                        };
-                        const ctx = std.fmt.parseInt(usize, value, 10) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{});
-                            return null;
-                        };
-                        opts.before_context = ctx;
-                        opts.after_context = ctx;
-                        break;
-                    },
-                    'd' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'd'", .{});
-                            return null;
-                        };
-                        if (std.mem.eql(u8, value, "recurse")) {
-                            opts.recursive = true;
-                        } else if (std.mem.eql(u8, value, "skip")) {
-                            opts.skip_dirs = true;
-                        }
-                        // "read" is the default behavior, no action needed
-                        break;
-                    },
-                    'D' => {
-                        // Device action stub: accept value, silently ignore
-                        if (j + 1 < arg.len) {
-                            // Value is rest of this arg
-                        } else if (i + 1 < args.len) {
-                            i += 1;
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'D'", .{});
-                            return null;
-                        }
-                        break;
-                    },
-                    else => {
+                if (parseArgs_shortFlag(&opts, ch)) continue;
+                switch (try parseArgs_shortValued(allocator, io, &opts, arg, args, &i, &j, stderr_writer)) { // tiger:allow:long-line
+                    .consumed_break => break,
+                    .consumed_error => return null,
+                    .not_mine => {
                         common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option -- '{c}'", .{ch});
                         return null;
                     },
@@ -438,6 +172,330 @@ fn parseArgs(allocator: Allocator, io: std.Io, args: []const []const u8, stderr_
     }
 
     return opts;
+}
+
+/// Outcome of a long-option value parse: handled, errored, or unrecognized.
+const LongOptionResult = enum { consumed_ok, consumed_error, not_mine };
+
+/// Handle boolean and mode long options (the `eql` arms). Returns true when
+/// `flag` was recognized and applied.
+fn parseArgs_longFlag(opts: *GrepOptions, flag: []const u8) bool {
+    assert(@intFromEnum(opts.regex_mode) <= @intFromEnum(RegexMode.fixed));
+    assert(@intFromEnum(opts.regex_mode) >= @intFromEnum(RegexMode.basic));
+    if (std.mem.eql(u8, flag, "help")) {
+        opts.help = true;
+    } else if (std.mem.eql(u8, flag, "version")) {
+        opts.version = true;
+    } else if (std.mem.eql(u8, flag, "extended-regexp")) {
+        opts.regex_mode = .extended;
+    } else if (std.mem.eql(u8, flag, "fixed-strings")) {
+        opts.regex_mode = .fixed;
+    } else if (std.mem.eql(u8, flag, "basic-regexp")) {
+        opts.regex_mode = .basic;
+    } else if (std.mem.eql(u8, flag, "ignore-case")) {
+        opts.ignore_case = true;
+    } else if (std.mem.eql(u8, flag, "invert-match")) {
+        opts.invert_match = true;
+    } else if (std.mem.eql(u8, flag, "count")) {
+        opts.count = true;
+    } else if (std.mem.eql(u8, flag, "files-with-matches")) {
+        opts.files_with_matches = true;
+    } else if (std.mem.eql(u8, flag, "files-without-match")) {
+        opts.files_without_match = true;
+    } else if (std.mem.eql(u8, flag, "line-number")) {
+        opts.line_number = true;
+    } else if (std.mem.eql(u8, flag, "with-filename")) {
+        opts.with_filename = true;
+    } else if (std.mem.eql(u8, flag, "no-filename")) {
+        opts.no_filename = true;
+    } else if (std.mem.eql(u8, flag, "only-matching")) {
+        opts.only_matching = true;
+    } else if (std.mem.eql(u8, flag, "quiet") or std.mem.eql(u8, flag, "silent")) {
+        opts.quiet = true;
+    } else if (std.mem.eql(u8, flag, "no-messages")) {
+        opts.no_messages = true;
+    } else if (std.mem.eql(u8, flag, "word-regexp")) {
+        opts.word_regexp = true;
+    } else if (std.mem.eql(u8, flag, "line-regexp")) {
+        opts.line_regexp = true;
+    } else if (std.mem.eql(u8, flag, "byte-offset")) {
+        opts.byte_offset = true;
+    } else if (std.mem.eql(u8, flag, "text")) {
+        // No-op: treat binary as text (no binary detection yet)
+    } else if (std.mem.eql(u8, flag, "binary")) {
+        // No-op: Unix treats all files as binary by default
+    } else if (std.mem.eql(u8, flag, "null")) {
+        opts.null_data = true;
+    } else if (std.mem.eql(u8, flag, "recursive")) {
+        opts.recursive = true;
+    } else if (std.mem.eql(u8, flag, "dereference-recursive")) {
+        opts.dereference_recursive = true;
+        opts.recursive = true;
+    } else if (std.mem.eql(u8, flag, "line-buffered")) {
+        // No-op: we flush appropriately already
+    } else if (std.mem.eql(u8, flag, "mmap")) {
+        // No-op: deprecated, accept silently
+    } else if (std.mem.eql(u8, flag, "null-data")) {
+        opts.null_line_sep = true;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/// Handle valued long options (the `startsWith` arms). Returns not_mine when
+/// `flag` is unrecognized so the caller can report the error.
+fn parseArgs_longValued(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *GrepOptions,
+    flag: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !LongOptionResult {
+    assert(@intFromEnum(opts.regex_mode) <= @intFromEnum(RegexMode.fixed));
+    assert(@intFromEnum(opts.regex_mode) >= @intFromEnum(RegexMode.basic));
+    if (std.mem.startsWith(u8, flag, "regexp=")) {
+        try opts.patterns.append(allocator, flag["regexp=".len..]);
+    } else if (std.mem.startsWith(u8, flag, "file=")) {
+        const pattern_file = flag["file=".len..];
+        try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, pattern_file, stderr_writer); // tiger:allow:long-line
+    } else if (std.mem.startsWith(u8, flag, "max-count=")) {
+        const val_str = flag["max-count=".len..];
+        opts.max_count = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{val_str}); // tiger:allow:long-line
+            return .consumed_error;
+        };
+    } else if (std.mem.startsWith(u8, flag, "after-context=")) {
+        const val_str = flag["after-context=".len..];
+        opts.after_context = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+            return .consumed_error;
+        };
+    } else if (std.mem.startsWith(u8, flag, "before-context=")) {
+        const val_str = flag["before-context=".len..];
+        opts.before_context = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+            return .consumed_error;
+        };
+    } else if (std.mem.startsWith(u8, flag, "context=")) {
+        const val_str = flag["context=".len..];
+        const ctx = std.fmt.parseInt(usize, val_str, 10) catch { // tiger:allow:usize-arch
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+            return .consumed_error;
+        };
+        opts.before_context = ctx;
+        opts.after_context = ctx;
+    } else if (std.mem.eql(u8, flag, "color") or std.mem.eql(u8, flag, "colour")) {
+        opts.color = .on;
+    } else if (std.mem.startsWith(u8, flag, "color=") or std.mem.startsWith(u8, flag, "colour=")) {
+        const eq_pos = std.mem.findScalar(u8, flag, '=').?;
+        const when = flag[eq_pos + 1 ..];
+        if (std.mem.eql(u8, when, "auto")) {
+            // Keep resolved value (TTY-dependent)
+        } else if (std.mem.eql(u8, when, "always")) {
+            opts.color = .on;
+        } else if (std.mem.eql(u8, when, "never")) {
+            opts.color = .off;
+        } else {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid argument '{s}' for '--color'", .{when}); // tiger:allow:long-line
+            return .consumed_error;
+        }
+    } else if (std.mem.startsWith(u8, flag, "include=")) {
+        try opts.include_globs.append(allocator, flag["include=".len..]);
+    } else if (std.mem.startsWith(u8, flag, "exclude=")) {
+        try opts.exclude_globs.append(allocator, flag["exclude=".len..]);
+    } else if (std.mem.startsWith(u8, flag, "exclude-dir=")) {
+        try opts.exclude_dirs.append(allocator, flag["exclude-dir=".len..]);
+    } else if (std.mem.startsWith(u8, flag, "label=")) {
+        opts.stdin_label = flag["label=".len..];
+    } else if (std.mem.startsWith(u8, flag, "binary-files=")) {
+        // Stub: accept silently (we treat all files as text)
+    } else if (std.mem.startsWith(u8, flag, "include-dir=")) {
+        // No-op stub: accept with value, silently ignore
+    } else {
+        return .not_mine;
+    }
+    return .consumed_ok;
+}
+
+/// Resolve the value for a short option that takes one: rest of this arg, or
+/// the next argv element (advancing the cursors). Returns null when none.
+fn parseArgs_shortValue(
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+) ?[]const u8 {
+    assert(arg.len > 1);
+    assert(j_ptr.* >= 1);
+    const j = j_ptr.*;
+    if (j + 1 < arg.len) return arg[j + 1 ..];
+    if (i_ptr.* + 1 < args.len) {
+        i_ptr.* += 1;
+        return args[i_ptr.*];
+    }
+    return null;
+}
+
+/// Handle no-argument short flags. Returns true when `ch` was applied.
+fn parseArgs_shortFlag(opts: *GrepOptions, ch: u8) bool {
+    assert(ch != 0);
+    assert(ch != '-');
+    switch (ch) {
+        'E' => opts.regex_mode = .extended,
+        'F' => opts.regex_mode = .fixed,
+        'G' => opts.regex_mode = .basic,
+        'i' => opts.ignore_case = true,
+        'v' => opts.invert_match = true,
+        'c' => opts.count = true,
+        'l' => opts.files_with_matches = true,
+        'L' => opts.files_without_match = true,
+        'n' => opts.line_number = true,
+        'H' => opts.with_filename = true,
+        'h' => opts.no_filename = true,
+        'o' => opts.only_matching = true,
+        'q' => opts.quiet = true,
+        's' => opts.no_messages = true,
+        'w' => opts.word_regexp = true,
+        'x' => opts.line_regexp = true,
+        'b' => opts.byte_offset = true,
+        'Z' => opts.null_data = true,
+        'a' => {}, // --text: treat binary as text (no-op, no binary detection yet)
+        'I' => {}, // ignore binary files (no-op, no binary detection yet)
+        'U' => {}, // --binary: Unix no-op
+        'J' => {}, // macOS: decompress bzip2 (no-op stub)
+        'M' => {}, // macOS: force mmap (no-op stub)
+        'O' => {}, // macOS: follow symlinks on cmdline only (no-op stub)
+        'p' => {}, // macOS: don't follow symlinks (no-op stub)
+        'S' => {}, // macOS: follow all symlinks (no-op stub)
+        'u' => {}, // macOS: report unmatched files (no-op stub)
+        'X' => {}, // macOS: legacy exclude-from (no-op stub)
+        'V' => opts.version = true,
+        'y' => opts.ignore_case = true, // legacy alias for -i
+        'z' => opts.null_line_sep = true,
+        'r' => opts.recursive = true,
+        'R' => {
+            opts.dereference_recursive = true;
+            opts.recursive = true;
+        },
+        else => return false,
+    }
+    return true;
+}
+
+/// Outcome of a valued short-option parse: consumed (break the arg), errored,
+/// or unrecognized so the caller reports "invalid option".
+const ShortValuedResult = enum { consumed_break, consumed_error, not_mine };
+
+/// Handle valued short options (P, e, f, m, A, B, C, d, D). Numeric arms are
+/// delegated to parseArgs_shortNumeric. Advances cursors via parseArgs_shortValue.
+fn parseArgs_shortValued(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *GrepOptions,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) !ShortValuedResult {
+    assert(arg.len > 1);
+    assert(j_ptr.* >= 1);
+    const ch = arg[j_ptr.*];
+    switch (ch) {
+        'm', 'A', 'B', 'C' => return parseArgs_shortNumeric(
+            allocator,
+            opts,
+            ch,
+            arg,
+            args,
+            i_ptr,
+            j_ptr,
+            stderr_writer,
+        ),
+        'P' => {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "-P (Perl regex) not supported", .{}); // tiger:allow:long-line
+            return .consumed_error;
+        },
+        'e' => {
+            const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'e'", .{}); // tiger:allow:long-line
+                return .consumed_error;
+            };
+            try opts.patterns.append(allocator, value);
+            return .consumed_break;
+        },
+        'f' => {
+            const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'f'", .{}); // tiger:allow:long-line
+                return .consumed_error;
+            };
+            try loadPatternsFromFile(allocator, io, &opts.patterns, &opts.pattern_file_contents, value, stderr_writer); // tiger:allow:long-line
+            return .consumed_break;
+        },
+        'd' => {
+            const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'd'", .{}); // tiger:allow:long-line
+                return .consumed_error;
+            };
+            if (std.mem.eql(u8, value, "recurse")) {
+                opts.recursive = true;
+            } else if (std.mem.eql(u8, value, "skip")) {
+                opts.skip_dirs = true;
+            }
+            // "read" is the default behavior, no action needed
+            return .consumed_break;
+        },
+        'D' => {
+            // Device action stub: accept value, silently ignore
+            _ = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'D'", .{}); // tiger:allow:long-line
+                return .consumed_error;
+            };
+            return .consumed_break;
+        },
+        else => return .not_mine,
+    }
+}
+
+/// Handle the integer-valued short options (m, A, B, C).
+fn parseArgs_shortNumeric(
+    allocator: Allocator,
+    opts: *GrepOptions,
+    ch: u8,
+    arg: []const u8,
+    args: []const []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch argv index, slice-index-forced
+    j_ptr: *usize, // tiger:allow:usize-arch arg index, slice-index-forced
+    stderr_writer: *std.Io.Writer,
+) ShortValuedResult {
+    const ch_is_numeric = ch == 'm' or ch == 'A' or ch == 'B' or ch == 'C';
+    assert(ch_is_numeric);
+    assert(arg.len > 1);
+    const value = parseArgs_shortValue(arg, args, i_ptr, j_ptr) orelse {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- '{c}'", .{ch}); // tiger:allow:long-line
+        return .consumed_error;
+    };
+    if (ch == 'm') {
+        opts.max_count = std.fmt.parseInt(usize, value, 10) catch { // tiger:allow:usize-arch
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid max count '{s}'", .{value}); // tiger:allow:long-line
+            return .consumed_error;
+        };
+        return .consumed_break;
+    }
+    const parsed = std.fmt.parseInt(usize, value, 10) catch { // tiger:allow:usize-arch
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid context length argument", .{}); // tiger:allow:long-line
+        return .consumed_error;
+    };
+    if (ch == 'A') {
+        opts.after_context = parsed;
+    } else if (ch == 'B') {
+        opts.before_context = parsed;
+    } else {
+        opts.before_context = parsed;
+        opts.after_context = parsed;
+    }
+    return .consumed_break;
 }
 
 /// Load patterns from a file, one per line
@@ -601,6 +659,20 @@ fn isWordChar(ch: u8) bool {
     return std.ascii.isAlphanumeric(ch) or ch == '_';
 }
 
+/// The C regex offset type (rm_so/rm_eo field of regmatch_t).
+const RegOffset = @TypeOf(@as(c.regmatch_t, undefined).rm_so);
+
+/// Convert a regoff match offset (rm_so/rm_eo) into a slice index.
+/// Negative offsets (no match for that subexpression) map to 0. The
+/// result indexes into `line`, so it must be usize (slice-index API).
+fn regOffsetToIndex(off: RegOffset) usize { // tiger:allow:usize-arch slice index
+    comptime assert(@typeInfo(RegOffset) == .int);
+    comptime assert(@typeInfo(RegOffset).int.signedness == .signed);
+    if (off < 0) return 0;
+    const idx: usize = @intCast(off); // tiger:allow:usize-arch slice index
+    return idx;
+}
+
 /// Check if a line matches a compiled pattern.
 /// When word_regexp is true, post-validates word boundaries instead of
 /// relying on pattern wrapping (which uses \| unsupported in BRE on macOS).
@@ -611,88 +683,127 @@ fn matchLine(pat: *const CompiledPattern, line: []const u8, allocator: Allocator
     switch (pat.*) {
         .fixed => |fp| {
             if (word_regexp) {
-                const search_info = if (fp.lower != null) blk: {
-                    const lower_line = toLower(allocator, line) catch return .{ .matched = false };
-                    break :blk .{ lower_line, fp.lower.?, true };
-                } else .{ line, fp.text, false };
-                const haystack = search_info[0];
-                const needle = search_info[1];
-                const need_free = search_info[2];
-                defer if (need_free) allocator.free(haystack);
-                var pos: usize = 0;
-                while (pos <= haystack.len) {
-                    const idx = std.mem.find(u8, haystack[pos..], needle) orelse return .{ .matched = false };
-                    const abs_start = pos + idx;
-                    const abs_end = abs_start + needle.len;
-                    const left_ok = if (abs_start == 0)
-                        (if (prev_char) |pc| !isWordChar(pc) else true)
-                    else
-                        !isWordChar(line[abs_start - 1]);
-                    const right_ok = (abs_end >= line.len) or !isWordChar(line[abs_end]);
-                    if (left_ok and right_ok) {
-                        return .{ .matched = true, .match_start = abs_start, .match_end = abs_end };
-                    }
-                    pos = abs_start + 1;
-                }
-                return .{ .matched = false };
+                return matchLine_fixedWord(&fp, line, allocator, prev_char);
             }
-            if (fp.lower) |lower_pattern| {
-                const lower_line = toLower(allocator, line) catch return .{ .matched = false };
-                defer allocator.free(lower_line);
-                if (std.mem.find(u8, lower_line, lower_pattern)) |pos| {
-                    return .{ .matched = true, .match_start = pos, .match_end = pos + lower_pattern.len };
-                }
-                return .{ .matched = false };
-            }
-            if (std.mem.find(u8, line, fp.text)) |pos| {
-                return .{ .matched = true, .match_start = pos, .match_end = pos + fp.text.len };
-            }
-            return .{ .matched = false };
+            return matchLine_fixedPlain(&fp, line, allocator);
         },
         .regex => |re| {
             if (word_regexp) {
-                var search_start: usize = 0;
-                var eff_prev_char = prev_char;
-                while (search_start <= line.len) {
-                    const search_line = line[search_start..];
-                    const search_z = allocator.dupeZ(u8, search_line) catch return .{ .matched = false };
-                    defer allocator.free(search_z);
-                    var pmatch: [1]c.regmatch_t = undefined;
-                    var eflags: c_int = 0;
-                    if (search_start > 0 or (eff_prev_char != null)) eflags |= c.REG_NOTBOL;
-                    const exec_result_val = c.regexec(re, search_z.ptr, 1, &pmatch, eflags);
-                    if (exec_result_val != 0) return .{ .matched = false };
-                    const rel_start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
-                    const rel_end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
-                    const abs_start = search_start + rel_start;
-                    const abs_end = search_start + rel_end;
-                    const left_ok = if (abs_start == 0)
-                        (if (eff_prev_char) |pc| !isWordChar(pc) else true)
-                    else
-                        !isWordChar(line[abs_start - 1]);
-                    const right_ok = (abs_end >= line.len) or !isWordChar(line[abs_end]);
-                    if (left_ok and right_ok) {
-                        return .{ .matched = true, .match_start = abs_start, .match_end = abs_end };
-                    }
-                    if (abs_start + 1 > line.len) break;
-                    search_start = abs_start + 1;
-                    eff_prev_char = line[abs_start];
-                }
-                return .{ .matched = false };
-            } else {
-                const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
-                defer allocator.free(line_z);
-                var pmatch: [1]c.regmatch_t = undefined;
-                const exec_result_val = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
-                if (exec_result_val == 0) {
-                    const start: usize = if (pmatch[0].rm_so >= 0) @intCast(pmatch[0].rm_so) else 0;
-                    const end: usize = if (pmatch[0].rm_eo >= 0) @intCast(pmatch[0].rm_eo) else 0;
-                    return .{ .matched = true, .match_start = start, .match_end = end };
-                }
-                return .{ .matched = false };
+                return matchLine_regexWord(re, line, allocator, prev_char);
             }
+            return matchLine_regexPlain(re, line, allocator);
         },
     }
+}
+
+/// Fixed-string match with -w word-boundary post-validation.
+fn matchLine_fixedWord(
+    fp: *const CompiledPattern.FixedPattern,
+    line: []const u8,
+    allocator: Allocator,
+    prev_char: ?u8,
+) MatchResult {
+    if (fp.lower) |lo| assert(lo.len == fp.text.len);
+    const search_info = if (fp.lower != null) blk: {
+        const lower_line = toLower(allocator, line) catch return .{ .matched = false };
+        break :blk .{ lower_line, fp.lower.?, true };
+    } else .{ line, fp.text, false };
+    const haystack = search_info[0];
+    const needle = search_info[1];
+    const need_free = search_info[2];
+    defer if (need_free) allocator.free(haystack);
+    var pos: usize = 0; // tiger:allow:usize-arch haystack index
+    while (pos <= haystack.len) {
+        const idx = std.mem.find(u8, haystack[pos..], needle) orelse return .{ .matched = false };
+        const abs_start = pos + idx;
+        const abs_end = abs_start + needle.len;
+        const left_ok = if (abs_start == 0)
+            (if (prev_char) |pc| !isWordChar(pc) else true)
+        else
+            !isWordChar(line[abs_start - 1]);
+        const right_ok = (abs_end >= line.len) or !isWordChar(line[abs_end]);
+        if (left_ok and right_ok) {
+            return .{ .matched = true, .match_start = abs_start, .match_end = abs_end };
+        }
+        pos = abs_start + 1;
+    }
+    return .{ .matched = false };
+}
+
+/// Plain fixed-string match (no word boundaries).
+fn matchLine_fixedPlain(
+    fp: *const CompiledPattern.FixedPattern,
+    line: []const u8,
+    allocator: Allocator,
+) MatchResult {
+    if (fp.lower) |lo| assert(lo.len == fp.text.len);
+    if (fp.lower) |lower_pattern| {
+        const lower_line = toLower(allocator, line) catch return .{ .matched = false };
+        defer allocator.free(lower_line);
+        if (std.mem.find(u8, lower_line, lower_pattern)) |pos| {
+            return .{ .matched = true, .match_start = pos, .match_end = pos + lower_pattern.len };
+        }
+        return .{ .matched = false };
+    }
+    if (std.mem.find(u8, line, fp.text)) |pos| {
+        return .{ .matched = true, .match_start = pos, .match_end = pos + fp.text.len };
+    }
+    return .{ .matched = false };
+}
+
+/// Regex match with -w word-boundary post-validation.
+fn matchLine_regexWord(
+    re: *c.regex_t,
+    line: []const u8,
+    allocator: Allocator,
+    prev_char: ?u8,
+) MatchResult {
+    assert(@intFromPtr(re) != 0);
+    var search_start: usize = 0; // tiger:allow:usize-arch line index
+    var eff_prev_char = prev_char;
+    while (search_start <= line.len) {
+        const search_line = line[search_start..];
+        const search_z = allocator.dupeZ(u8, search_line) catch return .{ .matched = false };
+        defer allocator.free(search_z);
+        var pmatch: [1]c.regmatch_t = undefined;
+        var eflags: c_int = 0;
+        if (search_start > 0 or (eff_prev_char != null)) eflags |= c.REG_NOTBOL;
+        const exec_result_val = c.regexec(re, search_z.ptr, 1, &pmatch, eflags);
+        if (exec_result_val != 0) return .{ .matched = false };
+        const rel_start = regOffsetToIndex(pmatch[0].rm_so);
+        const rel_end = regOffsetToIndex(pmatch[0].rm_eo);
+        const abs_start = search_start + rel_start;
+        const abs_end = search_start + rel_end;
+        const left_ok = if (abs_start == 0)
+            (if (eff_prev_char) |pc| !isWordChar(pc) else true)
+        else
+            !isWordChar(line[abs_start - 1]);
+        const right_ok = (abs_end >= line.len) or !isWordChar(line[abs_end]);
+        if (left_ok and right_ok) {
+            assert(abs_end >= abs_start);
+            return .{ .matched = true, .match_start = abs_start, .match_end = abs_end };
+        }
+        if (abs_start + 1 > line.len) break;
+        search_start = abs_start + 1;
+        eff_prev_char = line[abs_start];
+    }
+    return .{ .matched = false };
+}
+
+/// Plain regex match (no word boundaries).
+fn matchLine_regexPlain(re: *c.regex_t, line: []const u8, allocator: Allocator) MatchResult {
+    assert(@intFromPtr(re) != 0);
+    const line_z = allocator.dupeZ(u8, line) catch return .{ .matched = false };
+    defer allocator.free(line_z);
+    var pmatch: [1]c.regmatch_t = undefined;
+    const exec_result_val = c.regexec(re, line_z.ptr, 1, &pmatch, 0);
+    if (exec_result_val == 0) {
+        const start = regOffsetToIndex(pmatch[0].rm_so);
+        const end = regOffsetToIndex(pmatch[0].rm_eo);
+        assert(end >= start);
+        return .{ .matched = true, .match_start = start, .match_end = end };
+    }
+    return .{ .matched = false };
 }
 
 /// Check if a line matches any of the compiled patterns
@@ -809,134 +920,392 @@ fn processFile(
     defer lines.deinit(allocator);
     var line_offsets = std.ArrayListUnmanaged(usize).empty;
     defer line_offsets.deinit(allocator);
-    {
-        var start: usize = 0;
-        for (content, 0..) |ch, idx| {
-            if (ch == line_delim) {
-                lines.append(allocator, content[start..idx]) catch return false;
-                line_offsets.append(allocator, start) catch return false;
-                start = idx + 1;
-            }
-        }
-        if (start < content.len) {
-            lines.append(allocator, content[start..]) catch return false;
-            line_offsets.append(allocator, start) catch return false;
-        }
+    if (!processFile_splitLines(allocator, content, line_delim, &lines, &line_offsets)) {
+        return false;
     }
 
     // Context tracking
-    const has_context = opts.before_context > 0 or opts.after_context > 0;
-    var last_printed_line: ?usize = null;
-    var remaining_after: usize = 0;
+    var scan = ScanState{};
 
     for (lines.items) |line| {
         line_num += 1;
-
-        const result = matchAnyPattern(patterns, line, allocator, opts.word_regexp, null);
-        const is_match = if (opts.invert_match) !result.matched else result.matched;
-
-        if (is_match) {
-            found_match = true;
-            match_count += 1;
-
-            if (opts.quiet) return true;
-
-            if (!opts.count and !opts.files_with_matches and !opts.files_without_match) {
-                // Print before-context lines
-                if (has_context and opts.before_context > 0) {
-                    const ctx_start = if (line_num > opts.before_context) line_num - opts.before_context else 1;
-                    const already_printed = if (last_printed_line) |lp| lp + 1 else 0;
-                    const effective_start = @max(ctx_start, already_printed);
-
-                    // Print group separator if there's a gap
-                    if (last_printed_line) |lp| {
-                        if (effective_start > lp + 1) {
-                            stdout_writer.writeAll("--\n") catch {};
-                        }
-                    }
-
-                    var ctx_line = effective_start;
-                    while (ctx_line < line_num) : (ctx_line += 1) {
-                        printContextLine(stdout_writer, lines.items[ctx_line - 1], ctx_line, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[ctx_line - 1], use_color, fn_sep, line_term);
-                        last_printed_line = ctx_line;
-                    }
-                }
-
-                // Print the matching line
-                if (last_printed_line) |lp| {
-                    if (has_context and line_num > lp + 1 and opts.before_context == 0) {
-                        stdout_writer.writeAll("--\n") catch {};
-                    }
-                }
-
-                if (opts.only_matching and !opts.invert_match) {
-                    // Print all non-overlapping matches on this line, each on its own output line.
-                    var search_offset: usize = 0;
-                    var cur_result = result;
-                    while (cur_result.matched and cur_result.match_end > cur_result.match_start and search_offset + cur_result.match_end <= line.len) {
-                        if (show_filename) {
-                            printFilename(stdout_writer, filename, use_color);
-                            printSep(stdout_writer, fn_sep, use_color);
-                        }
-                        if (opts.line_number) {
-                            printLineNumber(stdout_writer, line_num, use_color);
-                            printSep(stdout_writer, ':', use_color);
-                        }
-                        if (opts.byte_offset) {
-                            printByteOffset(stdout_writer, line_offsets.items[line_num - 1] + search_offset + cur_result.match_start, use_color);
-                            printSep(stdout_writer, ':', use_color);
-                        }
-                        const abs_start = search_offset + cur_result.match_start;
-                        const abs_end = search_offset + cur_result.match_end;
-                        if (use_color) {
-                            stdout_writer.print("{s}", .{Color.match_highlight}) catch {};
-                            stdout_writer.writeAll(line[abs_start..abs_end]) catch {};
-                            stdout_writer.print("{s}", .{Color.reset}) catch {};
-                        } else {
-                            stdout_writer.writeAll(line[abs_start..abs_end]) catch {};
-                        }
-                        stdout_writer.writeByte(line_term) catch {};
-
-                        // Advance past this match and search for more
-                        search_offset = abs_end;
-                        if (search_offset >= line.len) break;
-                        cur_result = matchAnyPattern(patterns, line[search_offset..], allocator, opts.word_regexp, if (search_offset > 0) line[search_offset - 1] else null);
-                    }
-                } else {
-                    if (show_filename) {
-                        printFilename(stdout_writer, filename, use_color);
-                        printSep(stdout_writer, fn_sep, use_color);
-                    }
-                    if (opts.line_number) {
-                        printLineNumber(stdout_writer, line_num, use_color);
-                        printSep(stdout_writer, ':', use_color);
-                    }
-                    if (opts.byte_offset) {
-                        printByteOffset(stdout_writer, line_offsets.items[line_num - 1], use_color);
-                        printSep(stdout_writer, ':', use_color);
-                    }
-                    if (!opts.invert_match) {
-                        printMatchLine(stdout_writer, line, result.match_start, result.match_end, use_color, line_term);
-                    } else {
-                        stdout_writer.writeAll(line) catch {};
-                        stdout_writer.writeByte(line_term) catch {};
-                    }
-                }
-                last_printed_line = line_num;
-                remaining_after = opts.after_context;
-            }
-
-            if (opts.max_count) |mc| {
-                if (match_count >= mc) break;
-            }
-        } else if (remaining_after > 0) {
-            // Print after-context line
-            printContextLine(stdout_writer, line, line_num, filename, show_filename, opts.line_number, opts.byte_offset, line_offsets.items[line_num - 1], use_color, fn_sep, line_term);
-            last_printed_line = line_num;
-            remaining_after -= 1;
+        const ctx = LineContext{
+            .line = line,
+            .line_num = line_num,
+            .lines = lines.items,
+            .line_offsets = line_offsets.items,
+            .filename = filename,
+            .fn_sep = fn_sep,
+            .line_term = line_term,
+        };
+        switch (processFile_handleLine(allocator, patterns, opts, stdout_writer, ctx, show_filename, use_color, &scan)) { // tiger:allow:long-line
+            .keep_going => {},
+            .stop_scanning => break,
+            .quiet_return => return true,
         }
     }
 
+    found_match = scan.found_match;
+    match_count = scan.match_count;
+    processFile_printSummary(stdout_writer, opts, filename, match_count, found_match, show_filename, use_color, fn_sep, line_term); // tiger:allow:long-line
+
+    return found_match;
+}
+
+/// Loop-carried state for the per-line scan in processFile.
+const ScanState = struct {
+    found_match: bool = false,
+    match_count: usize = 0, // tiger:allow:usize-arch line counter, matches existing type
+    last_printed_line: ?usize = null, // tiger:allow:usize-arch line index
+    remaining_after: usize = 0, // tiger:allow:usize-arch line counter
+};
+
+/// Per-line inputs grouped to keep the handler's parameter list small.
+const LineContext = struct {
+    line: []const u8,
+    line_num: usize, // tiger:allow:usize-arch line index, slice-index-forced
+    lines: []const []const u8,
+    line_offsets: []const usize, // tiger:allow:usize-arch byte offsets, slice-index-forced
+    filename: []const u8,
+    fn_sep: u8,
+    line_term: u8,
+};
+
+/// Outcome of handling one line: continue, stop (max_count), or quiet-return.
+const LineOutcome = enum { keep_going, stop_scanning, quiet_return };
+
+/// Handle one scanned line: match, optionally print, and update scan state.
+fn processFile_handleLine(
+    allocator: Allocator,
+    patterns: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    ctx: LineContext,
+    show_filename: bool,
+    use_color: bool,
+    scan: *ScanState,
+) LineOutcome {
+    assert(ctx.line_num >= 1);
+    assert(ctx.lines.len == ctx.line_offsets.len);
+    const result = matchAnyPattern(patterns, ctx.line, allocator, opts.word_regexp, null);
+    const is_match = if (opts.invert_match) !result.matched else result.matched;
+
+    if (is_match) {
+        scan.found_match = true;
+        scan.match_count += 1;
+
+        if (opts.quiet) return .quiet_return;
+
+        if (!opts.count and !opts.files_with_matches and !opts.files_without_match) {
+            processFile_emitMatch(
+                allocator,
+                patterns,
+                opts,
+                stdout_writer,
+                ctx,
+                result,
+                show_filename,
+                use_color,
+                scan,
+            );
+        }
+
+        if (opts.max_count) |mc| {
+            if (scan.match_count >= mc) return .stop_scanning;
+        }
+    } else if (scan.remaining_after > 0) {
+        // Print after-context line
+        printContextLine(
+            stdout_writer,
+            ctx.line,
+            ctx.line_num,
+            ctx.filename,
+            show_filename,
+            opts.line_number,
+            opts.byte_offset,
+            ctx.line_offsets[ctx.line_num - 1],
+            use_color,
+            ctx.fn_sep,
+            ctx.line_term,
+        );
+        scan.last_printed_line = ctx.line_num;
+        scan.remaining_after -= 1;
+    }
+    return .keep_going;
+}
+
+/// Emit a match: before-context, optional group separator, the match line(s).
+fn processFile_emitMatch(
+    allocator: Allocator,
+    patterns: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    ctx: LineContext,
+    result: MatchResult,
+    show_filename: bool,
+    use_color: bool,
+    scan: *ScanState,
+) void {
+    assert(ctx.line_num >= 1);
+    assert(result.match_end >= result.match_start);
+    const has_context = opts.before_context > 0 or opts.after_context > 0;
+
+    // Print before-context lines
+    if (has_context and opts.before_context > 0) {
+        processFile_printBeforeContext(
+            stdout_writer,
+            ctx.lines,
+            ctx.line_offsets,
+            ctx.line_num,
+            opts,
+            ctx.filename,
+            show_filename,
+            use_color,
+            ctx.fn_sep,
+            ctx.line_term,
+            &scan.last_printed_line,
+        );
+    }
+
+    // Print the matching line
+    if (scan.last_printed_line) |lp| {
+        if (has_context and ctx.line_num > lp + 1 and opts.before_context == 0) {
+            stdout_writer.writeAll("--\n") catch {};
+        }
+    }
+
+    if (opts.only_matching and !opts.invert_match) {
+        processFile_printOnlyMatching(
+            allocator,
+            patterns,
+            stdout_writer,
+            ctx.line,
+            ctx.line_num,
+            ctx.line_offsets,
+            result,
+            opts,
+            ctx.filename,
+            show_filename,
+            use_color,
+            ctx.fn_sep,
+            ctx.line_term,
+        );
+    } else {
+        processFile_printNormalMatch(
+            stdout_writer,
+            ctx.line,
+            ctx.line_num,
+            ctx.line_offsets,
+            result,
+            opts,
+            ctx.filename,
+            show_filename,
+            use_color,
+            ctx.fn_sep,
+            ctx.line_term,
+        );
+    }
+    scan.last_printed_line = ctx.line_num;
+    scan.remaining_after = opts.after_context;
+}
+
+/// Split content into lines and parallel byte offsets. Returns false on OOM.
+fn processFile_splitLines(
+    allocator: Allocator,
+    content: []const u8,
+    line_delim: u8,
+    lines_ptr: *std.ArrayListUnmanaged([]const u8),
+    line_offsets_ptr: *std.ArrayListUnmanaged(usize), // tiger:allow:usize-arch byte offsets list
+) bool {
+    const delim_ok = line_delim == 0 or line_delim == '\n';
+    assert(delim_ok);
+    assert(lines_ptr.items.len == line_offsets_ptr.items.len);
+    var start: usize = 0; // tiger:allow:usize-arch byte offset
+    for (content, 0..) |ch, idx| {
+        if (ch == line_delim) {
+            lines_ptr.append(allocator, content[start..idx]) catch return false;
+            line_offsets_ptr.append(allocator, start) catch return false;
+            start = idx + 1;
+        }
+    }
+    if (start < content.len) {
+        lines_ptr.append(allocator, content[start..]) catch return false;
+        line_offsets_ptr.append(allocator, start) catch return false;
+    }
+    assert(lines_ptr.items.len == line_offsets_ptr.items.len);
+    return true;
+}
+
+/// Print before-context lines for a match, emitting a group separator on a gap.
+fn processFile_printBeforeContext(
+    stdout_writer: *std.Io.Writer,
+    lines: []const []const u8,
+    line_offsets: []const usize, // tiger:allow:usize-arch byte offsets, slice-index-forced
+    line_num: usize, // tiger:allow:usize-arch line index, slice-index-forced
+    opts: *const GrepOptions,
+    filename: []const u8,
+    show_filename: bool,
+    use_color: bool,
+    fn_sep: u8,
+    line_term: u8,
+    last_printed_ptr: *?usize, // tiger:allow:usize-arch line index pointer
+) void {
+    assert(opts.before_context > 0);
+    assert(line_num >= 1);
+    const ctx_start = if (line_num > opts.before_context) line_num - opts.before_context else 1;
+    const already_printed = if (last_printed_ptr.*) |lp| lp + 1 else 0;
+    const effective_start = @max(ctx_start, already_printed);
+
+    // Print group separator if there's a gap
+    if (last_printed_ptr.*) |lp| {
+        if (effective_start > lp + 1) {
+            stdout_writer.writeAll("--\n") catch {};
+        }
+    }
+
+    var ctx_line = effective_start;
+    while (ctx_line < line_num) : (ctx_line += 1) {
+        printContextLine(
+            stdout_writer,
+            lines[ctx_line - 1],
+            ctx_line,
+            filename,
+            show_filename,
+            opts.line_number,
+            opts.byte_offset,
+            line_offsets[ctx_line - 1],
+            use_color,
+            fn_sep,
+            line_term,
+        );
+        last_printed_ptr.* = ctx_line;
+    }
+}
+
+/// Print all non-overlapping matches on a line for -o, each on its own line.
+fn processFile_printOnlyMatching(
+    allocator: Allocator,
+    patterns: []const CompiledPattern,
+    stdout_writer: *std.Io.Writer,
+    line: []const u8,
+    line_num: usize, // tiger:allow:usize-arch line index, slice-index-forced
+    line_offsets: []const usize, // tiger:allow:usize-arch byte offsets, slice-index-forced
+    first_result: MatchResult,
+    opts: *const GrepOptions,
+    filename: []const u8,
+    show_filename: bool,
+    use_color: bool,
+    fn_sep: u8,
+    line_term: u8,
+) void {
+    assert(opts.only_matching);
+    assert(!opts.invert_match);
+    var search_offset: usize = 0; // tiger:allow:usize-arch line index
+    var cur_result = first_result;
+    while (cur_result.matched and
+        cur_result.match_end > cur_result.match_start and
+        search_offset + cur_result.match_end <= line.len)
+    {
+        if (show_filename) {
+            printFilename(stdout_writer, filename, use_color);
+            printSep(stdout_writer, fn_sep, use_color);
+        }
+        if (opts.line_number) {
+            printLineNumber(stdout_writer, line_num, use_color);
+            printSep(stdout_writer, ':', use_color);
+        }
+        if (opts.byte_offset) {
+            printByteOffset(
+                stdout_writer,
+                line_offsets[line_num - 1] + search_offset + cur_result.match_start,
+                use_color,
+            );
+            printSep(stdout_writer, ':', use_color);
+        }
+        const abs_start = search_offset + cur_result.match_start;
+        const abs_end = search_offset + cur_result.match_end;
+        if (use_color) {
+            stdout_writer.print("{s}", .{Color.match_highlight}) catch {};
+            stdout_writer.writeAll(line[abs_start..abs_end]) catch {};
+            stdout_writer.print("{s}", .{Color.reset}) catch {};
+        } else {
+            stdout_writer.writeAll(line[abs_start..abs_end]) catch {};
+        }
+        stdout_writer.writeByte(line_term) catch {};
+
+        // Advance past this match and search for more
+        search_offset = abs_end;
+        if (search_offset >= line.len) break;
+        const prev_char: ?u8 = if (search_offset > 0) line[search_offset - 1] else null;
+        cur_result = matchAnyPattern(
+            patterns,
+            line[search_offset..],
+            allocator,
+            opts.word_regexp,
+            prev_char,
+        );
+    }
+}
+
+/// Print the prefix and matching line for a normal (non -o) match.
+fn processFile_printNormalMatch(
+    stdout_writer: *std.Io.Writer,
+    line: []const u8,
+    line_num: usize, // tiger:allow:usize-arch line index, slice-index-forced
+    line_offsets: []const usize, // tiger:allow:usize-arch byte offsets, slice-index-forced
+    result: MatchResult,
+    opts: *const GrepOptions,
+    filename: []const u8,
+    show_filename: bool,
+    use_color: bool,
+    fn_sep: u8,
+    line_term: u8,
+) void {
+    assert(line_num >= 1);
+    assert(result.match_end >= result.match_start);
+    if (show_filename) {
+        printFilename(stdout_writer, filename, use_color);
+        printSep(stdout_writer, fn_sep, use_color);
+    }
+    if (opts.line_number) {
+        printLineNumber(stdout_writer, line_num, use_color);
+        printSep(stdout_writer, ':', use_color);
+    }
+    if (opts.byte_offset) {
+        printByteOffset(stdout_writer, line_offsets[line_num - 1], use_color);
+        printSep(stdout_writer, ':', use_color);
+    }
+    if (!opts.invert_match) {
+        printMatchLine(
+            stdout_writer,
+            line,
+            result.match_start,
+            result.match_end,
+            use_color,
+            line_term,
+        );
+    } else {
+        stdout_writer.writeAll(line) catch {};
+        stdout_writer.writeByte(line_term) catch {};
+    }
+}
+
+/// Print the trailing -c / -l / -L summary for a file.
+fn processFile_printSummary(
+    stdout_writer: *std.Io.Writer,
+    opts: *const GrepOptions,
+    filename: []const u8,
+    match_count: usize, // tiger:allow:usize-arch match counter, matches existing type
+    found_match: bool,
+    show_filename: bool,
+    use_color: bool,
+    fn_sep: u8,
+    line_term: u8,
+) void {
+    const sep_ok = fn_sep == 0 or fn_sep == ':';
+    assert(sep_ok);
+    const term_ok = line_term == 0 or line_term == '\n';
+    assert(term_ok);
     if (opts.count) {
         if (show_filename) {
             printFilename(stdout_writer, filename, use_color);
@@ -961,8 +1330,6 @@ fn processFile(
         else
             stdout_writer.writeByte('\n') catch {};
     }
-
-    return found_match;
 }
 
 /// Print a context line (with - separator instead of :)
@@ -1456,28 +1823,14 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         compiled.deinit(allocator);
     }
 
-    for (opts.patterns.items) |pattern| {
-        const cp = compilePattern(allocator, pattern, &opts, stderr_writer) orelse {
-            return @intFromEnum(common.ExitCode.misuse);
-        };
-        compiled.append(allocator, cp) catch return @intFromEnum(common.ExitCode.misuse);
-    }
+    (runGrep_compilePatterns(allocator, &opts, &compiled, stderr_writer)) orelse {
+        return @intFromEnum(common.ExitCode.misuse);
+    };
 
     // Determine color usage
     const use_color = opts.color == .on;
 
-    // Determine filename display:
-    //   --no-filename (-h) always suppresses
-    //   --with-filename (-H) always shows
-    //   default: show if multiple files or recursive
-    const show_filename = if (opts.no_filename)
-        false
-    else if (opts.with_filename)
-        true
-    else if (opts.recursive)
-        true
-    else
-        opts.files.items.len > 1;
+    const show_filename = runGrep_showFilename(&opts);
 
     var found_any = false;
     var had_error = false;
@@ -1496,42 +1849,8 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         searchTree(allocator, io, ".", compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
     } else {
         for (opts.files.items) |file_path| {
-            if (std.mem.eql(u8, file_path, "-")) {
-                const stdin_file = std.Io.File.stdin();
-                if (processFile(allocator, io, stdin_file, stdin_label, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
-                    found_any = true;
-                }
-                continue;
-            }
-
-            if (opts.recursive or opts.skip_dirs) {
-                // Check if it's a directory
-                const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
-                    if (!opts.no_messages) {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    }
-                    had_error = true;
-                    continue;
-                };
-                if (stat.kind == .directory) {
-                    if (opts.skip_dirs) continue; // -d skip: silently skip
-                    searchTree(allocator, io, file_path, compiled.items, &opts, stdout_writer, stderr_writer, use_color, &found_any);
-                    continue;
-                }
-            }
-
-            const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                if (!opts.no_messages) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                }
-                had_error = true;
-                continue;
-            };
-            defer file.close(io);
-            if (processFile(allocator, io, file, file_path, compiled.items, &opts, stdout_writer, show_filename, use_color)) {
-                found_any = true;
-            }
-            if (opts.quiet and found_any) return 0;
+            const quiet_early = runGrep_processOneOperand(allocator, io, file_path, compiled.items, &opts, stdout_writer, stderr_writer, show_filename, use_color, stdin_label, &found_any, &had_error); // tiger:allow:long-line
+            if (quiet_early) return 0;
         }
     }
 
@@ -1541,6 +1860,125 @@ pub fn runGrep(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
 
     if (had_error) return 2;
     return if (found_any) 0 else 1;
+}
+
+/// Compile every parsed pattern, appending to `compiled_ptr`.
+/// Returns null (error already printed) to signal the caller to exit misuse.
+fn runGrep_compilePatterns(
+    allocator: Allocator,
+    opts: *const GrepOptions,
+    compiled_ptr: *std.ArrayListUnmanaged(CompiledPattern),
+    stderr_writer: *std.Io.Writer,
+) ?void {
+    assert(opts.patterns.items.len > 0);
+    for (opts.patterns.items) |pattern| {
+        const cp = compilePattern(allocator, pattern, opts, stderr_writer) orelse return null;
+        compiled_ptr.append(allocator, cp) catch return null;
+    }
+    assert(compiled_ptr.items.len <= opts.patterns.items.len);
+    return {};
+}
+
+/// Decide whether to prefix output lines with the filename.
+///   --no-filename (-h) always suppresses
+///   --with-filename (-H) always shows
+///   default: show if multiple files or recursive
+fn runGrep_showFilename(opts: *const GrepOptions) bool {
+    assert(@TypeOf(opts.no_filename) == bool);
+    assert(@TypeOf(opts.recursive) == bool);
+    return if (opts.no_filename)
+        false
+    else if (opts.with_filename)
+        true
+    else if (opts.recursive)
+        true
+    else
+        opts.files.items.len > 1;
+}
+
+/// Search one command-line operand (stdin, directory, or regular file).
+/// Returns true when a quiet early-return (-q with a match) is requested.
+fn runGrep_processOneOperand(
+    allocator: Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    compiled: []const CompiledPattern,
+    opts: *const GrepOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    show_filename: bool,
+    use_color: bool,
+    stdin_label: []const u8,
+    found_any_ptr: *bool,
+    had_error_ptr: *bool,
+) bool {
+    assert(file_path.len > 0);
+    assert(compiled.len > 0);
+    if (std.mem.eql(u8, file_path, "-")) {
+        const stdin_file = std.Io.File.stdin();
+        const matched = processFile(
+            allocator,
+            io,
+            stdin_file,
+            stdin_label,
+            compiled,
+            opts,
+            stdout_writer,
+            show_filename,
+            use_color,
+        );
+        if (matched) found_any_ptr.* = true;
+        return false;
+    }
+
+    if (opts.recursive or opts.skip_dirs) {
+        // Check if it's a directory
+        const stat = std.Io.Dir.cwd().statFile(io, file_path, .{}) catch |err| {
+            if (!opts.no_messages) {
+                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) }); // tiger:allow:long-line
+            }
+            had_error_ptr.* = true;
+            return false;
+        };
+        if (stat.kind == .directory) {
+            if (opts.skip_dirs) return false; // -d skip: silently skip
+            searchTree(
+                allocator,
+                io,
+                file_path,
+                compiled,
+                opts,
+                stdout_writer,
+                stderr_writer,
+                use_color,
+                found_any_ptr,
+            );
+            return false;
+        }
+    }
+
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        if (!opts.no_messages) {
+            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "{s}: {s}", .{ file_path, common.posixErrorString(err) }); // tiger:allow:long-line
+        }
+        had_error_ptr.* = true;
+        return false;
+    };
+    defer file.close(io);
+    const matched = processFile(
+        allocator,
+        io,
+        file,
+        file_path,
+        compiled,
+        opts,
+        stdout_writer,
+        show_filename,
+        use_color,
+    );
+    if (matched) found_any_ptr.* = true;
+    if (opts.quiet and found_any_ptr.*) return true;
+    return false;
 }
 
 // ============================================================================
