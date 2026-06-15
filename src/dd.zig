@@ -126,68 +126,89 @@ fn parseOperands(args: []const []const u8) !DdConfig {
         if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
             const key = arg[0..eq_pos];
             const value = arg[eq_pos + 1 ..];
-
-            if (std.mem.eql(u8, key, "if")) {
-                config.input_file = value;
-            } else if (std.mem.eql(u8, key, "of")) {
-                config.output_file = value;
-            } else if (std.mem.eql(u8, key, "bs")) {
-                config.bs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "ibs")) {
-                config.ibs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "obs")) {
-                config.obs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "count")) {
-                config.count = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "skip")) {
-                config.skip = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "seek")) {
-                config.seek = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "cbs")) {
-                config.cbs = try parseByteSize(value);
-            } else if (std.mem.eql(u8, key, "conv")) {
-                try parseConversions(&config, value);
-            } else if (std.mem.eql(u8, key, "iseek")) {
-                // Alias for skip
-                config.skip = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "oseek")) {
-                // Alias for seek
-                config.seek = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "fillchar")) {
-                if (value.len != 1) return error.InvalidValue;
-                config.fillchar = value[0];
-            } else if (std.mem.eql(u8, key, "iflag")) {
-                // Stub: accept comma-separated input flags, silently ignore
-            } else if (std.mem.eql(u8, key, "oflag")) {
-                // Stub: accept comma-separated output flags, silently ignore
-            } else if (std.mem.eql(u8, key, "speed")) {
-                // Stub: accept speed limit, silently ignore
-                _ = std.fmt.parseInt(usize, value, 10) catch
-                    return error.InvalidValue;
-            } else if (std.mem.eql(u8, key, "status")) {
-                if (std.mem.eql(u8, value, "none")) {
-                    config.status = .none;
-                } else if (std.mem.eql(u8, value, "noxfer")) {
-                    config.status = .noxfer;
-                } else if (std.mem.eql(u8, value, "progress")) {
-                    config.status = .progress;
-                } else {
-                    return error.InvalidValue;
-                }
-            } else {
-                return error.UnknownOperand;
-            }
+            std.debug.assert(key.len <= arg.len);
+            std.debug.assert(@intFromPtr(value.ptr) >= @intFromPtr(key.ptr));
+            try parseOperands_applyKeyValue(&config, key, value);
         } else {
             return error.UnknownOperand;
         }
     }
 
     return config;
+}
+
+/// Apply a single parsed operand `key=value` to `config` in place.
+/// Straight-line dispatch over the supported operand keys; mirrors the
+/// behavior of the original inline if/else-if chain exactly.
+fn parseOperands_applyKeyValue(config: *DdConfig, key: []const u8, value: []const u8) !void {
+    std.debug.assert(@intFromPtr(value.ptr) >= @intFromPtr(key.ptr));
+    std.debug.assert(@intFromBool(config.help) <= 1);
+
+    if (std.mem.eql(u8, key, "if")) {
+        config.input_file = value;
+    } else if (std.mem.eql(u8, key, "of")) {
+        config.output_file = value;
+    } else if (std.mem.eql(u8, key, "bs")) {
+        config.bs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "ibs")) {
+        config.ibs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "obs")) {
+        config.obs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "count")) {
+        config.count = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "skip")) {
+        config.skip = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "seek")) {
+        config.seek = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "cbs")) {
+        config.cbs = try parseByteSize(value);
+    } else if (std.mem.eql(u8, key, "conv")) {
+        try parseConversions(config, value);
+    } else if (std.mem.eql(u8, key, "iseek")) {
+        // Alias for skip
+        config.skip = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "oseek")) {
+        // Alias for seek
+        config.seek = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "fillchar")) {
+        if (value.len != 1) return error.InvalidValue;
+        config.fillchar = value[0];
+    } else if (std.mem.eql(u8, key, "iflag")) {
+        // Stub: accept comma-separated input flags, silently ignore
+    } else if (std.mem.eql(u8, key, "oflag")) {
+        // Stub: accept comma-separated output flags, silently ignore
+    } else if (std.mem.eql(u8, key, "speed")) {
+        // Stub: accept speed limit, silently ignore
+        _ = std.fmt.parseInt(usize, value, 10) catch // tiger:allow:usize-arch byte-count
+            return error.InvalidValue;
+    } else if (std.mem.eql(u8, key, "status")) {
+        try parseOperands_applyKeyValue_status(config, value);
+    } else {
+        return error.UnknownOperand;
+    }
+}
+
+/// Apply a `status=LEVEL` operand to `config`. Split out of
+/// parseOperands_applyKeyValue so both helpers stay well within the
+/// line budget; behavior is identical to the original inline block.
+fn parseOperands_applyKeyValue_status(config: *DdConfig, value: []const u8) !void {
+    std.debug.assert(@intFromBool(config.help) <= 1);
+    std.debug.assert(@intFromBool(config.version) <= 1);
+
+    if (std.mem.eql(u8, value, "none")) {
+        config.status = .none;
+    } else if (std.mem.eql(u8, value, "noxfer")) {
+        config.status = .noxfer;
+    } else if (std.mem.eql(u8, value, "progress")) {
+        config.status = .progress;
+    } else {
+        return error.InvalidValue;
+    }
 }
 
 /// Parse comma-separated conversion options
@@ -478,10 +499,630 @@ fn findUnsupportedOperand(args: []const []const u8) ?[]const u8 {
     return null;
 }
 
-/// Execute the dd copy operation
-pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
+/// Outcome of handling a read error inside the main copy loop.
+/// `continue_loop` resumes the loop; `fatal` carries the exit code the
+/// caller must return immediately (stats already printed where the
+/// original inline code printed them).
+const ReadErrorOutcome = union(enum) {
+    continue_loop,
+    fatal: u8,
+};
+
+/// The pair of files dd copies between, returned by runDd_openFiles.
+const DdFiles = struct {
+    input_file: std.Io.File,
+    output_file: std.Io.File,
+};
+
+/// Result of opening the dd input/output files: either both files or
+/// an exit code to return. Lets runDd keep the branching while the
+/// straight-line open logic lives in the helper.
+const DdOpenResult = union(enum) {
+    files: DdFiles,
+    fatal: u8,
+};
+
+/// Invariant context shared by every per-block write helper. Bundling
+/// these together keeps the helper signatures and the copy-loop call
+/// sites short; `stats` is a mutable pointer so increments persist.
+const DdWriteCtx = struct {
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    output_file: std.Io.File,
+    status: StatusLevel,
+    stats: *DdStats,
+};
+
+/// The input and output working buffers dd always needs. The caller
+/// owns freeing them.
+const DdBuffers = struct {
+    in_buf: []u8,
+    out_buf: []u8,
+};
+
+/// Result of allocating the dd working buffers: the buffers or a fatal
+/// exit code after printing the allocation-failure message.
+const DdBuffersResult = union(enum) {
+    buffers: DdBuffers,
+    fatal: u8,
+};
+
+/// Result of allocating the optional conv=block conversion buffer: the
+/// optional buffer (null when not needed) or a fatal exit code.
+const DdCbsResult = union(enum) {
+    buffer: ?[]u8,
+    fatal: u8,
+};
+
+/// Immutable per-run parameters of the copy: the open input file, the
+/// working buffers, the effective block sizes, and the chosen copy
+/// mode. Bundling these keeps the copy-loop and finish call sites short.
+const DdPlan = struct {
+    input_file: std.Io.File,
+    in_buf: []u8,
+    out_buf: []u8,
+    cbs_buf: ?[]u8,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    simple_copy: bool,
+};
+
+/// Mutable position state carried across copy-loop iterations and into
+/// the tail-flush phase: the output buffer fill level, the conv=block
+/// record position, and the conv=unblock record position.
+const DdPositions = struct {
+    out_pos: usize = 0, // tiger:allow:usize-arch byte position uses slice index type
+    cbs_pos: usize = 0, // tiger:allow:usize-arch byte position uses slice index type
+    unblock_pos: usize = 0, // tiger:allow:usize-arch byte position uses slice index type
+};
+
+/// Validate mutually-exclusive conversion combinations and the cbs
+/// requirement for block/unblock. Returns 0 when the config is valid,
+/// or a misuse exit code after printing the matching error message.
+fn runDd_validateConfig(allocator: Allocator, stderr: *std.Io.Writer, config: *const DdConfig) u8 {
+    std.debug.assert(@intFromBool(config.conv_lcase) <= 1);
+    std.debug.assert(@intFromBool(config.conv_block) <= 1);
+
+    // lcase and ucase are mutually exclusive
+    if (config.conv_lcase and config.conv_ucase) {
+        const message = "conv=lcase and conv=ucase are mutually exclusive";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // ascii, ebcdic, and ibm are mutually exclusive
+    const charset_count = @as(u8, @intFromBool(config.conv_ascii)) +
+        @as(u8, @intFromBool(config.conv_ebcdic)) +
+        @as(u8, @intFromBool(config.conv_ibm));
+    if (charset_count > 1) {
+        const message = "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // block and unblock are mutually exclusive
+    if (config.conv_block and config.conv_unblock) {
+        const message = "conv=block and conv=unblock are mutually exclusive";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // block and unblock require cbs
+    if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
+        const message = "conv=block/unblock requires cbs operand";
+        common.printErrorWithProgram(allocator, stderr, "dd", "{s}", .{message});
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Allocate the input and output working buffers. Returns the buffers
+/// or a fatal exit code after printing the allocation-failure message.
+/// The caller registers the free defers.
+fn runDd_allocBuffers(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) DdBuffersResult {
+    std.debug.assert(ibs > 0);
+    std.debug.assert(obs > 0);
+
+    const in_buf = allocator.alloc(u8, ibs) catch {
+        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate input buffer", .{});
+        return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+    };
+    const out_buf = allocator.alloc(u8, obs) catch {
+        allocator.free(in_buf);
+        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate output buffer", .{});
+        return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+    };
+    return .{ .buffers = .{ .in_buf = in_buf, .out_buf = out_buf } };
+}
+
+/// Open the input and output files per the config. Returns the opened
+/// pair or a fatal exit code (after printing the OS error). The caller
+/// owns closing the files when paths were supplied.
+fn runDd_openFiles(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    config: *const DdConfig,
+) DdOpenResult {
+    std.debug.assert(@intFromBool(config.conv_notrunc) <= 1);
+    std.debug.assert(@intFromBool(config.help) <= 1);
+
+    // Open input
+    const input_file: std.Io.File = if (config.input_file) |path| blk: {
+        break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+            const message = common.posixErrorString(err);
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, message });
+            return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+        };
+    } else std.Io.File.stdin();
+
+    // Open output
+    const output_file: std.Io.File = if (config.output_file) |path| blk: {
+        const flags: std.Io.File.CreateFlags = .{
+            .truncate = !config.conv_notrunc,
+        };
+        break :blk std.Io.Dir.cwd().createFile(io, path, flags) catch |err| {
+            // Close the already-opened input file on output failure to
+            // match the original runDd defer cleanup order.
+            if (config.input_file != null) input_file.close(io);
+            const message = common.posixErrorString(err);
+            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, message });
+            return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+        };
+    } else std.Io.File.stdout();
+
+    return .{ .files = .{ .input_file = input_file, .output_file = output_file } };
+}
+
+/// Skip `skip_blocks` ibs-sized blocks at the start of the input by
+/// reading and discarding them. Returns 0 on success (including early
+/// EOF), or a fatal exit code. Skip errors do NOT print stats.
+fn runDd_skipInput(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    input_file: std.Io.File,
+    in_buf: []u8,
+    skip_blocks: usize, // tiger:allow:usize-arch block count uses slice index type
+) u8 {
+    std.debug.assert(skip_blocks > 0);
+    std.debug.assert(in_buf.len > 0);
+
+    var skipped: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+    while (skipped < skip_blocks) : (skipped += 1) {
+        _ = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
+            error.EndOfStream => break, // EOF before all skips done
+            else => {
+                const message = common.posixErrorString(err);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr,
+                    "dd",
+                    "error skipping input: {s}",
+                    .{message},
+                );
+                return @intFromEnum(common.ExitCode.general_error);
+            },
+        };
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Seek the output forward by `seek_blocks` obs-sized blocks. Falls
+/// back to writing zero blocks when the file cannot seek (e.g. stdout).
+/// Returns 0 on success, or a fatal exit code. Seek errors do NOT
+/// print stats.
+fn runDd_seekOutput(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    output_file: std.Io.File,
+    out_buf: []u8,
+    seek_blocks: usize, // tiger:allow:usize-arch block count uses slice index type
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) u8 {
+    std.debug.assert(seek_blocks > 0);
+    std.debug.assert(obs > 0);
+
+    const seek_bytes = seek_blocks * obs;
+    io.vtable.fileSeekTo(io.userdata, output_file, seek_bytes) catch {
+        // If seeking fails (e.g., stdout), try writing zeros
+        var seeked: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
+        @memset(out_buf, 0);
+        while (seeked < seek_blocks) : (seeked += 1) {
+            output_file.writeStreamingAll(io, out_buf) catch |write_err| {
+                const message = common.posixErrorString(write_err);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr,
+                    "dd",
+                    "error seeking output: {s}",
+                    .{message},
+                );
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        }
+    };
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Apply the skip= and seek= operands, in that order, by delegating to
+/// the skip and seek helpers. Returns 0 when both succeed (or are not
+/// requested), or the first fatal exit code encountered.
+fn runDd_skipAndSeek(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    files: DdFiles,
+    bufs: DdBuffers,
+    config: *const DdConfig,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) u8 {
+    std.debug.assert(bufs.in_buf.len > 0);
+    std.debug.assert(bufs.out_buf.len == obs);
+
+    if (config.skip > 0) {
+        const input = files.input_file;
+        const code = runDd_skipInput(allocator, io, stderr, input, bufs.in_buf, config.skip);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
+    }
+    if (config.seek > 0) {
+        const output = files.output_file;
+        const out_buf = bufs.out_buf;
+        const code = runDd_seekOutput(allocator, io, stderr, output, out_buf, config.seek, obs);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Allocate the conv=block conversion buffer when conv=block is active.
+/// Returns the optional buffer (null when not needed) or a fatal exit
+/// code after printing the allocation-failure message.
+fn runDd_allocCbs(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    need_cbs: bool,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+) DdCbsResult {
+    std.debug.assert(@intFromBool(need_cbs) <= 1);
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
+
+    if (!need_cbs) return .{ .buffer = null };
+    const cbs_buf = allocator.alloc(u8, cbs) catch {
+        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate cbs buffer", .{});
+        return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+    };
+    return .{ .buffer = cbs_buf };
+}
+
+/// Handle a non-EOF read error in the main copy loop. With conv=noerror
+/// this prints the error, optionally NUL-fills/accounts a synced block
+/// (writing it in simple-copy mode), and asks the caller to continue.
+/// Otherwise it prints the error and stats and returns a fatal code.
+fn runDd_handleReadError(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    in_buf: []u8,
+    ibs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    simple_copy: bool,
+    blocks_read: *usize, // tiger:allow:usize-arch block counter uses slice index type
+    err: anyerror,
+) ReadErrorOutcome {
+    std.debug.assert(in_buf.len > 0);
+    std.debug.assert(ibs > 0);
+
+    if (config.conv_noerror) {
+        // Continue after read errors
+        const read_message = common.posixErrorString(err);
+        common.printErrorWithProgram(
+            ctx.allocator,
+            ctx.stderr,
+            "dd",
+            "read error: {s}",
+            .{read_message},
+        );
+        if (config.conv_sync) {
+            // Fill with NULs when sync is specified
+            @memset(in_buf, 0);
+            // Count as a full block
+            ctx.stats.full_blocks_in += 1;
+            blocks_read.* += 1;
+            if (simple_copy) {
+                // Write the NUL-filled block
+                ctx.output_file.writeStreamingAll(ctx.io, in_buf) catch |werr| {
+                    const write_message = common.posixErrorString(werr);
+                    common.printErrorWithProgram(
+                        ctx.allocator,
+                        ctx.stderr,
+                        "dd",
+                        "write error: {s}",
+                        .{write_message},
+                    );
+                    return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+                };
+                ctx.stats.full_blocks_out += 1;
+                ctx.stats.bytes_copied += ibs;
+            }
+        }
+        return .continue_loop;
+    }
+    const read_message = common.posixErrorString(err);
+    common.printErrorWithProgram(
+        ctx.allocator,
+        ctx.stderr,
+        "dd",
+        "read error: {s}",
+        .{read_message},
+    );
+    printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+    return .{ .fatal = @intFromEnum(common.ExitCode.general_error) };
+}
+
+/// Report a write failure the way every copy-loop and flush write does:
+/// print the OS error, emit transfer stats, and yield the general-error
+/// exit code. Centralizes the repeated catch arm without changing it.
+fn runDd_writeError(ctx: *const DdWriteCtx, err: anyerror) u8 {
+    std.debug.assert(@intFromBool(ctx.status == .none) <= 1);
+    std.debug.assert(@intFromEnum(common.ExitCode.general_error) == 1);
+
+    const message = common.posixErrorString(err);
+    common.printErrorWithProgram(ctx.allocator, ctx.stderr, "dd", "write error: {s}", .{message});
+    printStats(ctx.io, ctx.stderr, ctx.stats.*, ctx.status);
+    return @intFromEnum(common.ExitCode.general_error);
+}
+
+/// Process one converted data block under conv=block: emit cbs-sized,
+/// fill-padded records on each newline and truncate overlong records.
+/// `cbs_pos` tracks the position within the in-progress record across
+/// blocks. Returns 0 to continue, or a fatal code (stats printed).
+fn runDd_writeBlockRecord(
+    ctx: *const DdWriteCtx,
+    record_buf: []u8,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    fillchar: u8,
+    data: []const u8,
+    cbs_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(record_buf.len == cbs);
+    std.debug.assert(cbs_pos.* <= cbs);
+
+    for (data) |byte| {
+        if (byte == '\n') {
+            // End of record: pad with fill character to cbs and write
+            if (cbs_pos.* < cbs) {
+                @memset(record_buf[cbs_pos.*..], fillchar);
+            }
+            ctx.output_file.writeStreamingAll(ctx.io, record_buf[0..cbs]) catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.stats.bytes_copied += cbs;
+            ctx.stats.full_blocks_out += 1;
+            cbs_pos.* = 0;
+        } else {
+            // Accumulate byte into record (truncate if > cbs)
+            if (cbs_pos.* < cbs) {
+                record_buf[cbs_pos.*] = byte;
+                cbs_pos.* += 1;
+            }
+        }
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Process one converted data block under conv=unblock: split it into
+/// cbs-sized records, strip trailing spaces, and emit each with a
+/// newline. `unblock_pos` tracks the partial record across blocks.
+/// Returns 0 to continue, or a fatal code (stats printed).
+fn runDd_writeUnblockRecords(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    data: []const u8,
+    unblock_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(cbs <= out_buf.len);
+    std.debug.assert(unblock_pos.* <= cbs);
+
+    // Process data in cbs-sized chunks
+    var data_pos: usize = 0; // tiger:allow:usize-arch byte position uses slice index type
+    while (data_pos < data.len) {
+        const remaining_in_record = cbs - unblock_pos.*;
+        const remaining_in_data = data.len - data_pos;
+        const to_consume = @min(remaining_in_record, remaining_in_data);
+
+        // Copy bytes into output buffer temporarily
+        @memcpy(out_buf[unblock_pos.*..][0..to_consume], data[data_pos..][0..to_consume]);
+        unblock_pos.* += to_consume;
+        data_pos += to_consume;
+
+        if (unblock_pos.* == cbs) {
+            // Complete record: strip trailing spaces and add newline
+            var end: usize = cbs; // tiger:allow:usize-arch byte position uses slice index type
+            while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
+            ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..end]) catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.output_file.writeStreamingAll(ctx.io, "\n") catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.stats.bytes_copied += end + 1;
+            ctx.stats.full_blocks_out += 1;
+            unblock_pos.* = 0;
+        }
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Write one converted block in simple-copy mode: each input block is
+/// written directly, with conv=osync padding a partial final block to
+/// obs with NULs. Updates stats. Returns 0 to continue, or a fatal
+/// code (stats printed).
+fn runDd_writeSimpleBlock(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    data: []const u8,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    conv_osync: bool,
+) u8 {
+    std.debug.assert(obs != 0);
+    std.debug.assert(out_buf.len == obs);
+
+    if (conv_osync and data.len < obs) {
+        // Pad partial block to obs size with NULs
+        @memcpy(out_buf[0..data.len], data);
+        @memset(out_buf[data.len..obs], 0);
+        ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..obs]) catch |err| {
+            return runDd_writeError(ctx, err);
+        };
+        ctx.stats.bytes_copied += obs;
+        ctx.stats.full_blocks_out += 1;
+    } else {
+        ctx.output_file.writeStreamingAll(ctx.io, data) catch |err| {
+            return runDd_writeError(ctx, err);
+        };
+        ctx.stats.bytes_copied += data.len;
+        if (data.len == obs) {
+            ctx.stats.full_blocks_out += 1;
+        } else {
+            ctx.stats.partial_blocks_out += 1;
+        }
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Write one converted block in buffered mode: accumulate into out_buf
+/// and flush whenever it fills to obs. `out_pos` carries the buffer
+/// fill level across blocks. Returns 0 to continue, or a fatal code
+/// (stats printed).
+fn runDd_writeBufferedBlock(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    data: []const u8,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    out_pos: *usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(obs != 0);
+    std.debug.assert(out_pos.* < obs);
+
+    var data_pos: usize = 0; // tiger:allow:usize-arch byte position uses slice index type
+    while (data_pos < data.len) {
+        const space_in_out = obs - out_pos.*;
+        const to_copy = @min(space_in_out, data.len - data_pos);
+        @memcpy(out_buf[out_pos.*..][0..to_copy], data[data_pos..][0..to_copy]);
+        out_pos.* += to_copy;
+        data_pos += to_copy;
+
+        if (out_pos.* == obs) {
+            // Output buffer is full, write it
+            ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..obs]) catch |err| {
+                return runDd_writeError(ctx, err);
+            };
+            ctx.stats.full_blocks_out += 1;
+            ctx.stats.bytes_copied += obs;
+            out_pos.* = 0;
+        }
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the conv=block tail: a partial record left without a trailing
+/// newline is fill-padded to cbs and written. Returns 0, or a fatal
+/// code (stats printed). Caller guards with conv_block and cbs_pos > 0.
+fn runDd_flushTails_block(
+    ctx: *const DdWriteCtx,
+    record_buf: []u8,
+    cbs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    cbs_pos: usize, // tiger:allow:usize-arch byte position uses slice index type
+    fillchar: u8,
+) u8 {
+    std.debug.assert(record_buf.len == cbs);
+    std.debug.assert(cbs_pos > 0);
+
+    @memset(record_buf[cbs_pos..], fillchar);
+    ctx.output_file.writeStreamingAll(ctx.io, record_buf[0..cbs]) catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    ctx.stats.bytes_copied += cbs;
+    ctx.stats.partial_blocks_out += 1;
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the conv=unblock tail: the partial record is space-stripped
+/// and written with a trailing newline. Returns 0, or a fatal code
+/// (stats printed). Caller guards with conv_unblock and unblock_pos > 0.
+fn runDd_flushTails_unblock(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    unblock_pos: usize, // tiger:allow:usize-arch byte position uses slice index type
+) u8 {
+    std.debug.assert(unblock_pos > 0);
+    std.debug.assert(unblock_pos <= out_buf.len);
+
+    var end: usize = unblock_pos; // tiger:allow:usize-arch byte position uses slice index type
+    while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
+    ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..end]) catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    ctx.output_file.writeStreamingAll(ctx.io, "\n") catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    ctx.stats.bytes_copied += end + 1;
+    ctx.stats.partial_blocks_out += 1;
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Flush the generic output buffer tail (non-simple, non-block,
+/// non-unblock): conv=osync pads the final block to obs. Returns 0, or
+/// a fatal code (stats printed). Caller guards with out_pos > 0.
+fn runDd_flushTails_buffer(
+    ctx: *const DdWriteCtx,
+    out_buf: []u8,
+    obs: usize, // tiger:allow:usize-arch byte count uses slice index type
+    out_pos: usize, // tiger:allow:usize-arch byte position uses slice index type
+    conv_osync: bool,
+) u8 {
+    std.debug.assert(out_pos > 0);
+    std.debug.assert(out_pos <= obs);
+
+    const write_len = if (conv_osync) blk: {
+        // Pad the final block to obs size with NULs
+        @memset(out_buf[out_pos..obs], 0);
+        break :blk obs;
+    } else out_pos;
+    ctx.output_file.writeStreamingAll(ctx.io, out_buf[0..write_len]) catch |err| {
+        return runDd_writeError(ctx, err);
+    };
+    if (conv_osync) {
+        ctx.stats.full_blocks_out += 1;
+        ctx.stats.bytes_copied += obs;
+    } else {
+        ctx.stats.partial_blocks_out += 1;
+        ctx.stats.bytes_copied += out_pos;
+    }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Execute the dd copy operation. Handles the argument-level outcomes
+/// (unsupported operand, parse errors, --help, --version) here and
+/// delegates the actual copy to runDd_copy once the config is valid.
+pub fn runDd(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) anyerror!u8 {
     if (findUnsupportedOperand(args)) |name| {
-        common.printErrorWithProgram(allocator, stderr, "dd", "unsupported operand '{s}' (not implemented)", .{name});
+        const message = "unsupported operand '{s}' (not implemented)";
+        common.printErrorWithProgram(allocator, stderr, "dd", message, .{name});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
@@ -507,132 +1148,100 @@ pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // lcase and ucase are mutually exclusive
-    if (config.conv_lcase and config.conv_ucase) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=lcase and conv=ucase are mutually exclusive", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
+    return runDd_copy(allocator, io, stderr, &config);
+}
 
-    // ascii, ebcdic, and ibm are mutually exclusive
-    const charset_count = @as(u8, @intFromBool(config.conv_ascii)) +
-        @as(u8, @intFromBool(config.conv_ebcdic)) +
-        @as(u8, @intFromBool(config.conv_ibm));
-    if (charset_count > 1) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=ascii, conv=ebcdic, and conv=ibm are mutually exclusive", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
+/// Set up the copy (validate, size, allocate, open, skip, seek), then
+/// run the copy loop and flush the tails. Owns every buffer/file defer
+/// so the lifecycle stays in one scope; returns the final exit code.
+fn runDd_copy(
+    allocator: Allocator,
+    io: std.Io,
+    stderr: *std.Io.Writer,
+    config: *const DdConfig,
+) u8 {
+    std.debug.assert(@intFromBool(config.conv_block) <= 1);
+    std.debug.assert(@intFromBool(config.conv_unblock) <= 1);
 
-    // block and unblock are mutually exclusive
-    if (config.conv_block and config.conv_unblock) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=block and conv=unblock are mutually exclusive", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // block and unblock require cbs
-    if ((config.conv_block or config.conv_unblock) and config.cbs == null) {
-        common.printErrorWithProgram(allocator, stderr, "dd", "conv=block/unblock requires cbs operand", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
+    const validate_code = runDd_validateConfig(allocator, stderr, config);
+    if (validate_code != @intFromEnum(common.ExitCode.success)) return validate_code;
 
     // Determine effective block sizes
     const ibs = if (config.bs) |bs| bs else config.ibs;
     const obs = if (config.bs) |bs| bs else config.obs;
-
     if (ibs == 0 or obs == 0) {
         common.printErrorWithProgram(allocator, stderr, "dd", "block size cannot be zero", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Allocate input and output buffers
-    const in_buf = allocator.alloc(u8, ibs) catch {
-        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate input buffer", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+    const bufs = switch (runDd_allocBuffers(allocator, stderr, ibs, obs)) {
+        .fatal => |code| return code,
+        .buffers => |b| b,
     };
-    defer allocator.free(in_buf);
+    defer allocator.free(bufs.in_buf);
+    defer allocator.free(bufs.out_buf);
 
-    const out_buf = allocator.alloc(u8, obs) catch {
-        common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate output buffer", .{});
-        return @intFromEnum(common.ExitCode.general_error);
+    const files = switch (runDd_openFiles(allocator, io, stderr, config)) {
+        .fatal => |code| return code,
+        .files => |f| f,
     };
-    defer allocator.free(out_buf);
+    defer if (config.input_file != null) files.input_file.close(io);
+    defer if (config.output_file != null) files.output_file.close(io);
 
-    // Open input
-    const input_file: std.Io.File = if (config.input_file) |path| blk: {
-        break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    } else std.Io.File.stdin();
-    defer if (config.input_file != null) input_file.close(io);
+    const ss_code = runDd_skipAndSeek(allocator, io, stderr, files, bufs, config, obs);
+    if (ss_code != @intFromEnum(common.ExitCode.success)) return ss_code;
 
-    // Open output
-    const output_file: std.Io.File = if (config.output_file) |path| blk: {
-        const flags: std.Io.File.CreateFlags = .{
-            .truncate = !config.conv_notrunc,
-        };
-        break :blk std.Io.Dir.cwd().createFile(io, path, flags) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    } else std.Io.File.stdout();
-    defer if (config.output_file != null) output_file.close(io);
-
-    // Skip input blocks
-    if (config.skip > 0) {
-        var skipped: usize = 0;
-        while (skipped < config.skip) : (skipped += 1) {
-            _ = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
-                error.EndOfStream => break, // EOF before all skips done
-                else => {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "error skipping input: {s}", .{common.posixErrorString(err)});
-                    return @intFromEnum(common.ExitCode.general_error);
-                },
-            };
-        }
-    }
-
-    // Seek output blocks
-    if (config.seek > 0) {
-        const seek_bytes = config.seek * obs;
-        io.vtable.fileSeekTo(io.userdata, output_file, seek_bytes) catch {
-            // If seeking fails (e.g., stdout), try writing zeros
-            var seeked: usize = 0;
-            @memset(out_buf, 0);
-            while (seeked < config.seek) : (seeked += 1) {
-                output_file.writeStreamingAll(io, out_buf) catch |write_err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "error seeking output: {s}", .{common.posixErrorString(write_err)});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-        };
-    }
-
-    // Allocate block/unblock conversion buffer if needed
     const cbs = config.cbs orelse 0;
-    var cbs_buf: ?[]u8 = null;
-    var cbs_pos: usize = 0;
-    if (config.conv_block) {
-        cbs_buf = allocator.alloc(u8, cbs) catch {
-            common.printErrorWithProgram(allocator, stderr, "dd", "failed to allocate cbs buffer", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-    }
+    const cbs_buf = switch (runDd_allocCbs(allocator, stderr, config.conv_block, cbs)) {
+        .fatal => |code| return code,
+        .buffer => |b| b,
+    };
     defer if (cbs_buf) |b| allocator.free(b);
 
-    var stats = DdStats{
-        .start_ns = std.Io.Timestamp.now(io, .real).nanoseconds,
+    var stats = DdStats{ .start_ns = std.Io.Timestamp.now(io, .real).nanoseconds };
+    const ctx = DdWriteCtx{
+        .allocator = allocator,
+        .io = io,
+        .stderr = stderr,
+        .output_file = files.output_file,
+        .status = config.status,
+        .stats = &stats,
     };
+    const plan = DdPlan{
+        .input_file = files.input_file,
+        .in_buf = bufs.in_buf,
+        .out_buf = bufs.out_buf,
+        .cbs_buf = cbs_buf,
+        .ibs = ibs,
+        .obs = obs,
+        .cbs = cbs,
+        // Use simple copy when bs= is set and no block/unblock conversion.
+        .simple_copy = config.bs != null and !config.conv_block and !config.conv_unblock,
+    };
+    var positions = DdPositions{};
 
-    // Use simple copy mode when bs= is set and no block/unblock conversion
-    const simple_copy = config.bs != null and !config.conv_block and !config.conv_unblock;
+    const loop_code = runDd_copyLoop(&ctx, config, &plan, &positions);
+    if (loop_code != @intFromEnum(common.ExitCode.success)) return loop_code;
 
-    // Main copy loop
-    var out_pos: usize = 0; // Current position in output buffer (for non-simple mode)
-    var blocks_read: usize = 0;
+    return runDd_finish(&ctx, config, &plan, &positions);
+}
 
-    // Unblock position tracker: position within current cbs-sized record
-    var unblock_pos: usize = 0;
+/// The main dd copy loop: read a block, account it, sync-pad, convert,
+/// and dispatch to the matching per-mode write helper. Position state
+/// is carried via pointers so the tail-flush phase can finish records.
+/// Returns 0 when the loop completes, or a fatal exit code.
+fn runDd_copyLoop(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    positions: *DdPositions,
+) u8 {
+    std.debug.assert(plan.in_buf.len == plan.ibs);
+    std.debug.assert(plan.out_buf.len == plan.obs);
 
+    const in_buf = plan.in_buf;
+    const input_file = plan.input_file;
+    var blocks_read: usize = 0; // tiger:allow:usize-arch block counter uses slice index type
     while (true) {
         // Check count limit
         if (config.count) |count| {
@@ -640,238 +1249,143 @@ pub fn runDd(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
         }
 
         // Read one input block
-        const bytes_read = input_file.readStreaming(io, &.{in_buf}) catch |err| switch (err) {
+        const bytes_read = input_file.readStreaming(ctx.io, &.{in_buf}) catch |err| switch (err) {
             error.EndOfStream => break, // EOF
-            else => {
-                if (config.conv_noerror) {
-                    // Continue after read errors
-                    common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
-                    if (config.conv_sync) {
-                        // Fill with NULs when sync is specified
-                        @memset(in_buf, 0);
-                        // Count as a full block
-                        stats.full_blocks_in += 1;
-                        blocks_read += 1;
-                        if (simple_copy) {
-                            // Write the NUL-filled block
-                            output_file.writeStreamingAll(io, in_buf) catch |werr| {
-                                common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(werr)});
-                                return @intFromEnum(common.ExitCode.general_error);
-                            };
-                            stats.full_blocks_out += 1;
-                            stats.bytes_copied += ibs;
-                        }
-                    }
-                    continue;
-                }
-                common.printErrorWithProgram(allocator, stderr, "dd", "read error: {s}", .{common.posixErrorString(err)});
-                printStats(io, stderr, stats, config.status);
-                return @intFromEnum(common.ExitCode.general_error);
+            else => switch (runDd_handleReadError(
+                ctx,
+                config,
+                in_buf,
+                plan.ibs,
+                plan.simple_copy,
+                &blocks_read,
+                err,
+            )) {
+                .continue_loop => continue,
+                .fatal => |code| return code,
             },
         };
 
         blocks_read += 1;
 
         // Track input block statistics
-        if (bytes_read == ibs) {
-            stats.full_blocks_in += 1;
+        if (bytes_read == plan.ibs) {
+            ctx.stats.full_blocks_in += 1;
         } else {
-            stats.partial_blocks_in += 1;
+            ctx.stats.partial_blocks_in += 1;
         }
 
         // Get the data to process
         var data = in_buf[0..bytes_read];
 
-        // Apply sync padding if needed
-        // GNU dd pads with spaces when conv=block or conv=unblock is active,
-        // and with NUL bytes otherwise.
-        if (config.conv_sync and bytes_read < ibs) {
+        // Apply sync padding if needed. GNU dd pads with spaces when
+        // conv=block or conv=unblock is active, and with NUL otherwise.
+        if (config.conv_sync and bytes_read < plan.ibs) {
             const pad_byte: u8 = if (config.conv_block or config.conv_unblock) ' ' else 0;
             @memset(in_buf[bytes_read..], pad_byte);
-            data = in_buf[0..ibs];
+            data = in_buf[0..plan.ibs];
         }
 
         // Apply conversions (swab, charset, case)
-        applyConversions(data, config);
+        applyConversions(data, config.*);
 
-        // Handle conv=block: convert newline-terminated records to fixed-size
-        if (config.conv_block) {
-            const record_buf = cbs_buf.?;
-            for (data) |byte| {
-                if (byte == '\n') {
-                    // End of record: pad with fill character to cbs and write
-                    if (cbs_pos < cbs) {
-                        @memset(record_buf[cbs_pos..], config.fillchar);
-                    }
-                    output_file.writeStreamingAll(io, record_buf[0..cbs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stats.bytes_copied += cbs;
-                    stats.full_blocks_out += 1;
-                    cbs_pos = 0;
-                } else {
-                    // Accumulate byte into record (truncate if > cbs)
-                    if (cbs_pos < cbs) {
-                        record_buf[cbs_pos] = byte;
-                        cbs_pos += 1;
-                    }
-                }
-            }
-            continue;
-        }
-
-        // Handle conv=unblock: convert fixed-size records to newline-terminated
-        if (config.conv_unblock) {
-            // Process data in cbs-sized chunks
-            var data_pos: usize = 0;
-            while (data_pos < data.len) {
-                const remaining_in_record = cbs - unblock_pos;
-                const remaining_in_data = data.len - data_pos;
-                const to_consume = @min(remaining_in_record, remaining_in_data);
-
-                // Copy bytes into output buffer temporarily
-                @memcpy(out_buf[unblock_pos..][0..to_consume], data[data_pos..][0..to_consume]);
-                unblock_pos += to_consume;
-                data_pos += to_consume;
-
-                if (unblock_pos == cbs) {
-                    // Complete record: strip trailing spaces and add newline
-                    var end: usize = cbs;
-                    while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
-                    output_file.writeStreamingAll(io, out_buf[0..end]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    output_file.writeStreamingAll(io, "\n") catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stats.bytes_copied += end + 1;
-                    stats.full_blocks_out += 1;
-                    unblock_pos = 0;
-                }
-            }
-            continue;
-        }
-
-        if (simple_copy) {
-            // Simple copy: write each input block directly as output
-            if (config.conv_osync and data.len < obs) {
-                // Pad partial block to obs size with NULs
-                @memcpy(out_buf[0..data.len], data);
-                @memset(out_buf[data.len..obs], 0);
-                output_file.writeStreamingAll(io, out_buf[0..obs]) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                    printStats(io, stderr, stats, config.status);
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-                stats.bytes_copied += obs;
-                stats.full_blocks_out += 1;
-            } else {
-                output_file.writeStreamingAll(io, data) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                    printStats(io, stderr, stats, config.status);
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-                stats.bytes_copied += data.len;
-                if (data.len == obs) {
-                    stats.full_blocks_out += 1;
-                } else {
-                    stats.partial_blocks_out += 1;
-                }
-            }
-        } else {
-            // Buffered copy: accumulate data in output buffer, write when full
-            var data_pos: usize = 0;
-            while (data_pos < data.len) {
-                const space_in_out = obs - out_pos;
-                const to_copy = @min(space_in_out, data.len - data_pos);
-                @memcpy(out_buf[out_pos..][0..to_copy], data[data_pos..][0..to_copy]);
-                out_pos += to_copy;
-                data_pos += to_copy;
-
-                if (out_pos == obs) {
-                    // Output buffer is full, write it
-                    output_file.writeStreamingAll(io, out_buf[0..obs]) catch |err| {
-                        common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-                        printStats(io, stderr, stats, config.status);
-                        return @intFromEnum(common.ExitCode.general_error);
-                    };
-                    stats.full_blocks_out += 1;
-                    stats.bytes_copied += obs;
-                    out_pos = 0;
-                }
-            }
-        }
+        const code = runDd_copyLoop_dispatch(ctx, config, plan, data, positions);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Dispatch one converted block to the matching write mode, mutating
+/// the carried position state. Returns 0 to continue the loop, or a
+/// fatal exit code. Branch order matches the original inline dispatch.
+fn runDd_copyLoop_dispatch(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    data: []u8,
+    positions: *DdPositions,
+) u8 {
+    std.debug.assert(plan.out_buf.len == plan.obs);
+    std.debug.assert(data.len <= plan.in_buf.len);
+
+    if (config.conv_block) {
+        return runDd_writeBlockRecord(
+            ctx,
+            plan.cbs_buf.?,
+            plan.cbs,
+            config.fillchar,
+            data,
+            &positions.cbs_pos,
+        );
+    }
+    if (config.conv_unblock) {
+        return runDd_writeUnblockRecords(ctx, plan.out_buf, plan.cbs, data, &positions.unblock_pos);
+    }
+    if (plan.simple_copy) {
+        return runDd_writeSimpleBlock(ctx, plan.out_buf, data, plan.obs, config.conv_osync);
+    }
+    return runDd_writeBufferedBlock(ctx, plan.out_buf, data, plan.obs, &positions.out_pos);
+}
+
+/// Flush the conversion tails left after the copy loop, fsync the
+/// output when requested, and print final transfer statistics. Returns
+/// success, or a fatal exit code if a tail write or fsync fails.
+fn runDd_finish(
+    ctx: *const DdWriteCtx,
+    config: *const DdConfig,
+    plan: *const DdPlan,
+    positions: *const DdPositions,
+) u8 {
+    std.debug.assert(plan.out_buf.len == plan.obs);
+    std.debug.assert(@intFromBool(plan.simple_copy) <= 1);
 
     // Flush remaining record for conv=block (partial record without newline)
-    if (config.conv_block and cbs_pos > 0) {
-        const record_buf = cbs_buf.?;
-        @memset(record_buf[cbs_pos..], config.fillchar);
-        output_file.writeStreamingAll(io, record_buf[0..cbs]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        stats.bytes_copied += cbs;
-        stats.partial_blocks_out += 1;
+    if (config.conv_block and positions.cbs_pos > 0) {
+        const code = runDd_flushTails_block(
+            ctx,
+            plan.cbs_buf.?,
+            plan.cbs,
+            positions.cbs_pos,
+            config.fillchar,
+        );
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
     // Flush remaining data for conv=unblock (partial record)
-    if (config.conv_unblock and unblock_pos > 0) {
-        var end: usize = unblock_pos;
-        while (end > 0 and out_buf[end - 1] == ' ') : (end -= 1) {}
-        output_file.writeStreamingAll(io, out_buf[0..end]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        output_file.writeStreamingAll(io, "\n") catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        stats.bytes_copied += end + 1;
-        stats.partial_blocks_out += 1;
+    if (config.conv_unblock and positions.unblock_pos > 0) {
+        const code = runDd_flushTails_unblock(ctx, plan.out_buf, positions.unblock_pos);
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
     // Flush remaining data in output buffer (non-simple mode, non-block/unblock)
-    if (!simple_copy and !config.conv_block and !config.conv_unblock and out_pos > 0) {
-        const write_len = if (config.conv_osync) blk: {
-            // Pad the final block to obs size with NULs
-            @memset(out_buf[out_pos..obs], 0);
-            break :blk obs;
-        } else out_pos;
-        output_file.writeStreamingAll(io, out_buf[0..write_len]) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "write error: {s}", .{common.posixErrorString(err)});
-            printStats(io, stderr, stats, config.status);
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        if (config.conv_osync) {
-            stats.full_blocks_out += 1;
-            stats.bytes_copied += obs;
-        } else {
-            stats.partial_blocks_out += 1;
-            stats.bytes_copied += out_pos;
-        }
+    const buffered_mode = !plan.simple_copy and !config.conv_block and !config.conv_unblock;
+    if (buffered_mode and positions.out_pos > 0) {
+        const code = runDd_flushTails_buffer(
+            ctx,
+            plan.out_buf,
+            plan.obs,
+            positions.out_pos,
+            config.conv_osync,
+        );
+        if (code != @intFromEnum(common.ExitCode.success)) return code;
     }
 
     // fsync the output file if requested
     if (config.conv_fsync) {
-        output_file.sync(io) catch |err| {
-            common.printErrorWithProgram(allocator, stderr, "dd", "fsync error: {s}", .{common.posixErrorString(err)});
+        ctx.output_file.sync(ctx.io) catch |err| {
+            const message = common.posixErrorString(err);
+            common.printErrorWithProgram(
+                ctx.allocator,
+                ctx.stderr,
+                "dd",
+                "fsync error: {s}",
+                .{message},
+            );
             return @intFromEnum(common.ExitCode.general_error);
         };
     }
 
     // Print statistics
-    printStats(io, stderr, stats, config.status);
-
+    printStats(ctx.io, ctx.stderr, ctx.stats.*, config.status);
     return @intFromEnum(common.ExitCode.success);
 }
 
