@@ -103,6 +103,7 @@ fn isObsoleteNumArg(arg: []const u8) bool {
 pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     const expanded_args = try expandObsoleteArgs(allocator, args);
     defer allocator.free(expanded_args);
+    std.debug.assert(expanded_args.len >= args.len); // expandObsoleteArgs never shrinks.
 
     const parsed_args = common.argparse.ArgParser.parseOrExit(HeadArgs, allocator, expanded_args, "head", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
@@ -120,32 +121,12 @@ pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
     }
 
     // Parse line count, handling negative values (e.g., -n -3 means "all but last 3")
-    var line_count: u64 = DEFAULT_LINE_COUNT;
-    var negative_count: u64 = 0;
-    if (parsed_args.lines) |lines_str| {
-        if (lines_str.len > 0 and lines_str[0] == '-') {
-            // Negative: output all but last N lines
-            negative_count = std.fmt.parseUnsigned(u64, lines_str[1..], 10) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines: '{s}'", .{lines_str});
-                return @intFromEnum(common.ExitCode.misuse);
-            };
-        } else {
-            line_count = std.fmt.parseUnsigned(u64, lines_str, 10) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "head", "invalid number of lines: '{s}'", .{lines_str});
-                return @intFromEnum(common.ExitCode.misuse);
-            };
-        }
-    }
+    const lc = try runHead_parseLineCount(allocator, parsed_args.lines, stderr_writer);
+    if (!lc.ok) return @intFromEnum(common.ExitCode.misuse);
+    const line_count = lc.line_count;
+    const negative_count = lc.negative_count;
 
-    const is_quiet = parsed_args.quiet or parsed_args.silent;
-
-    const options = HeadOptions{
-        .line_count = line_count,
-        .negative_count = negative_count,
-        .byte_count = parsed_args.bytes,
-        .show_headers = if (is_quiet) false else if (parsed_args.verbose) true else parsed_args.positionals.len > 1,
-        .line_delimiter = if (parsed_args.zero_terminated) 0 else '\n',
-    };
+    const options = runHead_buildOptions(parsed_args, line_count, negative_count);
 
     var stdin_buffer: [8192]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
@@ -170,30 +151,15 @@ pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
                 try processInput(stdin, stdout_writer, options, allocator);
             } else {
                 // Open and process regular file
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    had_error = true;
-                    continue;
-                };
-                defer file.close(io);
-
-                const stat = file.stat(io) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': {s}", .{ file_path, common.posixErrorString(err) });
-                    had_error = true;
-                    continue;
-                };
-                if (stat.kind == .directory) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "head", "error reading '{s}': Is a directory", .{file_path});
-                    had_error = true;
-                    continue;
-                }
-
-                if (options.show_headers) {
-                    try stdout_writer.print("==> {s} <==\n", .{file_path});
-                }
-                var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.reader(io, &file_buffer);
-                try processInput(&file_reader.interface, stdout_writer, options, allocator);
+                const file_failed = try runHead_processFile(
+                    allocator,
+                    io,
+                    file_path,
+                    stdout_writer,
+                    stderr_writer,
+                    &options,
+                );
+                if (file_failed) had_error = true;
             }
         }
         if (had_error) {
@@ -201,6 +167,159 @@ pub fn runHead(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
         }
     }
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Result of parsing the -n/--lines argument.
+/// When `ok` is false, the helper has already reported the error; the caller
+/// must exit with the misuse code and must not read line_count/negative_count.
+const ParsedLineCount = struct {
+    line_count: u64,
+    negative_count: u64,
+    ok: bool,
+};
+
+/// Parse the -n/--lines value, handling negative values (e.g., "-3" means
+/// "all but last 3"). On parse failure reports the error via stderr_writer and
+/// returns ok=false; defaults are preserved unchanged on the failure path.
+fn runHead_parseLineCount(
+    allocator: std.mem.Allocator,
+    lines_opt: ?[]const u8,
+    stderr_writer: *std.Io.Writer,
+) !ParsedLineCount {
+    var line_count: u64 = DEFAULT_LINE_COUNT;
+    var negative_count: u64 = 0;
+    const default_holds_before_parse = line_count == DEFAULT_LINE_COUNT or lines_opt != null;
+    std.debug.assert(default_holds_before_parse); // Default holds before parse.
+    if (lines_opt) |lines_str| {
+        if (lines_str.len > 0 and lines_str[0] == '-') {
+            // Negative: output all but last N lines
+            negative_count = std.fmt.parseUnsigned(u64, lines_str[1..], 10) catch {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "head",
+                    "invalid number of lines: '{s}'",
+                    .{lines_str},
+                );
+                return .{ .line_count = line_count, .negative_count = negative_count, .ok = false };
+            };
+        } else {
+            line_count = std.fmt.parseUnsigned(u64, lines_str, 10) catch {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "head",
+                    "invalid number of lines: '{s}'",
+                    .{lines_str},
+                );
+                return .{ .line_count = line_count, .negative_count = negative_count, .ok = false };
+            };
+        }
+    }
+    const result = ParsedLineCount{
+        .line_count = line_count,
+        .negative_count = negative_count,
+        .ok = true,
+    };
+    // Positive space: negative and explicit-positive line counts are mutually exclusive.
+    const counts_mutually_exclusive =
+        result.negative_count == 0 or result.line_count == DEFAULT_LINE_COUNT;
+    std.debug.assert(counts_mutually_exclusive);
+    // Negative space: a successful parse never leaves both counts at the defaults
+    // unless the input was null or empty.
+    const defaults_untouched =
+        result.line_count == DEFAULT_LINE_COUNT and result.negative_count == 0;
+    const ok_or_defaults_untouched = result.ok or defaults_untouched;
+    std.debug.assert(ok_or_defaults_untouched);
+    return result;
+}
+
+/// Open and process a single regular file (never "-"/stdin, which the parent
+/// handles inline). Returns true on any per-file error (after reporting it),
+/// mirroring the original `had_error = true; continue;`; false on success.
+fn runHead_processFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: *const HeadOptions,
+) !bool {
+    std.debug.assert(!std.mem.eql(u8, file_path, "-")); // Negative space: stdin handled by parent.
+    const delimiter_is_newline_or_nul =
+        options.line_delimiter == '\n' or options.line_delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Positive space: delimiter is newline or NUL.
+
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "head",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    defer file.close(io);
+
+    const stat = file.stat(io) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "head",
+            "error reading '{s}': {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    if (stat.kind == .directory) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "head",
+            "error reading '{s}': Is a directory",
+            .{file_path},
+        );
+        return true;
+    }
+
+    if (options.show_headers) {
+        try stdout_writer.print("==> {s} <==\n", .{file_path});
+    }
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.reader(io, &file_buffer);
+    try processInput(&file_reader.interface, stdout_writer, options.*, allocator);
+    return false;
+}
+
+/// Build HeadOptions from the parsed flags and the already-parsed line counts.
+/// Header visibility follows GNU precedence: --quiet wins, then --verbose, then
+/// the implicit "more than one file" rule.
+fn runHead_buildOptions(
+    parsed_args: HeadArgs,
+    line_count: u64,
+    negative_count: u64,
+) HeadOptions {
+    const is_quiet = parsed_args.quiet or parsed_args.silent;
+    const show_headers = if (is_quiet)
+        false
+    else if (parsed_args.verbose)
+        true
+    else
+        parsed_args.positionals.len > 1;
+    const options = HeadOptions{
+        .line_count = line_count,
+        .negative_count = negative_count,
+        .byte_count = parsed_args.bytes,
+        .show_headers = show_headers,
+        .line_delimiter = if (parsed_args.zero_terminated) 0 else '\n',
+    };
+    const headers_suppressed_when_quiet = !(options.show_headers and is_quiet);
+    std.debug.assert(headers_suppressed_when_quiet); // Quiet must suppress headers.
+    const delimiter_is_newline_or_nul =
+        options.line_delimiter == '\n' or options.line_delimiter == 0;
+    std.debug.assert(delimiter_is_newline_or_nul); // Newline or NUL only.
+    return options;
 }
 
 /// Entry point for the head binary.
