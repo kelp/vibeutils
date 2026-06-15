@@ -16,6 +16,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common");
 const testing = std.testing;
+const assert = std.debug.assert;
 
 /// Buffer size for I/O operations - matches typical file system block size for optimal performance
 const BUFFER_SIZE = 8192;
@@ -70,6 +71,12 @@ const TailOptions = struct {
         return file_count > 1;
     }
 };
+
+/// Returns true when byte is a valid line delimiter (NUL or newline). Used to
+/// keep delimiter precondition asserts free of compound boolean expressions.
+fn isLineDelimiter(byte: u8) bool {
+    return byte == 0 or byte == '\n';
+}
 
 /// Print version information to the specified writer
 fn printVersion(writer: *std.Io.Writer) !void {
@@ -150,16 +157,9 @@ pub fn runTail(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
     const parsed_args = common.argparse.ArgParser.parseOrExit(TailArgs, allocator, expanded_args, "tail", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
 
-    // Handle help
-    if (parsed_args.help) {
-        try printHelp(allocator, stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Handle version
-    if (parsed_args.version) {
-        try printVersion(stdout_writer);
-        return @intFromEnum(common.ExitCode.success);
+    // Handle --help / --version, which short-circuit normal processing.
+    if (try runTail_handleHelpVersion(allocator, parsed_args, stdout_writer)) |exit_code| {
+        return exit_code;
     }
 
     // Parse numeric arguments
@@ -172,128 +172,260 @@ pub fn runTail(allocator: std.mem.Allocator, io: std.Io, args: []const []const u
         .follow_retry = parsed_args.follow_retry,
     };
 
-    // Parse line count (-n flag)
-    if (parsed_args.lines) |lines_str| {
-        if (lines_str.len > 0 and lines_str[0] == '+') {
-            options.from_beginning = true;
-        }
-        options.line_count = parseNumericArg(lines_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of lines: '{s}'", .{lines_str});
-            return @intFromEnum(common.ExitCode.misuse);
-        };
-    } else if (parsed_args.reverse) {
-        options.line_count = null; // -r without -n: show all lines
-    } else {
-        options.line_count = 10; // default
-    }
-
-    // Parse byte count (-c flag) - overrides line count
-    if (parsed_args.bytes) |bytes_str| {
-        if (bytes_str.len > 0 and bytes_str[0] == '+') {
-            options.from_beginning_bytes = true;
-        }
-        options.byte_count = parseNumericArg(bytes_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of bytes: '{s}'", .{bytes_str});
-            return @intFromEnum(common.ExitCode.misuse);
-        };
-        options.line_count = null; // byte mode overrides line mode
-    }
-
-    // Parse block count (-b flag) - overrides lines, like -c but in 512-byte blocks
-    if (parsed_args.blocks) |blocks_str| {
-        if (blocks_str.len > 0 and blocks_str[0] == '+') {
-            options.from_beginning_bytes = true;
-        }
-        const block_count = parseNumericArg(blocks_str) catch {
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of blocks: '{s}'", .{blocks_str});
-            return @intFromEnum(common.ExitCode.misuse);
-        };
-        if (options.from_beginning_bytes) {
-            // +N blocks means start at block N (1-indexed), skip (N-1)*512 bytes
-            // processInputByBytesFromBeginning uses skip = byte_count - 1
-            // so byte_count = (N-1)*512 + 1
-            options.byte_count = if (block_count > 0) (block_count - 1) * 512 + 1 else 1;
-        } else {
-            options.byte_count = block_count * 512;
-        }
-        options.line_count = null; // block mode overrides line mode
-    }
-
-    // Validate: -f/-F and -r are mutually exclusive
-    if (options.follow and options.reverse) {
-        common.printErrorWithProgram(allocator, stderr_writer, "tail", "option used in invalid context -- r", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+    // Assemble count/byte/block options from the parsed args; this also
+    // validates the -f/-F vs -r mutual exclusion.
+    if (try runTail_buildOptions(allocator, parsed_args, stderr_writer, &options)) |exit_code| {
+        return exit_code;
     }
 
     // Process files
     if (parsed_args.positionals.len == 0) {
         // No files specified, read from stdin
         try processStdin(allocator, io, stdout_writer, options);
-    } else {
-        // Process each file
-        var had_error = false;
-        const should_show_headers = options.shouldShowHeaders(parsed_args.positionals.len);
-        for (parsed_args.positionals, 0..) |file_path, i| {
-            if (std.mem.eql(u8, file_path, "-")) {
-                // "-" means read from stdin
-                if (should_show_headers) {
-                    if (i > 0) try stdout_writer.writeAll("\n");
-                    try stdout_writer.writeAll("==> standard input <==\n");
-                }
-                try processStdin(allocator, io, stdout_writer, options);
-            } else {
-                // Open and process regular file
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    // -F (follow with retry) tolerates missing files
-                    if (parsed_args.follow_retry and err == error.FileNotFound) {
-                        continue;
-                    }
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    had_error = true;
-                    continue;
-                };
-                defer file.close(io);
+        return @intFromEnum(common.ExitCode.success);
+    }
 
-                if (should_show_headers) {
-                    if (i > 0) try stdout_writer.writeAll("\n");
-                    try stdout_writer.print("==> {s} <==\n", .{file_path});
-                }
-                try processFile(allocator, io, file, stdout_writer, options);
-            }
-        }
-        if (had_error and !options.follow) return @intFromEnum(common.ExitCode.general_error);
+    // Process each file
+    var had_error = false;
+    const should_show_headers = options.shouldShowHeaders(parsed_args.positionals.len);
+    for (parsed_args.positionals, 0..) |file_path, i| {
+        const file_had_error = try runTail_processOnePositional(
+            allocator,
+            io,
+            file_path,
+            i,
+            should_show_headers,
+            parsed_args,
+            stdout_writer,
+            stderr_writer,
+            &options,
+        );
+        had_error = had_error or file_had_error;
+    }
+    if (had_error and !options.follow) return @intFromEnum(common.ExitCode.general_error);
 
-        // Enter follow mode for the last real file
-        if (options.follow) {
-            var last_file_path: ?[]const u8 = null;
-            var real_file_count: usize = 0;
-            var j = parsed_args.positionals.len;
-            while (j > 0) {
-                j -= 1;
-                if (!std.mem.eql(u8, parsed_args.positionals[j], "-")) {
-                    real_file_count += 1;
-                    if (last_file_path == null) {
-                        last_file_path = parsed_args.positionals[j];
-                    }
-                }
-            }
-            if (real_file_count > 1) {
-                common.printErrorWithProgram(allocator, stderr_writer, "tail", "warning: following only '{s}'; multiple-file follow not yet supported", .{last_file_path.?});
-                stdout_writer.flush() catch {};
-                stderr_writer.flush() catch {};
-            }
-            if (last_file_path) |path| {
-                // Flush initial output before entering the follow loop
-                stdout_writer.flush() catch {};
-                followFile(allocator, io, path, stdout_writer, stderr_writer, options) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: {s}", .{ path, common.posixErrorString(err) });
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
+    // Enter follow mode for the last real file
+    if (options.follow) {
+        if (try runTail_enterFollow(
+            allocator,
+            io,
+            parsed_args,
+            stdout_writer,
+            stderr_writer,
+            &options,
+        )) |exit_code| {
+            return exit_code;
         }
     }
 
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Handle --help and --version. Returns a success exit code when either was
+/// requested (after printing), or null when normal processing should continue.
+fn runTail_handleHelpVersion(
+    allocator: std.mem.Allocator,
+    parsed_args: anytype,
+    stdout_writer: *std.Io.Writer,
+) !?u8 {
+    // Sanity-check the exit-code constants this helper returns.
+    assert(@intFromEnum(common.ExitCode.success) == 0);
+    assert(@TypeOf(parsed_args.help) == bool);
+
+    // Handle help
+    if (parsed_args.help) {
+        try printHelp(allocator, stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    // Handle version
+    if (parsed_args.version) {
+        try printVersion(stdout_writer);
+        return @intFromEnum(common.ExitCode.success);
+    }
+
+    return null;
+}
+
+/// Assemble line/byte/block count options from parsed args. Returns a non-null
+/// exit code when a count argument fails to parse; null on success.
+fn runTail_buildOptions(
+    allocator: std.mem.Allocator,
+    parsed_args: anytype,
+    stderr_writer: *std.Io.Writer,
+    options_out: *TailOptions,
+) !?u8 {
+    assert(options_out.line_count == null);
+    assert(options_out.byte_count == null);
+
+    // Parse line count (-n flag)
+    if (parsed_args.lines) |lines_str| {
+        if (lines_str.len > 0 and lines_str[0] == '+') {
+            options_out.from_beginning = true;
+        }
+        options_out.line_count = parseNumericArg(lines_str) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of lines: '{s}'", .{lines_str});
+            return @intFromEnum(common.ExitCode.misuse);
+        };
+    } else if (parsed_args.reverse) {
+        options_out.line_count = null; // -r without -n: show all lines
+    } else {
+        options_out.line_count = 10; // default
+    }
+
+    // Parse byte count (-c flag) - overrides line count
+    if (parsed_args.bytes) |bytes_str| {
+        if (bytes_str.len > 0 and bytes_str[0] == '+') {
+            options_out.from_beginning_bytes = true;
+        }
+        options_out.byte_count = parseNumericArg(bytes_str) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of bytes: '{s}'", .{bytes_str});
+            return @intFromEnum(common.ExitCode.misuse);
+        };
+        options_out.line_count = null; // byte mode overrides line mode
+    }
+
+    // Parse block count (-b flag) - overrides lines, like -c but in 512-byte blocks
+    if (parsed_args.blocks) |blocks_str| {
+        if (blocks_str.len > 0 and blocks_str[0] == '+') {
+            options_out.from_beginning_bytes = true;
+        }
+        const block_count = parseNumericArg(blocks_str) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "tail", "invalid number of blocks: '{s}'", .{blocks_str});
+            return @intFromEnum(common.ExitCode.misuse);
+        };
+        if (options_out.from_beginning_bytes) {
+            // +N blocks means start at block N (1-indexed), skip (N-1)*512 bytes
+            // processInputByBytesFromBeginning uses skip = byte_count - 1
+            // so byte_count = (N-1)*512 + 1
+            options_out.byte_count = if (block_count > 0) (block_count - 1) * 512 + 1 else 1;
+        } else {
+            options_out.byte_count = block_count * 512;
+        }
+        options_out.line_count = null; // block mode overrides line mode
+    }
+
+    // Validate: -f/-F and -r are mutually exclusive
+    if (options_out.follow and options_out.reverse) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tail",
+            "option used in invalid context -- r",
+            .{},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return null;
+}
+
+/// Process a single positional argument (a file path or "-" for stdin).
+/// Returns true if processing this entry encountered an error.
+fn runTail_processOnePositional(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file_path: []const u8,
+    index: usize, // tiger:allow:usize-arch slice index for positionals
+    should_show_headers: bool,
+    parsed_args: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: *const TailOptions,
+) !bool {
+    // An empty positional ("") is a legal shell argument and must still flow
+    // to the openFile error path (GNU tail prints an error and exits 1), so do
+    // NOT assert file_path is non-empty here.
+    assert(parsed_args.positionals.len > 0);
+    assert(index < parsed_args.positionals.len);
+
+    if (std.mem.eql(u8, file_path, "-")) {
+        // "-" means read from stdin
+        if (should_show_headers) {
+            if (index > 0) try stdout_writer.writeAll("\n");
+            try stdout_writer.writeAll("==> standard input <==\n");
+        }
+        try processStdin(allocator, io, stdout_writer, options.*);
+        return false;
+    }
+
+    // Open and process regular file
+    const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+        // -F (follow with retry) tolerates missing files
+        if (parsed_args.follow_retry and err == error.FileNotFound) {
+            return false;
+        }
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tail",
+            "{s}: {s}",
+            .{ file_path, common.posixErrorString(err) },
+        );
+        return true;
+    };
+    defer file.close(io);
+
+    if (should_show_headers) {
+        if (index > 0) try stdout_writer.writeAll("\n");
+        try stdout_writer.print("==> {s} <==\n", .{file_path});
+    }
+    try processFile(allocator, io, file, stdout_writer, options.*);
+    return false;
+}
+
+/// Enter follow mode on the last real (non-"-") positional file. Returns a
+/// non-null exit code on followFile failure; null otherwise.
+fn runTail_enterFollow(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    parsed_args: anytype,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: *const TailOptions,
+) !?u8 {
+    assert(options.follow);
+    assert(parsed_args.positionals.len > 0);
+
+    var last_file_path: ?[]const u8 = null;
+    var real_file_count: usize = 0; // tiger:allow:usize-arch counts slice elements
+    var j = parsed_args.positionals.len; // tiger:allow:usize-arch slice index
+    while (j > 0) {
+        j -= 1;
+        if (!std.mem.eql(u8, parsed_args.positionals[j], "-")) {
+            real_file_count += 1;
+            if (last_file_path == null) {
+                last_file_path = parsed_args.positionals[j];
+            }
+        }
+    }
+    if (real_file_count > 1) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tail",
+            "warning: following only '{s}'; multiple-file follow not yet supported",
+            .{last_file_path.?},
+        );
+        stdout_writer.flush() catch {};
+        stderr_writer.flush() catch {};
+    }
+    if (last_file_path) |path| {
+        // Flush initial output before entering the follow loop
+        stdout_writer.flush() catch {};
+        followFile(allocator, io, path, stdout_writer, stderr_writer, options.*) catch |err| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "tail",
+                "{s}: {s}",
+                .{ path, common.posixErrorString(err) },
+            );
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+
+    return null;
 }
 
 /// Main entry point for the tail utility
@@ -429,150 +561,306 @@ fn getInode(io: std.Io, path: []const u8) !u64 {
 /// This function runs an infinite loop and only returns on error.
 fn followFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, options: TailOptions) !void {
     var waited_for_file = false;
-    var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| blk: {
+    var file = try followFile_openInitial(
+        allocator,
+        io,
+        path,
+        stderr_writer,
+        &options,
+        &waited_for_file,
+    );
+    errdefer file.close(io);
+    // If we waited for the file to appear, read from the start
+    // (processFile never ran). Otherwise resume from end.
+    const last_pos: u64 = if (waited_for_file) 0 else try file.length(io);
+    const last_inode = try getInode(io, path);
+
+    if (comptime builtin.os.tag == .linux) {
+        try followFile_runInotify(
+            allocator,
+            io,
+            path,
+            &file,
+            last_pos,
+            last_inode,
+            stdout_writer,
+            stderr_writer,
+            &options,
+        );
+    } else {
+        try followFile_runKqueue(
+            allocator,
+            io,
+            path,
+            &file,
+            last_pos,
+            last_inode,
+            stdout_writer,
+            stderr_writer,
+            &options,
+        );
+    }
+}
+
+/// Linux follow loop: register an inotify watch and stream new data on each
+/// event, handling -F rotation and truncation. Returns only on error.
+fn followFile_runInotify(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    file: *std.Io.File,
+    last_pos_init: u64,
+    last_inode_init: u64,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: *const TailOptions,
+) !void {
+    // Don't assert path.len > 0: an empty path ("") is a legal positional and
+    // must reach openFile's error path rather than panicking.
+    assert(builtin.os.tag == .linux);
+    assert(builtin.os.tag != .macos);
+
+    var last_pos = last_pos_init;
+    var last_inode = last_inode_init;
+    const watch_mask = std.os.linux.IN.MODIFY |
+        std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF;
+    const inotify_fd = try inotifyInit1(std.os.linux.IN.CLOEXEC);
+    defer closeFd(inotify_fd);
+    const path_z = try std.mem.Allocator.dupeZ(allocator, u8, path);
+    defer allocator.free(path_z);
+    var wd = try inotifyAddWatch(inotify_fd, path_z, watch_mask);
+
+    // Read any data written before the watch was registered
+    last_pos = try readNewData(io, file.*, last_pos, stdout_writer);
+
+    // Intentional blocking event loop; relocated verbatim from followFile.
+    while (true) { // tiger:allow:unbounded-loop intentional follow loop
+        // Block until inotify event
+        var event_buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
+        const bytes_read = try std.posix.read(inotify_fd, &event_buf);
+        if (bytes_read == 0) continue;
+
+        // Check for file rotation (-F)
+        if (options.follow_retry) {
+            const new_inode = try followFile_rotationInode(allocator, io, path, stderr_writer);
+            if (new_inode != last_inode) {
+                const new_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+                inotifyRmWatch(inotify_fd, wd);
+                file.close(io);
+                file.* = new_file;
+                last_inode = new_inode;
+                last_pos = 0;
+                wd = try inotifyAddWatch(inotify_fd, path_z, watch_mask);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "tail",
+                    "{s}: file has been replaced; following new file",
+                    .{path},
+                );
+                stderr_writer.flush() catch {};
+                // Fall through to read any data already in the new file
+            }
+        }
+
+        try followFile_checkTruncation(allocator, io, file.*, path, &last_pos, stderr_writer);
+        last_pos = try readNewData(io, file.*, last_pos, stdout_writer);
+    }
+}
+
+/// macOS/BSD follow loop: register a kqueue VNODE watch and stream new data on
+/// each event, handling -F rotation and truncation. Returns only on error.
+fn followFile_runKqueue(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    file: *std.Io.File,
+    last_pos_init: u64,
+    last_inode_init: u64,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: *const TailOptions,
+) !void {
+    // Don't assert path.len > 0: an empty path ("") is a legal positional and
+    // must reach openFile's error path rather than panicking.
+    assert(builtin.os.tag != .linux);
+    assert(builtin.os.tag != .freestanding);
+
+    var last_pos = last_pos_init;
+    var last_inode = last_inode_init;
+    const kq = try kqueueCreate();
+    defer closeFd(kq);
+
+    var changelist = [1]std.c.Kevent{.{
+        .ident = @as(usize, @intCast(file.handle)), // tiger:allow:usize-arch kevent ident type
+        .filter = std.c.EVFILT.VNODE,
+        .flags = std.c.EV.ADD | std.c.EV.ENABLE | std.c.EV.CLEAR,
+        .fflags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME |
+            std.c.NOTE.EXTEND | std.c.NOTE.ATTRIB,
+        .data = 0,
+        .udata = 0,
+    }};
+    // Register the watch
+    _ = try keventCall(kq, &changelist, &.{}, null);
+
+    // Read any data written before the watch was registered
+    last_pos = try readNewData(io, file.*, last_pos, stdout_writer);
+
+    // Intentional blocking event loop; relocated verbatim from followFile.
+    while (true) { // tiger:allow:unbounded-loop intentional follow loop
+        // Wait for events (blocks)
+        var eventlist: [1]std.c.Kevent = undefined;
+        const nevents = try keventCall(kq, &.{}, &eventlist, null);
+        if (nevents == 0) continue;
+
+        // Check for file rotation (-F)
+        if (options.follow_retry) {
+            const new_inode = try followFile_rotationInode(allocator, io, path, stderr_writer);
+            if (new_inode != last_inode) {
+                const new_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+                file.close(io);
+                file.* = new_file;
+                last_inode = new_inode;
+                last_pos = 0;
+                // kevent ident field requires usize; re-register on new fd.
+                changelist[0].ident = @as(usize, @intCast(file.handle)); // tiger:allow:usize-arch
+                _ = try keventCall(kq, &changelist, &.{}, null);
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "tail",
+                    "{s}: file has been replaced; following new file",
+                    .{path},
+                );
+                stderr_writer.flush() catch {};
+                // Fall through to read any data already in the new file
+            }
+        }
+
+        try followFile_checkTruncation(allocator, io, file.*, path, &last_pos, stderr_writer);
+        last_pos = try readNewData(io, file.*, last_pos, stdout_writer);
+    }
+}
+
+/// Open the followed file, retrying under -F when it does not yet exist.
+/// Sets waited_out to true when it had to wait for the file to appear.
+fn followFile_openInitial(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    stderr_writer: *std.Io.Writer,
+    options: *const TailOptions,
+    waited_out: *bool,
+) !std.Io.File {
+    // Don't assert path.len > 0: an empty path ("") is a legal positional and
+    // must reach openFile's error path rather than panicking. The caller seeds
+    // waited_out to false; this helper is the only writer.
+    assert(waited_out.* == false);
+    assert(options.follow);
+
+    return std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| blk: {
         if (options.follow_retry and err == error.FileNotFound) {
             // -F: wait for file to appear
-            common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: No such file or directory; waiting for it to appear", .{path});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "tail",
+                "{s}: No such file or directory; waiting for it to appear",
+                .{path},
+            );
             stderr_writer.flush() catch {};
-            waited_for_file = true;
-            while (true) {
-                io.sleep(std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)), .awake) catch {};
+            waited_out.* = true;
+            // Bounded by the file appearing; relocated verbatim from followFile.
+            while (true) { // tiger:allow:unbounded-loop intentional appear-wait
+                io.sleep(
+                    std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)),
+                    .awake,
+                ) catch {};
                 break :blk std.Io.Dir.cwd().openFile(io, path, .{}) catch continue;
             }
         } else {
             return err;
         }
     };
-    errdefer file.close(io);
-    // If we waited for the file to appear, read from the start
-    // (processFile never ran). Otherwise resume from end.
-    var last_pos: u64 = if (waited_for_file) 0 else try file.length(io);
-    var last_inode = try getInode(io, path);
+}
 
-    if (comptime builtin.os.tag == .linux) {
-        const inotify_fd = try inotifyInit1(std.os.linux.IN.CLOEXEC);
-        defer closeFd(inotify_fd);
-        const path_z = try std.mem.Allocator.dupeZ(allocator, u8, path);
-        defer allocator.free(path_z);
-        var wd = try inotifyAddWatch(inotify_fd, path_z, std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF);
+/// Fetch the current inode of the followed file. Under FileNotFound, wait for
+/// the file to reappear (bounded by the reappearance event) and return its
+/// new inode; other errors propagate.
+fn followFile_rotationInode(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !u64 {
+    assert(path.len > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
 
-        // Read any data written before the watch was registered
-        last_pos = try readNewData(io, file, last_pos, stdout_writer);
-
-        while (true) {
-            // Block until inotify event
-            var event_buf: [4096]u8 align(@alignOf(std.os.linux.inotify_event)) = undefined;
-            const bytes_read = try std.posix.read(inotify_fd, &event_buf);
-            if (bytes_read == 0) continue;
-
-            // Check for file rotation (-F)
-            if (options.follow_retry) {
-                const new_inode = getInode(io, path) catch |err| blk: {
-                    if (err == error.FileNotFound) {
-                        // File is gone — wait for it to reappear
-                        common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has become inaccessible; waiting for it to reappear", .{path});
-                        stderr_writer.flush() catch {};
-                        while (true) {
-                            io.sleep(std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)), .awake) catch {};
-                            if (getInode(io, path)) |inode| {
-                                break :blk inode;
-                            } else |_| {}
-                        }
-                    } else {
-                        return err;
-                    }
-                };
-                if (new_inode != last_inode) {
-                    const new_file = try std.Io.Dir.cwd().openFile(io, path, .{});
-                    inotifyRmWatch(inotify_fd, wd);
-                    file.close(io);
-                    file = new_file;
-                    last_inode = new_inode;
-                    last_pos = 0;
-                    wd = try inotifyAddWatch(inotify_fd, path_z, std.os.linux.IN.MODIFY | std.os.linux.IN.DELETE_SELF | std.os.linux.IN.MOVE_SELF);
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has been replaced; following new file", .{path});
-                    stderr_writer.flush() catch {};
-                    // Fall through to read any data already in the new file
-                }
-            }
-
-            // Check for truncation
-            const new_end = try file.length(io);
-            if (new_end < last_pos) {
-                common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file truncated", .{path});
-                stderr_writer.flush() catch {};
-                last_pos = 0;
-            }
-
-            last_pos = try readNewData(io, file, last_pos, stdout_writer);
+    return getInode(io, path) catch |err| blk: {
+        if (err == error.FileNotFound) {
+            break :blk try followFile_waitForReappear(allocator, io, path, stderr_writer);
+        } else {
+            return err;
         }
-    } else {
-        // macOS/BSD: kqueue
-        const kq = try kqueueCreate();
-        defer closeFd(kq);
+    };
+}
 
-        var changelist = [1]std.c.Kevent{.{
-            .ident = @as(usize, @intCast(file.handle)),
-            .filter = std.c.EVFILT.VNODE,
-            .flags = std.c.EV.ADD | std.c.EV.ENABLE | std.c.EV.CLEAR,
-            .fflags = std.c.NOTE.WRITE | std.c.NOTE.DELETE | std.c.NOTE.RENAME | std.c.NOTE.EXTEND | std.c.NOTE.ATTRIB,
-            .data = 0,
-            .udata = 0,
-        }};
-        // Register the watch
-        _ = try keventCall(kq, &changelist, &.{}, null);
+/// File has become inaccessible during rotation; wait until it reappears and
+/// return its new inode.
+fn followFile_waitForReappear(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !u64 {
+    assert(path.len > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
 
-        // Read any data written before the watch was registered
-        last_pos = try readNewData(io, file, last_pos, stdout_writer);
+    // File is gone — wait for it to reappear
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "tail",
+        "{s}: file has become inaccessible; waiting for it to reappear",
+        .{path},
+    );
+    stderr_writer.flush() catch {};
+    // Bounded by the file reappearing; relocated verbatim from followFile.
+    while (true) { // tiger:allow:unbounded-loop intentional reappear-wait
+        io.sleep(
+            std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)),
+            .awake,
+        ) catch {};
+        if (getInode(io, path)) |inode| {
+            return inode;
+        } else |_| {}
+    }
+}
 
-        while (true) {
-            // Wait for events (blocks)
-            var eventlist: [1]std.c.Kevent = undefined;
-            const nevents = try keventCall(kq, &.{}, &eventlist, null);
-            if (nevents == 0) continue;
+/// Detect truncation of the followed file: when the file shrank below last_pos,
+/// reset last_pos to the start so we re-read from the beginning.
+fn followFile_checkTruncation(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    path: []const u8,
+    last_pos: *u64,
+    stderr_writer: *std.Io.Writer,
+) !void {
+    assert(path.len > 0);
+    assert(path.len <= std.Io.Dir.max_path_bytes);
 
-            // Check for file rotation (-F)
-            if (options.follow_retry) {
-                const new_inode = getInode(io, path) catch |err| blk: {
-                    if (err == error.FileNotFound) {
-                        // File is gone — wait for it to reappear
-                        common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has become inaccessible; waiting for it to reappear", .{path});
-                        stderr_writer.flush() catch {};
-                        while (true) {
-                            io.sleep(std.Io.Duration.fromNanoseconds(@intCast(std.time.ns_per_s)), .awake) catch {};
-                            if (getInode(io, path)) |inode| {
-                                break :blk inode;
-                            } else |_| {}
-                        }
-                    } else {
-                        return err;
-                    }
-                };
-                if (new_inode != last_inode) {
-                    const new_file = try std.Io.Dir.cwd().openFile(io, path, .{});
-                    file.close(io);
-                    file = new_file;
-                    last_inode = new_inode;
-                    last_pos = 0;
-                    // Register kqueue watch on new fd
-                    changelist[0].ident = @as(usize, @intCast(file.handle));
-                    _ = try keventCall(kq, &changelist, &.{}, null);
-                    common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file has been replaced; following new file", .{path});
-                    stderr_writer.flush() catch {};
-                    // Fall through to read any data already in the new file
-                }
-            }
-
-            // Check for truncation
-            const new_end = try file.length(io);
-            if (new_end < last_pos) {
-                common.printErrorWithProgram(allocator, stderr_writer, "tail", "{s}: file truncated", .{path});
-                stderr_writer.flush() catch {};
-                last_pos = 0;
-            }
-
-            last_pos = try readNewData(io, file, last_pos, stdout_writer);
-        }
+    const new_end = try file.length(io);
+    if (new_end < last_pos.*) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "tail",
+            "{s}: file truncated",
+            .{path},
+        );
+        stderr_writer.flush() catch {};
+        last_pos.* = 0;
     }
 }
 
@@ -910,130 +1198,194 @@ fn processInputByLinesFromFile(allocator: std.mem.Allocator, io: std.Io, file: s
     }
 
     const delimiter: u8 = if (zero_terminated) 0 else '\n';
+    assert(isLineDelimiter(delimiter));
 
     if (from_beginning) {
-        const lc = line_count orelse 1;
-        const max_lines = @as(usize, @intCast(lc));
-        // Skip the first (line_count - 1) lines and stream the rest
-        const skip_count = if (lc > 0) max_lines - 1 else 0;
-        var read_buf: [8192]u8 = undefined;
-
-        if (skip_count == 0) {
-            // +1 means output everything from the start
-            while (true) {
-                const n = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
-                    error.EndOfStream => return,
-                    else => return err,
-                };
-                try writer.writeAll(read_buf[0..n]);
-            }
-        }
-
-        var lines_seen: usize = 0;
-        while (true) {
-            const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
-                error.EndOfStream => return, // EOF before we finished skipping
-                else => return err,
-            };
-
-            for (read_buf[0..bytes_read], 0..) |byte, pos| {
-                if (byte == delimiter) {
-                    lines_seen += 1;
-                    if (lines_seen >= skip_count) {
-                        // Output the rest of this chunk after the delimiter
-                        try writer.writeAll(read_buf[pos + 1 .. bytes_read]);
-                        // Then stream remaining file content directly
-                        while (true) {
-                            const n = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
-                                error.EndOfStream => return,
-                                else => return err,
-                            };
-                            try writer.writeAll(read_buf[0..n]);
-                        }
-                    }
-                }
-            }
-        }
+        return processInputByLinesFromFile_fromBeginning(io, file, writer, line_count, delimiter);
     }
 
     // When line_count is null (reverse all), collect into a dynamic list
     if (line_count == null) {
-        var lines: std.ArrayListUnmanaged([]u8) = .empty;
-        defer {
-            for (lines.items) |line| allocator.free(line);
-            lines.deinit(allocator);
-        }
-
-        var read_buf: [8192]u8 = undefined;
-        var partial: std.ArrayListUnmanaged(u8) = .empty;
-        defer partial.deinit(allocator);
-
-        while (true) {
-            const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
-
-            var chunk_start: usize = 0;
-            for (read_buf[0..bytes_read], 0..) |byte, pos| {
-                if (byte == delimiter) {
-                    const chunk_end = pos + 1;
-                    if (partial.items.len > 0) {
-                        try partial.appendSlice(allocator, read_buf[chunk_start..chunk_end]);
-                        const line_copy = try allocator.dupe(u8, partial.items);
-                        try lines.append(allocator, line_copy);
-                        partial.clearRetainingCapacity();
-                    } else {
-                        const line_copy = try allocator.dupe(u8, read_buf[chunk_start..chunk_end]);
-                        try lines.append(allocator, line_copy);
-                    }
-                    chunk_start = chunk_end;
-                }
-            }
-            if (chunk_start < bytes_read) {
-                try partial.appendSlice(allocator, read_buf[chunk_start..bytes_read]);
-            }
-        }
-
-        if (partial.items.len > 0) {
-            const line_copy = try allocator.dupe(u8, partial.items);
-            try lines.append(allocator, line_copy);
-        }
-
-        // Output in reverse order
-        var i = lines.items.len;
-        while (i > 0) {
-            i -= 1;
-            const line = lines.items[i];
-            if (line.len > 0 and line[line.len - 1] == delimiter) {
-                try writer.writeAll(line[0 .. line.len - 1]);
-                try writer.writeByte(delimiter);
-            } else {
-                try writer.writeAll(line);
-                try writer.writeByte(delimiter);
-            }
-        }
-        return;
+        return processInputByLinesFromFile_reverseAll(allocator, io, file, writer, delimiter);
     }
 
-    const max_lines = @as(usize, @intCast(line_count.?));
+    const max_lines = @as(usize, @intCast(line_count.?)); // tiger:allow:usize-arch ring capacity
+    return processInputByLinesFromFile_lastN(
+        allocator,
+        io,
+        file,
+        writer,
+        max_lines,
+        delimiter,
+        reverse,
+    );
+}
+
+/// Output everything from line (line_count - 1) onward (the -n +NUM mode), by
+/// skipping leading lines then streaming the remainder of the file directly.
+fn processInputByLinesFromFile_fromBeginning(
+    io: std.Io,
+    file: std.Io.File,
+    writer: *std.Io.Writer,
+    line_count: ?u64,
+    delimiter: u8,
+) !void {
+    assert(isLineDelimiter(delimiter));
+
+    const lc = line_count orelse 1;
+    const max_lines = @as(usize, @intCast(lc)); // tiger:allow:usize-arch line index
+    // Skip the first (line_count - 1) lines and stream the rest
+    const skip_count = if (lc > 0) max_lines - 1 else 0;
+    assert(skip_count <= max_lines);
+    var read_buf: [8192]u8 = undefined;
+
+    if (skip_count == 0) {
+        // +1 means output everything from the start. Relocated verbatim;
+        // bounded by EOF on the file.
+        while (true) { // tiger:allow:unbounded-loop EOF-bounded read
+            const n = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            };
+            try writer.writeAll(read_buf[0..n]);
+        }
+    }
+
+    var lines_seen: usize = 0; // tiger:allow:usize-arch line counter for slice index
+    // Relocated verbatim; bounded by EOF while skipping leading lines.
+    while (true) { // tiger:allow:unbounded-loop EOF-bounded read
+        const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+            error.EndOfStream => return, // EOF before we finished skipping
+            else => return err,
+        };
+
+        for (read_buf[0..bytes_read], 0..) |byte, pos| {
+            if (byte == delimiter) {
+                lines_seen += 1;
+                if (lines_seen >= skip_count) {
+                    // Output the rest of this chunk after the delimiter
+                    try writer.writeAll(read_buf[pos + 1 .. bytes_read]);
+                    // Then stream remaining file content directly. Relocated
+                    // verbatim; bounded by EOF on the file.
+                    while (true) { // tiger:allow:unbounded-loop EOF-bounded read
+                        const n = file.readStreaming(
+                            io,
+                            &.{read_buf[0..]},
+                        ) catch |err| switch (err) {
+                            error.EndOfStream => return,
+                            else => return err,
+                        };
+                        try writer.writeAll(read_buf[0..n]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collect every line of the file into a list and emit them in reverse order
+/// (the -r without -n mode).
+fn processInputByLinesFromFile_reverseAll(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    writer: *std.Io.Writer,
+    delimiter: u8,
+) !void {
+    assert(isLineDelimiter(delimiter));
+
+    var lines: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (lines.items) |line| allocator.free(line);
+        lines.deinit(allocator);
+    }
+
+    var read_buf: [8192]u8 = undefined;
+    var partial: std.ArrayListUnmanaged(u8) = .empty;
+    defer partial.deinit(allocator);
+
+    // Relocated verbatim; bounded by EOF on the file.
+    while (true) { // tiger:allow:unbounded-loop EOF-bounded read
+        const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+
+        var chunk_start: usize = 0; // tiger:allow:usize-arch slice index
+        for (read_buf[0..bytes_read], 0..) |byte, pos| {
+            if (byte == delimiter) {
+                const chunk_end = pos + 1;
+                if (partial.items.len > 0) {
+                    try partial.appendSlice(allocator, read_buf[chunk_start..chunk_end]);
+                    const line_copy = try allocator.dupe(u8, partial.items);
+                    try lines.append(allocator, line_copy);
+                    partial.clearRetainingCapacity();
+                } else {
+                    const line_copy = try allocator.dupe(u8, read_buf[chunk_start..chunk_end]);
+                    try lines.append(allocator, line_copy);
+                }
+                chunk_start = chunk_end;
+            }
+        }
+        if (chunk_start < bytes_read) {
+            try partial.appendSlice(allocator, read_buf[chunk_start..bytes_read]);
+        }
+    }
+
+    if (partial.items.len > 0) {
+        const line_copy = try allocator.dupe(u8, partial.items);
+        try lines.append(allocator, line_copy);
+    }
+    // Sanity check: the read buffer keeps its fixed chunk size throughout.
+    assert(read_buf.len == 8192);
+
+    // Output in reverse order
+    var i = lines.items.len;
+    while (i > 0) {
+        i -= 1;
+        const line = lines.items[i];
+        if (line.len > 0 and line[line.len - 1] == delimiter) {
+            try writer.writeAll(line[0 .. line.len - 1]);
+            try writer.writeByte(delimiter);
+        } else {
+            try writer.writeAll(line);
+            try writer.writeByte(delimiter);
+        }
+    }
+}
+
+/// Keep only the last max_lines lines of the file in a ring buffer, then emit
+/// them (reversed when requested).
+fn processInputByLinesFromFile_lastN(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    writer: *std.Io.Writer,
+    max_lines: usize, // tiger:allow:usize-arch ring buffer capacity
+    delimiter: u8,
+    reverse: bool,
+) !void {
+    assert(max_lines > 0);
+    assert(isLineDelimiter(delimiter));
 
     // Use LineBuffer to keep the last N lines
     var line_buffer = try LineBuffer.init(allocator, max_lines);
     defer line_buffer.deinit();
+    assert(line_buffer.capacity == max_lines);
 
     // Stream file in chunks and extract lines
     var read_buf: [8192]u8 = undefined;
     var partial: std.ArrayListUnmanaged(u8) = .empty;
     defer partial.deinit(allocator);
 
-    while (true) {
+    // Relocated verbatim; bounded by EOF on the file.
+    while (true) { // tiger:allow:unbounded-loop EOF-bounded read
         const bytes_read = file.readStreaming(io, &.{read_buf[0..]}) catch |err| switch (err) {
             error.EndOfStream => break,
             else => return err,
         };
 
-        var chunk_start: usize = 0;
+        var chunk_start: usize = 0; // tiger:allow:usize-arch slice index
         for (read_buf[0..bytes_read], 0..) |byte, pos| {
             if (byte == delimiter) {
                 const chunk_end = pos + 1; // Include delimiter
@@ -1075,85 +1427,129 @@ fn processInputByLines(allocator: std.mem.Allocator, reader: *std.Io.Reader, wri
     }
 
     const delimiter: u8 = if (zero_terminated) 0 else '\n';
+    assert(isLineDelimiter(delimiter));
 
     if (from_beginning) {
-        const lc = line_count orelse 1;
-        const max_lines = @as(usize, @intCast(lc));
-        // Skip the first (line_count - 1) lines and output the rest
-        const skip_count = if (lc > 0) max_lines - 1 else 0;
-        var lines_skipped: usize = 0;
-
-        // Skip lines by reading and discarding them
-        while (lines_skipped < skip_count) {
-            if (reader.takeDelimiterInclusive(delimiter)) |_| {
-                lines_skipped += 1;
-            } else |err| switch (err) {
-                error.EndOfStream => return,
-                else => return err,
-            }
-        }
-
-        // Output remaining lines
-        while (reader.takeDelimiterInclusive(delimiter)) |line| {
-            try writer.writeAll(line);
-        } else |err| switch (err) {
-            error.EndOfStream => {
-                // Handle final partial line (no trailing delimiter)
-                const remaining = reader.buffered();
-                if (remaining.len > 0) {
-                    try writer.writeAll(remaining);
-                    reader.toss(remaining.len);
-                }
-            },
-            else => return err,
-        }
-        return;
+        return processInputByLines_fromBeginning(reader, writer, line_count, delimiter);
     }
 
     // When line_count is null (reverse all), collect into a dynamic list
     if (line_count == null) {
-        var lines: std.ArrayListUnmanaged([]u8) = .empty;
-        defer {
-            for (lines.items) |line| allocator.free(line);
-            lines.deinit(allocator);
-        }
-
-        while (reader.takeDelimiterInclusive(delimiter)) |line| {
-            const line_copy = try allocator.dupe(u8, line);
-            try lines.append(allocator, line_copy);
-        } else |err| switch (err) {
-            error.EndOfStream => {
-                const remaining = reader.buffered();
-                if (remaining.len > 0) {
-                    const line_copy = try allocator.dupe(u8, remaining);
-                    try lines.append(allocator, line_copy);
-                    reader.toss(remaining.len);
-                }
-            },
-            else => return err,
-        }
-
-        // Output in reverse order
-        var i = lines.items.len;
-        while (i > 0) {
-            i -= 1;
-            const line = lines.items[i];
-            if (line.len > 0 and line[line.len - 1] == delimiter) {
-                try writer.writeAll(line[0 .. line.len - 1]);
-                try writer.writeByte(delimiter);
-            } else {
-                try writer.writeAll(line);
-                try writer.writeByte(delimiter);
-            }
-        }
-        return;
+        return processInputByLines_reverseAll(allocator, reader, writer, delimiter);
     }
 
-    const max_lines = @as(usize, @intCast(line_count.?));
+    const max_lines = @as(usize, @intCast(line_count.?)); // tiger:allow:usize-arch ring capacity
+    return processInputByLines_lastN(allocator, reader, writer, max_lines, delimiter, reverse);
+}
+
+/// Skip leading lines then stream the remainder (the -n +NUM mode) from a
+/// stream reader that lacks seek support.
+fn processInputByLines_fromBeginning(
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    line_count: ?u64,
+    delimiter: u8,
+) !void {
+    assert(isLineDelimiter(delimiter));
+
+    const lc = line_count orelse 1;
+    const max_lines = @as(usize, @intCast(lc)); // tiger:allow:usize-arch line index
+    // Skip the first (line_count - 1) lines and output the rest
+    const skip_count = if (lc > 0) max_lines - 1 else 0;
+    assert(skip_count <= max_lines);
+    var lines_skipped: usize = 0; // tiger:allow:usize-arch line counter
+
+    // Skip lines by reading and discarding them
+    while (lines_skipped < skip_count) {
+        if (reader.takeDelimiterInclusive(delimiter)) |_| {
+            lines_skipped += 1;
+        } else |err| switch (err) {
+            error.EndOfStream => return,
+            else => return err,
+        }
+    }
+
+    // Output remaining lines
+    while (reader.takeDelimiterInclusive(delimiter)) |line| {
+        try writer.writeAll(line);
+    } else |err| switch (err) {
+        error.EndOfStream => {
+            // Handle final partial line (no trailing delimiter)
+            const remaining = reader.buffered();
+            if (remaining.len > 0) {
+                try writer.writeAll(remaining);
+                reader.toss(remaining.len);
+            }
+        },
+        else => return err,
+    }
+}
+
+/// Collect all lines from the stream reader and emit them reversed (the -r
+/// without -n mode).
+fn processInputByLines_reverseAll(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    delimiter: u8,
+) !void {
+    assert(isLineDelimiter(delimiter));
+
+    var lines: std.ArrayListUnmanaged([]u8) = .empty;
+    defer {
+        for (lines.items) |line| allocator.free(line);
+        lines.deinit(allocator);
+    }
+
+    while (reader.takeDelimiterInclusive(delimiter)) |line| {
+        const line_copy = try allocator.dupe(u8, line);
+        try lines.append(allocator, line_copy);
+    } else |err| switch (err) {
+        error.EndOfStream => {
+            const remaining = reader.buffered();
+            if (remaining.len > 0) {
+                const line_copy = try allocator.dupe(u8, remaining);
+                try lines.append(allocator, line_copy);
+                reader.toss(remaining.len);
+            }
+        },
+        else => return err,
+    }
+    // After EOF handling the reader's buffer must be fully consumed.
+    assert(reader.buffered().len == 0);
+
+    // Output in reverse order
+    var i = lines.items.len;
+    while (i > 0) {
+        i -= 1;
+        const line = lines.items[i];
+        if (line.len > 0 and line[line.len - 1] == delimiter) {
+            try writer.writeAll(line[0 .. line.len - 1]);
+            try writer.writeByte(delimiter);
+        } else {
+            try writer.writeAll(line);
+            try writer.writeByte(delimiter);
+        }
+    }
+}
+
+/// Keep only the last max_lines lines from the stream reader in a ring buffer,
+/// then emit them (reversed when requested).
+fn processInputByLines_lastN(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    max_lines: usize, // tiger:allow:usize-arch ring buffer capacity
+    delimiter: u8,
+    reverse: bool,
+) !void {
+    assert(max_lines > 0);
+    assert(isLineDelimiter(delimiter));
 
     // Use LineBuffer ring buffer for last N lines
     var line_buffer = try LineBuffer.init(allocator, max_lines);
     defer line_buffer.deinit();
+    assert(line_buffer.capacity == max_lines);
 
     // Read lines and add to ring buffer
     while (reader.takeDelimiterInclusive(delimiter)) |line| {
