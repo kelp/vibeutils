@@ -70,34 +70,42 @@ pub fn main(init: std.process.Init) noreturn {
     common.utilityMain(init, runUniq);
 }
 
-/// Public entry point that reads from stdin or files
-pub fn runUniq(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
-    // Pre-process args: extract METHOD from --all-repeated=METHOD
-    // and replace with bare --all-repeated so argparse sees a bool flag.
-    var all_repeated_method: AllRepeatedMethod = .off;
-    var cleaned_args: std.ArrayListUnmanaged([]const u8) = .empty;
-    defer cleaned_args.deinit(allocator);
+/// Pre-process args: extract METHOD from --all-repeated=METHOD / -D=METHOD and
+/// replace with the bare bool flag so argparse sees a plain boolean. Writes the
+/// cleaned arguments into the caller-owned `cleaned_args` list and the resolved
+/// method into `method_out`. Returns a non-null exit code on an invalid
+/// argument (after printing the error), or null on normal completion.
+fn runUniq_preprocessAllRepeated(
+    allocator: Allocator,
+    args: []const []const u8,
+    cleaned_args: *std.ArrayListUnmanaged([]const u8),
+    method_out: *AllRepeatedMethod,
+    stderr_writer: *std.Io.Writer,
+) !?u8 {
+    std.debug.assert(cleaned_args.items.len == 0);
+    std.debug.assert(method_out.* == .off);
+
     try cleaned_args.ensureTotalCapacity(allocator, args.len);
 
     for (args) |arg| {
         if (std.mem.startsWith(u8, arg, "--all-repeated=")) {
             const method_str = arg["--all-repeated=".len..];
-            all_repeated_method = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
+            method_out.* = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
                 common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument '{s}' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{method_str});
                 return @intFromEnum(common.ExitCode.misuse);
             };
-            if (all_repeated_method == .off) {
+            if (method_out.* == .off) {
                 common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument 'off' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             }
             cleaned_args.appendAssumeCapacity("--all-repeated");
         } else if (std.mem.startsWith(u8, arg, "-D=")) {
             const method_str = arg["-D=".len..];
-            all_repeated_method = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
+            method_out.* = std.meta.stringToEnum(AllRepeatedMethod, method_str) orelse {
                 common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument '{s}' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{method_str});
                 return @intFromEnum(common.ExitCode.misuse);
             };
-            if (all_repeated_method == .off) {
+            if (method_out.* == .off) {
                 common.printErrorWithProgram(allocator, stderr_writer, "uniq", "invalid argument 'off' for '--all-repeated'\nValid arguments are:\n  - 'none'\n  - 'prepend'\n  - 'separate'", .{});
                 return @intFromEnum(common.ExitCode.misuse);
             }
@@ -106,6 +114,129 @@ pub fn runUniq(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
             cleaned_args.appendAssumeCapacity(arg);
         }
     }
+
+    return null;
+}
+
+/// Open the OUTPUT file (positionals[1]) if requested and dispatch to
+/// runUniqWithInput; otherwise dispatch with the caller's stdout writer. The
+/// output-open branch is straight-line work pushed down out of runUniq.
+fn runUniq_dispatchOutput(
+    allocator: Allocator,
+    io: std.Io,
+    opts: UniqArgs,
+    reader: *std.Io.Reader,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(opts.positionals.len <= 2);
+    std.debug.assert(@intFromPtr(reader) != 0);
+
+    const has_output = opts.positionals.len >= 2 and !std.mem.eql(u8, opts.positionals[1], "-");
+    const output_path = if (has_output) opts.positionals[1] else null;
+
+    if (output_path) |out_path| {
+        const output_file = std.Io.Dir.cwd().createFile(
+            io,
+            out_path,
+            .{ .truncate = true },
+        ) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{
+                out_path,
+                common.posixErrorString(err),
+            });
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        defer output_file.close(io);
+
+        var out_buffer: [8192]u8 = undefined;
+        var out_writer = output_file.writerStreaming(io, &out_buffer);
+        defer out_writer.interface.flush() catch {};
+
+        return runUniqWithInput(allocator, opts, reader, &out_writer.interface, stderr_writer);
+    } else {
+        return runUniqWithInput(allocator, opts, reader, stdout_writer, stderr_writer);
+    }
+}
+
+/// Open the INPUT reader (a file at `input_path`, or stdin when null) and
+/// dispatch to runUniq_dispatchOutput. Owns the input buffer, whose lifetime
+/// must span the dispatch call. The file-vs-stdin branch is pushed down here so
+/// the parent stays within the function-length budget.
+fn runUniq_dispatchInput(
+    allocator: Allocator,
+    io: std.Io,
+    opts: UniqArgs,
+    input_path: ?[]const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    std.debug.assert(opts.positionals.len <= 2);
+    // Empty input paths are valid here: the OS rejects them and the error is
+    // reported gracefully below, so the only true precondition is that a
+    // present path is the INPUT positional (positionals[0]).
+    if (input_path != null) {
+        std.debug.assert(opts.positionals.len >= 1);
+    }
+
+    var input_buffer: [8192]u8 = undefined;
+
+    if (input_path) |path| {
+        const input_file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{
+                path,
+                common.posixErrorString(err),
+            });
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        defer input_file.close(io);
+
+        var file_reader = input_file.readerStreaming(io, &input_buffer);
+        return runUniq_dispatchOutput(
+            allocator,
+            io,
+            opts,
+            &file_reader.interface,
+            stdout_writer,
+            stderr_writer,
+        );
+    } else {
+        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &input_buffer);
+        return runUniq_dispatchOutput(
+            allocator,
+            io,
+            opts,
+            &stdin_reader.interface,
+            stdout_writer,
+            stderr_writer,
+        );
+    }
+}
+
+/// Public entry point that reads from stdin or files
+pub fn runUniq(
+    allocator: Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) !u8 {
+    // Pre-process args: extract METHOD from --all-repeated=METHOD
+    // and replace with bare --all-repeated so argparse sees a bool flag.
+    var all_repeated_method: AllRepeatedMethod = .off;
+    var cleaned_args: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer cleaned_args.deinit(allocator);
+
+    if (try runUniq_preprocessAllRepeated(
+        allocator,
+        args,
+        &cleaned_args,
+        &all_repeated_method,
+        stderr_writer,
+    )) |code| {
+        return code;
+    }
+    std.debug.assert(cleaned_args.items.len == args.len);
 
     var parsed_args = common.argparse.ArgParser.parseOrExit(UniqArgs, allocator, cleaned_args.items, "uniq", stderr_writer) catch return @intFromEnum(common.ExitCode.misuse);
     defer allocator.free(parsed_args.positionals);
@@ -136,70 +267,21 @@ pub fn runUniq(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         common.printErrorWithProgram(allocator, stderr_writer, "uniq", "extra operand '{s}'\nTry 'uniq --help' for more information.", .{parsed_args.positionals[2]});
         return @intFromEnum(common.ExitCode.misuse);
     }
+    std.debug.assert(parsed_args.positionals.len <= 2);
 
     // Open input
-    const input_path = if (parsed_args.positionals.len >= 1 and !std.mem.eql(u8, parsed_args.positionals[0], "-"))
-        parsed_args.positionals[0]
-    else
-        null;
+    const has_input = parsed_args.positionals.len >= 1 and
+        !std.mem.eql(u8, parsed_args.positionals[0], "-");
+    const input_path = if (has_input) parsed_args.positionals[0] else null;
 
-    var input_buffer: [8192]u8 = undefined;
-
-    if (input_path) |path| {
-        const input_file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        defer input_file.close(io);
-
-        var file_reader = input_file.readerStreaming(io, &input_buffer);
-
-        // Open output
-        const output_path = if (parsed_args.positionals.len >= 2 and !std.mem.eql(u8, parsed_args.positionals[1], "-"))
-            parsed_args.positionals[1]
-        else
-            null;
-
-        if (output_path) |out_path| {
-            const output_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ out_path, common.posixErrorString(err) });
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            defer output_file.close(io);
-
-            var out_buffer: [8192]u8 = undefined;
-            var out_writer = output_file.writerStreaming(io, &out_buffer);
-            defer out_writer.interface.flush() catch {};
-
-            return runUniqWithInput(allocator, parsed_args, &file_reader.interface, &out_writer.interface, stderr_writer);
-        } else {
-            return runUniqWithInput(allocator, parsed_args, &file_reader.interface, stdout_writer, stderr_writer);
-        }
-    } else {
-        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &input_buffer);
-
-        // Open output
-        const output_path = if (parsed_args.positionals.len >= 2 and !std.mem.eql(u8, parsed_args.positionals[1], "-"))
-            parsed_args.positionals[1]
-        else
-            null;
-
-        if (output_path) |out_path| {
-            const output_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "uniq", "{s}: {s}", .{ out_path, common.posixErrorString(err) });
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            defer output_file.close(io);
-
-            var out_buffer: [8192]u8 = undefined;
-            var out_writer = output_file.writerStreaming(io, &out_buffer);
-            defer out_writer.interface.flush() catch {};
-
-            return runUniqWithInput(allocator, parsed_args, &stdin_reader.interface, &out_writer.interface, stderr_writer);
-        } else {
-            return runUniqWithInput(allocator, parsed_args, &stdin_reader.interface, stdout_writer, stderr_writer);
-        }
-    }
+    return runUniq_dispatchInput(
+        allocator,
+        io,
+        parsed_args,
+        input_path,
+        stdout_writer,
+        stderr_writer,
+    );
 }
 
 /// Internal function that processes input from a reader. Testable with fixed readers.
