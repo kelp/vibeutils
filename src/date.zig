@@ -65,55 +65,16 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
 
         // Long options
         if (arg.len > 1 and arg[1] == '-') {
+            // Help/version short-circuit parseArgs entirely; keep them here.
             if (std.mem.eql(u8, arg, "--help")) {
                 opts.help = true;
                 return .{ .opts = opts, .err = null };
             } else if (std.mem.eql(u8, arg, "--version")) {
                 opts.version = true;
                 return .{ .opts = opts, .err = null };
-            } else if (std.mem.eql(u8, arg, "--utc") or std.mem.eql(u8, arg, "--universal")) {
-                opts.utc = true;
-            } else if (std.mem.startsWith(u8, arg, "--rfc-3339=")) {
-                opts.rfc_3339 = arg["--rfc-3339=".len..];
-            } else if (std.mem.eql(u8, arg, "--rfc-3339")) {
-                // Needs a value as the next argument
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.rfc_3339 = args[i];
-                } else {
-                    err_msg = "option '--rfc-3339' requires an argument";
-                    break;
-                }
-            } else if (std.mem.eql(u8, arg, "--rfc-email")) {
-                opts.rfc_email = true;
-            } else if (std.mem.startsWith(u8, arg, "--date=")) {
-                opts.date_string = arg["--date=".len..];
-            } else if (std.mem.eql(u8, arg, "--date")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.date_string = args[i];
-                } else {
-                    err_msg = "option '--date' requires an argument";
-                    break;
-                }
-            } else if (std.mem.startsWith(u8, arg, "--reference=")) {
-                opts.reference_file = arg["--reference=".len..];
-            } else if (std.mem.eql(u8, arg, "--reference")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.reference_file = args[i];
-                } else {
-                    err_msg = "option '--reference' requires an argument";
-                    break;
-                }
-            } else if (std.mem.startsWith(u8, arg, "--iso-8601")) {
-                if (std.mem.startsWith(u8, arg, "--iso-8601=")) {
-                    opts.iso_8601 = arg["--iso-8601=".len..];
-                } else {
-                    opts.iso_8601 = "date";
-                }
-            } else {
-                err_msg = "unrecognized option";
+            }
+            if (parseArgs_longOption(arg, args, &i, &opts)) |msg| {
+                err_msg = msg;
                 break;
             }
             continue;
@@ -121,106 +82,181 @@ fn parseArgs(args: []const []const u8) struct { opts: DateOptions, err: ?[]const
 
         // Short options
         const flags = arg[1..];
-        var j: usize = 0;
-        while (j < flags.len) : (j += 1) {
-            switch (flags[j]) {
-                'u' => opts.utc = true,
-                'R' => opts.rfc_email = true,
-                'h' => {
-                    opts.help = true;
-                    return .{ .opts = opts, .err = null };
-                },
-                'V' => {
-                    opts.version = true;
-                    return .{ .opts = opts, .err = null };
-                },
-                'd' => {
-                    // -d takes the rest of this arg or next arg
-                    if (j + 1 < flags.len) {
-                        opts.date_string = flags[j + 1 ..];
-                        j = flags.len; // consume rest
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.date_string = args[i];
-                    } else {
-                        err_msg = "option '-d' requires an argument";
-                        return .{ .opts = opts, .err = err_msg };
-                    }
-                },
-                'r' => {
-                    // -r takes the rest of this arg or next arg
-                    if (j + 1 < flags.len) {
-                        opts.reference_file = flags[j + 1 ..];
-                        j = flags.len; // consume rest
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.reference_file = args[i];
-                    } else {
-                        err_msg = "option '-r' requires an argument";
-                        return .{ .opts = opts, .err = err_msg };
-                    }
-                },
-                'j' => opts.no_set_date = true,
-                'f' => {
-                    // -f takes the rest of this arg or next arg
-                    if (j + 1 < flags.len) {
-                        opts.input_fmt = flags[j + 1 ..];
-                        j = flags.len; // consume rest
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.input_fmt = args[i];
-                    } else {
-                        err_msg = "option '-f' requires an argument";
-                        return .{ .opts = opts, .err = err_msg };
-                    }
-                },
-                'z' => {
-                    // -z takes the rest of this arg or next arg
-                    if (j + 1 < flags.len) {
-                        opts.output_zone = flags[j + 1 ..];
-                        j = flags.len; // consume rest
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.output_zone = args[i];
-                    } else {
-                        err_msg = "option '-z' requires an argument";
-                        return .{ .opts = opts, .err = err_msg };
-                    }
-                },
-                'n' => {
-                    // -n: do not set the system time (no-op, we never set time)
-                },
-                'v' => {
-                    // -v: adjust date/time component (stub)
-                    if (j + 1 < flags.len) {
-                        opts.v_adjust = flags[j + 1 ..];
-                        j = flags.len; // consume rest
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.v_adjust = args[i];
-                    } else {
-                        err_msg = "option '-v' requires an argument";
-                        return .{ .opts = opts, .err = err_msg };
-                    }
-                },
-                'I' => {
-                    // -I with optional attached value: -Iseconds, -Idate, etc.
-                    if (j + 1 < flags.len) {
-                        opts.iso_8601 = flags[j + 1 ..];
-                        j = flags.len; // consume rest
-                    } else {
-                        opts.iso_8601 = "date";
-                    }
-                },
-                else => {
-                    err_msg = "unrecognized option";
-                    return .{ .opts = opts, .err = err_msg };
-                },
-            }
+        if (parseArgs_shortOption(flags, args, &i, &opts)) |msg| {
+            err_msg = msg;
+            break;
+        }
+        // -h/-V short-circuit parseArgs entirely; the helper signals via opts.
+        if (opts.help or opts.version) {
+            return .{ .opts = opts, .err = null };
         }
     }
 
     return .{ .opts = opts, .err = err_msg };
+}
+
+/// Parse a single long option (`--`-prefixed), excluding `--help`/`--version`
+/// which short-circuit parseArgs. Mutates opts, advances the cursor for
+/// next-arg cases, and returns an error string or null.
+fn parseArgs_longOption(
+    arg: []const u8,
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch cursor indexes args slice (usize required)
+    opts: *DateOptions,
+) ?[]const u8 {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+    std.debug.assert(arg[1] == '-');
+    std.debug.assert(arg.len != 0);
+
+    if (std.mem.eql(u8, arg, "--utc") or std.mem.eql(u8, arg, "--universal")) {
+        opts.utc = true;
+    } else if (std.mem.startsWith(u8, arg, "--rfc-3339=")) {
+        opts.rfc_3339 = arg["--rfc-3339=".len..];
+    } else if (std.mem.eql(u8, arg, "--rfc-3339")) {
+        // Needs a value as the next argument
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.rfc_3339 = args[i.*];
+        } else {
+            return "option '--rfc-3339' requires an argument";
+        }
+    } else if (std.mem.eql(u8, arg, "--rfc-email")) {
+        opts.rfc_email = true;
+    } else if (std.mem.startsWith(u8, arg, "--date=")) {
+        opts.date_string = arg["--date=".len..];
+    } else if (std.mem.eql(u8, arg, "--date")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.date_string = args[i.*];
+        } else {
+            return "option '--date' requires an argument";
+        }
+    } else if (std.mem.startsWith(u8, arg, "--reference=")) {
+        opts.reference_file = arg["--reference=".len..];
+    } else if (std.mem.eql(u8, arg, "--reference")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.reference_file = args[i.*];
+        } else {
+            return "option '--reference' requires an argument";
+        }
+    } else if (std.mem.startsWith(u8, arg, "--iso-8601")) {
+        if (std.mem.startsWith(u8, arg, "--iso-8601=")) {
+            opts.iso_8601 = arg["--iso-8601=".len..];
+        } else {
+            opts.iso_8601 = "date";
+        }
+    } else {
+        return "unrecognized option";
+    }
+    return null;
+}
+
+/// Parse a run of short option flags (the chars after a single `-`). Mutates
+/// opts, advances the arg cursor for next-arg cases, and returns an error
+/// string or null. Help/version are signalled via opts.help/opts.version so
+/// the parent can reproduce the immediate exit.
+fn parseArgs_shortOption(
+    flags: []const u8,
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch cursor indexes args slice (usize required)
+    opts: *DateOptions,
+) ?[]const u8 {
+    // NOTE: flags may be empty (the bare `-` arg yields arg[1..] == ""), which
+    // the original parseArgs handled by falling through the never-running loop;
+    // do NOT assert flags.len > 0 here (it would change behavior to a panic).
+    std.debug.assert(i.* < args.len);
+    std.debug.assert(args.len > 0);
+
+    var j: usize = 0; // tiger:allow:usize-arch index into flags slice (usize required)
+    while (j < flags.len) : (j += 1) {
+        switch (flags[j]) {
+            'u' => opts.utc = true,
+            'R' => opts.rfc_email = true,
+            'h' => {
+                opts.help = true;
+                return null;
+            },
+            'V' => {
+                opts.version = true;
+                return null;
+            },
+            'd' => {
+                // -d takes the rest of this arg or next arg
+                if (!parseArgs_takeValue(flags, args, i, &j, &opts.date_string)) {
+                    return "option '-d' requires an argument";
+                }
+            },
+            'r' => {
+                // -r takes the rest of this arg or next arg
+                if (!parseArgs_takeValue(flags, args, i, &j, &opts.reference_file)) {
+                    return "option '-r' requires an argument";
+                }
+            },
+            'j' => opts.no_set_date = true,
+            'f' => {
+                // -f takes the rest of this arg or next arg
+                if (!parseArgs_takeValue(flags, args, i, &j, &opts.input_fmt)) {
+                    return "option '-f' requires an argument";
+                }
+            },
+            'z' => {
+                // -z takes the rest of this arg or next arg
+                if (!parseArgs_takeValue(flags, args, i, &j, &opts.output_zone)) {
+                    return "option '-z' requires an argument";
+                }
+            },
+            'n' => {
+                // -n: do not set the system time (no-op, we never set time)
+            },
+            'v' => {
+                // -v: adjust date/time component (stub)
+                if (!parseArgs_takeValue(flags, args, i, &j, &opts.v_adjust)) {
+                    return "option '-v' requires an argument";
+                }
+            },
+            'I' => {
+                // -I with optional attached value: -Iseconds, -Idate, etc.
+                if (j + 1 < flags.len) {
+                    opts.iso_8601 = flags[j + 1 ..];
+                    j = flags.len; // consume rest
+                } else {
+                    opts.iso_8601 = "date";
+                }
+            },
+            else => {
+                return "unrecognized option";
+            },
+        }
+    }
+    return null;
+}
+
+/// Resolve the argument value for a short option that consumes one (`-d`/`-r`/
+/// `-f`/`-z`/`-v`): the rest of the current flag run, else the next arg. Writes
+/// it to dest, advances j (to consume the rest) or i (to the next arg), and
+/// returns true on success, false when no argument is available.
+fn parseArgs_takeValue(
+    flags: []const u8,
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch cursor indexes args slice (usize required)
+    j: *usize, // tiger:allow:usize-arch cursor indexes flags slice (usize required)
+    dest: *?[]const u8,
+) bool {
+    std.debug.assert(flags.len > 0);
+    std.debug.assert(j.* < flags.len);
+
+    if (j.* + 1 < flags.len) {
+        dest.* = flags[j.* + 1 ..];
+        j.* = flags.len; // consume rest
+        return true;
+    } else if (i.* + 1 < args.len) {
+        i.* += 1;
+        dest.* = args[i.*];
+        return true;
+    }
+    return false;
 }
 
 /// Resolve the timestamp to use based on options
@@ -296,6 +332,8 @@ fn parseIso8601(ds: []const u8) TimestampResult {
 
     if (month < 1 or month > 12) return err_result;
     if (day < 1 or day > 31) return err_result;
+    std.debug.assert(month >= 1);
+    std.debug.assert(month <= 12);
 
     var hour: i32 = 0;
     var minute: i32 = 0;
@@ -307,35 +345,8 @@ fn parseIso8601(ds: []const u8) TimestampResult {
 
     // Parse optional time component
     if (ds.len > 10) {
-        if (ds[10] != 'T' and ds[10] != ' ') return err_result;
-        const time_str = ds[11..];
-        if (time_str.len < 5) return err_result;
-        if (time_str[2] != ':') return err_result;
-
-        hour = std.fmt.parseInt(i32, time_str[0..2], 10) catch return err_result;
-        minute = std.fmt.parseInt(i32, time_str[3..5], 10) catch return err_result;
-
-        if (time_str.len >= 8 and time_str[5] == ':') {
-            second = std.fmt.parseInt(i32, time_str[6..8], 10) catch return err_result;
-        }
-
-        // Parse timezone suffix after the time component
-        // Look for Z, +HH:MM, or -HH:MM
-        const seconds_end: usize = if (time_str.len >= 8 and time_str[5] == ':') 8 else 5;
-        if (time_str.len > seconds_end) {
-            const tz_str = time_str[seconds_end..];
-            if (tz_str.len == 1 and tz_str[0] == 'Z') {
-                has_tz = true;
-                tz_offset_secs = 0;
-            } else if (tz_str.len == 6 and (tz_str[0] == '+' or tz_str[0] == '-') and tz_str[3] == ':') {
-                const tz_hours = std.fmt.parseInt(i32, tz_str[1..3], 10) catch return err_result;
-                const tz_mins = std.fmt.parseInt(i32, tz_str[4..6], 10) catch return err_result;
-                tz_offset_secs = @as(i64, tz_hours) * 3600 + @as(i64, tz_mins) * 60;
-                if (tz_str[0] == '-') {
-                    tz_offset_secs = -tz_offset_secs;
-                }
-                has_tz = true;
-            }
+        if (!parseIso8601_parseTime(ds, &hour, &minute, &second, &tz_offset_secs, &has_tz)) {
+            return err_result;
         }
     }
 
@@ -365,6 +376,58 @@ fn parseIso8601(ds: []const u8) TimestampResult {
         if (result == -1) return err_result;
         return .{ .secs = @intCast(result), .ns = 0, .err = null };
     }
+}
+
+/// Parse the time + timezone component of an ISO 8601 string (everything after
+/// the `YYYY-MM-DD` date part). Writes parsed values through the out-params and
+/// returns true on success, false on the "invalid date" error so the parent
+/// can map it to err_result. Called only when ds.len > 10.
+fn parseIso8601_parseTime(
+    ds: []const u8,
+    hour: *i32,
+    minute: *i32,
+    second: *i32,
+    tz_offset_secs: *i64,
+    has_tz: *bool,
+) bool {
+    std.debug.assert(ds.len > 10);
+    std.debug.assert(hour.* == 0);
+    std.debug.assert(minute.* == 0);
+
+    if (ds[10] != 'T' and ds[10] != ' ') return false;
+    const time_str = ds[11..];
+    if (time_str.len < 5) return false;
+    if (time_str[2] != ':') return false;
+
+    hour.* = std.fmt.parseInt(i32, time_str[0..2], 10) catch return false;
+    minute.* = std.fmt.parseInt(i32, time_str[3..5], 10) catch return false;
+
+    if (time_str.len >= 8 and time_str[5] == ':') {
+        second.* = std.fmt.parseInt(i32, time_str[6..8], 10) catch return false;
+    }
+
+    // Parse timezone suffix after the time component
+    // Look for Z, +HH:MM, or -HH:MM
+    const seconds_end: usize = // tiger:allow:usize-arch index into time_str slice
+        if (time_str.len >= 8 and time_str[5] == ':') 8 else 5;
+    if (time_str.len > seconds_end) {
+        const tz_str = time_str[seconds_end..];
+        if (tz_str.len == 1 and tz_str[0] == 'Z') {
+            has_tz.* = true;
+            tz_offset_secs.* = 0;
+        } else if (tz_str.len == 6 and
+            (tz_str[0] == '+' or tz_str[0] == '-') and tz_str[3] == ':')
+        {
+            const tz_hours = std.fmt.parseInt(i32, tz_str[1..3], 10) catch return false;
+            const tz_mins = std.fmt.parseInt(i32, tz_str[4..6], 10) catch return false;
+            tz_offset_secs.* = @as(i64, tz_hours) * 3600 + @as(i64, tz_mins) * 60;
+            if (tz_str[0] == '-') {
+                tz_offset_secs.* = -tz_offset_secs.*;
+            }
+            has_tz.* = true;
+        }
+    }
+    return true;
 }
 
 /// Determine the format string based on options
@@ -452,82 +515,29 @@ fn formatDate(
     epoch_secs: i64,
     ns: i64,
 ) ![]const u8 {
+    // These nanosecond bounds are the documented range maintained by callers
+    // (resolveTimestamp), asserted here as real domain invariants.
+    std.debug.assert(ns >= -std.time.ns_per_s);
+    std.debug.assert(ns < std.time.ns_per_s);
+
     // Pre-process format string to replace custom specifiers
     // We handle: %N (nanoseconds), %s (epoch seconds), %:z (timezone +HH:MM),
     //            %% (literal %), %n (newline), %t (tab)
     var processed = try std.ArrayList(u8).initCapacity(allocator, format.len);
     defer processed.deinit(allocator);
 
-    var tz_buf: [8]u8 = undefined;
-
     var fi: usize = 0;
     while (fi < format.len) {
         if (format[fi] == '%' and fi + 1 < format.len) {
-            const next = format[fi + 1];
-            switch (next) {
-                's' => {
-                    // Epoch seconds - format directly
-                    var secs_buf: [24]u8 = undefined;
-                    const secs_str = std.fmt.bufPrint(&secs_buf, "{d}", .{epoch_secs}) catch "0";
-                    try processed.appendSlice(allocator, secs_str);
-                    fi += 2;
-                },
-                'N' => {
-                    // Nanoseconds - 9-digit zero-padded
-                    var ns_buf: [16]u8 = undefined;
-                    const abs_ns: u64 = if (ns < 0) @intCast(-ns) else @intCast(ns);
-                    const ns_str = std.fmt.bufPrint(&ns_buf, "{d:0>9}", .{abs_ns}) catch "000000000";
-                    try processed.appendSlice(allocator, ns_str);
-                    fi += 2;
-                },
-                'z' => {
-                    // Numeric timezone offset without colon (+HHMM)
-                    // Handle directly to ensure tm_gmtoff is respected (macOS strftime bug)
-                    const offset_secs = tm.tm_gmtoff;
-                    const abs_offset: u64 = if (offset_secs < 0) @intCast(-offset_secs) else @intCast(offset_secs);
-                    const sign: u8 = if (offset_secs < 0) '-' else '+';
-                    const hours = @divTrunc(abs_offset, 3600);
-                    const minutes = @divTrunc(@mod(abs_offset, 3600), 60);
-                    const tz_str = std.fmt.bufPrint(&tz_buf, "{c}{d:0>2}{d:0>2}", .{
-                        sign,
-                        hours,
-                        minutes,
-                    }) catch "+0000";
-                    try processed.appendSlice(allocator, tz_str);
-                    fi += 2;
-                },
-                ':' => {
-                    // Check for %:z (timezone with colon)
-                    if (fi + 2 < format.len and format[fi + 2] == 'z') {
-                        const tz_str = formatTzOffset(&tz_buf, tm);
-                        try processed.appendSlice(allocator, tz_str);
-                        fi += 3;
-                    } else {
-                        // Pass through unknown %: sequences
-                        try processed.append(allocator, '%');
-                        fi += 1;
-                    }
-                },
-                '%' => {
-                    // Literal % - pass through to strftime which handles %%
-                    try processed.appendSlice(allocator, "%%");
-                    fi += 2;
-                },
-                'n' => {
-                    try processed.append(allocator, '\n');
-                    fi += 2;
-                },
-                't' => {
-                    try processed.append(allocator, '\t');
-                    fi += 2;
-                },
-                else => {
-                    // Pass through to strftime
-                    try processed.append(allocator, '%');
-                    try processed.append(allocator, next);
-                    fi += 2;
-                },
-            }
+            fi = try formatDate_appendSpecifier(
+                allocator,
+                &processed,
+                format,
+                fi,
+                tm,
+                epoch_secs,
+                ns,
+            );
         } else {
             try processed.append(allocator, format[fi]);
             fi += 1;
@@ -549,6 +559,104 @@ fn formatDate(
     }
 
     return allocator.dupe(u8, output_buf[0..len]);
+}
+
+/// Handle one `%`-led specifier at format[fi] (parent guarantees a following
+/// char). Appends the expansion to processed and returns the new fi cursor
+/// (number of consumed chars advanced). Custom specifiers (%s/%N/%z/%:z) are
+/// expanded here; everything else is passed through to strftime verbatim.
+fn formatDate_appendSpecifier(
+    allocator: Allocator,
+    processed: *std.ArrayList(u8),
+    format: []const u8,
+    fi: usize, // tiger:allow:usize-arch cursor indexes format slice (usize required)
+    tm: *const time.c_tm,
+    epoch_secs: i64,
+    ns: i64,
+) !usize { // tiger:allow:usize-arch returns the format-slice cursor (usize required)
+    std.debug.assert(fi < format.len);
+    std.debug.assert(format[fi] == '%');
+    std.debug.assert(fi + 1 < format.len);
+    std.debug.assert(format.len > 0);
+
+    var tz_buf: [8]u8 = undefined;
+    const next = format[fi + 1];
+    switch (next) {
+        's' => {
+            // Epoch seconds - format directly
+            var secs_buf: [24]u8 = undefined;
+            const secs_str = std.fmt.bufPrint(&secs_buf, "{d}", .{epoch_secs}) catch "0";
+            try processed.appendSlice(allocator, secs_str);
+            return fi + 2;
+        },
+        'N' => {
+            // Nanoseconds - 9-digit zero-padded
+            var ns_buf: [16]u8 = undefined;
+            const abs_ns: u64 = if (ns < 0) @intCast(-ns) else @intCast(ns);
+            const ns_str = std.fmt.bufPrint(&ns_buf, "{d:0>9}", .{abs_ns}) catch "000000000";
+            try processed.appendSlice(allocator, ns_str);
+            return fi + 2;
+        },
+        'z' => {
+            // Numeric timezone offset without colon (+HHMM)
+            // Handle directly to ensure tm_gmtoff is respected (macOS strftime bug)
+            const tz_str = formatDate_appendSpecifier_tzNumeric(&tz_buf, tm);
+            try processed.appendSlice(allocator, tz_str);
+            return fi + 2;
+        },
+        ':' => {
+            // Check for %:z (timezone with colon)
+            if (fi + 2 < format.len and format[fi + 2] == 'z') {
+                const tz_str = formatTzOffset(&tz_buf, tm);
+                try processed.appendSlice(allocator, tz_str);
+                return fi + 3;
+            } else {
+                // Pass through unknown %: sequences
+                try processed.append(allocator, '%');
+                return fi + 1;
+            }
+        },
+        '%' => {
+            // Literal % - pass through to strftime which handles %%
+            try processed.appendSlice(allocator, "%%");
+            return fi + 2;
+        },
+        'n' => {
+            try processed.append(allocator, '\n');
+            return fi + 2;
+        },
+        't' => {
+            try processed.append(allocator, '\t');
+            return fi + 2;
+        },
+        else => {
+            // Pass through to strftime
+            try processed.append(allocator, '%');
+            try processed.append(allocator, next);
+            return fi + 2;
+        },
+    }
+}
+
+/// Format tm's UTC offset as +HHMM (no colon) into buf for the `%z` specifier.
+/// Handled directly rather than via strftime so tm_gmtoff is respected (macOS
+/// strftime bug). Returns the formatted slice (or "+0000" on bufPrint failure).
+fn formatDate_appendSpecifier_tzNumeric(buf: []u8, tm: *const time.c_tm) []const u8 {
+    std.debug.assert(buf.len >= 5);
+    std.debug.assert(tm.tm_gmtoff >= -86400);
+    std.debug.assert(tm.tm_gmtoff <= 86400);
+
+    const offset_secs = tm.tm_gmtoff;
+    const abs_offset: u64 = if (offset_secs < 0) @intCast(-offset_secs) else @intCast(offset_secs);
+    const sign: u8 = if (offset_secs < 0) '-' else '+';
+    const hours = @divTrunc(abs_offset, 3600);
+    const minutes = @divTrunc(@mod(abs_offset, 3600), 60);
+    const tz_str = std.fmt.bufPrint(buf, "{c}{d:0>2}{d:0>2}", .{
+        sign,
+        hours,
+        minutes,
+    }) catch "+0000";
+    return tz_str;
 }
 
 /// Main date utility logic
