@@ -11,6 +11,17 @@
   source. CI (`test.yml`/`integration.yml`) and the release
   build all run on `macos-26`, plus Linux x86_64 and arm64.
 
+### Fixed
+- Stop `ls` from printing a false "git command not found in
+  PATH" warning (#41). `findGitRoot` now resolves relative start
+  paths through `std.process.currentPath` instead of
+  `realPath` on the cwd handle, so it locates the repository
+  root from a subdirectory. Git status now degrades silently
+  when no repository is found; a warning prints only on a real
+  initialization error (e.g. out of memory) under
+  `--git=always`. Re-enabled `src/common/git.zig`'s unit tests
+  in the build, which had been silently excluded.
+
 ## v0.10.1 — 2026-05-28
 
 ### Fixed
@@ -23,6 +34,7 @@
   few calls `free` needs (`host_statistics64`,
   `mach_host_self`, `vm_statistics64_data_t`). These track
   the stable kernel ABI and are immune to SDK header churn.
+>>>>>>> origin/main
 
 ## v0.10.0 — 2026-05-26
 

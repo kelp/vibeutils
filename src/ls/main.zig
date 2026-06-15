@@ -278,11 +278,12 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     };
 
     // Initialize GitContext once if git status is requested
+    const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
     var git_context: ?types.GitContext = null;
     if (options.show_git_status) {
         git_context = types.GitContext.init(allocator, io, ".");
         if (git_context) |*ctx| {
-            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", options.show_git_status);
+            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", git_explicit_always);
         }
     }
     defer if (git_context) |*ctx| ctx.deinit();
