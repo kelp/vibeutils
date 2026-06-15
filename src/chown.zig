@@ -102,22 +102,9 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     const positionals = parsed_args.positionals;
 
     // Convert arguments to internal options
-    const options = ChownOptions{
-        .changes = parsed_args.changes,
-        .silent = parsed_args.silent or parsed_args.quiet,
-        .verbose = parsed_args.verbose,
-        .no_dereference = parsed_args.no_dereference,
-        .traverse_cmdline_symlinks = parsed_args.H,
-        .traverse_all_symlinks = parsed_args.L,
-        .no_traverse_symlinks = parsed_args.P,
-        .recursive = parsed_args.recursive,
-        .reference_file = parsed_args.reference,
-        .numeric_ids = parsed_args.numeric_ids,
-        .no_cross_device = parsed_args.no_cross_device,
-        .preserve_root = parsed_args.preserve_root,
-    };
+    const options = runChown_buildOptions(parsed_args);
 
-    // Extract owner spec and files based on whether --reference is used
+    // Extract owner spec and file list based on whether --reference is used.
     const owner_spec: []const u8 = if (parsed_args.reference != null) blk: {
         // With --reference, we only need files (no owner spec)
         if (positionals.len < 1) {
@@ -134,11 +121,84 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
         break :blk positionals[0];
     };
 
-    // Extract file list based on mode
     const files: []const []const u8 = if (parsed_args.reference != null)
         positionals
     else
         positionals[1..];
+
+    // Reject --preserve-root on '/' and non-numeric specs under -n. A
+    // non-null result is the exit code to return after reporting the error.
+    if (runChown_validate(allocator, files, owner_spec, options, stderr_writer)) |code| {
+        return code;
+    }
+
+    // Parse ownership specification once before the file loop. A null result
+    // signals the error was already reported and we should return failure.
+    const ownership = (try runChown_resolveOwnership(
+        allocator,
+        io,
+        options,
+        owner_spec,
+        stderr_writer,
+    )) orelse return @intFromEnum(common.ExitCode.general_error);
+
+    // Process each file with pre-parsed ownership
+    return runChown_processFiles(
+        allocator,
+        io,
+        files,
+        ownership,
+        options,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+/// Build the internal ChownOptions from parsed command-line arguments. Pure
+/// field mapping lifted verbatim from runChown to keep the parent under the
+/// 70-line cap; -f/--quiet collapse to a single silent flag.
+fn runChown_buildOptions(parsed_args: ChownArgs) ChownOptions {
+    // -L/-P and -H/-P are mutually exclusive traverse flags (negative space).
+    const both_traverse_all_and_none = parsed_args.L and parsed_args.P;
+    const both_traverse_cmdline_and_none = parsed_args.H and parsed_args.P;
+    assert(!both_traverse_all_and_none);
+    assert(!both_traverse_cmdline_and_none);
+    return ChownOptions{
+        .changes = parsed_args.changes,
+        .silent = parsed_args.silent or parsed_args.quiet,
+        .verbose = parsed_args.verbose,
+        .no_dereference = parsed_args.no_dereference,
+        .traverse_cmdline_symlinks = parsed_args.H,
+        .traverse_all_symlinks = parsed_args.L,
+        .no_traverse_symlinks = parsed_args.P,
+        .recursive = parsed_args.recursive,
+        .reference_file = parsed_args.reference,
+        .numeric_ids = parsed_args.numeric_ids,
+        .no_cross_device = parsed_args.no_cross_device,
+        .preserve_root = parsed_args.preserve_root,
+    };
+}
+
+/// Validate operands before the file loop: --preserve-root refuses recursive
+/// operation on '/', and -n requires a purely numeric owner spec. Returns the
+/// exit code to surface (after reporting the error) when validation fails, or
+/// null when all checks pass. Branching is centralized here on behalf of the
+/// parent so runChown stays under the line cap.
+fn runChown_validate(
+    allocator: std.mem.Allocator,
+    files: []const []const u8,
+    owner_spec: []const u8,
+    options: ChownOptions,
+    stderr_writer: *std.Io.Writer,
+) ?u8 {
+    // -n only constrains an explicit spec; reference mode leaves owner_spec empty.
+    const numeric_applies = options.numeric_ids and owner_spec.len > 0;
+    // When -n applies there must be a spec to validate (positive space); a
+    // spec under -n is never the empty string (negative space).
+    if (numeric_applies) {
+        assert(owner_spec.len > 0);
+        assert(!(owner_spec.len == 0));
+    }
 
     // --preserve-root: refuse to operate recursively on '/'
     if (options.preserve_root and options.recursive) {
@@ -151,25 +211,46 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     }
 
     // -n: validate that owner spec uses only numeric IDs
-    if (options.numeric_ids and owner_spec.len > 0) {
+    if (numeric_applies) {
         if (!isNumericOwnerSpec(owner_spec)) {
             common.printErrorWithProgram(allocator, stderr_writer, "chown", "invalid spec: '{s}' (numeric IDs only with -n)", .{owner_spec});
             return @intFromEnum(common.ExitCode.misuse);
         }
     }
 
-    // Parse ownership specification once before the file loop
-    var ownership: common.user_group.OwnershipSpec = undefined;
+    return null;
+}
 
+/// Resolve the ownership spec once before the file loop, either from a
+/// --reference file or by parsing owner_spec. On error it reports via
+/// handleError and returns null so the caller returns general_error; on
+/// success it returns the parsed OwnershipSpec (warning about octal-mode
+/// confusion when applicable).
+fn runChown_resolveOwnership(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ChownOptions,
+    owner_spec: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !?common.user_group.OwnershipSpec {
+    // Exactly one source supplies ownership: a reference file XOR an owner spec.
+    const has_spec = owner_spec.len > 0;
+    const has_reference = options.reference_file != null;
+    const has_some_source = has_spec or has_reference;
+    const has_both_sources = has_spec and has_reference;
+    assert(has_some_source); // Positive space: at least one source present.
+    assert(!has_both_sources); // Negative space: never both at once.
+
+    var ownership: common.user_group.OwnershipSpec = undefined;
     if (options.reference_file) |ref_path| {
         ownership = getOwnershipFromReference(io, ref_path) catch |err| {
             handleError(allocator, ref_path, err, options, stderr_writer);
-            return @intFromEnum(common.ExitCode.general_error);
+            return null;
         };
     } else {
         ownership = common.user_group.OwnershipSpec.parse(owner_spec, allocator) catch |err| {
             handleError(allocator, owner_spec, err, options, stderr_writer);
-            return @intFromEnum(common.ExitCode.general_error);
+            return null;
         };
     }
 
@@ -178,7 +259,25 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
         common.printWarningWithProgram(allocator, stderr_writer, "chown", "'{s}' looks like a permission mode; did you mean 'chmod {s}'?", .{ owner_spec, owner_spec });
     }
 
-    // Process each file with pre-parsed ownership
+    return ownership;
+}
+
+/// Apply the pre-parsed ownership to each file, dispatching to the recursive
+/// walker or the single-file path per the recursive option. Returns the
+/// accumulated exit code (0 on full success, general_error if any file failed).
+fn runChown_processFiles(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    files: []const []const u8,
+    ownership: common.user_group.OwnershipSpec,
+    options: ChownOptions,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    // The exit code starts at success and only ever moves to general_error.
+    assert(@intFromEnum(common.ExitCode.success) == 0);
+    assert(@intFromEnum(common.ExitCode.general_error) != 0);
+
     var exit_code: u8 = 0;
     for (files) |file_path| {
         if (options.recursive) {
@@ -193,6 +292,11 @@ pub fn runChown(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
         }
     }
 
+    // Exit code is either success or general_error, never any other value.
+    const is_success = exit_code == 0;
+    const is_general_error = exit_code == @intFromEnum(common.ExitCode.general_error);
+    const is_known_code = is_success or is_general_error;
+    assert(is_known_code);
     return exit_code;
 }
 
