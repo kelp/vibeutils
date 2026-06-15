@@ -182,26 +182,19 @@ pub fn parseTimeStyle(arg: []const u8) !TimeStyle {
     return std.meta.stringToEnum(TimeStyle, arg) orelse error.InvalidTimeStyle;
 }
 
-/// Git initialization errors for better error reporting
+/// Git initialization errors for better error reporting.
+///
+/// A missing repository is signalled by `findGitRoot` returning null, not an
+/// error, so `GitContext.init` leaves `init_error` null in that case. The only
+/// surfaced errors are unexpected I/O failures (e.g. OOM), hence the single
+/// variant. The message is the detail appended after "git status unavailable:".
 pub const GitInitError = enum {
-    not_a_repository,
-    permission_denied,
-    corrupted_repository,
-    git_command_not_found,
-    network_error,
-    disk_full,
     unknown_error,
 
     /// Get a user-friendly error message
     pub fn getMessage(self: GitInitError) []const u8 {
         return switch (self) {
-            .not_a_repository => "not a git repository (or any of the parent directories)",
-            .permission_denied => "permission denied accessing git repository",
-            .corrupted_repository => "git repository appears to be corrupted",
-            .git_command_not_found => "git command not found in PATH",
-            .network_error => "network error during git operation",
-            .disk_full => "disk full during git operation",
-            .unknown_error => "unknown git error",
+            .unknown_error => "unexpected error",
         };
     }
 };
@@ -250,8 +243,14 @@ pub const GitContext = struct {
     }
 
     /// Report initialization issues if git operations were requested but unavailable
-    pub fn reportInitializationIssues(self: *const GitContext, allocator: std.mem.Allocator, stderr_writer: anytype, prog_name: []const u8, git_features_requested: bool) void {
-        if (git_features_requested and self.init_error != null) {
+    pub fn reportInitializationIssues(
+        self: *const GitContext,
+        allocator: std.mem.Allocator,
+        stderr_writer: anytype,
+        prog_name: []const u8,
+        warn_when_unavailable: bool,
+    ) void {
+        if (warn_when_unavailable and self.init_error != null) {
             if (self.init_error) |err| {
                 common.printWarningWithProgram(allocator, stderr_writer, prog_name, "git status unavailable: {s}", .{err.getMessage()});
             }
@@ -260,14 +259,55 @@ pub const GitContext = struct {
 };
 
 /// Map system errors to GitInitError
-fn mapGitError(err: anyerror) GitInitError {
-    return switch (err) {
-        error.NotFound => GitInitError.not_a_repository,
-        error.AccessDenied => GitInitError.permission_denied,
-        error.InvalidFormat => GitInitError.corrupted_repository,
-        error.FileNotFound => GitInitError.git_command_not_found,
-        error.NetworkUnreachable => GitInitError.network_error,
-        error.NoSpaceLeft => GitInitError.disk_full,
-        else => GitInitError.unknown_error,
+fn mapGitError(_: anyerror) GitInitError {
+    // findGitRoot returns null (not an error) for a missing repo; a surfaced
+    // error is always an unexpected I/O failure (e.g. OOM).
+    return GitInitError.unknown_error;
+}
+
+const testing = std.testing;
+
+test "reportInitializationIssues stays silent in auto mode" {
+    // Auto mode must not surface git warnings even when init failed, so a
+    // user who has not opted in never sees spurious noise on stderr.
+    var ctx = GitContext{
+        .repo = null,
+        .allocator = testing.allocator,
+        .init_error = .unknown_error,
     };
+
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    ctx.reportInitializationIssues(testing.allocator, &w, "ls", false);
+    try testing.expectEqual(@as(usize, 0), w.buffered().len);
+
+    // Explicit --git=always (warn_when_unavailable = true) must surface the
+    // truthful message and must never claim the git command is missing.
+    w = .fixed(&buf);
+    ctx.reportInitializationIssues(testing.allocator, &w, "ls", true);
+    const output = w.buffered();
+    try testing.expect(std.mem.find(u8, output, "git status unavailable") != null);
+    try testing.expect(std.mem.find(u8, output, "command not found") == null);
+}
+
+test "GitContext.init in a non-repo yields no init_error" {
+    // A genuine non-repository directory must initialize cleanly: findGitRoot
+    // returns null (not an error), so no false init_error is recorded. The
+    // test directory must live OUTSIDE any git repository, so we anchor it
+    // under the system temp dir rather than testing.tmpDir (which nests under
+    // the project tree and would be found by the upward .git walk).
+    const io = testing.io;
+    var tmp_root = try std.Io.Dir.openDirAbsolute(io, "/tmp", .{});
+    defer tmp_root.close(io);
+
+    const dir_name = "vibeutils_ls_nonrepo_test";
+    tmp_root.deleteTree(io, dir_name) catch {};
+    try tmp_root.createDirPath(io, dir_name);
+    defer tmp_root.deleteTree(io, dir_name) catch {};
+
+    const abs = "/tmp/" ++ dir_name;
+    var ctx = GitContext.init(testing.allocator, io, abs);
+    defer ctx.deinit();
+    try testing.expect(ctx.repo == null);
+    try testing.expect(ctx.init_error == null);
 }

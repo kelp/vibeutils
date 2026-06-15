@@ -170,49 +170,52 @@ pub const GitRepo = struct {
     }
 };
 
-/// Find the git repository root directory
+/// Find the git repository root directory.
+///
+/// Resolves `start_path` to an absolute path, then walks up looking for a
+/// `.git` entry (file or directory). The only production caller (GitRepo.init
+/// via GitContext) passes "." so the process cwd is exactly the directory we
+/// want to resolve. We fill the absolute path with `std.process.currentPath`,
+/// not `std.Io.Dir.cwd().realPath`: on the 0.16 Threaded backend the cwd
+/// handle is AT.FDCWD and realPath on it returns error.FileNotFound. That
+/// error escaped here, was mapped to the bogus "git command not found"
+/// warning, and is the root cause of issue #41. The old code also discarded
+/// the realPath result and walked from the relative "." literal, which only
+/// happened to work when the cwd already was the repo root.
 fn findGitRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8) !?[]const u8 {
+    std.debug.assert(start_path.len > 0);
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const abs_start: []const u8 = if (std.fs.path.isAbsolute(start_path))
-        start_path
-    else blk: {
-        const len = try std.Io.Dir.cwd().realPath(io, &path_buf);
-        // realPath gives us the cwd, not the full path to start_path; just use start_path as-is
-        // if it's relative we fall back to resolving it via openDir
-        _ = len;
+    var path: []const u8 = if (std.fs.path.isAbsolute(start_path)) blk: {
         break :blk start_path;
+    } else blk: {
+        const cwd_len = try std.process.currentPath(io, &path_buf);
+        break :blk path_buf[0..cwd_len];
     };
+    std.debug.assert(path.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(path));
 
-    var current_path = try allocator.dupe(u8, abs_start);
+    // Bounded walk to the filesystem root. No real tree is this deep, so the
+    // bound only guards against a pathological or adversarial path.
+    const max_git_walk_depth = 256;
+    var depth: usize = 0;
+    while (depth < max_git_walk_depth) : (depth += 1) {
+        std.debug.assert(path.len > 0);
 
-    while (true) {
-        // Check if .git exists in current directory
-        const git_path = try std.fmt.allocPrint(allocator, "{s}/.git", .{current_path});
-        defer allocator.free(git_path);
+        var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return null;
+        defer dir.close(io);
 
-        // Check if .git exists (file or directory)
-        std.Io.Dir.accessAbsolute(io, git_path, .{}) catch |err| switch (err) {
-            error.FileNotFound => {
-                // Move up one directory
-                const parent = std.fs.path.dirname(current_path);
-                if (parent == null or std.mem.eql(u8, parent.?, current_path)) {
-                    // Reached filesystem root
-                    allocator.free(current_path);
-                    return null;
-                }
+        // statFile detects a .git that is a file (worktree/submodule) or dir.
+        if (dir.statFile(io, ".git", .{})) |_| {
+            return try allocator.dupe(u8, path);
+        } else |_| {}
 
-                const new_path = try allocator.dupe(u8, parent.?);
-                allocator.free(current_path);
-                current_path = new_path;
-                continue;
-            },
-            else => return err,
-        };
-
-        // Found .git directory/file
-        return current_path;
+        const parent = std.fs.path.dirname(path) orelse return null;
+        if (std.mem.eql(u8, parent, path)) return null;
+        path = parent;
     }
+
+    return null;
 }
 
 /// Parse git status characters into GitStatus enum
@@ -273,7 +276,7 @@ test "findGitRoot in non-git directory" {
     defer tmp_dir.cleanup();
 
     // Create a nested directory to ensure we're not in a git repo
-    try tmp_dir.dir.makePath(io, "test/nested/deep");
+    try tmp_dir.dir.createDirPath(io, "test/nested/deep");
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const nested_dir = try tmp_dir.dir.openDir(io, "test/nested/deep", .{});
@@ -337,7 +340,7 @@ test "GitRepo init in non-git directory" {
     defer tmp_dir.cleanup();
 
     // Create a nested directory to ensure we're not in a git repo
-    try tmp_dir.dir.makePath(io, "test/nested/deep");
+    try tmp_dir.dir.createDirPath(io, "test/nested/deep");
 
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const nested_dir = try tmp_dir.dir.openDir(io, "test/nested/deep", .{});
@@ -351,4 +354,55 @@ test "GitRepo init in non-git directory" {
         // Verify the repo has a valid root path
         try testing.expect(r.root_path.len > 0);
     }
+}
+
+test "findGitRoot resolves repo from a relative start path in a subdirectory" {
+    const io = testing.io;
+    const allocator = testing.allocator;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "repo/sub/deep");
+    {
+        var m = try tmp_dir.dir.createFile(io, "repo/.git", .{});
+        m.close(io);
+    }
+
+    // Capture original cwd as a Dir handle and restore it after.
+    var orig_cwd = try std.Io.Dir.cwd().openDir(io, ".", .{});
+    defer {
+        std.process.setCurrentDir(io, orig_cwd) catch {};
+        orig_cwd.close(io);
+    }
+
+    var deep = try tmp_dir.dir.openDir(io, "repo/sub/deep", .{});
+    defer deep.close(io);
+    try std.process.setCurrentDir(io, deep);
+
+    // BUG #41: relative "." from a subdir errors (cwd().realPath) instead of
+    // resolving to the repo root.
+    const result = try findGitRoot(allocator, io, ".");
+    try testing.expect(result != null);
+    defer allocator.free(result.?);
+    try testing.expect(std.mem.endsWith(u8, result.?, "repo"));
+}
+
+test "findGitRoot locates root from an absolute subdirectory path" {
+    const io = testing.io;
+    const allocator = testing.allocator;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "repo/sub/deep");
+    {
+        var m = try tmp_dir.dir.createFile(io, "repo/.git", .{});
+        m.close(io);
+    }
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var deep_dir = try tmp_dir.dir.openDir(io, "repo/sub/deep", .{});
+    defer deep_dir.close(io);
+    const deep_len = try deep_dir.realPath(io, &path_buf);
+    const result = try findGitRoot(allocator, io, path_buf[0..deep_len]);
+    try testing.expect(result != null);
+    defer allocator.free(result.?);
+    try testing.expect(std.mem.endsWith(u8, result.?, "repo"));
 }

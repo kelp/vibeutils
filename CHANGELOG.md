@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Stop `ls` from printing a false "git command not found in
+  PATH" warning (#41). `findGitRoot` now resolves relative start
+  paths through `std.process.currentPath` instead of
+  `realPath` on the cwd handle, so it locates the repository
+  root from a subdirectory. Git status now degrades silently
+  when no repository is found; a warning prints only on a real
+  initialization error (e.g. out of memory) under
+  `--git=always`. Re-enabled `src/common/git.zig`'s unit tests
+  in the build, which had been silently excluded.
+
 ## v0.10.0 — 2026-05-26
 
 ### Infrastructure

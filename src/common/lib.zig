@@ -571,4 +571,5 @@ test "posixErrorString: unknown error falls back to @errorName" {
 // Import tests to ensure they are run as part of the test suite
 test {
     // All common module tests are included via individual test blocks
+    _ = @import("git.zig");
 }
