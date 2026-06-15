@@ -118,68 +118,8 @@ pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent
 
     // Handle -S: split string into tokens, process as assignments/command
     if (options.split_string) |split_str| {
-        var split_assignments = std.ArrayListUnmanaged(Assignment).empty;
-        defer split_assignments.deinit(allocator);
-        var split_command = std.ArrayListUnmanaged([]const u8).empty;
-        var in_command = false;
-
-        var token_it = std.mem.tokenizeAny(u8, split_str, " \t");
-        while (token_it.next()) |token| {
-            if (in_command) {
-                split_command.append(allocator, token) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            } else if (std.mem.indexOfScalar(u8, token, '=')) |eq_pos| {
-                split_assignments.append(allocator, .{
-                    .name = token[0..eq_pos],
-                    .value = token[eq_pos + 1 ..],
-                }) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            } else {
-                // First non-assignment token starts the command
-                in_command = true;
-                split_command.append(allocator, token) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-        }
-
-        // Merge -S assignments with any from the command line
-        if (split_assignments.items.len > 0) {
-            var merged = std.ArrayListUnmanaged(Assignment).empty;
-            // Add original assignments first
-            for (options.assignments) |a| {
-                merged.append(allocator, a) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-            // Then -S assignments
-            for (split_assignments.items) |a| {
-                merged.append(allocator, a) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-            // Free old owned assignments before replacing
-            if (options.owns_memory and options.assignments.len > 0) {
-                allocator.free(options.assignments);
-            }
-            options.assignments = merged.toOwnedSlice(allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-        }
-
-        // -S command tokens override if no command was set from args
-        if (options.command.len == 0 and split_command.items.len > 0) {
-            options.command = split_command.items;
-        } else {
-            split_command.deinit(allocator);
+        if (try runEnv_handleSplitString(allocator, &options, split_str, stderr_writer)) |code| {
+            return code;
         }
     }
 
@@ -192,16 +132,142 @@ pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent
 
     // Verbose output for environment modifications
     if (options.verbose) {
-        if (options.ignore_environment) {
-            stderr_writer.writeAll("env: clearing environment\n") catch {};
-        }
-        for (options.unsets) |name| {
-            stderr_writer.print("env: unsetenv {s}\n", .{name}) catch {};
-        }
-        for (options.assignments) |assignment| {
-            stderr_writer.print("env: setenv {s}={s}\n", .{ assignment.name, assignment.value }) catch {};
+        runEnv_writeVerbose(&options, stderr_writer);
+    }
+
+    return runEnv_finishCommand(allocator, io, &options, &env_map, stdout_writer, stderr_writer);
+}
+
+/// Handle -S/--split-string: tokenize the split string into assignments and a
+/// command, merging with command-line assignments. Returns null to continue,
+/// or an exit code the caller should return (on OOM).
+fn runEnv_handleSplitString(
+    allocator: Allocator,
+    options: *EnvOptions,
+    split_str: []const u8,
+    stderr_writer: *std.Io.Writer,
+) error{}!?u8 {
+    std.debug.assert(options.split_string != null);
+    std.debug.assert(!options.help);
+
+    var split_assignments = std.ArrayListUnmanaged(Assignment).empty;
+    defer split_assignments.deinit(allocator);
+    var split_command = std.ArrayListUnmanaged([]const u8).empty;
+    var in_command = false;
+
+    var token_it = std.mem.tokenizeAny(u8, split_str, " \t");
+    while (token_it.next()) |token| {
+        if (in_command) {
+            split_command.append(allocator, token) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        } else if (std.mem.indexOfScalar(u8, token, '=')) |eq_pos| {
+            split_assignments.append(allocator, .{
+                .name = token[0..eq_pos],
+                .value = token[eq_pos + 1 ..],
+            }) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        } else {
+            // First non-assignment token starts the command
+            in_command = true;
+            split_command.append(allocator, token) catch {
+                common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+                return @intFromEnum(common.ExitCode.general_error);
+            };
         }
     }
+
+    // Merge -S assignments with any from the command line
+    if (split_assignments.items.len > 0) {
+        const merge_result = try runEnv_handleSplitString_mergeAssignments(
+            allocator,
+            options,
+            split_assignments.items,
+            stderr_writer,
+        );
+        if (merge_result) |code| return code;
+    }
+
+    // -S command tokens override if no command was set from args
+    if (options.command.len == 0 and split_command.items.len > 0) {
+        options.command = split_command.items;
+    } else {
+        split_command.deinit(allocator);
+    }
+    return null;
+}
+
+/// Merge command-line assignments with -S assignments into a fresh owned slice.
+/// Returns null on success, or an exit code the caller should return (on OOM).
+fn runEnv_handleSplitString_mergeAssignments(
+    allocator: Allocator,
+    options: *EnvOptions,
+    split_assignments: []const Assignment,
+    stderr_writer: *std.Io.Writer,
+) error{}!?u8 {
+    std.debug.assert(split_assignments.len > 0);
+    std.debug.assert(options.split_string != null);
+
+    var merged = std.ArrayListUnmanaged(Assignment).empty;
+    // Add original assignments first
+    for (options.assignments) |a| {
+        merged.append(allocator, a) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+    // Then -S assignments
+    for (split_assignments) |a| {
+        merged.append(allocator, a) catch {
+            common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+    }
+    // Free old owned assignments before replacing
+    if (options.owns_memory and options.assignments.len > 0) {
+        allocator.free(options.assignments);
+    }
+    options.assignments = merged.toOwnedSlice(allocator) catch {
+        common.printErrorWithProgram(allocator, stderr_writer, "env", "out of memory", .{});
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+    return null;
+}
+
+/// Write verbose env-modification lines (clearing/unsetenv/setenv) to stderr.
+/// Precondition: verbose mode is enabled.
+fn runEnv_writeVerbose(options: *const EnvOptions, stderr_writer: *std.Io.Writer) void {
+    std.debug.assert(options.verbose);
+    std.debug.assert(!options.help);
+
+    if (options.ignore_environment) {
+        stderr_writer.writeAll("env: clearing environment\n") catch {};
+    }
+    for (options.unsets) |name| {
+        stderr_writer.print("env: unsetenv {s}\n", .{name}) catch {};
+    }
+    for (options.assignments) |assignment| {
+        const fmt_args = .{ assignment.name, assignment.value };
+        stderr_writer.print("env: setenv {s}={s}\n", fmt_args) catch {};
+    }
+}
+
+/// Finish: handle -C chdir, print env when no command, inject -P alt PATH, and
+/// execute the command. Returns the final exit code.
+fn runEnv_finishCommand(
+    allocator: Allocator,
+    io: std.Io,
+    options: *const EnvOptions,
+    env_map: *std.process.Environ.Map,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) anyerror!u8 {
+    // Reached only after help/version returned upstream, so both are false.
+    std.debug.assert(options.help == false);
+    std.debug.assert(options.version == false);
 
     // Handle -C/--chdir
     if (options.chdir) |dir| {
@@ -213,7 +279,7 @@ pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent
 
     // If no command, print the environment
     if (options.command.len == 0) {
-        printEnvironment(stdout_writer, &env_map, options.null_delimiter) catch {
+        printEnvironment(stdout_writer, env_map, options.null_delimiter) catch {
             return @intFromEnum(common.ExitCode.general_error);
         };
         return 0;
@@ -234,7 +300,7 @@ pub fn runEnv(allocator: Allocator, io: std.Io, args: []const []const u8, parent
     }
 
     // Execute the command
-    return execCommand(allocator, io, options.command, &env_map, stderr_writer);
+    return execCommand(allocator, io, options.command, env_map, stderr_writer);
 }
 
 /// Parse command-line arguments manually (env has unusual argument syntax)
@@ -272,10 +338,7 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
         // Check for NAME=VALUE assignment or command start
         if (!past_options and !std.mem.startsWith(u8, arg, "-")) {
             if (std.mem.indexOfScalar(u8, arg, '=')) |eq_pos| {
-                assignments.append(allocator, .{
-                    .name = arg[0..eq_pos],
-                    .value = arg[eq_pos + 1 ..],
-                }) catch return error.OutOfMemory;
+                try parseArgs_appendAssignment(allocator, &assignments, arg, eq_pos);
                 seen_assignment = true;
                 continue;
             }
@@ -293,117 +356,53 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
 
         // Long flags
         if (std.mem.startsWith(u8, arg, "--")) {
-            if (std.mem.eql(u8, arg, "--help")) {
-                options.help = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--version")) {
-                options.version = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--ignore-environment")) {
-                options.ignore_environment = true;
-            } else if (std.mem.eql(u8, arg, "--null")) {
-                options.null_delimiter = true;
-            } else if (std.mem.startsWith(u8, arg, "--unset=")) {
-                const name = arg["--unset=".len..];
-                unsets.append(allocator, name) catch return error.OutOfMemory;
-            } else if (std.mem.eql(u8, arg, "--unset")) {
-                i += 1;
-                if (i >= args.len) return error.MissingValue;
-                unsets.append(allocator, args[i]) catch return error.OutOfMemory;
-            } else if (std.mem.startsWith(u8, arg, "--chdir=")) {
-                options.chdir = arg["--chdir=".len..];
-            } else if (std.mem.eql(u8, arg, "--chdir")) {
-                i += 1;
-                if (i >= args.len) return error.MissingValue;
-                options.chdir = args[i];
-            } else if (std.mem.startsWith(u8, arg, "--split-string=")) {
-                options.split_string = arg["--split-string=".len..];
-            } else if (std.mem.eql(u8, arg, "--split-string")) {
-                i += 1;
-                if (i >= args.len) return error.MissingValue;
-                options.split_string = args[i];
-            } else {
-                return error.UnknownFlag;
-            }
+            try parseArgs_parseLongFlag(allocator, &options, &unsets, arg, &i, args);
+            // Early return if help/version was found
+            if (options.help or options.version) break;
             continue;
         }
 
         // Short flags (can be combined for boolean flags)
         if (arg.len > 1 and arg[0] == '-') {
-            var j: usize = 1;
-            while (j < arg.len) : (j += 1) {
-                switch (arg[j]) {
-                    'i' => options.ignore_environment = true,
-                    '0', 'z' => options.null_delimiter = true,
-                    'h' => {
-                        options.help = true;
-                        break;
-                    },
-                    'V' => {
-                        options.version = true;
-                        break;
-                    },
-                    'u' => {
-                        // -u requires a value
-                        if (j + 1 < arg.len) {
-                            // Value is the rest of this arg: -uNAME
-                            unsets.append(allocator, arg[j + 1 ..]) catch return error.OutOfMemory;
-                            j = arg.len; // consumed rest of arg
-                        } else {
-                            // Value is the next arg
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            unsets.append(allocator, args[i]) catch return error.OutOfMemory;
-                        }
-                        break;
-                    },
-                    'C' => {
-                        // -C requires a value
-                        if (j + 1 < arg.len) {
-                            options.chdir = arg[j + 1 ..];
-                            j = arg.len;
-                        } else {
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            options.chdir = args[i];
-                        }
-                        break;
-                    },
-                    'P' => {
-                        // -P requires a path value
-                        if (j + 1 < arg.len) {
-                            options.alt_path = arg[j + 1 ..];
-                            j = arg.len;
-                        } else {
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            options.alt_path = args[i];
-                        }
-                        break;
-                    },
-                    'S' => {
-                        // -S requires a string value (stub)
-                        if (j + 1 < arg.len) {
-                            options.split_string = arg[j + 1 ..];
-                            j = arg.len;
-                        } else {
-                            i += 1;
-                            if (i >= args.len) return error.MissingValue;
-                            options.split_string = args[i];
-                        }
-                        break;
-                    },
-                    'v' => options.verbose = true,
-                    else => return error.UnknownFlag,
-                }
-            }
+            try parseArgs_parseShortFlags(allocator, &options, &unsets, arg, &i, args);
             // Early return if help/version was found in combined flags
             if (options.help or options.version) break;
             continue;
         }
     }
 
-    // Transfer ownership from ArrayListUnmanaged to owned slices
+    try parseArgs_finalizeOwnership(allocator, &options, &unsets, &assignments);
+    return options;
+}
+
+/// Append a NAME=VALUE assignment parsed from arg, split at eq_pos.
+fn parseArgs_appendAssignment(
+    allocator: Allocator,
+    assignments: *std.ArrayListUnmanaged(Assignment),
+    arg: []const u8,
+    eq_pos: usize, // tiger:allow:usize-arch std slice indexing forces usize
+) error{OutOfMemory}!void {
+    std.debug.assert(eq_pos < arg.len);
+    std.debug.assert(arg[eq_pos] == '=');
+
+    assignments.append(allocator, .{
+        .name = arg[0..eq_pos],
+        .value = arg[eq_pos + 1 ..],
+    }) catch return error.OutOfMemory;
+}
+
+/// Transfer ownership of the parsed unsets/assignments lists into the options
+/// struct as owned slices (or free empty lists). Sets owns_memory.
+fn parseArgs_finalizeOwnership(
+    allocator: Allocator,
+    options: *EnvOptions,
+    unsets: *std.ArrayListUnmanaged([]const u8),
+    assignments: *std.ArrayListUnmanaged(Assignment),
+) error{OutOfMemory}!void {
+    std.debug.assert(!options.owns_memory);
+    std.debug.assert(options.unsets.len == 0);
+    std.debug.assert(options.assignments.len == 0);
+
     options.owns_memory = true;
     if (unsets.items.len > 0) {
         options.unsets = unsets.toOwnedSlice(allocator) catch return error.OutOfMemory;
@@ -415,7 +414,124 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) error{ UnknownFlag,
     } else {
         assignments.deinit(allocator);
     }
-    return options;
+}
+
+/// Consume a value for a value-taking short flag: either the rest of the
+/// current arg (-uNAME) or the next arg (-u NAME). Advances j to arg.len for
+/// the inline case, or advances i for the next-arg case.
+fn parseArgs_consumeValue(
+    arg: []const u8,
+    j: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    i: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    args: []const []const u8,
+) error{MissingValue}![]const u8 {
+    std.debug.assert(j.* >= 1);
+    std.debug.assert(j.* <= arg.len);
+
+    if (j.* + 1 < arg.len) {
+        // Value is the rest of this arg: -uNAME
+        const value = arg[j.* + 1 ..];
+        j.* = arg.len; // consumed rest of arg
+        return value;
+    }
+    // Value is the next arg
+    i.* += 1;
+    if (i.* >= args.len) return error.MissingValue;
+    return args[i.*];
+}
+
+/// Parse a single long flag (--foo) token, mutating options/unsets in place.
+/// Value-taking flags may advance i to consume the next arg.
+fn parseArgs_parseLongFlag(
+    allocator: Allocator,
+    options: *EnvOptions,
+    unsets: *std.ArrayListUnmanaged([]const u8),
+    arg: []const u8,
+    i: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    args: []const []const u8,
+) error{ UnknownFlag, MissingValue, OutOfMemory }!void {
+    std.debug.assert(arg.len >= 2);
+    std.debug.assert(std.mem.startsWith(u8, arg, "--"));
+
+    if (std.mem.eql(u8, arg, "--help")) {
+        options.help = true;
+    } else if (std.mem.eql(u8, arg, "--version")) {
+        options.version = true;
+    } else if (std.mem.eql(u8, arg, "--ignore-environment")) {
+        options.ignore_environment = true;
+    } else if (std.mem.eql(u8, arg, "--null")) {
+        options.null_delimiter = true;
+    } else if (std.mem.startsWith(u8, arg, "--unset=")) {
+        const name = arg["--unset=".len..];
+        unsets.append(allocator, name) catch return error.OutOfMemory;
+    } else if (std.mem.eql(u8, arg, "--unset")) {
+        i.* += 1;
+        if (i.* >= args.len) return error.MissingValue;
+        unsets.append(allocator, args[i.*]) catch return error.OutOfMemory;
+    } else if (std.mem.startsWith(u8, arg, "--chdir=")) {
+        options.chdir = arg["--chdir=".len..];
+    } else if (std.mem.eql(u8, arg, "--chdir")) {
+        i.* += 1;
+        if (i.* >= args.len) return error.MissingValue;
+        options.chdir = args[i.*];
+    } else if (std.mem.startsWith(u8, arg, "--split-string=")) {
+        options.split_string = arg["--split-string=".len..];
+    } else if (std.mem.eql(u8, arg, "--split-string")) {
+        i.* += 1;
+        if (i.* >= args.len) return error.MissingValue;
+        options.split_string = args[i.*];
+    } else {
+        return error.UnknownFlag;
+    }
+}
+
+/// Parse combined short flags (-i0, -uNAME, ...), mutating options/unsets in
+/// place. Value-taking flags consume the rest of the arg or the next arg.
+fn parseArgs_parseShortFlags(
+    allocator: Allocator,
+    options: *EnvOptions,
+    unsets: *std.ArrayListUnmanaged([]const u8),
+    arg: []const u8,
+    i: *usize, // tiger:allow:usize-arch std slice indexing forces usize
+    args: []const []const u8,
+) error{ UnknownFlag, MissingValue, OutOfMemory }!void {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+
+    var j: usize = 1; // tiger:allow:usize-arch std slice indexing forces usize
+    while (j < arg.len) : (j += 1) {
+        switch (arg[j]) {
+            'i' => options.ignore_environment = true,
+            '0', 'z' => options.null_delimiter = true,
+            'h' => {
+                options.help = true;
+                break;
+            },
+            'V' => {
+                options.version = true;
+                break;
+            },
+            'u' => {
+                const value = try parseArgs_consumeValue(arg, &j, i, args);
+                unsets.append(allocator, value) catch return error.OutOfMemory;
+                break;
+            },
+            'C' => {
+                options.chdir = try parseArgs_consumeValue(arg, &j, i, args);
+                break;
+            },
+            'P' => {
+                options.alt_path = try parseArgs_consumeValue(arg, &j, i, args);
+                break;
+            },
+            'S' => {
+                options.split_string = try parseArgs_consumeValue(arg, &j, i, args);
+                break;
+            },
+            'v' => options.verbose = true,
+            else => return error.UnknownFlag,
+        }
+    }
 }
 
 /// Build the environment map based on options
