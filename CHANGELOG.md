@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Removed
+- **Dropped the `darwin-amd64` (Intel macOS) prebuilt binary.**
+  Builds and CI now target macOS 26 (Tahoe), which is Apple
+  Silicon only, so the release no longer ships an x86_64 macOS
+  tarball and Homebrew bottles are tagged `arm64_tahoe` instead
+  of `arm64_sequoia`. Intel Mac users can still build from
+  source. CI (`test.yml`/`integration.yml`) and the release
+  build all run on `macos-26`, plus Linux x86_64 and arm64.
+
 ### Fixed
 - Stop `ls` from printing a false "git command not found in
   PATH" warning (#41). `findGitRoot` now resolves relative start
@@ -12,6 +21,20 @@
   initialization error (e.g. out of memory) under
   `--git=always`. Re-enabled `src/common/git.zig`'s unit tests
   in the build, which had been silently excluded.
+
+## v0.10.1 — 2026-05-28
+
+### Fixed
+- **macOS build broken on the macOS 26 SDK (#40).** `free`
+  imported the mach headers via `@cImport`, but Zig 0.16's
+  translate-c cannot size the `mach_msg_*_descriptor_t`
+  bitfield/union types in the 26.x SDK, failing the build
+  with "struct changed size unexpectedly". Replaced the mach
+  `@cImport` with hand-written `extern` declarations for the
+  few calls `free` needs (`host_statistics64`,
+  `mach_host_self`, `vm_statistics64_data_t`). These track
+  the stable kernel ABI and are immune to SDK header churn.
+>>>>>>> origin/main
 
 ## v0.10.0 — 2026-05-26
 

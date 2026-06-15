@@ -15,12 +15,77 @@ const prog_name = "free";
 // Platform-specific memory information
 // ============================================================================
 
+// sysctl and getpagesize come from clean libc headers. The mach headers
+// (mach/mach.h, mach/mach_host.h) are deliberately NOT imported here: Zig
+// 0.16's translate-c cannot size the mach_msg_*_descriptor_t bitfield/union
+// types in the macOS 26 SDK, marking them "uninstantiable" and failing the
+// @cImport with "struct changed size unexpectedly" (issue #40). We only need
+// a handful of mach calls, so we hand-write extern declarations below. These
+// are stable kernel ABI and portable across SDK churn.
 const c = @cImport({
     @cInclude("sys/sysctl.h");
-    @cInclude("mach/mach.h");
-    @cInclude("mach/mach_host.h");
     @cInclude("unistd.h");
 });
+
+// Hand-written mach bindings. See the comment on the @cImport above for why
+// these are not pulled from the mach headers via translate-c. Type mapping
+// matches <mach/arm/vm_types.h>, <mach/port.h>, and <mach/kern_return.h>:
+//   natural_t   = unsigned int (u32)
+//   integer_t   = int (c_int)
+//   mach_port_t = mach_port_name_t = natural_t (u32)
+//   kern_return_t = int (c_int)
+const mach = struct {
+    const natural_t = u32;
+    const integer_t = c_int;
+    const kern_return_t = c_int;
+    const host_t = u32;
+    const host_flavor_t = integer_t;
+    const mach_msg_type_number_t = natural_t;
+
+    /// HOST_VM_INFO64 from <mach/host_info.h>: 64-bit virtual memory stats.
+    const HOST_VM_INFO64: host_flavor_t = 4;
+    /// KERN_SUCCESS from <mach/kern_return.h>.
+    const KERN_SUCCESS: kern_return_t = 0;
+
+    /// Mirrors `struct vm_statistics64` from <mach/vm_statistics.h>. Field
+    /// order and types must match the kernel ABI exactly; all fields are
+    /// naturally aligned so no explicit padding is required.
+    const vm_statistics64_data_t = extern struct {
+        free_count: natural_t,
+        active_count: natural_t,
+        inactive_count: natural_t,
+        wire_count: natural_t,
+        zero_fill_count: u64,
+        reactivations: u64,
+        pageins: u64,
+        pageouts: u64,
+        faults: u64,
+        cow_faults: u64,
+        lookups: u64,
+        hits: u64,
+        purges: u64,
+        purgeable_count: natural_t,
+        speculative_count: natural_t,
+        decompressions: u64,
+        compressions: u64,
+        swapins: u64,
+        swapouts: u64,
+        compressor_page_count: natural_t,
+        throttled_count: natural_t,
+        external_page_count: natural_t,
+        internal_page_count: natural_t,
+        total_uncompressed_pages_in_compressor: u64,
+        swapped_count: u64,
+    };
+
+    extern fn mach_host_self() host_t;
+    extern fn host_statistics64(
+        host_priv: host_t,
+        flavor: host_flavor_t,
+        host_info64_out: [*]integer_t,
+        host_info64_outCnt: *mach_msg_type_number_t,
+    ) kern_return_t;
+};
 
 /// Memory information gathered from the system
 pub const MemInfo = struct {
@@ -61,16 +126,18 @@ fn getMemInfoMacOS() !MemInfo {
     const sysctl_ret = c.sysctl(&mib, 2, &mem_size, &size, null, 0);
     if (sysctl_ret != 0) return error.SysctlFailed;
 
-    // VM statistics via host_statistics64
-    var vm_stat: c.vm_statistics64_data_t = undefined;
-    var count: c.mach_msg_type_number_t = @intCast(@divExact(@sizeOf(c.vm_statistics64_data_t), @sizeOf(c.natural_t)));
-    const host_ret = c.host_statistics64(
-        c.mach_host_self(),
-        c.HOST_VM_INFO64,
+    // VM statistics via host_statistics64. The count is the buffer size in
+    // units of integer_t (natural_t), matching the HOST_VM_INFO64_COUNT macro.
+    var vm_stat: mach.vm_statistics64_data_t = undefined;
+    var count: mach.mach_msg_type_number_t =
+        @intCast(@divExact(@sizeOf(mach.vm_statistics64_data_t), @sizeOf(mach.natural_t)));
+    const host_ret = mach.host_statistics64(
+        mach.mach_host_self(),
+        mach.HOST_VM_INFO64,
         @ptrCast(&vm_stat),
         &count,
     );
-    if (host_ret != c.KERN_SUCCESS) return error.HostStatisticsFailed;
+    if (host_ret != mach.KERN_SUCCESS) return error.HostStatisticsFailed;
 
     const page_size: u64 = @intCast(c.getpagesize());
     const free_pages: u64 = @intCast(vm_stat.free_count);
@@ -877,6 +944,52 @@ test "getMemInfo returns valid data" {
     // Total memory should be positive
     try testing.expect(info.total > 0);
     // Used + free should not exceed total (approximately)
+    try testing.expect(info.used <= info.total);
+}
+
+// Regression guard for issue #40: the hand-written mach.vm_statistics64_data_t
+// replaces a translate-c @cImport that broke on the macOS 26 SDK. translate-c
+// emitted @sizeOf assertions to verify the struct against the C ABI; we lost
+// those when we dropped the import, so re-create them here. A wrong field
+// order or type would make host_statistics64 fill the struct with values at
+// the wrong offsets, so free would silently report garbage memory numbers.
+// Offsets are derived from struct vm_statistics64 in <mach/vm_statistics.h>;
+// every field is naturally aligned, giving a 160-byte struct with no padding.
+test "mach.vm_statistics64_data_t matches the C ABI layout" {
+    const T = mach.vm_statistics64_data_t;
+    // Total size and field count, mirroring the dropped translate-c assertion.
+    try testing.expectEqual(@as(usize, 160), @sizeOf(T));
+    try testing.expectEqual(@as(usize, 40), @divExact(@sizeOf(T), @sizeOf(mach.natural_t)));
+
+    // Offsets of the fields getMemInfoMacOS actually reads.
+    try testing.expectEqual(@as(usize, 0), @offsetOf(T, "free_count"));
+    try testing.expectEqual(@as(usize, 4), @offsetOf(T, "active_count"));
+    try testing.expectEqual(@as(usize, 8), @offsetOf(T, "inactive_count"));
+    try testing.expectEqual(@as(usize, 12), @offsetOf(T, "wire_count"));
+    try testing.expectEqual(@as(usize, 88), @offsetOf(T, "purgeable_count"));
+    try testing.expectEqual(@as(usize, 92), @offsetOf(T, "speculative_count"));
+    try testing.expectEqual(@as(usize, 128), @offsetOf(T, "compressor_page_count"));
+    // Last field must end exactly at the struct boundary.
+    try testing.expectEqual(@as(usize, 152), @offsetOf(T, "swapped_count"));
+}
+
+// Cross-check the mach path against an independent source: total physical
+// memory from host_statistics64's caller must agree with sysctl hw.memsize.
+// If the struct layout regressed, getMemInfoMacOS would still read memsize
+// correctly (separate sysctl call) but the page counts would be nonsense —
+// so we also assert free/used stay within the physical total.
+test "getMemInfoMacOS agrees with sysctl on macOS" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+    const info = try getMemInfoMacOS();
+
+    var memsize: u64 = 0;
+    var len: usize = @sizeOf(u64);
+    var mib = [_]c_int{ c.CTL_HW, c.HW_MEMSIZE };
+    try testing.expectEqual(@as(c_int, 0), c.sysctl(&mib, 2, &memsize, &len, null, 0));
+
+    try testing.expect(memsize > 0);
+    try testing.expectEqual(memsize, info.total);
+    try testing.expect(info.free <= info.total);
     try testing.expect(info.used <= info.total);
 }
 

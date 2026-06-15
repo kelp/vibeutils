@@ -4406,6 +4406,12 @@ test "find: -Bmin stub accepted (always true)" {
 
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
 
+    // Birth time is optional on Linux (e.g. unavailable over a virtiofs
+    // mount). Without it, -Bmin legitimately matches nothing, so skip
+    // rather than assert a match the filesystem cannot support.
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
+    if (getBirthTime(file_path) == null) return error.SkipZigTest;
+
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();
     var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -4453,6 +4459,12 @@ test "find: -Btime evaluates birth time" {
     f.close(testing.io);
 
     const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    // Birth time is optional on Linux (e.g. unavailable over a virtiofs
+    // mount). Without it, -Btime legitimately matches nothing, so skip
+    // rather than assert a match the filesystem cannot support.
+    const file_path = try std.fs.path.join(allocator, &.{ dir_path, "file.txt" });
+    if (getBirthTime(file_path) == null) return error.SkipZigTest;
 
     var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
     defer stdout_aw.deinit();

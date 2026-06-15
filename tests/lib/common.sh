@@ -19,7 +19,12 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$(dirname "$LIB_DIR")"
 PROJECT_ROOT="$(dirname "$TESTS_DIR")"
 BIN_DIR="$PROJECT_ROOT/zig-out/bin"
-TEMP_DIR="${TMPDIR:-/tmp}/vibeutils_tests_$$"
+# Canonicalize the temp root so physical-path checks (e.g. pwd -P) compare
+# equal regardless of the /tmp -> /private/tmp or /var -> /private/var
+# symlinks on macOS, without per-prefix special-casing in the tests.
+_temp_root="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || _temp_root="${TMPDIR:-/tmp}"
+TEMP_DIR="$_temp_root/vibeutils_tests_$$"
+unset _temp_root
 
 # Colors for output (respects NO_COLOR)
 if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]]; then
@@ -143,6 +148,13 @@ init_test_session() {
 
     # Create temp directory
     mkdir -p "$TEMP_DIR"
+
+    # On macOS new files inherit the directory's group (BSD semantics). If the
+    # temp root belongs to a group the user is not a member of (e.g. a
+    # wheel-owned /tmp), created files get an un-settable group, which breaks
+    # cp -p group preservation and `test -G`. Force the user's primary group
+    # so tests behave the same regardless of the ambient temp dir's group.
+    chgrp "$(id -g)" "$TEMP_DIR" 2>/dev/null || true
 
     # Verify binary directory exists
     if [[ ! -d "$BIN_DIR" ]]; then

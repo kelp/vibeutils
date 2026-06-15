@@ -130,9 +130,13 @@ build-release:
 
 # --- Release ---
 
-# Bump version, tag, push, trigger CI release
+# Release gate 1 (local): test, bump version, push main (no tag)
 release version:
     @scripts/release.sh {{version}}
+
+# Release gate 2 (CI): wait for green CI on all runners, push tag
+release-tag version:
+    @scripts/release-tag.sh {{version}}
 
 # --- Code Quality ---
 

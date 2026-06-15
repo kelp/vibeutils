@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Release script for vibeutils
 #
-# Updates version in build.zig.zon and flake.nix, commits,
-# tags, and pushes. The push triggers CI which builds release
-# binaries, creates a GitHub release, updates the Homebrew
-# tap, and pushes to Cachix.
+# Gate 1 (local) of the two-gate release flow. Runs the unit and
+# integration test suites as hard gates — and when run from macOS,
+# also runs both suites on Linux via OrbStack (orb -m ubuntu), so a
+# release cut from the Mac must pass on BOTH platforms locally before
+# anything is pushed. Then updates the version in build.zig.zon and
+# flake.nix, promotes the CHANGELOG, commits the bump, and pushes it
+# to main (which triggers the CI test + integration workflows). It
+# does NOT create or push the tag — that is scripts/release-tag.sh,
+# which waits for green CI on all runners first. See the "MANDATORY
+# release gate" in CLAUDE.md.
 #
 # Usage: scripts/release.sh <version>
 # Example: scripts/release.sh 0.7.0
@@ -81,21 +87,50 @@ echo ""
 echo "Releasing vibeutils: $CURRENT -> $VERSION"
 echo ""
 
-# Run tests
+# Unit and integration tests are HARD gates: both must pass locally
+# before the version bump is pushed to main. CI then re-runs both on
+# every runner (the second gate, enforced by scripts/release-tag.sh).
 echo "Running unit tests..."
 zig build test
 echo "  Unit tests passed"
 
-# Integration tests require bash 4+; skip on macOS with bash 3.
-# Unit tests via 'zig build test' cover all code paths.
-if bash --version 2>/dev/null | head -1 | grep -q 'version [4-9]'; then
-    echo "Running integration tests..."
-    just it
-    echo "  Integration tests passed"
-else
-    echo "Skipping integration tests (bash 4+ required, run on Linux CI)"
+# Integration tests require bash 4+ (macOS default is bash 3.2).
+# This is a hard gate, not a skip: refuse to release without them.
+if ! bash --version 2>/dev/null | head -1 | grep -q 'version [4-9]'; then
+    echo "Error: integration tests require bash 4+ (have: $(bash --version 2>/dev/null | head -1))."
+    echo "Install with: brew install bash (and put it ahead of /bin in PATH)."
+    echo "Integration tests are a mandatory release gate and cannot be skipped."
+    exit 1
 fi
+echo "Running integration tests..."
+just it
+echo "  Integration tests passed"
 echo ""
+
+# When releasing from macOS, run the full suite on Linux via OrbStack
+# too. Local validation is a hard gate on BOTH platforms before the
+# bump is pushed: fail fast here rather than push a commit that only
+# breaks on Linux. (CI re-runs both as the second gate.)
+if [ "$(uname -s)" = "Darwin" ]; then
+    if ! command -v orb >/dev/null 2>&1; then
+        echo "Error: orb (OrbStack) not found, but Linux validation is a"
+        echo "mandatory release gate when releasing from macOS."
+        echo "Install OrbStack, or cut the release from Linux."
+        exit 1
+    fi
+    # The orb VM has zig but not the `just` task runner, so invoke the
+    # underlying steps directly. `just it` is `zig build` + integration.sh;
+    # integration.sh requires bash 4+ (the VM ships 5.2) and finds the repo
+    # via BASH_SOURCE, so the working directory does not matter.
+    echo "Running unit tests on Linux (orb -m ubuntu)..."
+    orb -m ubuntu zig build test
+    echo "  Linux unit tests passed"
+    echo "Running integration tests on Linux (orb -m ubuntu)..."
+    orb -m ubuntu zig build
+    orb -m ubuntu bash tests/integration.sh
+    echo "  Linux integration tests passed"
+    echo ""
+fi
 
 # Update version in build.zig.zon
 sed -i.bak "s/\.version = \"${CURRENT}\"/\.version = \"${VERSION}\"/" build.zig.zon && rm -f build.zig.zon.bak
@@ -132,24 +167,33 @@ if ! grep -q "^## v${VERSION} — ${TODAY}$" "$NOTES_FILE"; then
     exit 1
 fi
 
-# Commit, tag, push
+# Commit the version bump and push it to main. This triggers the
+# test.yml and integration.yml workflows on the release commit.
 git add build.zig.zon flake.nix "$NOTES_FILE"
 git commit -m "Release v${VERSION}"
 echo "Committed version bump"
 
-git tag "$TAG"
-echo "Created tag $TAG"
-
 git push origin main
-git push origin "$TAG"
-echo "Pushed to origin"
+echo "Pushed version bump to main"
 
+# The tag is deliberately NOT created or pushed here. Pushing the tag
+# starts the irreversible build/publish pipeline, so it lives in a
+# separate command (just release-tag) that waits for green CI on all
+# runners first. See the "MANDATORY release gate" in CLAUDE.md.
 echo ""
-echo "Release $VERSION started. GitHub Actions will:"
-echo "  - Build release binaries"
-echo "  - Create draft release with notes from CHANGELOG.md"
-echo "  - Publish release (locks tag + assets via immutable releases)"
-echo "  - Update Homebrew tap"
-echo "  - Push to Cachix"
+echo "=============================================================="
+echo "Version bump for $VERSION is on main. The tag is NOT created"
+echo "yet — that is a separate, CI-gated step."
 echo ""
-echo "Monitor: https://github.com/kelp/vibeutils/actions"
+echo "CI (test.yml + integration.yml) is now running on the release"
+echo "commit. Watch it on macos-latest AND ubuntu-latest:"
+echo "  https://github.com/kelp/vibeutils/actions"
+echo ""
+echo "Once you have confirmed this release should go out, run:"
+echo ""
+echo "    just release-tag $VERSION"
+echo ""
+echo "That command waits for CI to be green on all runners, then"
+echo "creates and pushes the tag to start publishing. The tag push"
+echo "is irreversible (immutable releases locks the tag and assets)."
+echo "=============================================================="

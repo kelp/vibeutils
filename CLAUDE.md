@@ -119,8 +119,62 @@ verified signatures on all branches. Never bypass this:
 
 ## Releases
 
-**Always use `just release x.y.z`** to cut a release.
-Never manually edit `build.zig.zon` and tag.
+A release is a **two-command, two-gate** flow. Always use
+the `just` recipes; never manually edit `build.zig.zon` and
+tag.
+
+```
+just release x.y.z       # Gate 1 (local): tests + push main
+# ... wait for CI, confirm ...
+just release-tag x.y.z   # Gate 2 (CI): wait for green, push tag
+```
+
+### 🔴 MANDATORY release gate
+
+**Unit AND integration tests are hard gates at BOTH layers.
+Local first, then CI — neither may be skipped.**
+
+1. **Local hard gate** (`just release`, via
+   `scripts/release.sh`): runs `zig build test` and
+   `just it` on the host. **When run from macOS, it also
+   runs both suites on Linux via OrbStack (`orb -m ubuntu
+   zig build test` for units; `orb -m ubuntu zig build`
+   then `orb -m ubuntu bash tests/integration.sh` for
+   integration — the VM has `zig` but not `just`)** — a
+   release cut from the Mac must pass on BOTH platforms
+   locally. If any suite fails
+   — or if integration tests can't run (bash 4+ required;
+   macOS default is 3.2) or `orb` is missing — the script
+   aborts before pushing anything. It then pushes only the
+   version-bump commit to `main`, which triggers CI. **It
+   never creates or pushes the tag.**
+2. **CI hard gate** (`just release-tag`, via
+   `scripts/release-tag.sh`): waits for `test.yml` AND
+   `integration.yml` to pass on the exact release commit
+   on **every** runner (`macos-latest` AND
+   `ubuntu-latest`) before creating and pushing the tag.
+
+**Never push a release tag without specific, explicit
+confirmation first.** The tag push is the irreversible
+step — it triggers the build/publish pipeline and
+[immutable releases][imm] locks the tag and assets at
+publish. Pushing the version-bump commit to `main` is
+safe (it triggers CI); pushing the *tag* requires the
+human to confirm, after CI is green on all runners, that
+this specific release should go out. Running
+`just release-tag` IS that confirmation — do not run it
+on the human's behalf, and do not infer confirmation from
+an earlier "cut a release" instruction.
+
+Required ordering:
+1. `just release x.y.z` — local tests pass, version-bump
+   commit lands on `main`.
+2. Wait for `test.yml` and `integration.yml` to pass on
+   that commit on **both** `macos-latest` and
+   `ubuntu-latest`.
+3. Get explicit confirmation to release.
+4. `just release-tag x.y.z` — re-verifies green CI, then
+   pushes the tag.
 
 ### Changelog workflow
 
@@ -146,15 +200,36 @@ the version to the script (`just release 0.9.3`, not
 
 ### Release script gates
 
-The release script (`scripts/release.sh`) gates on:
+`scripts/release.sh` (`just release x.y.z`) gates on:
 1. Must be on `main` with clean working tree
 2. `## Unreleased` section exists and is non-empty
 3. Runs `zig build test` (unit tests must pass)
-4. Runs `just it` (integration tests must pass)
-5. Updates version in `build.zig.zon` and `flake.nix`
-6. Promotes `## Unreleased` to `## vX.Y.Z — <date>` in
+4. Runs `just it` (integration tests must pass) — a hard
+   gate: aborts if bash 4+ is unavailable rather than
+   skipping
+5. On macOS, re-runs both suites on Linux via OrbStack
+   (`orb -m ubuntu`) — a hard gate; aborts if `orb` is
+   missing
+6. Updates version in `build.zig.zon` and `flake.nix`
+7. Promotes `## Unreleased` to `## vX.Y.Z — <date>` in
    `CHANGELOG.md`
-7. Commits, tags, and pushes
+8. Commits the bump and pushes it to `main`. **Stops
+   there — it does not create or push the tag.**
+
+`scripts/release-tag.sh` (`just release-tag x.y.z`) gates
+on:
+1. Must be on `main` with clean working tree
+2. `build.zig.zon` is already at `x.y.z` (i.e. `just
+   release` ran)
+3. `HEAD` matches `origin/main` (the release commit is
+   pushed, so CI is running on it)
+4. Tag `vx.y.z` does not already exist locally or on
+   origin
+5. Waits for `test.yml` AND `integration.yml` to conclude
+   **success** on the release commit (each run covers the
+   full `macos-latest` + `ubuntu-latest` matrix, via
+   `gh run watch --exit-status`)
+6. Only then creates the tag and pushes it
 
 CI then builds binaries, creates a **draft** release
 with assets and notes extracted from the `## vX.Y.Z`
