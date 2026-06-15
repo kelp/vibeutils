@@ -217,6 +217,39 @@ fn resolveConfig(allocator: Allocator, opts: DuOptions, deref_mode: DereferenceM
         config.human_readable = true;
     }
 
+    // Derive block_size from -b/-k/-m/-g and the --block-size override.
+    try resolveConfig_applyBlockSize(opts, &config);
+
+    // -t SIZE threshold
+    if (opts.threshold) |t_str| {
+        config.threshold = parseThreshold(t_str) orelse return error.InvalidThreshold;
+    }
+
+    // -s implies --max-depth=0
+    if (opts.summarize) {
+        config.max_depth = 0;
+    }
+
+    // --max-depth=N
+    if (opts.max_depth) |depth_str| {
+        config.max_depth = std.fmt.parseInt(u64, depth_str, 10) catch return error.InvalidMaxDepth;
+    }
+
+    // Parse explicit --color mode (overrides DisplayConfig)
+    if (opts.color) |when| try resolveConfig_applyColorMode(when, &config.display);
+
+    // Parse explicit --icons mode (overrides DisplayConfig)
+    if (opts.icons) |when| try resolveConfig_applyIconMode(when, &config.show_icons);
+
+    return config;
+}
+
+/// Derive `config.block_size` (and `apparent_size` for -b) from the size
+/// flags, applying the same precedence as before: -b/-k/-m/-g set defaults
+/// in order, then --block-size overrides them all.
+fn resolveConfig_applyBlockSize(opts: DuOptions, config: *DuConfig) error{InvalidBlockSize}!void {
+    assert(config.block_size != 0);
+
     // -b implies --apparent-size --block-size=1
     if (opts.bytes) {
         config.apparent_size = true;
@@ -243,48 +276,49 @@ fn resolveConfig(allocator: Allocator, opts: DuOptions, deref_mode: DereferenceM
         config.block_size = parseBlockSize(bs_str) orelse return error.InvalidBlockSize;
     }
 
-    // -t SIZE threshold
-    if (opts.threshold) |t_str| {
-        config.threshold = parseThreshold(t_str) orelse return error.InvalidThreshold;
-    }
+    assert(config.block_size != 0);
+}
 
-    // -s implies --max-depth=0
-    if (opts.summarize) {
-        config.max_depth = 0;
-    }
+/// Apply an explicit --color WHEN value to the display config, overriding the
+/// TTY-resolved default. Leaves "auto" untouched; rejects unknown values.
+fn resolveConfig_applyColorMode(
+    when: []const u8,
+    display: *common.display_config.DisplayConfig,
+) error{InvalidColorMode}!void {
+    // Caller only invokes this for a present --color value, never an empty one.
+    assert(when.len > 0);
+    assert(!std.mem.eql(u8, when, ""));
 
-    // --max-depth=N
-    if (opts.max_depth) |depth_str| {
-        config.max_depth = std.fmt.parseInt(u64, depth_str, 10) catch return error.InvalidMaxDepth;
+    if (std.mem.eql(u8, when, "always")) {
+        display.color = .on;
+    } else if (std.mem.eql(u8, when, "auto")) {
+        // Keep resolved value (TTY-dependent)
+    } else if (std.mem.eql(u8, when, "never")) {
+        display.color = .off;
+    } else {
+        return error.InvalidColorMode;
     }
+}
 
-    // Parse explicit --color mode (overrides DisplayConfig)
-    if (opts.color) |when| {
-        if (std.mem.eql(u8, when, "always")) {
-            config.display.color = .on;
-        } else if (std.mem.eql(u8, when, "auto")) {
-            // Keep resolved value (TTY-dependent)
-        } else if (std.mem.eql(u8, when, "never")) {
-            config.display.color = .off;
-        } else {
-            return error.InvalidColorMode;
-        }
+/// Apply an explicit --icons WHEN value to `show_icons`, overriding the
+/// TTY-resolved default. Leaves "auto" untouched; rejects unknown values.
+fn resolveConfig_applyIconMode(
+    when: []const u8,
+    show_icons: *bool,
+) error{InvalidIconMode}!void {
+    // Caller only invokes this for a present --icons value, never an empty one.
+    assert(when.len > 0);
+    assert(!std.mem.eql(u8, when, ""));
+
+    if (std.mem.eql(u8, when, "always")) {
+        show_icons.* = true;
+    } else if (std.mem.eql(u8, when, "auto")) {
+        // Keep resolved value (TTY-dependent)
+    } else if (std.mem.eql(u8, when, "never")) {
+        show_icons.* = false;
+    } else {
+        return error.InvalidIconMode;
     }
-
-    // Parse explicit --icons mode (overrides DisplayConfig)
-    if (opts.icons) |when| {
-        if (std.mem.eql(u8, when, "always")) {
-            config.show_icons = true;
-        } else if (std.mem.eql(u8, when, "auto")) {
-            // Keep resolved value (TTY-dependent)
-        } else if (std.mem.eql(u8, when, "never")) {
-            config.show_icons = false;
-        } else {
-            return error.InvalidIconMode;
-        }
-    }
-
-    return config;
 }
 
 // ============================================================================
@@ -327,70 +361,85 @@ fn doStat(path: []const u8, follow_symlinks: bool) !StatResult {
     path_buf[path.len] = 0;
     const c_path = path_buf[0..path.len :0];
 
-    if (builtin.os.tag == .linux) {
-        const linux = std.os.linux;
-        var sx: linux.Statx = undefined;
-        const at_flags: u32 = if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW;
-        const rc = linux.statx(
-            std.Io.Dir.cwd().handle,
-            c_path,
-            at_flags,
-            linux.STATX.BASIC_STATS,
-            &sx,
-        );
-        switch (linux.errno(rc)) {
-            .SUCCESS => {},
-            .ACCES => return error.AccessDenied,
-            .NOENT => return error.FileNotFound,
-            .NOTDIR => return error.NotDir,
-            .NAMETOOLONG => return error.NameTooLong,
-            .LOOP => return error.SymLinkLoop,
-            else => return error.SystemResources,
-        }
-        const mode: u32 = @intCast(sx.mode);
-        const is_dir = (mode & c.S.IFMT) == c.S.IFDIR;
-        const is_symlink = (mode & c.S.IFMT) == c.S.IFLNK;
-        // Combine dev_major and dev_minor into a u64 device number
-        const dev: u64 = (@as(u64, sx.dev_major) << 32) | @as(u64, sx.dev_minor);
-        return StatResult{
-            .dev = dev,
-            .ino = sx.ino,
-            .nlink = @intCast(sx.nlink),
-            .mode = mode,
-            .size = @intCast(sx.size),
-            .blocks = @intCast(sx.blocks),
-            .is_dir = is_dir,
-            .is_symlink = is_symlink,
-        };
-    } else {
-        var stat_buf: c.Stat = undefined;
-        const at_flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
-        const result = c.fstatat(std.Io.Dir.cwd().handle, c_path, &stat_buf, at_flags);
-        if (result != 0) {
-            const errno = std.posix.errno(result);
-            return switch (errno) {
-                .ACCES => error.AccessDenied,
-                .NOENT => error.FileNotFound,
-                .NOTDIR => error.NotDir,
-                .NAMETOOLONG => error.NameTooLong,
-                .LOOP => error.SymLinkLoop,
-                else => error.SystemResources,
-            };
-        }
-        const mode: u32 = @intCast(stat_buf.mode);
-        const is_dir = (mode & c.S.IFMT) == c.S.IFDIR;
-        const is_symlink = (mode & c.S.IFMT) == c.S.IFLNK;
-        return StatResult{
-            .dev = @intCast(stat_buf.dev),
-            .ino = @intCast(stat_buf.ino),
-            .nlink = @intCast(stat_buf.nlink),
-            .mode = mode,
-            .size = stat_buf.size,
-            .blocks = stat_buf.blocks,
-            .is_dir = is_dir,
-            .is_symlink = is_symlink,
+    return if (builtin.os.tag == .linux)
+        doStat_linux(c_path, follow_symlinks)
+    else
+        doStat_posix(c_path, follow_symlinks);
+}
+
+/// Linux `statx` path of doStat: stat `c_path` and decode it into StatResult.
+fn doStat_linux(c_path: [:0]const u8, follow_symlinks: bool) !StatResult {
+    assert(c_path.len <= std.Io.Dir.max_path_bytes);
+    assert(c_path[c_path.len] == 0);
+
+    const linux = std.os.linux;
+    var sx: linux.Statx = undefined;
+    const at_flags: u32 = if (follow_symlinks) 0 else linux.AT.SYMLINK_NOFOLLOW;
+    const rc = linux.statx(
+        std.Io.Dir.cwd().handle,
+        c_path,
+        at_flags,
+        linux.STATX.BASIC_STATS,
+        &sx,
+    );
+    switch (linux.errno(rc)) {
+        .SUCCESS => {},
+        .ACCES => return error.AccessDenied,
+        .NOENT => return error.FileNotFound,
+        .NOTDIR => return error.NotDir,
+        .NAMETOOLONG => return error.NameTooLong,
+        .LOOP => return error.SymLinkLoop,
+        else => return error.SystemResources,
+    }
+    const mode: u32 = @intCast(sx.mode);
+    const is_dir = (mode & c.S.IFMT) == c.S.IFDIR;
+    const is_symlink = (mode & c.S.IFMT) == c.S.IFLNK;
+    // Combine dev_major and dev_minor into a u64 device number
+    const dev: u64 = (@as(u64, sx.dev_major) << 32) | @as(u64, sx.dev_minor);
+    return StatResult{
+        .dev = dev,
+        .ino = sx.ino,
+        .nlink = @intCast(sx.nlink),
+        .mode = mode,
+        .size = @intCast(sx.size),
+        .blocks = @intCast(sx.blocks),
+        .is_dir = is_dir,
+        .is_symlink = is_symlink,
+    };
+}
+
+/// POSIX `fstatat` path of doStat: stat `c_path` and decode it into StatResult.
+fn doStat_posix(c_path: [:0]const u8, follow_symlinks: bool) !StatResult {
+    assert(c_path.len <= std.Io.Dir.max_path_bytes);
+    assert(c_path[c_path.len] == 0);
+
+    var stat_buf: c.Stat = undefined;
+    const at_flags: u32 = if (follow_symlinks) 0 else c.AT.SYMLINK_NOFOLLOW;
+    const result = c.fstatat(std.Io.Dir.cwd().handle, c_path, &stat_buf, at_flags);
+    if (result != 0) {
+        const errno = std.posix.errno(result);
+        return switch (errno) {
+            .ACCES => error.AccessDenied,
+            .NOENT => error.FileNotFound,
+            .NOTDIR => error.NotDir,
+            .NAMETOOLONG => error.NameTooLong,
+            .LOOP => error.SymLinkLoop,
+            else => error.SystemResources,
         };
     }
+    const mode: u32 = @intCast(stat_buf.mode);
+    const is_dir = (mode & c.S.IFMT) == c.S.IFDIR;
+    const is_symlink = (mode & c.S.IFMT) == c.S.IFLNK;
+    return StatResult{
+        .dev = @intCast(stat_buf.dev),
+        .ino = @intCast(stat_buf.ino),
+        .nlink = @intCast(stat_buf.nlink),
+        .mode = mode,
+        .size = stat_buf.size,
+        .blocks = stat_buf.blocks,
+        .is_dir = is_dir,
+        .is_symlink = is_symlink,
+    };
 }
 
 /// Get the size contribution of a file (disk usage or apparent size).
@@ -833,26 +882,8 @@ pub fn main(init: std.process.Init) !void {
 }
 
 pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout: *std.Io.Writer, stderr: *std.Io.Writer) anyerror!u8 {
-    const opts = common.argparse.ArgParser.parse(DuOptions, allocator, args) catch |err| {
-        switch (err) {
-            error.UnknownFlag => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid option\nTry 'du --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.MissingValue => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "option requires an argument\nTry 'du --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidValue => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument value\nTry 'du --help' for more information.", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "argument parsing error", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            },
-        }
-    };
+    const opts = common.argparse.ArgParser.parse(DuOptions, allocator, args) catch |err|
+        return runDu_parseArgsError(allocator, stderr, err);
     defer allocator.free(opts.positionals);
 
     if (opts.help) {
@@ -872,38 +903,11 @@ pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     }
 
     const deref_mode = resolveDerefMode(args);
-    const config = resolveConfig(allocator, opts, deref_mode) catch |err| {
-        switch (err) {
-            error.InvalidBlockSize => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid --block-size argument", .{});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidMaxDepth => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid maximum depth '{s}'", .{opts.max_depth orelse ""});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidColorMode => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' for '--color'\nValid arguments are: 'always', 'auto', 'never'", .{opts.color orelse ""});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidIconMode => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid argument '{s}' for '--icons'\nValid arguments are: 'always', 'auto', 'never'", .{opts.icons orelse ""});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-            error.InvalidThreshold => {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "invalid --threshold argument '{s}'", .{opts.threshold orelse ""});
-                return @intFromEnum(common.ExitCode.misuse);
-            },
-        }
-    };
+    const config = resolveConfig(allocator, opts, deref_mode) catch |err|
+        return runDu_resolveConfigError(allocator, stderr, opts, err);
 
     // Initialize styling based on resolved display config
-    const StyleType = common.style.Style(*std.Io.Writer);
-    var style = StyleType{ .color_mode = .none, .writer = stdout };
-    if (config.display.color == .on) {
-        const detected = StyleType.ColorMode.detect(allocator) catch .basic;
-        style.color_mode = if (detected == .none) .basic else detected;
-    }
+    const style = runDu_initStyle(allocator, stdout, config);
 
     const paths = if (opts.positionals.len == 0)
         &[_][]const u8{"."}
@@ -936,6 +940,148 @@ pub fn runDu(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     }
 
     return if (has_error) @as(u8, 1) else 0;
+}
+
+/// Map an argparse error to a user-facing message + exit code for runDu.
+/// Kept separate so runDu's `catch` stays a single line.
+fn runDu_parseArgsError(allocator: Allocator, stderr: *std.Io.Writer, err: anyerror) u8 {
+    assert(err != error.Success);
+    // prog_name is a fixed module constant we embed in every message.
+    assert(prog_name.len > 0);
+
+    switch (err) {
+        error.UnknownFlag => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid option\nTry 'du --help' for more information.",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.MissingValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "option requires an argument\nTry 'du --help' for more information.",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidValue => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid argument value\nTry 'du --help' for more information.",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        else => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "argument parsing error",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.general_error);
+        },
+    }
+}
+
+/// Map a resolveConfig error to a user-facing message + exit code for runDu.
+/// Needs `opts` to echo the offending value strings. Kept separate so runDu's
+/// `catch` stays a single line.
+fn runDu_resolveConfigError(
+    allocator: Allocator,
+    stderr: *std.Io.Writer,
+    opts: DuOptions,
+    err: anyerror,
+) u8 {
+    assert(err != error.Success);
+    // prog_name is a fixed module constant we embed in every message.
+    assert(prog_name.len > 0);
+
+    switch (err) {
+        error.InvalidBlockSize => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid --block-size argument",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidMaxDepth => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid maximum depth '{s}'",
+                .{opts.max_depth orelse ""},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidColorMode => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid argument '{s}' for '--color'\n" ++
+                    "Valid arguments are: 'always', 'auto', 'never'",
+                .{opts.color orelse ""},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidIconMode => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid argument '{s}' for '--icons'\n" ++
+                    "Valid arguments are: 'always', 'auto', 'never'",
+                .{opts.icons orelse ""},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        error.InvalidThreshold => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "invalid --threshold argument '{s}'",
+                .{opts.threshold orelse ""},
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        },
+        else => unreachable,
+    }
+}
+
+/// Build the output Style from the resolved display config, detecting the
+/// terminal color depth only when color is enabled.
+fn runDu_initStyle(
+    allocator: Allocator,
+    stdout: *std.Io.Writer,
+    config: DuConfig,
+) common.style.Style(*std.Io.Writer) {
+    const StyleType = common.style.Style(*std.Io.Writer);
+    // config is fully resolved before styling: block_size never stays zero.
+    assert(config.block_size != 0);
+    assert(config.block_size >= 1);
+
+    var style = StyleType{ .color_mode = .none, .writer = stdout };
+    if (config.display.color == .on) {
+        const detected = StyleType.ColorMode.detect(allocator) catch .basic;
+        style.color_mode = if (detected == .none) .basic else detected;
+        assert(style.color_mode != .none);
+    }
+    return style;
 }
 
 // ============================================================================
