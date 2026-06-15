@@ -115,6 +115,9 @@ const EscapeResult = struct {
 /// Process a backslash escape sequence in the format string.
 /// Handles \n, \t, \r, \a, \b, \f, \v, \\, \0NNN, \xHH.
 fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult {
+    std.debug.assert(pos < format.len);
+    std.debug.assert(format[pos] == '\\');
+
     if (pos + 1 >= format.len) {
         // Trailing backslash, output literally
         try writer.writeByte('\\');
@@ -160,65 +163,115 @@ fn processEscape(format: []const u8, pos: usize, writer: anytype) !EscapeResult 
         },
         '0' => {
             // Octal: \0NNN (up to 3 octal digits after the leading 0)
-            var value: u8 = 0;
-            var j: usize = pos + 2;
-            var count: usize = 0;
-            while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
-                j += 1;
-                count += 1;
-            }) {
-                value = value *% 8 +% (format[j] - '0');
-            }
-            try writer.writeByte(value);
-            return .{ .new_pos = j };
+            const new_pos = try processEscape_octalWithPrefix(format, pos + 2, writer);
+            return .{ .new_pos = new_pos };
         },
         '1'...'7' => {
             // Octal: \NNN (up to 3 octal digits, first digit included)
-            var value: u8 = 0;
-            var j: usize = pos + 1;
-            var count: usize = 0;
-            while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
-                j += 1;
-                count += 1;
-            }) {
-                value = value *% 8 +% (format[j] - '0');
-            }
-            try writer.writeByte(value);
-            return .{ .new_pos = j };
+            const new_pos = try processEscape_octalNoPrefix(format, pos + 1, writer);
+            return .{ .new_pos = new_pos };
         },
         'x' => {
             // Hex: \xHH (1-2 hex digits)
-            var value: u8 = 0;
-            var j: usize = pos + 2;
-            var hex_digits: usize = 0;
-            while (hex_digits < 2 and j < format.len) : ({
-                j += 1;
-                hex_digits += 1;
-            }) {
-                const c = format[j];
-                const digit: u8 = switch (c) {
-                    '0'...'9' => c - '0',
-                    'a'...'f' => c - 'a' + 10,
-                    'A'...'F' => c - 'A' + 10,
-                    else => break,
-                };
-                value = value * 16 + digit;
-            }
-            if (hex_digits > 0) {
-                try writer.writeByte(value);
-                return .{ .new_pos = j };
-            } else {
-                // No hex digits, output \x literally
-                try writer.writeByte('\\');
-                try writer.writeByte('x');
-                return .{ .new_pos = pos + 2 };
-            }
+            return try processEscape_hex(format, pos + 2, writer);
         },
         else => {
             // Unknown escape, output backslash literally
             try writer.writeByte('\\');
             return .{ .new_pos = pos + 1 };
         },
+    }
+}
+
+/// Scan up to 3 octal digits starting at value_start, accumulate into a byte,
+/// write it, and return the position after the consumed digits. Used for the
+/// \0NNN form where the leading '0' is a prefix, so digits begin past it.
+fn processEscape_octalWithPrefix(
+    format: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= format.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (format[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 3 octal digits starting at value_start, accumulate into a byte,
+/// write it, and return the position after the consumed digits. Used for the
+/// \NNN form where the first digit is part of the value. Kept separate from
+/// the prefixed variant so the start offset stays exact.
+fn processEscape_octalNoPrefix(
+    format: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= format.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < format.len and format[j] >= '0' and format[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (format[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 2 hex digits starting at value_start for the \xHH form. Writes
+/// the decoded byte and returns the new position; if no hex digit follows,
+/// outputs "\x" literally and returns value_start (just past the 'x').
+fn processEscape_hex(
+    format: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !EscapeResult {
+    std.debug.assert(value_start <= format.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var hex_digits: usize = 0; // tiger:allow:usize-arch loop counter
+    while (hex_digits < 2 and j < format.len) : ({
+        j += 1;
+        hex_digits += 1;
+    }) {
+        const c = format[j];
+        const digit: u8 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => break,
+        };
+        value = value * 16 + digit;
+    }
+    std.debug.assert(hex_digits <= 2);
+
+    if (hex_digits > 0) {
+        try writer.writeByte(value);
+        return .{ .new_pos = j };
+    } else {
+        // No hex digits, output \x literally
+        try writer.writeByte('\\');
+        try writer.writeByte('x');
+        return .{ .new_pos = value_start };
     }
 }
 
@@ -240,71 +293,18 @@ fn processSpecifier(
     allocator: Allocator,
     had_error: *bool,
 ) !SpecifierResult {
+    std.debug.assert(pos < format.len);
+    std.debug.assert(format[pos] == '%');
+    const arg_idx_entry = arg_idx.*;
+
     var i = pos + 1; // Skip the '%'
 
-    // Parse flags: -, +, space, 0, #
-    var left_justify = false;
-    var plus_sign = false;
-    var space_sign = false;
-    var zero_pad = false;
-    var hash_flag = false;
-
-    while (i < format.len) {
-        switch (format[i]) {
-            '-' => left_justify = true,
-            '+' => plus_sign = true,
-            ' ' => space_sign = true,
-            '0' => zero_pad = true,
-            '#' => hash_flag = true,
-            else => break,
-        }
-        i += 1;
-    }
-
-    // Parse width
-    var width: ?usize = null;
-    if (i < format.len and format[i] == '*') {
-        // Width from argument
-        const w_str = getNextArg(arguments, arg_idx);
-        const w_val = std.fmt.parseInt(i64, w_str, 10) catch 0;
-        if (w_val < 0) {
-            // Negative width implies left-justify (GNU behavior)
-            left_justify = true;
-            width = @as(usize, @intCast(-w_val));
-        } else {
-            width = @as(usize, @intCast(w_val));
-        }
-        i += 1;
-    } else {
-        var w: usize = 0;
-        var has_width = false;
-        while (i < format.len and format[i] >= '0' and format[i] <= '9') {
-            w = w * 10 + (format[i] - '0');
-            has_width = true;
-            i += 1;
-        }
-        if (has_width) width = w;
-    }
-
-    // Parse precision
-    var precision: ?usize = null;
-    if (i < format.len and format[i] == '.') {
-        i += 1;
-        if (i < format.len and format[i] == '*') {
-            // Precision from argument
-            const p_str = getNextArg(arguments, arg_idx);
-            const p_val = std.fmt.parseInt(i64, p_str, 10) catch 0;
-            precision = if (p_val >= 0) @as(usize, @intCast(p_val)) else null;
-            i += 1;
-        } else {
-            var p: usize = 0;
-            while (i < format.len and format[i] >= '0' and format[i] <= '9') {
-                p = p * 10 + (format[i] - '0');
-                i += 1;
-            }
-            precision = p;
-        }
-    }
+    // Parse flags, then width and precision, accumulating into one spec.
+    // A '*' width can flip left_justify when negative, so parseWidth gets a
+    // pointer into the spec's flag.
+    var spec = processSpecifier_parseFlags(format, &i);
+    spec.width = processSpecifier_parseWidth(format, &i, arguments, arg_idx, &spec.left_justify);
+    spec.precision = processSpecifier_parsePrecision(format, &i, arguments, arg_idx);
 
     // Parse conversion character
     if (i >= format.len) {
@@ -315,16 +315,6 @@ fn processSpecifier(
 
     const conv = format[i];
     i += 1;
-
-    const spec = FormatSpec{
-        .left_justify = left_justify,
-        .plus_sign = plus_sign,
-        .space_sign = space_sign,
-        .zero_pad = zero_pad,
-        .hash_flag = hash_flag,
-        .width = width,
-        .precision = precision,
-    };
 
     switch (conv) {
         's' => {
@@ -342,69 +332,21 @@ fn processSpecifier(
                 try writer.writeByte(arg[0]);
             }
         },
-        'd', 'i' => {
+        'd', 'i', 'u', 'o', 'x', 'X' => {
             const arg = getNextArg(arguments, arg_idx);
-            const parse_result = parseIntArgEx(arg);
-            if (!parse_result.ok and arg.len > 0) {
-                common.printErrorWithProgram(allocator, stderr_writer, "printf", "'{s}': expected a numeric value", .{arg});
-                had_error.* = true;
-            }
-            try formatSignedInt(writer, parse_result.value, 10, false, spec);
+            try processSpecifier_dispatchInt(
+                writer,
+                conv,
+                arg,
+                spec,
+                allocator,
+                stderr_writer,
+                had_error,
+            );
         },
-        'u' => {
+        'f', 'F', 'e', 'E', 'g', 'G', 'a', 'A' => {
             const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatUnsignedInt(writer, val, 10, false, spec);
-        },
-        'o' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatUnsignedInt(writer, val, 8, spec.hash_flag, spec);
-        },
-        'x' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatHex(writer, val, false, spec);
-        },
-        'X' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseUintArg(arg);
-            try formatHex(writer, val, true, spec);
-        },
-        'f', 'F' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'f', spec);
-        },
-        'e' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'e', spec);
-        },
-        'E' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'E', spec);
-        },
-        'g' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'g', spec);
-        },
-        'G' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatFloat(writer, val, 'G', spec);
-        },
-        'a' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatHexFloat(writer, val, false, spec);
-        },
-        'A' => {
-            const arg = getNextArg(arguments, arg_idx);
-            const val = parseFloatArg(arg);
-            try formatHexFloat(writer, val, true, spec);
+            try processSpecifier_dispatchFloat(writer, conv, arg, spec);
         },
         else => {
             // Unknown specifier, output literally
@@ -413,7 +355,181 @@ fn processSpecifier(
         },
     }
 
+    std.debug.assert(arg_idx.* >= arg_idx_entry);
+    std.debug.assert(i <= format.len);
     return .{ .pos = i };
+}
+
+/// Parse the leading flag characters (-, +, space, 0, #) of a format
+/// specifier, advancing i_ptr past them. Returns a FormatSpec with only the
+/// flag fields set; width and precision stay null for the caller to fill.
+fn processSpecifier_parseFlags(
+    format: []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch slice index
+) FormatSpec {
+    std.debug.assert(i_ptr.* <= format.len);
+    const i_entry = i_ptr.*;
+
+    var spec = FormatSpec{};
+    while (i_ptr.* < format.len) {
+        switch (format[i_ptr.*]) {
+            '-' => spec.left_justify = true,
+            '+' => spec.plus_sign = true,
+            ' ' => spec.space_sign = true,
+            '0' => spec.zero_pad = true,
+            '#' => spec.hash_flag = true,
+            else => break,
+        }
+        i_ptr.* += 1;
+    }
+
+    std.debug.assert(i_ptr.* >= i_entry);
+    std.debug.assert(i_ptr.* <= format.len);
+    return spec;
+}
+
+/// Parse a width field for a format specifier, advancing i_ptr past it. A '*'
+/// reads the width from the next argument; a negative '*' width flips
+/// left_justify_ptr (GNU behavior). Otherwise reads decimal digits in place.
+/// Returns the parsed width, or null if none is present.
+fn processSpecifier_parseWidth(
+    format: []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch slice index
+    arguments: []const []const u8,
+    arg_idx: *usize, // tiger:allow:usize-arch slice index
+    left_justify_ptr: *bool,
+) ?usize { // tiger:allow:usize-arch slice padding count
+    std.debug.assert(i_ptr.* <= format.len);
+    const i_entry = i_ptr.*;
+
+    var width: ?usize = null;
+    if (i_ptr.* < format.len and format[i_ptr.*] == '*') {
+        // Width from argument
+        const w_str = getNextArg(arguments, arg_idx);
+        const w_val = std.fmt.parseInt(i64, w_str, 10) catch 0;
+        if (w_val < 0) {
+            // Negative width implies left-justify (GNU behavior)
+            left_justify_ptr.* = true;
+            width = @as(usize, @intCast(-w_val));
+        } else {
+            width = @as(usize, @intCast(w_val));
+        }
+        i_ptr.* += 1;
+    } else {
+        var w: usize = 0;
+        var has_width = false;
+        while (i_ptr.* < format.len and format[i_ptr.*] >= '0' and format[i_ptr.*] <= '9') {
+            w = w * 10 + (format[i_ptr.*] - '0');
+            has_width = true;
+            i_ptr.* += 1;
+        }
+        if (has_width) width = w;
+    }
+
+    std.debug.assert(i_ptr.* >= i_entry);
+    std.debug.assert(i_ptr.* <= format.len);
+    return width;
+}
+
+/// Parse a precision field ('.' optionally followed by '*' or digits) for a
+/// format specifier, advancing i_ptr past it. A '*' reads precision from the
+/// next argument (negative becomes null). Returns the parsed precision, or null
+/// if no '.' is present.
+fn processSpecifier_parsePrecision(
+    format: []const u8,
+    i_ptr: *usize, // tiger:allow:usize-arch slice index
+    arguments: []const []const u8,
+    arg_idx: *usize, // tiger:allow:usize-arch slice index
+) ?usize { // tiger:allow:usize-arch slice precision count
+    std.debug.assert(i_ptr.* <= format.len);
+
+    var precision: ?usize = null;
+    if (i_ptr.* < format.len and format[i_ptr.*] == '.') {
+        std.debug.assert(format[i_ptr.*] == '.');
+        i_ptr.* += 1;
+        if (i_ptr.* < format.len and format[i_ptr.*] == '*') {
+            // Precision from argument
+            const p_str = getNextArg(arguments, arg_idx);
+            const p_val = std.fmt.parseInt(i64, p_str, 10) catch 0;
+            precision = if (p_val >= 0) @as(usize, @intCast(p_val)) else null;
+            i_ptr.* += 1;
+        } else {
+            var p: usize = 0;
+            while (i_ptr.* < format.len and format[i_ptr.*] >= '0' and format[i_ptr.*] <= '9') {
+                p = p * 10 + (format[i_ptr.*] - '0');
+                i_ptr.* += 1;
+            }
+            precision = p;
+        }
+    }
+    return precision;
+}
+
+/// Dispatch the integer conversions (d, i, u, o, x, X) for a parsed argument.
+/// The d/i path reports a non-numeric warning via had_error. Error sink params
+/// go last per Tiger Style.
+fn processSpecifier_dispatchInt(
+    writer: anytype,
+    conv: u8,
+    arg: []const u8,
+    spec: FormatSpec,
+    allocator: Allocator,
+    stderr_writer: anytype,
+    had_error: *bool,
+) !void {
+    // Membership in d/i/u/o/x/X is enforced positively by the switch's
+    // `else => unreachable`; assert the negative space we must never see here.
+    std.debug.assert(conv != 's');
+    std.debug.assert(conv != 'b');
+
+    switch (conv) {
+        'd', 'i' => {
+            const parse_result = parseIntArgEx(arg);
+            if (!parse_result.ok and arg.len > 0) {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "printf",
+                    "'{s}': expected a numeric value",
+                    .{arg},
+                );
+                had_error.* = true;
+            }
+            try formatSignedInt(writer, parse_result.value, 10, false, spec);
+        },
+        'u' => try formatUnsignedInt(writer, parseUintArg(arg), 10, false, spec),
+        'o' => try formatUnsignedInt(writer, parseUintArg(arg), 8, spec.hash_flag, spec),
+        'x' => try formatHex(writer, parseUintArg(arg), false, spec),
+        'X' => try formatHex(writer, parseUintArg(arg), true, spec),
+        else => unreachable,
+    }
+}
+
+/// Dispatch the floating-point conversions (f, F, e, E, g, G, a, A) for a
+/// parsed argument. Each arm parses the float once and selects the formatter by
+/// conversion letter.
+fn processSpecifier_dispatchFloat(
+    writer: anytype,
+    conv: u8,
+    arg: []const u8,
+    spec: FormatSpec,
+) !void {
+    // Membership in f/F/e/E/g/G/a/A is enforced positively by the switch's
+    // `else => unreachable`; assert the negative space we must never see here.
+    std.debug.assert(conv != 'd');
+    std.debug.assert(conv != 's');
+
+    const val = parseFloatArg(arg);
+    switch (conv) {
+        'f', 'F' => try formatFloat(writer, val, 'f', spec),
+        'e' => try formatFloat(writer, val, 'e', spec),
+        'E' => try formatFloat(writer, val, 'E', spec),
+        'g' => try formatFloat(writer, val, 'g', spec),
+        'G' => try formatFloat(writer, val, 'G', spec),
+        'a' => try formatHexFloat(writer, val, false, spec),
+        'A' => try formatHexFloat(writer, val, true, spec),
+        else => unreachable,
+    }
 }
 
 /// Format specifier flags and modifiers
@@ -577,7 +693,9 @@ fn formatString(writer: anytype, s: []const u8, spec: FormatSpec) !void {
 fn formatBString(writer: anytype, s: []const u8) !bool {
     var i: usize = 0;
     while (i < s.len) {
+        std.debug.assert(i < s.len);
         if (s[i] == '\\' and i + 1 < s.len) {
+            std.debug.assert(s[i] == '\\');
             switch (s[i + 1]) {
                 'a' => {
                     try writer.writeByte('\x07');
@@ -617,57 +735,14 @@ fn formatBString(writer: anytype, s: []const u8) !bool {
                 },
                 '0' => {
                     // \0NNN: '0' is a prefix, read up to 3 octal digits after it
-                    var value: u8 = 0;
-                    var j: usize = i + 2; // skip past \ and 0
-                    var count: usize = 0;
-                    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
-                        j += 1;
-                        count += 1;
-                    }) {
-                        value = value *% 8 +% (s[j] - '0');
-                    }
-                    try writer.writeByte(value);
-                    i = j;
+                    i = try formatBString_octalWithPrefix(s, i + 2, writer);
                 },
                 '1'...'7' => {
                     // \NNN: first digit is part of the value, up to 3 digits total
-                    var value: u8 = 0;
-                    var j: usize = i + 1; // start at the first digit
-                    var count: usize = 0;
-                    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
-                        j += 1;
-                        count += 1;
-                    }) {
-                        value = value *% 8 +% (s[j] - '0');
-                    }
-                    try writer.writeByte(value);
-                    i = j;
+                    i = try formatBString_octalNoPrefix(s, i + 1, writer);
                 },
                 'x' => {
-                    var value: u8 = 0;
-                    var j: usize = 2;
-                    var hex_digits: usize = 0;
-                    while (hex_digits < 2 and i + j < s.len) : ({
-                        j += 1;
-                        hex_digits += 1;
-                    }) {
-                        const c = s[i + j];
-                        const digit: u8 = switch (c) {
-                            '0'...'9' => c - '0',
-                            'a'...'f' => c - 'a' + 10,
-                            'A'...'F' => c - 'A' + 10,
-                            else => break,
-                        };
-                        value = value * 16 + digit;
-                    }
-                    if (hex_digits > 0) {
-                        try writer.writeByte(value);
-                        i += j;
-                    } else {
-                        try writer.writeByte('\\');
-                        try writer.writeByte('x');
-                        i += 2;
-                    }
+                    i = try formatBString_hex(s, i, writer);
                 },
                 else => {
                     try writer.writeByte('\\');
@@ -680,6 +755,99 @@ fn formatBString(writer: anytype, s: []const u8) !bool {
         }
     }
     return false;
+}
+
+/// Scan up to 3 octal digits starting at value_start in a %b string, write the
+/// decoded byte, and return the new index. Used for the \0NNN form where the
+/// leading '0' is a prefix, so digits begin past it.
+fn formatBString_octalWithPrefix(
+    s: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= s.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (s[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 3 octal digits starting at value_start in a %b string, write the
+/// decoded byte, and return the new index. Used for the \NNN form where the
+/// first digit is part of the value. Kept separate from the prefixed variant so
+/// the start offset stays exact.
+fn formatBString_octalNoPrefix(
+    s: []const u8,
+    value_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(value_start <= s.len);
+
+    var value: u8 = 0;
+    var j: usize = value_start; // tiger:allow:usize-arch slice index
+    var count: usize = 0; // tiger:allow:usize-arch loop counter
+    while (count < 3 and j < s.len and s[j] >= '0' and s[j] <= '7') : ({
+        j += 1;
+        count += 1;
+    }) {
+        value = value *% 8 +% (s[j] - '0');
+    }
+    try writer.writeByte(value);
+
+    std.debug.assert(j >= value_start);
+    std.debug.assert(j <= value_start + 3);
+    return j;
+}
+
+/// Scan up to 2 hex digits for the \xHH form in a %b string. escape_start is
+/// the index of the backslash; digits are read at escape_start+2 onward via the
+/// original `j`-from-2 offset to preserve identical indexing. Returns the new
+/// absolute index: escape_start+j on success, escape_start+2 when no hex digit
+/// follows (in which case "\x" is emitted literally).
+fn formatBString_hex(
+    s: []const u8,
+    escape_start: usize, // tiger:allow:usize-arch slice index
+    writer: anytype,
+) !usize { // tiger:allow:usize-arch slice index
+    std.debug.assert(escape_start + 1 < s.len);
+
+    var value: u8 = 0;
+    var j: usize = 2; // tiger:allow:usize-arch slice index
+    var hex_digits: usize = 0; // tiger:allow:usize-arch loop counter
+    while (hex_digits < 2 and escape_start + j < s.len) : ({
+        j += 1;
+        hex_digits += 1;
+    }) {
+        const c = s[escape_start + j];
+        const digit: u8 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => break,
+        };
+        value = value * 16 + digit;
+    }
+    std.debug.assert(hex_digits <= 2);
+
+    if (hex_digits > 0) {
+        try writer.writeByte(value);
+        return escape_start + j;
+    } else {
+        try writer.writeByte('\\');
+        try writer.writeByte('x');
+        return escape_start + 2;
+    }
 }
 
 /// Format a signed integer with the given radix and spec
