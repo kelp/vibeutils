@@ -98,34 +98,16 @@ fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer
     const is_default_template = parsed.positionals.len == 0;
     const raw_template = if (parsed.positionals.len == 1) parsed.positionals[0] else default_template;
 
-    // Validate explicit --suffix does not contain path separator
     const explicit_suffix = parsed.suffix orelse "";
-    if (std.mem.findScalar(u8, explicit_suffix, '/') != null) {
-        if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid suffix '{s}': contains directory separator", .{explicit_suffix});
-        }
-        return @intFromEnum(common.ExitCode.general_error);
-    }
 
     // Find X's in the template. Characters after the last run of X's
     // are treated as an implicit suffix (GNU mktemp behavior).
     const xs = findTemplateXs(raw_template);
-    if (xs.x_count < 3) {
-        if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "too few X's in template '{s}'", .{raw_template});
-        }
-        return @intFromEnum(common.ExitCode.general_error);
-    }
 
-    // Total suffix = implicit suffix from template + explicit --suffix flag
-    const total_suffix_len = xs.implicit_suffix_len + explicit_suffix.len;
-
-    // With -t, the template must not contain a directory separator.
-    if (parsed.t and std.mem.findScalar(u8, raw_template, '/') != null) {
-        if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid template, '{s}', contains directory separator", .{raw_template});
-        }
-        return @intFromEnum(common.ExitCode.general_error);
+    // Validate suffix/template separators and X count. Each failing check
+    // reports its own diagnostic (unless quiet) and yields general_error.
+    if (run_validate(allocator, stderr_writer, &parsed, raw_template, explicit_suffix, xs)) |code| {
+        return code;
     }
 
     // GNU mktemp semantics:
@@ -136,64 +118,214 @@ fn run(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer
     //     Leading "./", "foo/bar", and "/abs/x" are all preserved.
     const force_tmpdir = parsed.tmpdir != null or parsed.t or is_default_template;
 
-    const full_template = blk: {
-        if (force_tmpdir) {
-            const tmpdir = resolveForcedTmpdir(allocator, parsed.tmpdir) catch {
-                if (!parsed.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to resolve temporary directory", .{});
-                }
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            defer allocator.free(tmpdir);
-
-            // When routing through tmpdir, use only the basename of the template.
-            const template_basename = std.fs.path.basename(raw_template);
-            const filename = if (explicit_suffix.len > 0)
-                std.fmt.allocPrint(allocator, "{s}{s}", .{ template_basename, explicit_suffix }) catch {
-                    if (!parsed.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
-                    }
-                    return @intFromEnum(common.ExitCode.general_error);
-                }
-            else
-                try allocator.dupe(u8, template_basename);
-            defer allocator.free(filename);
-
-            break :blk std.fs.path.join(allocator, &.{ tmpdir, filename }) catch {
-                if (!parsed.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
-                }
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-        } else {
-            // Verbatim path: preserve user's template exactly (leading "./", relative, absolute).
-            if (explicit_suffix.len > 0) {
-                break :blk std.fmt.allocPrint(allocator, "{s}{s}", .{ raw_template, explicit_suffix }) catch {
-                    if (!parsed.quiet) {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to allocate memory", .{});
-                    }
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-            }
-            break :blk try allocator.dupe(u8, raw_template);
-        }
+    const full_template = run_buildFullTemplate(
+        allocator,
+        raw_template,
+        explicit_suffix,
+        force_tmpdir,
+        parsed.tmpdir,
+    ) catch |err| {
+        // A bare-dupe OOM propagated out of run unchanged in the original; the
+        // other tags print their distinct message and exit general_error.
+        if (err == error.OutOfMemory) return err;
+        return run_reportBuildError(allocator, stderr_writer, parsed.quiet, @errorCast(err));
     };
 
-    // Generate the temporary file or directory
-    // total_suffix_len covers both implicit (chars after X's) and explicit --suffix
-    const result_path = generateTemp(allocator, io, full_template, xs.x_count, total_suffix_len, parsed.directory, parsed.@"dry-run") catch {
-        if (!parsed.quiet) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "failed to create {s} via template '{s}'", .{
-                if (parsed.directory) "directory" else "file",
-                full_template,
-            });
-        }
+    // Generate the temporary file or directory, then print its path.
+    return run_emitResult(
+        allocator,
+        io,
+        stdout_writer,
+        stderr_writer,
+        &parsed,
+        full_template,
+        xs,
+        explicit_suffix,
+    );
+}
+
+/// Create the temp file/directory from the resolved template and print its
+/// path on success. On failure reports the create error (unless quiet) and
+/// returns general_error. Returns success after printing the path. The
+/// generateTemp call and the stdout print move here verbatim from run.
+fn run_emitResult(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    parsed: *const MktempArgs,
+    full_template: []const u8,
+    xs: TemplateXs,
+    explicit_suffix: []const u8,
+) !u8 {
+    // total_suffix_len covers both the implicit suffix (chars after the X
+    // run) and the explicit --suffix flag, matching run's prior computation.
+    const total_suffix_len = xs.implicit_suffix_len + explicit_suffix.len;
+    // Precondition: the resolved template still carries the X run to fill.
+    std.debug.assert(full_template.len >= xs.x_count);
+    // Negative space: the suffix can never exceed the template length.
+    std.debug.assert(total_suffix_len <= full_template.len);
+
+    const result_path = generateTemp(
+        allocator,
+        io,
+        full_template,
+        xs.x_count,
+        total_suffix_len,
+        parsed.directory,
+        parsed.@"dry-run",
+    ) catch {
+        const kind = if (parsed.directory) "directory" else "file";
+        const fmt = "failed to create {s} via template '{s}'";
+        run_reportError(allocator, stderr_writer, parsed.quiet, fmt, .{ kind, full_template });
         return @intFromEnum(common.ExitCode.general_error);
     };
 
     try stdout_writer.print("{s}\n", .{result_path});
 
     return @intFromEnum(common.ExitCode.success);
+}
+
+/// Validate the explicit suffix, the X count, and the `-t` template before
+/// any path is built. Returns the general_error exit code on the first
+/// failing check (after reporting its distinct diagnostic unless quiet), or
+/// null when every check passes. All three checks share the same exit code,
+/// so collapsing them here changes no observable behavior.
+fn run_validate(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    parsed: *const MktempArgs,
+    raw_template: []const u8,
+    explicit_suffix: []const u8,
+    xs: TemplateXs,
+) ?u8 {
+    // Precondition: a template is always present (positional or default).
+    std.debug.assert(raw_template.len > 0);
+    // Negative space: x_count never exceeds the template it was scanned from.
+    std.debug.assert(xs.x_count <= raw_template.len);
+
+    const quiet = parsed.quiet;
+    // Explicit --suffix must not contain a path separator.
+    if (std.mem.findScalar(u8, explicit_suffix, '/') != null) {
+        const fmt = "invalid suffix '{s}': contains directory separator";
+        run_reportError(allocator, stderr_writer, quiet, fmt, .{explicit_suffix});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    // Template must contain at least three X's.
+    if (xs.x_count < 3) {
+        const fmt = "too few X's in template '{s}'";
+        run_reportError(allocator, stderr_writer, quiet, fmt, .{raw_template});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    // With -t, the template must not contain a directory separator.
+    if (parsed.t and std.mem.findScalar(u8, raw_template, '/') != null) {
+        const fmt = "invalid template, '{s}', contains directory separator";
+        run_reportError(allocator, stderr_writer, quiet, fmt, .{raw_template});
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+    return null;
+}
+
+/// Print an error via the program prefix, but only when not in quiet mode.
+/// Centralizes the repeated quiet-guard + print tail shared by the
+/// validation, build, and emit paths so each branch stays a one-liner.
+fn run_reportError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    quiet: bool,
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    // Precondition: every call site passes a non-empty format string.
+    std.debug.assert(fmt.len > 0);
+    // Negative space: args must be a tuple/struct of format arguments; a
+    // scalar passed by mistake would not type-check as a struct here.
+    std.debug.assert(@typeInfo(@TypeOf(args)) == .@"struct");
+    if (!quiet) {
+        common.printErrorWithProgram(allocator, stderr_writer, prog_name, fmt, args);
+    }
+}
+
+/// Emit the diagnostic that matches a run_buildFullTemplate failure and
+/// return the general_error exit code. OutOfMemory is handled by run itself
+/// (re-propagated), so it never reaches here.
+fn run_reportBuildError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    quiet: bool,
+    err: error{ ResolveTmpdir, AllocPrintFailed },
+) u8 {
+    const general_error = @intFromEnum(common.ExitCode.general_error);
+    // Sanity check: the general error code is the conventional 1...
+    std.debug.assert(general_error == 1);
+    // ...and is distinct from the success code we never return here.
+    std.debug.assert(general_error != @intFromEnum(common.ExitCode.success));
+    switch (err) {
+        error.ResolveTmpdir => {
+            const fmt = "failed to resolve temporary directory";
+            run_reportError(allocator, stderr_writer, quiet, fmt, .{});
+        },
+        error.AllocPrintFailed => {
+            const fmt = "failed to allocate memory";
+            run_reportError(allocator, stderr_writer, quiet, fmt, .{});
+        },
+    }
+    return general_error;
+}
+
+/// Build the full template path that generateTemp consumes.
+///
+/// Mirrors GNU mktemp semantics: when `force_tmpdir` is set (no TEMPLATE
+/// default, `-p DIR`, or `-t`) the template's basename is joined under the
+/// resolved tmpdir; otherwise the user's template is preserved verbatim.
+///
+/// Failures map to three distinct tags so the caller reproduces the original
+/// behavior exactly: resolveForcedTmpdir failure -> error.ResolveTmpdir;
+/// an allocPrint/join failure -> error.AllocPrintFailed (caller prints
+/// "failed to allocate memory" and exits general_error); a bare dupe failure
+/// -> error.OutOfMemory (caller re-propagates it out of run, as the original
+/// `try allocator.dupe(...)` did). The caller owns the returned slice.
+fn run_buildFullTemplate(
+    allocator: Allocator,
+    raw_template: []const u8,
+    explicit_suffix: []const u8,
+    force_tmpdir: bool,
+    tmpdir_arg: ?[]const u8,
+) error{ ResolveTmpdir, AllocPrintFailed, OutOfMemory }![]const u8 {
+    // Precondition: the template already passed the x_count >= 3 check, so
+    // it has at least three characters.
+    std.debug.assert(raw_template.len >= 3);
+    // Negative space: callers reject a '/' in the explicit suffix before
+    // reaching here, so none should be present.
+    std.debug.assert(std.mem.findScalar(u8, explicit_suffix, '/') == null);
+
+    if (force_tmpdir) {
+        const tmpdir = resolveForcedTmpdir(allocator, tmpdir_arg) catch return error.ResolveTmpdir;
+        defer allocator.free(tmpdir);
+
+        // When routing through tmpdir, use only the basename of the template.
+        const template_basename = std.fs.path.basename(raw_template);
+        const filename = if (explicit_suffix.len > 0)
+            std.fmt.allocPrint(allocator, "{s}{s}", .{
+                template_basename,
+                explicit_suffix,
+            }) catch return error.AllocPrintFailed
+        else
+            try allocator.dupe(u8, template_basename);
+        defer allocator.free(filename);
+
+        const joined = std.fs.path.join(allocator, &.{ tmpdir, filename });
+        return joined catch return error.AllocPrintFailed;
+    }
+
+    // Verbatim path: preserve user's template exactly (leading "./", relative, absolute).
+    if (explicit_suffix.len > 0) {
+        return std.fmt.allocPrint(allocator, "{s}{s}", .{
+            raw_template,
+            explicit_suffix,
+        }) catch return error.AllocPrintFailed;
+    }
+    return try allocator.dupe(u8, raw_template);
 }
 
 /// Count trailing 'X' characters in the template
