@@ -88,6 +88,19 @@ const IdArgs = struct {
     };
 };
 
+/// Shared, invariant plumbing for runId's mode helpers. Grouping the
+/// allocator, parsed args, output terminator, and writers keeps helper
+/// signatures and call sites within the 100-column limit. The struct is
+/// passed by `*const` (it exceeds 16 bytes) and never mutated.
+const RunIdContext = struct {
+    allocator: Allocator,
+    parsed: *const IdArgs,
+    /// Entry terminator: '\n' by default, NUL with -z.
+    delimiter: u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+};
+
 /// Main entry point for the id utility
 pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer) !u8 {
     _ = io;
@@ -119,10 +132,82 @@ pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // GNU id: -a is a no-op (ignored), not an alias for -G
+    // Validate flag combinations; bail out early with a misuse code if invalid.
+    if (try runId_checkFlagCombos(allocator, &parsed, stderr_writer)) |code| return code;
+
+    const ctx = RunIdContext{
+        .allocator = allocator,
+        .parsed = &parsed,
+        .delimiter = if (parsed.zero) 0 else '\n',
+        .stdout_writer = stdout_writer,
+        .stderr_writer = stderr_writer,
+    };
+
+    // Resolve target user (named user or current process).
+    var uid: common.user_group.uid_t = undefined;
+    var gid: common.user_group.gid_t = undefined;
+    var is_specified_user = false;
+    if (try runId_resolveTarget(&ctx, &uid, &gid, &is_specified_user)) |code| return code;
+
+    return runId_dispatch(&ctx, uid, gid, is_specified_user);
+}
+
+/// Dispatch on the output-mode flags and run the matching printer.
+/// -a is a GNU no-op (handled as default), not an alias for -G.
+fn runId_dispatch(
+    ctx: *const RunIdContext,
+    uid: common.user_group.uid_t,
+    gid: common.user_group.gid_t,
+    is_specified_user: bool,
+) !u8 {
+    const parsed = ctx.parsed;
+    // checkFlagCombos already enforced at most one of -u/-g/-G is set.
+    const mode_count: u8 = @as(u8, @intFromBool(parsed.user)) +
+        @as(u8, @intFromBool(parsed.group)) +
+        @as(u8, @intFromBool(parsed.groups));
+    std.debug.assert(mode_count <= 1);
+    // Negative space: -A (audit) never reaches dispatch; it exits earlier.
+    std.debug.assert(!parsed.audit);
+
+    if (parsed.full_name) return runId_printFullName(ctx, uid);
+    if (parsed.passwd_entry) return runId_printPasswdEntry(ctx, uid);
+    if (parsed.pretty) {
+        return printPrettyFormat(
+            ctx.allocator,
+            uid,
+            gid,
+            is_specified_user,
+            ctx.stdout_writer,
+            ctx.stderr_writer,
+        );
+    }
+    if (parsed.user) return runId_printUserOnly(ctx, uid, is_specified_user);
+    if (parsed.group) return runId_printGroupOnly(ctx, gid, is_specified_user);
+    if (parsed.groups) return runId_printAllGroups(ctx, uid, gid, is_specified_user);
+
+    // Default format: uid=N(name) gid=N(name) groups=N(name),N(name),...
+    return printDefaultFormat(
+        ctx.allocator,
+        uid,
+        gid,
+        is_specified_user,
+        ctx.delimiter,
+        ctx.stdout_writer,
+        ctx.stderr_writer,
+    );
+}
+
+/// Validate flag combinations for runId. Returns a misuse exit code to bail out
+/// with, or null when the combination is valid and execution should continue.
+fn runId_checkFlagCombos(
+    allocator: Allocator,
+    parsed: *const IdArgs,
+    stderr_writer: *std.Io.Writer,
+) !?u8 {
+    // GNU id: -a is a no-op (ignored), not an alias for -G.
     const show_groups = parsed.groups;
 
-    // -n and -r only make sense with -u, -g, or -G
+    // -n and -r only make sense with -u, -g, or -G.
     if (parsed.name and !parsed.user and !parsed.group and !show_groups) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print only names in default format", .{});
         return @intFromEnum(common.ExitCode.misuse);
@@ -132,37 +217,54 @@ pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // GNU id: -z requires a format flag (-u, -g, or -G)
+    // GNU id: -z requires a format flag (-u, -g, or -G).
     if (parsed.zero and !parsed.user and !parsed.group and !show_groups) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", "option --zero not permitted in default format", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // Mutually exclusive: -u, -g, -G
+    // Mutually exclusive: -u, -g, -G.
     const mode_count: u8 = @as(u8, @intFromBool(parsed.user)) +
         @as(u8, @intFromBool(parsed.group)) +
         @as(u8, @intFromBool(show_groups));
+    // Positive space: at most all three mode flags can be set.
+    std.debug.assert(mode_count <= 3);
+    // Negative space: -a is never a mode flag here.
+    std.debug.assert(show_groups == parsed.groups);
     if (mode_count > 1) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    // -p is mutually exclusive with -u, -g, -G
+    // -p is mutually exclusive with -u, -g, -G.
     if (parsed.pretty and mode_count > 0) {
         common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot print 'only' of more than one choice", .{});
         return @intFromEnum(common.ExitCode.misuse);
     }
 
-    const delimiter: u8 = if (parsed.zero) 0 else '\n';
+    return null;
+}
 
-    // Resolve target user
-    var uid: common.user_group.uid_t = undefined;
-    var gid: common.user_group.gid_t = undefined;
-    var is_specified_user = false;
+/// Resolve the target uid/gid for runId, writing results through out-params.
+/// Returns a general-error exit code when a named user cannot be found, or
+/// null on success.
+fn runId_resolveTarget(
+    ctx: *const RunIdContext,
+    out_uid: *common.user_group.uid_t,
+    out_gid: *common.user_group.gid_t,
+    out_is_specified: *bool,
+) !?u8 {
+    const allocator = ctx.allocator;
+    const parsed = ctx.parsed;
+    const stderr_writer = ctx.stderr_writer;
+    // The parent already rejected more than one positional operand.
+    std.debug.assert(parsed.positionals.len <= 1);
+    // Negative space: -A (audit) never reaches resolution; it exits earlier.
+    std.debug.assert(!parsed.audit);
 
     if (parsed.positionals.len == 1) {
-        // Look up specified user
-        is_specified_user = true;
+        // Look up specified user.
+        out_is_specified.* = true;
         const username = parsed.positionals[0];
         const user_info = common.user_group.getUserById(
             common.user_group.parseUser(username, allocator) catch {
@@ -175,185 +277,318 @@ pub fn runId(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
             return @intFromEnum(common.ExitCode.general_error);
         };
         defer allocator.free(user_info.name);
-        uid = user_info.uid;
-        gid = user_info.gid;
+        out_uid.* = user_info.uid;
+        out_gid.* = user_info.gid;
     } else {
-        // Current user
+        // Current user.
+        out_is_specified.* = false;
         if (parsed.real) {
-            uid = common.user_group.getCurrentUserId();
-            gid = common.user_group.getCurrentGroupId();
+            out_uid.* = common.user_group.getCurrentUserId();
+            out_gid.* = common.user_group.getCurrentGroupId();
         } else {
-            uid = @intCast(geteuid());
-            gid = @intCast(getegid());
+            out_uid.* = @intCast(geteuid());
+            out_gid.* = @intCast(getegid());
         }
     }
+    return null;
+}
 
-    // Handle -F (full name from GECOS field)
-    if (parsed.full_name) {
-        const pw = getpwuid(@intCast(uid));
-        if (pw) |passwd| {
-            const gecos = std.mem.span(passwd.pw_gecos);
-            try stdout_writer.print("{s}", .{gecos});
-            try stdout_writer.writeByte(delimiter);
-            return @intFromEnum(common.ExitCode.success);
-        } else {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find full name for user ID {d}", .{uid});
-            return @intFromEnum(common.ExitCode.general_error);
-        }
+/// Handle -F: print the GECOS full name for the resolved uid.
+fn runId_printFullName(ctx: *const RunIdContext, uid: common.user_group.uid_t) !u8 {
+    const allocator = ctx.allocator;
+    const stdout_writer = ctx.stdout_writer;
+    const stderr_writer = ctx.stderr_writer;
+    const delimiter = ctx.delimiter;
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
+
+    const pw = getpwuid(@intCast(uid));
+    if (pw) |passwd| {
+        // The looked-up entry must belong to the resolved uid.
+        std.debug.assert(passwd.pw_uid == @as(std.c.uid_t, @intCast(uid)));
+        const gecos = std.mem.span(passwd.pw_gecos);
+        try stdout_writer.print("{s}", .{gecos});
+        try stdout_writer.writeByte(delimiter);
+        return @intFromEnum(common.ExitCode.success);
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "cannot find full name for user ID {d}",
+            .{uid},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
     }
+}
 
-    // Handle -P (passwd file entry)
-    // Format: name:passwd:uid:gid:class:change:expire:gecos:home:shell
-    if (parsed.passwd_entry) {
-        const pw = getpwuid(@intCast(uid));
-        if (pw) |passwd| {
-            const pw_name = std.mem.span(passwd.pw_name);
-            const pw_passwd = std.mem.span(passwd.pw_passwd);
-            const pw_gecos = std.mem.span(passwd.pw_gecos);
-            const pw_dir = std.mem.span(passwd.pw_dir);
-            const pw_shell = std.mem.span(passwd.pw_shell);
-            if (@import("builtin").os.tag == .macos) {
-                const pw_class = std.mem.span(passwd.pw_class);
-                try stdout_writer.print("{s}:{s}:{d}:{d}:{s}:{d}:{d}:{s}:{s}:{s}", .{
-                    pw_name,
-                    pw_passwd,
-                    passwd.pw_uid,
-                    passwd.pw_gid,
-                    pw_class,
-                    passwd.pw_change,
-                    passwd.pw_expire,
-                    pw_gecos,
-                    pw_dir,
-                    pw_shell,
-                });
-            } else {
-                try stdout_writer.print("{s}:{s}:{d}:{d}::0:0:{s}:{s}:{s}", .{
-                    pw_name,
-                    pw_passwd,
-                    passwd.pw_uid,
-                    passwd.pw_gid,
-                    pw_gecos,
-                    pw_dir,
-                    pw_shell,
-                });
-            }
-            try stdout_writer.writeByte(delimiter);
-            return @intFromEnum(common.ExitCode.success);
+/// Handle -P: print the passwd file entry for the resolved uid.
+/// Format: name:passwd:uid:gid:class:change:expire:gecos:home:shell
+fn runId_printPasswdEntry(ctx: *const RunIdContext, uid: common.user_group.uid_t) !u8 {
+    const allocator = ctx.allocator;
+    const stdout_writer = ctx.stdout_writer;
+    const stderr_writer = ctx.stderr_writer;
+    const delimiter = ctx.delimiter;
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
+
+    const pw = getpwuid(@intCast(uid));
+    if (pw) |passwd| {
+        // The looked-up entry must belong to the resolved uid.
+        std.debug.assert(passwd.pw_uid == @as(std.c.uid_t, @intCast(uid)));
+        const pw_name = std.mem.span(passwd.pw_name);
+        const pw_passwd = std.mem.span(passwd.pw_passwd);
+        const pw_gecos = std.mem.span(passwd.pw_gecos);
+        const pw_dir = std.mem.span(passwd.pw_dir);
+        const pw_shell = std.mem.span(passwd.pw_shell);
+        if (@import("builtin").os.tag == .macos) {
+            const pw_class = std.mem.span(passwd.pw_class);
+            try stdout_writer.print("{s}:{s}:{d}:{d}:{s}:{d}:{d}:{s}:{s}:{s}", .{
+                pw_name,
+                pw_passwd,
+                passwd.pw_uid,
+                passwd.pw_gid,
+                pw_class,
+                passwd.pw_change,
+                passwd.pw_expire,
+                pw_gecos,
+                pw_dir,
+                pw_shell,
+            });
         } else {
-            common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find passwd entry for user ID {d}", .{uid});
-            return @intFromEnum(common.ExitCode.general_error);
-        }
-    }
-
-    // Handle -p (human-readable output)
-    if (parsed.pretty) {
-        return printPrettyFormat(allocator, uid, gid, is_specified_user, stdout_writer, stderr_writer);
-    }
-
-    // Handle -u (user only)
-    if (parsed.user) {
-        const target_uid = blk: {
-            if (is_specified_user) break :blk uid;
-            if (parsed.real) break :blk common.user_group.getCurrentUserId();
-            break :blk @as(common.user_group.uid_t, @intCast(geteuid()));
-        };
-
-        if (parsed.name) {
-            const info = common.user_group.getUserById(target_uid, allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for user ID {d}", .{target_uid});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            defer allocator.free(info.name);
-            try stdout_writer.print("{s}", .{info.name});
-        } else {
-            try stdout_writer.print("{d}", .{target_uid});
+            try stdout_writer.print("{s}:{s}:{d}:{d}::0:0:{s}:{s}:{s}", .{
+                pw_name,
+                pw_passwd,
+                passwd.pw_uid,
+                passwd.pw_gid,
+                pw_gecos,
+                pw_dir,
+                pw_shell,
+            });
         }
         try stdout_writer.writeByte(delimiter);
         return @intFromEnum(common.ExitCode.success);
+    } else {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "id",
+            "cannot find passwd entry for user ID {d}",
+            .{uid},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
     }
+}
 
-    // Handle -g (group only)
-    if (parsed.group) {
-        const target_gid = blk: {
-            if (is_specified_user) break :blk gid;
-            if (parsed.real) break :blk common.user_group.getCurrentGroupId();
-            break :blk @as(common.user_group.gid_t, @intCast(getegid()));
+/// Handle -u: print only the effective (or real) user ID or name.
+fn runId_printUserOnly(
+    ctx: *const RunIdContext,
+    uid: common.user_group.uid_t,
+    is_specified_user: bool,
+) !u8 {
+    const allocator = ctx.allocator;
+    const parsed = ctx.parsed;
+    const stdout_writer = ctx.stdout_writer;
+    const stderr_writer = ctx.stderr_writer;
+    const delimiter = ctx.delimiter;
+    // Reached only via the -u branch in runId.
+    std.debug.assert(parsed.user);
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
+
+    const target_uid = blk: {
+        if (is_specified_user) break :blk uid;
+        if (parsed.real) break :blk common.user_group.getCurrentUserId();
+        break :blk @as(common.user_group.uid_t, @intCast(geteuid()));
+    };
+
+    if (parsed.name) {
+        const info = common.user_group.getUserById(target_uid, allocator) catch {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "id",
+                "cannot find name for user ID {d}",
+                .{target_uid},
+            );
+            return @intFromEnum(common.ExitCode.general_error);
         };
+        defer allocator.free(info.name);
+        try stdout_writer.print("{s}", .{info.name});
+    } else {
+        try stdout_writer.print("{d}", .{target_uid});
+    }
+    try stdout_writer.writeByte(delimiter);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Handle -g: print only the effective (or real) group ID or name.
+fn runId_printGroupOnly(
+    ctx: *const RunIdContext,
+    gid: common.user_group.gid_t,
+    is_specified_user: bool,
+) !u8 {
+    const allocator = ctx.allocator;
+    const parsed = ctx.parsed;
+    const stdout_writer = ctx.stdout_writer;
+    const stderr_writer = ctx.stderr_writer;
+    const delimiter = ctx.delimiter;
+    // Reached only via the -g branch in runId.
+    std.debug.assert(parsed.group);
+    // Delimiter is newline (default) or NUL (-z); never anything else.
+    std.debug.assert(runId_isTerminator(delimiter));
+
+    const target_gid = blk: {
+        if (is_specified_user) break :blk gid;
+        if (parsed.real) break :blk common.user_group.getCurrentGroupId();
+        break :blk @as(common.user_group.gid_t, @intCast(getegid()));
+    };
+
+    if (parsed.name) {
+        const info = common.user_group.getGroupById(target_gid, allocator) catch {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "id",
+                "cannot find name for group ID {d}",
+                .{target_gid},
+            );
+            return @intFromEnum(common.ExitCode.general_error);
+        };
+        defer allocator.free(info.name);
+        try stdout_writer.print("{s}", .{info.name});
+    } else {
+        try stdout_writer.print("{d}", .{target_gid});
+    }
+    try stdout_writer.writeByte(delimiter);
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Handle -G: print all group IDs (or names) for the target user.
+fn runId_printAllGroups(
+    ctx: *const RunIdContext,
+    uid: common.user_group.uid_t,
+    gid: common.user_group.gid_t,
+    is_specified_user: bool,
+) !u8 {
+    const allocator = ctx.allocator;
+    const parsed = ctx.parsed;
+    const stdout_writer = ctx.stdout_writer;
+    const stderr_writer = ctx.stderr_writer;
+    const delimiter = ctx.delimiter;
+    // Reached only via the -G branch in runId.
+    std.debug.assert(parsed.groups);
+    const group_separator: u8 = if (parsed.zero) 0 else ' ';
+    // Separator tracks -z: NUL when zero, space otherwise. Compare against the
+    // independently derived expected value to avoid a compound assert boolean.
+    const separator_expected: u8 = if (parsed.zero) 0 else ' ';
+    std.debug.assert(group_separator == separator_expected);
+
+    // Collect the group list: getgrouplist(3) for a named user, getgroups(2)
+    // for the current process. A null result means "no list, print the single
+    // primary group instead"; an allocation error returns a general error.
+    const group_list: []std.c.gid_t = if (is_specified_user)
+        getGroupsForUser(uid, @intCast(gid), allocator) orelse {
+            return printSingleGroup(
+                allocator,
+                gid,
+                parsed.name,
+                delimiter,
+                stdout_writer,
+                stderr_writer,
+            );
+        }
+    else switch (runId_printAllGroups_currentGroups(allocator)) {
+        .list => |list| list,
+        .fall_back => return printSingleGroup(
+            allocator,
+            gid,
+            parsed.name,
+            delimiter,
+            stdout_writer,
+            stderr_writer,
+        ),
+        .alloc_failed => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "id",
+                "memory allocation failed",
+                .{},
+            );
+            return @intFromEnum(common.ExitCode.general_error);
+        },
+    };
+    defer allocator.free(group_list);
+
+    for (group_list, 0..) |g, i| {
+        const group_gid: common.user_group.gid_t = @intCast(g);
+        if (i > 0) try stdout_writer.writeByte(group_separator);
 
         if (parsed.name) {
-            const info = common.user_group.getGroupById(target_gid, allocator) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", "cannot find name for group ID {d}", .{target_gid});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            defer allocator.free(info.name);
-            try stdout_writer.print("{s}", .{info.name});
-        } else {
-            try stdout_writer.print("{d}", .{target_gid});
-        }
-        try stdout_writer.writeByte(delimiter);
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Handle -G (all groups)
-    if (show_groups) {
-        const group_separator: u8 = if (parsed.zero) 0 else ' ';
-
-        // Get group list: getgrouplist(3) for a named user,
-        // getgroups(2) for the current process.
-        const group_list: []std.c.gid_t = if (is_specified_user)
-            getGroupsForUser(uid, @intCast(gid), allocator) orelse {
-                return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
-            }
-        else blk: {
-            const ngroups = getgroups(0, undefined);
-            if (ngroups <= 0) {
-                return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
-            }
-            const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch {
-                common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            const actual = getgroups(@intCast(ngroups), buf.ptr);
-            if (actual <= 0) {
-                allocator.free(buf);
-                return printSingleGroup(allocator, gid, parsed.name, delimiter, stdout_writer, stderr_writer);
-            }
-            const count: usize = @intCast(actual);
-            if (count == buf.len) break :blk buf;
-            // Shrink to exact count so free() sees the right length.
-            const exact = allocator.alloc(std.c.gid_t, count) catch {
-                allocator.free(buf);
-                common.printErrorWithProgram(allocator, stderr_writer, "id", "memory allocation failed", .{});
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-            @memcpy(exact, buf[0..count]);
-            allocator.free(buf);
-            break :blk exact;
-        };
-        defer allocator.free(group_list);
-
-        for (group_list, 0..) |g, i| {
-            const group_gid: common.user_group.gid_t = @intCast(g);
-            if (i > 0) try stdout_writer.writeByte(group_separator);
-
-            if (parsed.name) {
-                const info = common.user_group.getGroupById(group_gid, allocator) catch {
-                    // Fall back to numeric if name lookup fails
-                    try stdout_writer.print("{d}", .{group_gid});
-                    continue;
-                };
-                defer allocator.free(info.name);
-                try stdout_writer.print("{s}", .{info.name});
-            } else {
+            const info = common.user_group.getGroupById(group_gid, allocator) catch {
+                // Fall back to numeric if name lookup fails.
                 try stdout_writer.print("{d}", .{group_gid});
-            }
+                continue;
+            };
+            defer allocator.free(info.name);
+            try stdout_writer.print("{s}", .{info.name});
+        } else {
+            try stdout_writer.print("{d}", .{group_gid});
         }
-        try stdout_writer.writeByte(delimiter);
-        return @intFromEnum(common.ExitCode.success);
     }
+    try stdout_writer.writeByte(delimiter);
+    return @intFromEnum(common.ExitCode.success);
+}
 
-    // Default format: uid=N(name) gid=N(name) groups=N(name),N(name),...
-    return printDefaultFormat(allocator, uid, gid, is_specified_user, delimiter, stdout_writer, stderr_writer);
+/// Outcome of collecting the current process's supplementary groups.
+const CurrentGroups = union(enum) {
+    /// An owned, exact-length group slice the caller must free.
+    list: []std.c.gid_t,
+    /// No supplementary groups: caller should print the single primary group.
+    fall_back,
+    /// An allocation failed: caller should report it and return general error.
+    alloc_failed,
+};
+
+/// Collect the current process's supplementary groups via getgroups(2),
+/// shrinking the buffer to the exact count. Straight-line work for
+/// runId_printAllGroups; the caller owns all branching on the result.
+fn runId_printAllGroups_currentGroups(allocator: Allocator) CurrentGroups {
+    const ngroups = getgroups(0, undefined);
+    if (ngroups <= 0) return .fall_back;
+    // ngroups is the kernel's group count; it must be positive here.
+    std.debug.assert(ngroups > 0);
+
+    const buf = allocator.alloc(std.c.gid_t, @intCast(ngroups)) catch return .alloc_failed;
+    const actual = getgroups(@intCast(ngroups), buf.ptr);
+    if (actual <= 0) {
+        allocator.free(buf);
+        return .fall_back;
+    }
+    const count: usize = @intCast(actual); // tiger:allow:usize-arch slice index
+    // The second call cannot report more groups than the first sizing call.
+    std.debug.assert(count <= buf.len);
+    if (count == buf.len) return .{ .list = buf };
+
+    // Shrink to exact count so the caller's free() sees the right length.
+    const exact = allocator.alloc(std.c.gid_t, count) catch {
+        allocator.free(buf);
+        return .alloc_failed;
+    };
+    @memcpy(exact, buf[0..count]);
+    allocator.free(buf);
+    return .{ .list = exact };
+}
+
+/// True when `delimiter` is one of the two terminators id ever emits:
+/// newline (default) or NUL (with -z). Used by helper assertions to state
+/// the precondition without a compound boolean in the assert itself.
+fn runId_isTerminator(delimiter: u8) bool {
+    return switch (delimiter) {
+        '\n', 0 => true,
+        else => false,
+    };
 }
 
 /// Print a single group in -G mode
