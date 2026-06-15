@@ -109,6 +109,172 @@ fn resolveLogical(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
     return result;
 }
 
+/// Print a "name: message" resolution error with the program prefix. Shared by
+/// the resolve helpers, which all format the identical "{s}: {s}" diagnostic.
+fn printResolveError(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    name: []const u8,
+    err: anyerror,
+) void {
+    std.debug.assert(name.len > 0);
+    // posixErrorString never yields an empty string for a real error.
+    const message = common.posixErrorString(err);
+    std.debug.assert(message.len > 0);
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        "realpath",
+        "{s}: {s}",
+        .{ name, message },
+    );
+}
+
+/// Resolve the target path according to the active canonicalization mode.
+/// Returns the owned resolved slice, or null when an error was already
+/// reported (the caller then returns false). `opts` passed `*const` (>16 bytes).
+fn processPath_resolveTarget(
+    allocator: Allocator,
+    io: std.Io,
+    path: []const u8,
+    opts: *const RealpathArgs,
+    stderr_writer: *std.Io.Writer,
+) !?[]u8 {
+    std.debug.assert(path.len > 0);
+    // At most one of the existing/missing mode flags may be set.
+    const both_modes = opts.canonicalize_existing and opts.canonicalize_missing;
+    std.debug.assert(!both_modes);
+
+    if (opts.no_symlinks) {
+        return resolveLogical(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    } else if (opts.canonicalize_missing) {
+        return path_utils.canonicalizeMissing(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    } else if (opts.canonicalize_existing) {
+        // -e: all components must exist
+        return realPathAbsoluteDupe(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    } else {
+        // Default (-E semantics): all but last component must exist.
+        return path_utils.canonicalizeParentMustExist(allocator, io, path) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, path, err);
+            }
+            return null;
+        };
+    }
+}
+
+/// Resolve the relative base directory. Distinct from `processPath_resolveTarget`:
+/// the default branch uses `realPathAbsoluteDupe` (no parent-must-exist mode).
+/// Returns the owned resolved slice, or null when an error was already reported.
+fn processPath_resolveBase(
+    allocator: Allocator,
+    io: std.Io,
+    base_dir: []const u8,
+    opts: *const RealpathArgs,
+    stderr_writer: *std.Io.Writer,
+) !?[]u8 {
+    std.debug.assert(base_dir.len > 0);
+    const both_modes = opts.canonicalize_existing and opts.canonicalize_missing;
+    std.debug.assert(!both_modes);
+
+    if (opts.no_symlinks) {
+        return resolveLogical(allocator, io, base_dir) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, base_dir, err);
+            }
+            return null;
+        };
+    } else if (opts.canonicalize_missing) {
+        return path_utils.canonicalizeMissing(allocator, io, base_dir) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, base_dir, err);
+            }
+            return null;
+        };
+    } else {
+        return realPathAbsoluteDupe(allocator, io, base_dir) catch |err| {
+            if (!opts.quiet) {
+                printResolveError(allocator, stderr_writer, base_dir, err);
+            }
+            return null;
+        };
+    }
+}
+
+/// Compute the relative-output form of `resolved` against `resolved_base`.
+/// When `relative_base_only` is true (--relative-base without --relative-to),
+/// only print relative if `resolved` is under `resolved_base`; otherwise always
+/// print relative. Returns an owned slice (the caller frees it).
+fn processPath_makeRelative(
+    allocator: Allocator,
+    resolved: []const u8,
+    resolved_base: []const u8,
+    relative_base_only: bool,
+) ![]u8 {
+    std.debug.assert(resolved.len > 0);
+    std.debug.assert(resolved_base.len > 0);
+    std.debug.assert(std.fs.path.isAbsolute(resolved));
+
+    if (relative_base_only) {
+        // --relative-base only: print relative if under base, absolute otherwise
+        if (std.mem.startsWith(u8, resolved, resolved_base) and
+            (resolved.len == resolved_base.len or resolved[resolved_base.len] == '/'))
+        {
+            const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
+                return try allocator.dupe(u8, resolved);
+            };
+            // Empty relative path means same directory
+            if (rel.len == 0) {
+                allocator.free(rel);
+                return try allocator.dupe(u8, ".");
+            }
+            return rel;
+        } else {
+            return try allocator.dupe(u8, resolved);
+        }
+    } else {
+        // --relative-to: always print relative
+        const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
+            return try allocator.dupe(u8, resolved);
+        };
+        // Empty relative path means same directory
+        if (rel.len == 0) {
+            allocator.free(rel);
+            return try allocator.dupe(u8, ".");
+        }
+        return rel;
+    }
+}
+
+/// Write the resolved output followed by the line delimiter (NUL or newline).
+fn processPath_writeOutput(stdout_writer: *std.Io.Writer, output: []const u8, zero: bool) !void {
+    std.debug.assert(output.len > 0);
+    // Negative-space: output is a real slice, never a dangling/undefined pointer.
+    std.debug.assert(@intFromPtr(output.ptr) != 0);
+
+    try stdout_writer.writeAll(output);
+    if (zero) {
+        try stdout_writer.writeByte(0);
+    } else {
+        try stdout_writer.writeByte('\n');
+    }
+}
+
 /// Process a single path and write the result
 fn processPath(
     allocator: Allocator,
@@ -118,107 +284,33 @@ fn processPath(
     stdout_writer: *std.Io.Writer,
     stderr_writer: *std.Io.Writer,
 ) !bool {
-    const resolved = if (opts.no_symlinks) blk: {
-        break :blk resolveLogical(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    } else if (opts.canonicalize_missing) blk: {
-        break :blk path_utils.canonicalizeMissing(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    } else if (opts.canonicalize_existing) blk: {
-        // -e: all components must exist
-        break :blk realPathAbsoluteDupe(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    } else blk: {
-        // Default (-E semantics): all but last component must exist.
-        break :blk path_utils.canonicalizeParentMustExist(allocator, io, path) catch |err| {
-            if (!opts.quiet) {
-                common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ path, common.posixErrorString(err) });
-            }
-            return false;
-        };
-    };
+    const resolved =
+        (try processPath_resolveTarget(allocator, io, path, &opts, stderr_writer)) orelse
+        return false;
     defer allocator.free(resolved);
 
     // Handle --relative-to and --relative-base
     const output = if (opts.relative_to != null or opts.relative_base != null) blk: {
         const base_dir = opts.relative_to orelse opts.relative_base.?;
 
-        // Resolve the base dir itself
-        const resolved_base = if (opts.no_symlinks)
-            resolveLogical(allocator, io, base_dir) catch |err| {
-                if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
-                }
-                return false;
-            }
-        else if (opts.canonicalize_missing)
-            path_utils.canonicalizeMissing(allocator, io, base_dir) catch |err| {
-                if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
-                }
-                return false;
-            }
-        else
-            realPathAbsoluteDupe(allocator, io, base_dir) catch |err| {
-                if (!opts.quiet) {
-                    common.printErrorWithProgram(allocator, stderr_writer, "realpath", "{s}: {s}", .{ base_dir, common.posixErrorString(err) });
-                }
-                return false;
-            };
+        const resolved_base =
+            (try processPath_resolveBase(allocator, io, base_dir, &opts, stderr_writer)) orelse
+            return false;
         defer allocator.free(resolved_base);
 
-        if (opts.relative_base != null and opts.relative_to == null) {
-            // --relative-base only: print relative if under base, absolute otherwise
-            if (std.mem.startsWith(u8, resolved, resolved_base) and
-                (resolved.len == resolved_base.len or resolved[resolved_base.len] == '/'))
-            {
-                const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
-                    break :blk try allocator.dupe(u8, resolved);
-                };
-                // Empty relative path means same directory
-                if (rel.len == 0) {
-                    allocator.free(rel);
-                    break :blk try allocator.dupe(u8, ".");
-                }
-                break :blk rel;
-            } else {
-                break :blk try allocator.dupe(u8, resolved);
-            }
-        } else {
-            // --relative-to: always print relative
-            const rel = std.fs.path.relative(allocator, "/", null, resolved_base, resolved) catch {
-                break :blk try allocator.dupe(u8, resolved);
-            };
-            // Empty relative path means same directory
-            if (rel.len == 0) {
-                allocator.free(rel);
-                break :blk try allocator.dupe(u8, ".");
-            }
-            break :blk rel;
-        }
+        const relative_base_only = opts.relative_base != null and opts.relative_to == null;
+        break :blk try processPath_makeRelative(
+            allocator,
+            resolved,
+            resolved_base,
+            relative_base_only,
+        );
     } else blk: {
         break :blk try allocator.dupe(u8, resolved);
     };
     defer allocator.free(output);
 
-    try stdout_writer.writeAll(output);
-    if (opts.zero) {
-        try stdout_writer.writeByte(0);
-    } else {
-        try stdout_writer.writeByte('\n');
-    }
+    try processPath_writeOutput(stdout_writer, output, opts.zero);
 
     return true;
 }
