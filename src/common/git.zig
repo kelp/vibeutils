@@ -202,7 +202,14 @@ fn findGitRoot(allocator: std.mem.Allocator, io: std.Io, start_path: []const u8)
     while (depth < max_git_walk_depth) : (depth += 1) {
         std.debug.assert(path.len > 0);
 
-        var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return null;
+        // A directory we cannot open is not "no repository": surface genuine
+        // errors (e.g. permission denied) so GitContext.init records an
+        // init_error and --git=always can report it. A missing or non-dir
+        // component just means there is nothing more to walk, so stop.
+        var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => return null,
+            else => return err,
+        };
         defer dir.close(io);
 
         // statFile detects a .git that is a file (worktree/submodule) or dir.
