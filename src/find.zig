@@ -7311,3 +7311,459 @@ test "find: evaluate: prune via out-param composed with -o suppresses pruned dir
     // The sibling falls through to the right -print and appears.
     try testing.expect(std.mem.find(u8, out, "sibling_hhh.txt") != null);
 }
+
+// ============================================================================
+// Parser-de-recursion characterization tests
+//
+// These lock in the EXACT grammar the iterative rewrite of parseOr/parseAnd/
+// parseUnary (and exprContainsDelete) must preserve: AND binds tighter than
+// OR, both operators are left-associative, -not negates only its immediate
+// operand and chains, parentheses override precedence, the parse-error
+// messages/exit codes are identical, and a -delete buried anywhere in the
+// tree still forces depth-first. Every assertion below targets an outcome a
+// WRONG precedence/associativity/error rewrite would flip. They are
+// behavior-PRESERVING: they pass GREEN on the current recursive parser and
+// must stay GREEN after the iterative rewrite. Teeth proven later by
+// transient sabotage.
+// ============================================================================
+
+test "find: parser: AND binds tighter than OR (A -o B -a C = A OR (B AND C))" {
+    // The single most important precedence invariant. With the correct
+    // parse A OR (B AND C):
+    //   - match_a.txt   matches A only            -> printed (A true)
+    //   - match_bc.dat  matches B and C           -> printed (B AND C true)
+    //   - match_b_only.txt matches B only         -> NOT printed
+    // The WRONG parse (A OR B) AND C distributes C over everything, so
+    // match_a.txt (not a .dat) would be DROPPED. Asserting match_a.txt is
+    // PRESENT requires a non-default (truthy) outcome, so no default trap.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    (try tmp.dir.createFile(testing.io, "match_a.txt", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "match_bc.dat", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "match_b_only.txt", .{})).close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // A = -name match_a*, B = -name match_b*, C = -name *.dat
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "match_a*", "-o", "-name", "match_b*", "-a", "-name", "*.dat",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // A true -> printed. Only the correct OR-of-AND parse keeps this file.
+    try testing.expect(std.mem.find(u8, out, "match_a.txt") != null);
+    // B AND C true -> printed.
+    try testing.expect(std.mem.find(u8, out, "match_bc.dat") != null);
+    // B true but C false, and A false -> NOT printed.
+    try testing.expect(std.mem.find(u8, out, "match_b_only.txt") == null);
+}
+
+test "find: parser: implicit AND binds tighter than OR (A -o B C = A OR (B AND C))" {
+    // Same precedence law, but the AND between B and C is IMPLICIT (no -a
+    // token). The implicit-AND path through parseAnd must layer under parseOr
+    // identically to explicit -a. Same fixture/outcome as the explicit form.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    (try tmp.dir.createFile(testing.io, "match_a.txt", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "match_bc.dat", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "match_b_only.txt", .{})).close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // No -a: B and C are joined by implicit AND.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "match_a*", "-o", "-name", "match_b*", "-name", "*.dat",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    try testing.expect(std.mem.find(u8, out, "match_a.txt") != null);
+    try testing.expect(std.mem.find(u8, out, "match_bc.dat") != null);
+    try testing.expect(std.mem.find(u8, out, "match_b_only.txt") == null);
+}
+
+test "find: parser: all 3 operands of an -o chain contribute; none dropped (A -o B -o C)" {
+    // A -o B -o C builds or(or(A,B),C). Associativity does not change the SET an
+    // OR-chain matches, so a behavioral test through runFind cannot distinguish
+    // left- from right-leaning trees; what it CAN pin is operand-completeness:
+    // each of the three distinct predicates contributes its file, and a decoy
+    // matching none stays absent. A rewrite that drops an operand (mis-builds
+    // the chain and loses the first or last term) would lose one of these
+    // files. All three present and decoy absent => the full chain is intact.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    (try tmp.dir.createFile(testing.io, "term_one.aaa", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "term_two.bbb", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "term_three.ccc", .{})).close(testing.io);
+    // A decoy that matches NONE of the three predicates: must never appear.
+    (try tmp.dir.createFile(testing.io, "decoy.zzz", .{})).close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "*.aaa", "-o", "-name", "*.bbb", "-o", "-name", "*.ccc",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // Every operand of the 3-way OR contributes; none is dropped.
+    try testing.expect(std.mem.find(u8, out, "term_one.aaa") != null);
+    try testing.expect(std.mem.find(u8, out, "term_two.bbb") != null);
+    try testing.expect(std.mem.find(u8, out, "term_three.ccc") != null);
+    // The decoy matches no predicate and must be excluded.
+    try testing.expect(std.mem.find(u8, out, "decoy.zzz") == null);
+}
+
+test "find: parser: all 3 conjuncts of an implicit-AND chain apply; none dropped (A B C)" {
+    // A B C builds and(and(A,B),C). Associativity is invariant for conjunction
+    // membership, so a behavioral test cannot pin literal tree shape; what it
+    // pins is conjunct-completeness: the chain matches ONLY the file satisfying
+    // ALL three predicates. A rewrite that drops a term would over-match (let a
+    // 2-of-3 file through). The fixture has one full match and a near-miss that
+    // satisfies exactly two of the three.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // all_three: starts "abc", contains "mid", ends ".dat" -> all three true.
+    (try tmp.dir.createFile(testing.io, "abc_mid_yes.dat", .{})).close(testing.io);
+    // near_miss: starts "abc", contains "mid", but ends ".txt" -> C false.
+    (try tmp.dir.createFile(testing.io, "abc_mid_no.txt", .{})).close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // A = -name abc*, B = -name *mid*, C = -name *.dat (implicit AND between).
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "abc*", "-name", "*mid*", "-name", "*.dat",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // Satisfies all three conjuncts -> printed.
+    try testing.expect(std.mem.find(u8, out, "abc_mid_yes.dat") != null);
+    // Fails the third conjunct -> excluded. Proves C is still ANDed in.
+    try testing.expect(std.mem.find(u8, out, "abc_mid_no.txt") == null);
+}
+
+test "find: parser: -not negates only its operand then implicit-ANDs the rest" {
+    // -not -name X -type f = and(not(name X), type f). The negation must bind
+    // ONLY to -name X, then implicit-AND the following -type f. Fixture:
+    //   - keep_me.txt   : name != skip*, is a file -> not(false)=true AND file
+    //                     true -> printed.
+    //   - skip_me.txt   : name == skip*           -> not(true)=false -> dropped.
+    //   - a subdirectory: name != skip*, but NOT a file -> type f false ->
+    //                     dropped. This proves -type f is still ANDed, i.e. the
+    //                     -not did not swallow it.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    (try tmp.dir.createFile(testing.io, "keep_me.txt", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "skip_me.txt", .{})).close(testing.io);
+    try tmp.dir.createDir(testing.io, "keep_dir", .default_dir);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-not", "-name", "skip*", "-type", "f",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // not(name)=true AND type f true -> printed.
+    try testing.expect(std.mem.find(u8, out, "keep_me.txt") != null);
+    // not(name)=false -> dropped.
+    try testing.expect(std.mem.find(u8, out, "skip_me.txt") == null);
+    // not(name)=true but type f false -> dropped, proving -type f is still
+    // conjoined and was NOT absorbed into the -not operand.
+    try testing.expect(std.mem.find(u8, out, "keep_dir") == null);
+}
+
+test "find: parser: -not -not P double-negates back to P" {
+    // -not -not -name X = not(not(name X)) = name X. The -not chain must apply
+    // twice and cancel. Fixture: one matching file (must survive both
+    // negations and print) and one non-matching file (must NOT print). A
+    // rewrite that handles only a single -not (or applies an extra/odd count)
+    // would flip both outcomes.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    (try tmp.dir.createFile(testing.io, "target_xyz.txt", .{})).close(testing.io);
+    (try tmp.dir.createFile(testing.io, "other_qqq.txt", .{})).close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-not", "-not", "-name", "target_xyz*",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const out = stdout_aw.writer.buffered();
+    // Double negation cancels -> behaves like -name target_xyz*.
+    try testing.expect(std.mem.find(u8, out, "target_xyz.txt") != null);
+    try testing.expect(std.mem.find(u8, out, "other_qqq.txt") == null);
+}
+
+test "find: parser: parentheses override AND-over-OR precedence" {
+    // ( A -o B ) -type f forces the OR to evaluate FIRST, then ANDs -type f.
+    // Without the parens, A -o B -type f parses as A OR (B AND type f), where
+    // the -type f binds only to B. The two parses differ observably:
+    //   - file_a.txt is a directory? No -- we make A match a DIRECTORY so that
+    //     grouping changes its fate.
+    // Fixture:
+    //   - grp_a (a directory): matches A=name grp_a*. Not a file.
+    //   - grp_b.txt (a file) : matches B=name grp_b*. Is a file.
+    // Grouped ( A -o B ) -type f:
+    //   - grp_a: (A or B)=true, but -type f false -> NOT printed.
+    //   - grp_b.txt: (A or B)=true, -type f true -> printed.
+    // Ungrouped A -o B -type f = A OR (B AND type f):
+    //   - grp_a: A true -> printed (this is the DIFFERENCE).
+    // We pin the GROUPED form: grp_a (the directory) must be ABSENT, which can
+    // only happen when the parens forced -type f to apply to the whole OR.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "grp_a_dir", .default_dir);
+    (try tmp.dir.createFile(testing.io, "grp_b_file.txt", .{})).close(testing.io);
+
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    // Grouped form: ( name grp_a* -o name grp_b* ) -type f.
+    var grouped_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer grouped_out.deinit();
+    var grouped_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer grouped_err.deinit();
+
+    const grouped_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "(", "-name", "grp_a*", "-o", "-name", "grp_b*", ")", "-type", "f",
+    }, &grouped_out.writer, &grouped_err.writer);
+    try testing.expectEqual(@as(u8, 0), grouped_code);
+
+    const g = grouped_out.writer.buffered();
+    // The OR ran first, then -type f filtered the whole group: the directory
+    // is excluded, the file survives.
+    try testing.expect(std.mem.find(u8, g, "grp_a_dir") == null);
+    try testing.expect(std.mem.find(u8, g, "grp_b_file.txt") != null);
+
+    // Ungrouped form differs: A OR (B AND type f) keeps the directory because
+    // A (-name grp_a*) is true regardless of -type. Pin the contrast so a
+    // rewrite that ignores parens (treats both alike) fails one of the two.
+    var plain_out: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer plain_out.deinit();
+    var plain_err: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer plain_err.deinit();
+
+    const plain_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "grp_a*", "-o", "-name", "grp_b*", "-type", "f",
+    }, &plain_out.writer, &plain_err.writer);
+    try testing.expectEqual(@as(u8, 0), plain_code);
+
+    const p = plain_out.writer.buffered();
+    // Without parens the directory IS printed (A binds standalone in the OR).
+    try testing.expect(std.mem.find(u8, p, "grp_a_dir") != null);
+}
+
+test "find: parser: trailing '(' with no ')' reports missing closing and exits 1" {
+    // UnmatchedParen path: parseUnary consumes '(', enters parseOr, returns at
+    // end-of-input with no ')'. The exact message "missing closing ')'" and
+    // exit 1 are an external contract the iterative rewrite must reproduce
+    // byte-for-byte. A rewrite that forgets the close_paren check would either
+    // succeed (wrong exit) or emit a different message.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    (try tmp.dir.createFile(testing.io, "anything.txt", .{})).close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "(", "-name", "*.txt",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "missing closing") != null);
+}
+
+test "find: parser: stray ')' in operand position errors with unknown predicate, exit 1" {
+    // A ')' that lands in OPERAND position (e.g. right after -o, where the
+    // grammar demands a fresh operand) is not a valid stop-token there: it
+    // flows down parseOr -> parseAnd -> parseUnary -> parsePrimary and hits
+    // the catch-all as an unknown predicate. The contract: exit 1 and stderr
+    // names ")" as unknown. The iterative rewrite must route an operand-
+    // position ')' to the same parsePrimary catch-all, never silently accept
+    // it. (A trailing ')' AFTER a complete expression is, by contrast, a stop
+    // token the current parser leaves unconsumed -- so we force the operand
+    // position with a preceding -o.)
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    (try tmp.dir.createFile(testing.io, "anything.txt", .{})).close(testing.io);
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        dir_path, "-name", "*.txt", "-o", ")",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 1), exit_code);
+    try testing.expect(std.mem.find(u8, stderr_aw.writer.buffered(), "unknown predicate") != null);
+}
+
+test "find: exprContainsDelete: -delete under -not still forces depth-first" {
+    // The .not_expr arm of exprContainsDelete (the only recursive arm not
+    // otherwise covered: and_expr by test ~4014, or_expr by the -o test below)
+    // must descend into its single child so a -delete wrapped in -not still
+    // flips depth_first on. The parse is not_expr(delete): a real not_expr node
+    // sits above the .delete leaf, so the walk MUST recurse through .not_expr to
+    // find it. (Contrast a bare `( -delete )`, which adds no AST node -- the
+    // group's inner expr is returned directly, leaving a bare .delete root that
+    // would not exercise any descent.)
+    //
+    // -not evaluates its operand first (firing -delete's side effect) then
+    // negates the boolean, so the deletion still happens; only the returned
+    // truth value is inverted. Behavioral proof: a populated directory is fully
+    // removed. If exprContainsDelete dropped the .not_expr arm, depth_first
+    // would stay off, the dir would be visited pre-order, and rmdir on a still-
+    // populated directory would fail (the directory would survive).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "notvictim", .default_dir);
+    var notvictim = try tmp.dir.openDir(testing.io, "notvictim", .{});
+    (try notvictim.createFile(testing.io, "x.txt", .{})).close(testing.io);
+    (try notvictim.createFile(testing.io, "y.txt", .{})).close(testing.io);
+    notvictim.close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const victim_path = try std.fs.path.join(allocator, &.{ base, "notvictim" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -not -delete : the tree is not_expr(delete). The walk must descend the
+    // .not_expr arm to reach the .delete and force depth-first.
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        victim_path, "-not", "-delete",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    // Whole populated directory gone -> depth-first was forced through the
+    // .not_expr arm, so children were deleted before the dir.
+    const victim_stat = tmp.dir.statFile(testing.io, "notvictim", .{});
+    try testing.expect(victim_stat == error.FileNotFound);
+}
+
+test "find: exprContainsDelete: -delete behind -o still forces depth-first" {
+    // The or_expr arm of exprContainsDelete must visit BOTH children. Here
+    // -delete sits on the right of -o, behind a left operand. The walk must
+    // reach it so depth_first turns on. Proof: a populated directory whose
+    // entries match the left predicate is fully removed via the right -delete.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "orvictim", .default_dir);
+    var orvictim = try tmp.dir.openDir(testing.io, "orvictim", .{});
+    (try orvictim.createFile(testing.io, "p.dat", .{})).close(testing.io);
+    (try orvictim.createFile(testing.io, "q.dat", .{})).close(testing.io);
+    orvictim.close(testing.io);
+
+    const base = try tmp.dir.realPathFileAlloc(testing.io, ".", allocator);
+    const victim_path = try std.fs.path.join(allocator, &.{ base, "orvictim" });
+
+    var stdout_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stdout_aw.deinit();
+    var stderr_aw: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer stderr_aw.deinit();
+
+    // -name nomatch* -o -delete : left never matches, so -delete fires on
+    // every entry (post-order, because exprContainsDelete saw the right arm).
+    const exit_code = try runFind(allocator, testing.io, &[_][]const u8{
+        victim_path, "-name", "nomatch*", "-o", "-delete",
+    }, &stdout_aw.writer, &stderr_aw.writer);
+    try testing.expectEqual(@as(u8, 0), exit_code);
+
+    const victim_stat = tmp.dir.statFile(testing.io, "orvictim", .{});
+    try testing.expect(victim_stat == error.FileNotFound);
+}

@@ -1158,4 +1158,163 @@ test_find() {
             "Expected leaf.txt in output (implicit -print), got: '$out'"
     fi
     rm -rf "$deep_dir"
+
+    # ================================================================
+    # Robustness-fix (intended RED before iterative-parser migration):
+    # find deeply nested parentheses do not overflow the parser.
+    #
+    # 20000 open parens, -name leaf.txt, then 20000 close parens builds
+    # a depth-20000 grouped expression. The recursive-descent parser
+    # (parseUnary -> parseOr mutual recursion) descends to that depth on
+    # the open parens and overflows the stack: the process aborts with
+    # SIGABRT (exit 134) and produces no output. GNU find returns 0 and
+    # applies the implicit -print. The upcoming iterative-parser rewrite
+    # fixes this; both assertions below flip to PASS afterward.
+    #
+    # This is depth-driven, not OS-specific: it runs identically on
+    # macOS and Linux, so no uname branch is needed.
+    # ================================================================
+    echo -e "${CYAN}Testing deeply nested parentheses do not overflow the parser (behavior-fix)...${NC}"
+
+    local paren_dir
+    paren_dir=$(create_temp_dir)
+    create_temp_file "content" "$paren_dir/leaf.txt"
+
+    # Build: 20000 "(" tokens, then -name leaf.txt, then 20000 ")"
+    # tokens. mapfile + yes fills the array in O(n); a bash append loop
+    # would be O(n^2). 40001 short tokens is well under ARG_MAX.
+    local paren_args=()
+    local paren_open=()
+    local paren_close=()
+    mapfile -t paren_open < <(yes -- "(" | head -n 20000)
+    mapfile -t paren_close < <(yes -- ")" | head -n 20000)
+    paren_args=("${paren_open[@]}" -name leaf.txt "${paren_close[@]}")
+
+    run_command cmd out err exit_code "$binary" "$paren_dir" "${paren_args[@]}"
+
+    # KEY RED 1: the parser must run to completion (exit 0), not abort
+    # with SIGABRT (134) on a deeply-nested parenthesized expression.
+    if [[ $exit_code -eq 0 ]]; then
+        print_test_result "find deeply nested parentheses do not overflow the parser" "PASS"
+    else
+        print_test_result "find deeply nested parentheses do not overflow the parser" "FAIL" \
+            "Expected exit 0, got $exit_code (134 = SIGABRT stack overflow)"
+    fi
+
+    # KEY RED 2: the implicit -print must fire, proving the grouped
+    # expression parsed and evaluated to completion rather than merely
+    # avoiding the crash.
+    if [[ "$out" =~ leaf.txt ]]; then
+        print_test_result "find deeply nested parentheses apply implicit -print" "PASS"
+    else
+        print_test_result "find deeply nested parentheses apply implicit -print" "FAIL" \
+            "Expected leaf.txt in output (implicit -print), got: '$out'"
+    fi
+    rm -rf "$paren_dir"
+
+    # ================================================================
+    # Robustness-fix (intended RED before iterative-parser migration):
+    # find deep -not chain does not overflow the parser.
+    #
+    # 50000 -not tokens then -name leaf.txt builds a depth-50000 chain
+    # of negations. parseUnary recurses once per -not and overflows the
+    # stack: the process aborts with SIGABRT (exit 134) and produces no
+    # output. 50000 is even, so the predicate is NOT inverted and
+    # leaf.txt SHOULD match. GNU find returns 0 and applies the implicit
+    # -print. The upcoming iterative-parser rewrite fixes this.
+    #
+    # This is depth-driven, not OS-specific: it runs identically on
+    # macOS and Linux, so no uname branch is needed.
+    # ================================================================
+    echo -e "${CYAN}Testing deep -not chain does not overflow the parser (behavior-fix)...${NC}"
+
+    local not_dir
+    not_dir=$(create_temp_dir)
+    create_temp_file "content" "$not_dir/leaf.txt"
+
+    # Build: 50000 -not tokens, then -name leaf.txt. mapfile + yes fills
+    # the array in O(n). 50000 negations (even) leave the predicate
+    # un-inverted, so the file matches.
+    local not_args=()
+    mapfile -t not_args < <(yes -- -not | head -n 50000)
+    not_args+=(-name leaf.txt)
+
+    run_command cmd out err exit_code "$binary" "$not_dir" "${not_args[@]}"
+
+    # KEY RED 1: the parser must run to completion (exit 0), not abort
+    # with SIGABRT (134) on a deep -not chain.
+    if [[ $exit_code -eq 0 ]]; then
+        print_test_result "find deep -not chain does not overflow the parser" "PASS"
+    else
+        print_test_result "find deep -not chain does not overflow the parser" "FAIL" \
+            "Expected exit 0, got $exit_code (134 = SIGABRT stack overflow)"
+    fi
+
+    # KEY RED 2: an even number of negations leaves -name leaf.txt
+    # un-inverted, so the implicit -print must emit leaf.txt. This
+    # proves the chain parsed and evaluated, not merely avoided crashing.
+    if [[ "$out" =~ leaf.txt ]]; then
+        print_test_result "find deep -not chain applies implicit -print" "PASS"
+    else
+        print_test_result "find deep -not chain applies implicit -print" "FAIL" \
+            "Expected leaf.txt in output (even -not count, implicit -print), got: '$out'"
+    fi
+    rm -rf "$not_dir"
+
+    # ================================================================
+    # Robustness-fix (intended RED before iterative-parser migration):
+    # find deep expression does not overflow exprContainsDelete.
+    #
+    # exprContainsDelete walks the parsed expression tree once at parse
+    # time on EVERY invocation (to decide whether -delete safety applies)
+    # and recurses to the full tree depth. The evaluator was just made
+    # iterative, so a depth-20000 -true chain now passes; this test uses
+    # depth 200000, which is deep enough to overflow exprContainsDelete
+    # specifically. No -delete appears anywhere, so this isolates the
+    # tree-walk, not -delete handling. The process aborts with SIGABRT
+    # (exit 134) and produces no output. GNU find returns 0 and applies
+    # the implicit -print. The upcoming iterative rewrite fixes this.
+    #
+    # Depth 200000 verified to abort current code (exit 134) on this
+    # Linux box; ~3s wall, well under ARG_MAX. This is distinct from the
+    # evaluator deep-AND test above (depth 20000, now passing).
+    #
+    # This is depth-driven, not OS-specific: it runs identically on
+    # macOS and Linux, so no uname branch is needed.
+    # ================================================================
+    echo -e "${CYAN}Testing deep expression does not overflow exprContainsDelete (behavior-fix)...${NC}"
+
+    local containsdelete_dir
+    containsdelete_dir=$(create_temp_dir)
+    create_temp_file "content" "$containsdelete_dir/leaf.txt"
+
+    # Build: 200000 implicitly-ANDed -true primaries (no -delete).
+    # mapfile + yes fills the array in O(n); a bash append loop would be
+    # O(n^2) and far too slow at this depth.
+    local containsdelete_args=()
+    mapfile -t containsdelete_args < <(yes -- -true | head -n 200000)
+
+    run_command cmd out err exit_code \
+        "$binary" "$containsdelete_dir" "${containsdelete_args[@]}"
+
+    # KEY RED 1: the parse-time exprContainsDelete tree-walk must run to
+    # completion (exit 0), not abort with SIGABRT (134) on a depth-200000
+    # expression.
+    if [[ $exit_code -eq 0 ]]; then
+        print_test_result "find deep expression does not overflow exprContainsDelete" "PASS"
+    else
+        print_test_result "find deep expression does not overflow exprContainsDelete" "FAIL" \
+            "Expected exit 0, got $exit_code (134 = SIGABRT stack overflow)"
+    fi
+
+    # KEY RED 2: the implicit -print must fire, proving the whole
+    # pipeline (parse, exprContainsDelete walk, evaluate) ran to
+    # completion rather than merely avoiding the crash.
+    if [[ "$out" =~ leaf.txt ]]; then
+        print_test_result "find deep expression applies implicit -print after exprContainsDelete" "PASS"
+    else
+        print_test_result "find deep expression applies implicit -print after exprContainsDelete" "FAIL" \
+            "Expected leaf.txt in output (implicit -print), got: '$out'"
+    fi
+    rm -rf "$containsdelete_dir"
 }
