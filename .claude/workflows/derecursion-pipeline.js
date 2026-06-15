@@ -12,6 +12,7 @@ export const meta = {
     { title: 'Green check', detail: 'tests green on restored real code, compiles (haiku)' },
     { title: 'Implement', detail: 'replace recursion with an explicit bounded stack (opus, tdd-pipeline:implementer)' },
     { title: 'Verify gate', detail: 'SCOPED: util unit + util integration + lint + no self-recursion (haiku)' },
+    { title: 'Tiger check', detail: 'scan for NEW Tiger Style violations, triage dual-use, fix (haiku/sonnet)' },
     { title: 'Code review', detail: 'loop code-reviewer until APPROVED (opus)' },
     { title: 'Final verify', detail: 'ONCE: full unit + full privileged + full integration (haiku)' },
   ],
@@ -158,6 +159,65 @@ const FINAL_SCHEMA = {
     integration_pass: { type: 'boolean', description: 'true if the FULL integration suite (just it) passes' },
     summary: { type: 'string' },
     output_excerpt: { type: 'string' },
+  },
+};
+
+// Tiger check — runs the mechanical Tiger Style scanner against the diff, then
+// TRIAGES its candidate violations: confirm real ones and FILTER legitimate
+// dual-use cases (a `usize` that interfaces a std API; a `while (true)` provably
+// bounded by a break/return guarded by an assert). NEW violations block; the
+// scanner also reports PRE-existing ones (preexisting_count) but those do not
+// block. clean=true iff no confirmed NEW violations remain after triage.
+const TIGER_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['clean', 'new_violations', 'preexisting_count', 'filtered', 'summary', 'output_excerpt'],
+  properties: {
+    clean: {
+      type: 'boolean',
+      description: 'true iff there are no confirmed NEW Tiger Style violations after triage',
+    },
+    new_violations: {
+      type: 'array',
+      description: 'confirmed NEW violations introduced by this change; these BLOCK until fixed',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['rule', 'location', 'detail'],
+        properties: {
+          rule: {
+            type: 'string',
+            description:
+              'one of: long-line, long-fn, self-recursion, compound-assert, unbounded-loop, usize-arch',
+          },
+          location: { type: 'string', description: 'file:line as reported by the scanner' },
+          detail: { type: 'string', description: 'the scanner detail field (e.g. width=128, fn=NAME)' },
+        },
+      },
+    },
+    preexisting_count: {
+      type: 'integer',
+      description: 'count of PRE-existing violations the scanner reported (reported, not blocking)',
+    },
+    filtered: {
+      type: 'array',
+      description: 'candidate violations dismissed as legitimate dual-use, with the reason',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['location', 'why'],
+        properties: {
+          location: { type: 'string', description: 'file:line of the dismissed candidate' },
+          why: {
+            type: 'string',
+            description:
+              'why it is legitimate (e.g. usize required by a std API; while(true) bounded by a break+assert)',
+          },
+        },
+      },
+    },
+    summary: { type: 'string' },
+    output_excerpt: { type: 'string', description: 'a short excerpt of the scanner stdout' },
   },
 };
 
@@ -586,6 +646,71 @@ async function runGreen() {
     implNote = vimpl.result.summary;
   }
 
+  // Tiger check: scan the diff for NEW Tiger Style violations, triage dual-use
+  // candidates, and re-dispatch the implementer to fix any confirmed NEW ones.
+  // PRE-existing violations are reported but do not block.
+  async function runTigerCheck(label) {
+    return await agent(
+      [
+        '## YOUR TASK (Tiger check — scan, triage, and report)',
+        'Run, EXACTLY as given, the mechanical Tiger Style scanner against this change:',
+        '  bash scripts/tiger-check.sh --base HEAD',
+        'The scanner emits TAB-separated violation lines (<rule>\\t<file>:<line>\\t<status>\\t<detail>)',
+        'with status NEW or PRE, then a final "SUMMARY total=<N> new=<N>" line. It parses stdout only;',
+        'stderr carries human notes. Then TRIAGE the candidates:',
+        '  - Confirm the genuine NEW violations.',
+        '  - FILTER legitimate dual-use cases that the mechanical scanner cannot judge: a `usize` that',
+        '    interfaces a std API (required by the signature it talks to), or a `while (true)` that is',
+        '    provably bounded by a break/return guarded by an assert. Move each such candidate into',
+        '    `filtered` with the reason; do NOT count it as a NEW violation.',
+        'Return TIGER_SCHEMA: new_violations = the confirmed NEW violations (these BLOCK);',
+        'preexisting_count = how many PRE rows the scanner reported (reported, not blocking);',
+        'filtered = the dual-use candidates you dismissed and why. clean = true iff new_violations is',
+        'empty after triage. Read code to adjudicate, but do NOT edit anything — report facts only.',
+      ].join('\n'),
+      { label, phase: 'Tiger check', model: 'haiku', schema: TIGER_SCHEMA },
+    );
+  }
+
+  phase('Tiger check');
+  let tiger = await runTigerCheck(`tiger-check:${a.utility}`);
+  log(`tiger check: clean=${tiger.clean} new=${(tiger.new_violations || []).length} pre=${tiger.preexisting_count} filtered=${(tiger.filtered || []).length}`);
+  let tfix = 0;
+  while (!tiger.clean && tfix < GATE_FIX_MAX) {
+    tfix += 1;
+    const violations = (tiger.new_violations || [])
+      .map((v) => `- [${v.rule}] ${v.location}: ${v.detail}`)
+      .join('\n');
+    log(`tiger check failed (${(tiger.new_violations || []).length} new violations) — re-dispatching implementer.`);
+    const timpl = await runImplementer(
+      [
+        brief,
+        '',
+        '## YOUR TASK (implementer, Tiger-check fix)',
+        taskHeader(),
+        '',
+        `Your earlier summary: ${implNote}`,
+        '',
+        'The Tiger Style scanner flagged NEW violations your change introduced. Fix every one below while',
+        'keeping all tests green and behavior unchanged:',
+        violations || '(no specific lines reported; re-read the scanner output and fix the new violations)',
+        '',
+        'These are NEW violations only — pre-existing ones are out of scope. If a flagged line is actually a',
+        'legitimate dual-use case (a `usize` required by a std API, or a `while (true)` provably bounded by a',
+        'break/return guarded by an assert), say so in your summary instead of contorting the code; the Tiger',
+        'check will re-triage. If a fix would require changing a WRONG test, return outcome=needs_test_change',
+        'with instructions instead. Otherwise fix the code and set outcome=done. Do NOT commit.',
+      ].join('\n'),
+      `implementer:${a.utility}#tfix${tfix}`,
+      'Tiger check',
+      brief,
+    );
+    testsChangedDuringGreen = testsChangedDuringGreen || timpl.tests_changed;
+    implNote = timpl.result.summary;
+    tiger = await runTigerCheck(`tiger-check:${a.utility}#${tfix}`);
+    log(`tiger check (after fix ${tfix}): clean=${tiger.clean} new=${(tiger.new_violations || []).length} pre=${tiger.preexisting_count} filtered=${(tiger.filtered || []).length}`);
+  }
+
   phase('Code review');
   let codeReview = null;
   let round = 0;
@@ -659,11 +784,13 @@ async function runGreen() {
     impl_summary: implNote,
     tests_changed_during_green: testsChangedDuringGreen,
     verify_gate: verify,
+    tiger_check: tiger,
     code_review: codeReview,
     final_verify: finalCheck,
     final_all_pass: finalAllPass,
     ready_to_commit_green:
       !!(verify && verify.unit_pass && verify.integration_pass && verify.lint_clean && verify.no_self_recursion) &&
+      !!(tiger && tiger.clean) &&
       codeReview.assessment === 'APPROVED' &&
       finalAllPass,
   };
