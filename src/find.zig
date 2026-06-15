@@ -767,15 +767,41 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr: anytype) !F
     };
 }
 
+/// Walk the expression tree with an explicit heap-backed stack (no recursion)
+/// and report whether any node is a `.delete`. Preserves the original pre-order,
+/// left-before-right visit order and short-circuits on the first `.delete`.
 fn exprContainsDelete(expr: *const Expression) bool {
-    switch (expr.tag) {
-        .delete => return true,
-        .and_expr, .or_expr => {
-            return exprContainsDelete(expr.data.binary.left) or exprContainsDelete(expr.data.binary.right);
-        },
-        .not_expr => return exprContainsDelete(expr.data.unary),
-        else => return false,
+    // Bound the walk well above any practical tree size; a left-leaning
+    // implicit-AND chain of N tokens yields N nodes (tests reach 200000).
+    const max_nodes: usize = 1_000_000; // tiger:allow:usize-arch node visit cap
+    var stack: std.ArrayListUnmanaged(*const Expression) = .empty;
+    defer stack.deinit(std.heap.page_allocator);
+
+    stack.append(std.heap.page_allocator, expr) catch return false;
+    var visited: usize = 0; // tiger:allow:usize-arch counter against node cap
+
+    while (stack.items.len > 0) {
+        assert(stack.items.len > 0);
+        visited += 1;
+        assert(visited <= max_nodes);
+
+        const node = stack.pop().?;
+        switch (node.tag) {
+            .delete => return true,
+            .and_expr, .or_expr => {
+                // Push right first so the left child is popped (visited) first.
+                stack.append(std.heap.page_allocator, node.data.binary.right) catch return false;
+                stack.append(std.heap.page_allocator, node.data.binary.left) catch return false;
+            },
+            .not_expr => {
+                stack.append(std.heap.page_allocator, node.data.unary) catch return false;
+            },
+            else => {},
+        }
     }
+
+    assert(stack.items.len == 0);
+    return false;
 }
 
 const ExprParseError = error{
@@ -786,74 +812,246 @@ const ExprParseError = error{
     OutOfMemory,
 };
 
-fn parseOr(allocator: Allocator, args: []const []const u8, pos: *usize, has_action: *bool, pctx: *ParseContext) ExprParseError!*Expression {
-    var left = try parseAnd(allocator, args, pos, has_action, pctx);
+/// Binary operators and the paren sentinel held on the shunting-yard operator
+/// stack. AND binds tighter than OR; `.op_lparen` blocks reduction across a
+/// group boundary.
+const Operator = enum { op_or, op_and, op_lparen };
 
-    while (pos.* < args.len) {
-        const arg = args[pos.*];
-        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "-or")) {
-            pos.* += 1;
-            const right = try parseAnd(allocator, args, pos, has_action, pctx);
-            left = try allocExpr(allocator, .or_expr, .{ .binary = .{ .left = left, .right = right } });
-        } else {
-            break;
-        }
-    }
+/// Mutable state threaded through the shunting-yard engine's token handlers.
+/// Bundled into one struct so each helper stays small and takes few arguments
+/// (Tiger Style inverse-hourglass) while sharing the two stacks.
+const ParseState = struct {
+    op_stack: std.ArrayListUnmanaged(Operator),
+    val_stack: std.ArrayListUnmanaged(*Expression),
+    // not_count carried with each `(` so a `-not (` wraps the whole group.
+    paren_not_stack: std.ArrayListUnmanaged(usize), // tiger:allow:usize-arch -not per paren
+    not_count: usize = 0, // tiger:allow:usize-arch pending -not before next operand
+    expect_operand: bool = true, // true = operand position, false = operator position
+};
 
-    return left;
+/// One classified expression token. Mutually exclusive flags drive the engine's
+/// branch selection without re-running `std.mem.eql` in every handler.
+const TokenKind = struct {
+    is_or: bool,
+    is_and: bool,
+    is_not: bool,
+    is_lparen: bool,
+    is_rparen: bool,
+};
+
+fn classifyToken(arg: []const u8) TokenKind {
+    return .{
+        .is_or = std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "-or"),
+        .is_and = std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "-and"),
+        .is_not = std.mem.eql(u8, arg, "!") or std.mem.eql(u8, arg, "-not"),
+        .is_lparen = std.mem.eql(u8, arg, "("),
+        .is_rparen = std.mem.eql(u8, arg, ")"),
+    };
 }
 
-fn parseAnd(allocator: Allocator, args: []const []const u8, pos: *usize, has_action: *bool, pctx: *ParseContext) ExprParseError!*Expression {
-    var left = try parseUnary(allocator, args, pos, has_action, pctx);
+/// Pop one binary operator and its two operands, combine them into the matching
+/// AND/OR node, and push the result. Left is popped second (deeper on the value
+/// stack), so chains stay left-leaning: A op B op C => op(op(A,B),C).
+fn parseReduceTop(allocator: Allocator, state: *ParseState) ExprParseError!void {
+    assert(state.op_stack.items.len > 0);
+    assert(state.val_stack.items.len >= 2);
 
-    while (pos.* < args.len) {
-        const arg = args[pos.*];
-        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "-or") or std.mem.eql(u8, arg, ")")) {
-            break;
-        }
+    const op = state.op_stack.pop().?;
+    assert(op != .op_lparen);
+    const right = state.val_stack.pop().?;
+    const left = state.val_stack.pop().?;
+    const tag: ExprTag = if (op == .op_and) .and_expr else .or_expr;
+    const node = try allocExpr(allocator, tag, .{ .binary = .{ .left = left, .right = right } });
+    try state.val_stack.append(allocator, node);
+}
 
-        if (std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "-and")) {
-            pos.* += 1;
-        }
+/// Wrap `inner` in `count` `.not_expr` nodes (innermost first), reproducing the
+/// right-associative `-not` chain the recursive parser built.
+fn parseApplyNots(
+    allocator: Allocator,
+    inner: *Expression,
+    count: usize, // tiger:allow:usize-arch -not depth count
+) ExprParseError!*Expression {
+    assert(count <= 1_000_000);
+    var result = inner;
+    var remaining = count; // tiger:allow:usize-arch loop counter mirroring count
+    while (remaining > 0) : (remaining -= 1) {
+        result = try allocExpr(allocator, .not_expr, .{ .unary = result });
+    }
+    assert(remaining == 0);
+    if (count > 0) assert(result.tag == .not_expr);
+    return result;
+}
 
+/// Reduce operators on the stack while the top has precedence >= `min_prec`,
+/// stopping at a `.op_lparen` sentinel or an empty stack. AND outranks OR.
+fn parseReduceWhile(
+    allocator: Allocator,
+    state: *ParseState,
+    min_prec: u8,
+) ExprParseError!void {
+    assert(min_prec >= 1);
+    assert(min_prec <= 2);
+    while (state.op_stack.items.len > 0) {
+        const top = state.op_stack.items[state.op_stack.items.len - 1];
+        if (top == .op_lparen) break;
+        const top_prec: u8 = if (top == .op_and) 2 else 1;
+        if (top_prec < min_prec) break;
+        try parseReduceTop(allocator, state);
+    }
+    assert(min_prec >= 1);
+}
+
+/// Full-expression parser, rewritten as an iterative shunting-yard engine so no
+/// recursion (direct or mutual) remains. Drives the whole grammar
+/// (OR < AND < NOT < primary|paren) and builds byte-identical trees to the old
+/// recursive descent. Keeps the original name/signature: `parseArgs` calls only
+/// this.
+fn parseOr(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    has_action: *bool,
+    pctx: *ParseContext,
+) ExprParseError!*Expression {
+    var state = ParseState{ .op_stack = .empty, .val_stack = .empty, .paren_not_stack = .empty };
+    defer state.op_stack.deinit(allocator);
+    defer state.val_stack.deinit(allocator);
+    defer state.paren_not_stack.deinit(allocator);
+
+    // Each token drives a bounded amount of work; cap the loop accordingly.
+    const max_iterations: usize = args.len * 4 + 4; // tiger:allow:usize-arch loop cap
+    var iteration_count: usize = 0; // tiger:allow:usize-arch loop counter vs cap
+
+    while (true) { // tiger:allow:unbounded-loop bounded by asserted iteration cap
+        iteration_count += 1;
+        assert(iteration_count <= max_iterations);
         if (pos.* >= args.len) break;
-        const next_arg = args[pos.*];
-        if (std.mem.eql(u8, next_arg, "-o") or std.mem.eql(u8, next_arg, "-or") or std.mem.eql(u8, next_arg, ")")) {
-            break;
-        }
 
-        const right = try parseUnary(allocator, args, pos, has_action, pctx);
-        left = try allocExpr(allocator, .and_expr, .{ .binary = .{ .left = left, .right = right } });
+        const kind = classifyToken(args[pos.*]);
+        if (state.expect_operand) {
+            try parseStepOperand(allocator, args, pos, has_action, pctx, &state, kind);
+        } else {
+            const stop = try parseStepOperator(allocator, pos, &state, kind);
+            if (stop) break; // top-level ')': stop token, left unconsumed
+        }
     }
 
-    return left;
+    // End of input in operand position needs a value; the recursive parser
+    // returned true_expr here (and -not at end wrapped that true_expr).
+    if (state.expect_operand) {
+        const true_node = try allocExpr(allocator, .true_expr, .{ .none = {} });
+        const wrapped = try parseApplyNots(allocator, true_node, state.not_count);
+        state.not_count = 0;
+        try state.val_stack.append(allocator, wrapped);
+    }
+
+    try parseDrain(allocator, &state, pctx);
+    assert(state.val_stack.items.len == 1);
+    assert(state.op_stack.items.len == 0);
+    return state.val_stack.items[0];
 }
 
-fn parseUnary(allocator: Allocator, args: []const []const u8, pos: *usize, has_action: *bool, pctx: *ParseContext) ExprParseError!*Expression {
-    if (pos.* >= args.len) {
-        return allocExpr(allocator, .true_expr, .{ .none = {} });
-    }
-
-    const arg = args[pos.*];
-
-    if (std.mem.eql(u8, arg, "!") or std.mem.eql(u8, arg, "-not")) {
+/// Handle one token in operand position: accumulate `-not`, open a group, or
+/// parse a primary (wrapping it in any pending `-not`s). A stray operator/`)`
+/// flows to `parsePrimary`, preserving the old "unknown predicate" error.
+fn parseStepOperand(
+    allocator: Allocator,
+    args: []const []const u8,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    has_action: *bool,
+    pctx: *ParseContext,
+    state: *ParseState,
+    kind: TokenKind,
+) ExprParseError!void {
+    assert(state.expect_operand);
+    if (kind.is_not) {
+        state.not_count += 1;
         pos.* += 1;
-        const operand = try parseUnary(allocator, args, pos, has_action, pctx);
-        return allocExpr(allocator, .not_expr, .{ .unary = operand });
-    }
-
-    if (std.mem.eql(u8, arg, "(")) {
+    } else if (kind.is_lparen) {
+        try state.paren_not_stack.append(allocator, state.not_count);
+        state.not_count = 0;
+        try state.op_stack.append(allocator, .op_lparen);
         pos.* += 1;
-        const expr = try parseOr(allocator, args, pos, has_action, pctx);
-        if (pos.* >= args.len or !std.mem.eql(u8, args[pos.*], ")")) {
+    } else {
+        const primary = try parsePrimary(allocator, args, pos, has_action, pctx);
+        const wrapped = try parseApplyNots(allocator, primary, state.not_count);
+        state.not_count = 0;
+        try state.val_stack.append(allocator, wrapped);
+        state.expect_operand = false;
+    }
+}
+
+/// Handle one token in operator position. Returns true when a top-level `)`
+/// (no matching `(`) should stop the parse, left unconsumed for the caller.
+/// Anything that is not an operator/`)` triggers an implicit AND and is then
+/// reprocessed as an operand (no `pos` advance).
+fn parseStepOperator(
+    allocator: Allocator,
+    pos: *usize, // tiger:allow:usize-arch slice index cursor; Zig slice indexing requires usize
+    state: *ParseState,
+    kind: TokenKind,
+) ExprParseError!bool {
+    assert(!state.expect_operand);
+    if (kind.is_or) {
+        try parseReduceWhile(allocator, state, 1);
+        try state.op_stack.append(allocator, .op_or);
+        state.expect_operand = true;
+        pos.* += 1;
+    } else if (kind.is_and) {
+        try parseReduceWhile(allocator, state, 2);
+        try state.op_stack.append(allocator, .op_and);
+        state.expect_operand = true;
+        pos.* += 1;
+    } else if (kind.is_rparen) {
+        if (!parseHasLparen(state)) return true;
+        try parseReduceWhile(allocator, state, 1);
+        _ = state.op_stack.pop(); // discard the .op_lparen sentinel
+        try parseCloseGroup(allocator, state);
+        pos.* += 1;
+    } else {
+        try parseReduceWhile(allocator, state, 2);
+        try state.op_stack.append(allocator, .op_and);
+        state.expect_operand = true;
+    }
+    return false;
+}
+
+/// Drain the operator stack at end of input, combining every pending binary
+/// operator. An `.op_lparen` here means a group was never closed.
+fn parseDrain(allocator: Allocator, state: *ParseState, pctx: *ParseContext) ExprParseError!void {
+    assert(state.val_stack.items.len >= 1);
+    while (state.op_stack.items.len > 0) {
+        const top = state.op_stack.items[state.op_stack.items.len - 1];
+        if (top == .op_lparen) {
             pctx.setError("missing closing ')'", .{});
             return error.UnmatchedParen;
         }
-        pos.* += 1;
-        return expr;
+        try parseReduceTop(allocator, state);
     }
+    assert(state.op_stack.items.len == 0);
+}
 
-    return parsePrimary(allocator, args, pos, has_action, pctx);
+/// Whether any `.op_lparen` sentinel is currently on the operator stack. A `)`
+/// with no matching `(` is a top-level stop token, left unconsumed.
+fn parseHasLparen(state: *const ParseState) bool {
+    var index: usize = 0; // tiger:allow:usize-arch slice index
+    while (index < state.op_stack.items.len) : (index += 1) {
+        if (state.op_stack.items[index] == .op_lparen) return true;
+    }
+    return false;
+}
+
+/// Apply the `-not` count captured at the matching `(` to the group's reduced
+/// value, mirroring `-not ( ... )` wrapping the whole group in the old parser.
+fn parseCloseGroup(allocator: Allocator, state: *ParseState) ExprParseError!void {
+    assert(state.paren_not_stack.items.len > 0);
+    assert(state.val_stack.items.len > 0);
+
+    const group_nots = state.paren_not_stack.pop().?;
+    const group_val = state.val_stack.pop().?;
+    const wrapped = try parseApplyNots(allocator, group_val, group_nots);
+    try state.val_stack.append(allocator, wrapped);
 }
 
 fn parsePrimary(allocator: Allocator, args: []const []const u8, pos: *usize, has_action: *bool, pctx: *ParseContext) ExprParseError!*Expression {
