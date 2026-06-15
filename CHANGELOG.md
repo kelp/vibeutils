@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.2 — 2026-06-15
 
 ### Removed
 - **Dropped the `darwin-amd64` (Intel macOS) prebuilt binary.**
