@@ -336,8 +336,43 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
     else
         null;
 
-    // Build argv for child process
+    // Build argv for child process and run the child under the timeout.
     const cmd_args = parsed.positionals[1..];
+    return runTimeout_spawnAndWait(allocator, io, stderr_writer, cmd_args, .{
+        .timeout_nanos = timeout_nanos,
+        .kill_after_nanos = kill_after_nanos,
+        .timeout_signal = timeout_signal,
+        .foreground = parsed.foreground,
+        .verbose = parsed.verbose,
+        .preserve_status = parsed.@"preserve-status",
+    });
+}
+
+/// Timeout run options resolved from parsed arguments. Grouped into a
+/// struct so the three booleans and the durations cannot be transposed
+/// at the call site (Tiger Style named-argument guidance).
+const RunOptions = struct {
+    timeout_nanos: u64,
+    kill_after_nanos: ?u64,
+    timeout_signal: u8,
+    foreground: bool,
+    verbose: bool,
+    preserve_status: bool,
+};
+
+/// Spawn the child command and wait for it under the timeout policy.
+/// Returns the resolved exit code (the child's own code, 124 on timeout,
+/// 125/126/127 on spawn failure, or 137 when killed by SIGKILL).
+fn runTimeout_spawnAndWait(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    cmd_args: []const []const u8,
+    options: RunOptions,
+) u8 {
+    std.debug.assert(cmd_args.len > 0);
+    std.debug.assert(options.timeout_signal > 0);
+    std.debug.assert(options.timeout_signal < 64);
 
     // Spawn child process
     const child = std.process.spawn(io, .{
@@ -346,7 +381,7 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
         .stdout = .inherit,
         .stderr = .inherit,
         // Set pgid=0 to put child in its own process group (for group kill)
-        .pgid = if (parsed.foreground) null else @as(?std.posix.pid_t, 0),
+        .pgid = if (options.foreground) null else @as(?std.posix.pid_t, 0),
     }) catch |err| {
         return handleSpawnError(allocator, stderr_writer, cmd_args[0], err);
     };
@@ -354,15 +389,117 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
     const child_pid = child.id orelse return 125;
 
     // If timeout is 0, just wait for the command (no timeout)
-    if (timeout_nanos == 0) {
+    if (options.timeout_nanos == 0) {
         return waitChild(child_pid);
     }
 
     // Wait with timeout using polling approach
     // Poll at intervals until either the child exits or timeout expires
     const poll_interval_ns: u64 = 10 * std.time.ns_per_ms; // 10ms
-    var elapsed_ns: u64 = 0;
 
+    if (runTimeout_pollUntilTimeout(
+        child_pid,
+        options.timeout_nanos,
+        poll_interval_ns,
+        io,
+    )) |exit_code| {
+        return exit_code;
+    }
+
+    // Timeout expired - send the signal
+    if (options.verbose) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "sending signal {d} to command '{s}'",
+            .{ options.timeout_signal, cmd_args[0] },
+        );
+    }
+
+    sendSignal(child_pid, @intCast(options.timeout_signal), !options.foreground);
+
+    // If --kill-after is set, wait for that duration then send KILL
+    if (options.kill_after_nanos) |ka_nanos| {
+        if (ka_nanos > 0) {
+            return runTimeout_spawnAndWait_killAfter(
+                allocator,
+                io,
+                stderr_writer,
+                cmd_args,
+                child_pid,
+                ka_nanos,
+                poll_interval_ns,
+                options,
+            );
+        }
+    }
+
+    // Wait for child to actually finish after signal
+    const final_exit = waitChild(child_pid);
+
+    return runTimeout_resolveExitCode(final_exit, options.preserve_status, options.timeout_signal);
+}
+
+/// Handle the --kill-after window after the timeout signal was sent.
+/// Polls for early exit, otherwise sends SIGKILL and waits. Returns the
+/// resolved exit code. Single caller: runTimeout_spawnAndWait.
+fn runTimeout_spawnAndWait_killAfter(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    cmd_args: []const []const u8,
+    child_pid: std.c.pid_t,
+    kill_after_nanos: u64,
+    poll_interval_ns: u64,
+    options: RunOptions,
+) u8 {
+    std.debug.assert(cmd_args.len > 0);
+    std.debug.assert(kill_after_nanos > 0);
+    std.debug.assert(poll_interval_ns > 0);
+
+    if (runTimeout_pollKillAfter(
+        child_pid,
+        kill_after_nanos,
+        poll_interval_ns,
+        options.preserve_status,
+        io,
+    )) |exit_code| {
+        return exit_code;
+    }
+
+    // Still running - send KILL
+    if (options.verbose) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "sending signal KILL to command '{s}'",
+            .{cmd_args[0]},
+        );
+    }
+
+    sendSignal(child_pid, 9, !options.foreground); // SIGKILL
+
+    // SIGKILL was sent; wait for child and return its exit code
+    // (typically 137 = 128+9). GNU timeout does this too,
+    // regardless of --preserve-status.
+    return waitChild(child_pid);
+}
+
+/// Poll the child until it exits or the timeout window elapses.
+/// Returns the child's exit code if it exits within the window, or null
+/// if the timeout expired while the child was still running.
+fn runTimeout_pollUntilTimeout(
+    child_pid: std.c.pid_t,
+    timeout_nanos: u64,
+    poll_interval_ns: u64,
+    io: std.Io,
+) ?u8 {
+    std.debug.assert(timeout_nanos > 0);
+    std.debug.assert(poll_interval_ns > 0);
+
+    var elapsed_ns: u64 = 0;
     while (elapsed_ns < timeout_nanos) {
         // Try to collect the child status without blocking
         if (tryWaitChild(child_pid)) |exit_code| {
@@ -375,60 +512,54 @@ pub fn runTimeout(allocator: Allocator, io: std.Io, args: []const []const u8, st
         io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
         elapsed_ns += sleep_time;
     }
+    return null;
+}
 
-    // Timeout expired - send the signal
-    if (parsed.verbose) {
-        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal {d} to command '{s}'", .{ timeout_signal, cmd_args[0] });
-    }
+/// Poll the child during the --kill-after window after the timeout signal.
+/// Returns an exit code if the child exits within the window (the child's
+/// own code when preserve_status is set, otherwise 124), or null if the
+/// child is still running after the window so the caller must send KILL.
+fn runTimeout_pollKillAfter(
+    child_pid: std.c.pid_t,
+    kill_after_nanos: u64,
+    poll_interval_ns: u64,
+    preserve_status: bool,
+    io: std.Io,
+) ?u8 {
+    std.debug.assert(kill_after_nanos > 0);
+    std.debug.assert(poll_interval_ns > 0);
 
-    sendSignal(child_pid, @intCast(timeout_signal), !parsed.foreground);
-
-    // If --kill-after is set, wait for that duration then send KILL
-    if (kill_after_nanos) |ka_nanos| {
-        if (ka_nanos > 0) {
-            var ka_elapsed: u64 = 0;
-            while (ka_elapsed < ka_nanos) {
-                if (tryWaitChild(child_pid)) |exit_code| {
-                    if (parsed.@"preserve-status") {
-                        return exit_code;
-                    }
-                    return 124;
-                }
-
-                const remaining = ka_nanos - ka_elapsed;
-                const sleep_time = @min(poll_interval_ns, remaining);
-                io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
-                ka_elapsed += sleep_time;
+    var ka_elapsed: u64 = 0;
+    while (ka_elapsed < kill_after_nanos) {
+        if (tryWaitChild(child_pid)) |exit_code| {
+            if (preserve_status) {
+                return exit_code;
             }
-
-            // Still running - send KILL
-            if (parsed.verbose) {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "sending signal KILL to command '{s}'", .{cmd_args[0]});
-            }
-
-            sendSignal(child_pid, 9, !parsed.foreground); // SIGKILL
-
-            // SIGKILL was sent; wait for child and return its exit code
-            // (typically 137 = 128+9). GNU timeout does this too,
-            // regardless of --preserve-status.
-            return waitChild(child_pid);
+            return 124;
         }
+
+        const remaining = kill_after_nanos - ka_elapsed;
+        const sleep_time = @min(poll_interval_ns, remaining);
+        io.sleep(std.Io.Duration.fromNanoseconds(@intCast(sleep_time)), .awake) catch {};
+        ka_elapsed += sleep_time;
     }
+    return null;
+}
 
-    // Wait for child to actually finish after signal
-    const final_exit = waitChild(child_pid);
+/// Resolve the final exit code after the child finishes following a signal.
+/// With preserve_status the child's own code is returned. SIGKILL (9)
+/// cannot be caught, so the child always dies via signal and GNU timeout
+/// returns the signal exit code (137 = 128+9) rather than 124.
+fn runTimeout_resolveExitCode(final_exit: u8, preserve_status: bool, timeout_signal: u8) u8 {
+    std.debug.assert(timeout_signal > 0);
+    std.debug.assert(timeout_signal < 64);
 
-    if (parsed.@"preserve-status") {
+    if (preserve_status) {
         return final_exit;
     }
-
-    // SIGKILL (9) cannot be caught, so the child always dies via signal.
-    // GNU timeout returns the signal exit code (137 = 128+9) in this case
-    // rather than the generic timeout code (124).
     if (timeout_signal == 9) {
         return final_exit;
     }
-
     return 124;
 }
 
