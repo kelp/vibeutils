@@ -375,16 +375,17 @@ test "findGitRoot resolves repo from a relative start path in a subdirectory" {
         m.close(io);
     }
 
-    // Capture original cwd as a Dir handle and restore it after.
+    // Capture the original cwd as a Dir handle to restore after the chdir.
     var orig_cwd = try std.Io.Dir.cwd().openDir(io, ".", .{});
-    defer {
-        std.process.setCurrentDir(io, orig_cwd) catch {};
-        orig_cwd.close(io);
-    }
+    defer orig_cwd.close(io);
 
     var deep = try tmp_dir.dir.openDir(io, "repo/sub/deep", .{});
     defer deep.close(io);
+
     try std.process.setCurrentDir(io, deep);
+    // Restore cwd before either handle closes. Defers run LIFO, so this
+    // registers last and runs first, leaving cwd off `deep` before it closes.
+    defer std.process.setCurrentDir(io, orig_cwd) catch {};
 
     // BUG #41: relative "." from a subdir errors (cwd().realPath) instead of
     // resolving to the repo root.
