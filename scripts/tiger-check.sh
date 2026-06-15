@@ -71,7 +71,29 @@ function status_for(lineno,   key) {
     return "PRE";
 }
 
+# Inline-suppression escape hatch. A violation is suppressed if the
+# ORIGINAL source line at lineno carries a comment token of the form
+# "tiger:allow:<rule>" matching this rule, or the wildcard
+# "tiger:allow:*". The token must be read from the RAW line (it lives in
+# a comment, which strip_comments_strings would otherwise blank), so we
+# stash each raw line in RAW[lineno] and scan it here. For long-fn the
+# violation is reported at the fn signature line, so lineno is fn_start
+# and the token is expected on that signature line.
+function is_suppressed(rule, lineno,   raw, tok, star) {
+    raw = RAW[lineno];
+    if (raw == "") return 0;
+    star = "tiger:allow:*";
+    if (index(raw, star) > 0) return 1;
+    tok = "tiger:allow:" rule;
+    if (index(raw, tok) > 0) return 1;
+    return 0;
+}
+
 function emit(rule, lineno, detail,   st) {
+    if (is_suppressed(rule, lineno)) {
+        SUPPRESSED++;
+        return;
+    }
     st = status_for(lineno);
     printf "%s\t%s:%d\t%s\t%s\n", rule, FILE, lineno, st, detail;
 }
@@ -169,6 +191,13 @@ BEGIN {
     sub(/\r$/, "", line);
     lineno = NR;
 
+    # Stash the RAW line (comment intact) so emit() can honor an inline
+    # "tiger:allow:<rule>" suppression token. The token lives in a
+    # comment that comment-stripping would blank, so suppression must
+    # read this original text, not the stripped `code`. long-fn emits at
+    # the signature line, which RAW retains for the whole file.
+    RAW[lineno] = line;
+
     # --- long-line ---------------------------------------------------
     w = display_width(line);
     if (w > 100) {
@@ -264,6 +293,14 @@ BEGIN {
         if (fn_depth <= 0) {
             finalize_fn(lineno);
         }
+    }
+}
+
+END {
+    # Human note only (stderr): how many candidates this file suppressed
+    # via inline tiger:allow tokens. stdout stays the parseable contract.
+    if (SUPPRESSED > 0) {
+        printf "tiger-check: %s: suppressed %d violation(s) via tiger:allow\n", FILE, SUPPRESSED > "/dev/stderr";
     }
 }
 
