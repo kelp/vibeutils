@@ -160,79 +160,9 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
 
         // Long options
         if (arg.len > 1 and arg[1] == '-') {
-            if (std.mem.eql(u8, arg, "--help")) {
-                opts.help = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--version")) {
-                opts.version = true;
-                break;
-            } else if (std.mem.eql(u8, arg, "--all")) {
-                opts.all = true;
-            } else if (std.mem.eql(u8, arg, "--human-readable")) {
-                opts.human_readable = true;
-            } else if (std.mem.eql(u8, arg, "--si")) {
-                opts.si = true;
-            } else if (std.mem.eql(u8, arg, "--inodes")) {
-                opts.inodes = true;
-            } else if (std.mem.eql(u8, arg, "--local")) {
-                opts.local = true;
-            } else if (std.mem.eql(u8, arg, "--portability")) {
-                opts.portability = true;
-                opts.human_readable = false;
-                opts.display.color = .off;
-                opts.display.icons = .off;
-                opts.display.highlight = .off;
-                opts.display.theme = .none;
-            } else if (std.mem.eql(u8, arg, "--print-type")) {
-                opts.print_type = true;
-            } else if (std.mem.eql(u8, arg, "--total")) {
-                opts.total = true;
-            } else if (std.mem.startsWith(u8, arg, "--block-size=")) {
-                const val = arg["--block-size=".len..];
-                opts.block_size = parseBlockSize(val) orelse {
-                    err_msg = "invalid --block-size argument";
-                    break;
-                };
-                opts.human_readable = false;
-            } else if (std.mem.eql(u8, arg, "--block-size")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.block_size = parseBlockSize(args[i]) orelse {
-                        err_msg = "invalid --block-size argument";
-                        break;
-                    };
-                    opts.human_readable = false;
-                } else {
-                    err_msg = "option '--block-size' requires an argument";
-                    break;
-                }
-            } else if (std.mem.startsWith(u8, arg, "--type=")) {
-                opts.include_type = arg["--type=".len..];
-            } else if (std.mem.eql(u8, arg, "--type")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.include_type = args[i];
-                } else {
-                    err_msg = "option '--type' requires an argument";
-                    break;
-                }
-            } else if (std.mem.startsWith(u8, arg, "--exclude-type=")) {
-                opts.exclude_type = arg["--exclude-type=".len..];
-            } else if (std.mem.eql(u8, arg, "--exclude-type")) {
-                if (i + 1 < args.len) {
-                    i += 1;
-                    opts.exclude_type = args[i];
-                } else {
-                    err_msg = "option '--exclude-type' requires an argument";
-                    break;
-                }
-            } else if (std.mem.startsWith(u8, arg, "--output=")) {
-                opts.output_fields = arg["--output=".len..];
-            } else if (std.mem.eql(u8, arg, "--output")) {
-                // --output without = uses default field list
-                opts.output_fields = "source,fstype,size,used,avail,pcent,target";
-            } else {
-                err_msg = "unrecognized option";
+            const err = parseArgs_longOption(args, &i, arg, &opts);
+            if (err != null or opts.help or opts.version) {
+                err_msg = err;
                 break;
             }
             continue;
@@ -241,99 +171,9 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
         // Short options
         var j: usize = 1;
         while (j < arg.len) : (j += 1) {
-            switch (arg[j]) {
-                'a' => opts.all = true,
-                'h' => opts.human_readable = true,
-                'H' => opts.si = true,
-                'i' => opts.inodes = true,
-                'k' => {
-                    opts.block_1k = true;
-                    opts.human_readable = false;
-                },
-                'l' => opts.local = true,
-                'n' => {
-                    if (comptime is_linux) {
-                        err_msg = "unrecognized option";
-                        break;
-                    }
-                    opts.no_sync = true;
-                },
-                'P' => {
-                    opts.portability = true;
-                    opts.human_readable = false;
-                    opts.display.color = .off;
-                    opts.display.icons = .off;
-                    opts.display.highlight = .off;
-                    opts.display.theme = .none;
-                },
-                'T' => opts.print_type = true,
-                't' => {
-                    if (j + 1 < arg.len) {
-                        opts.include_type = arg[j + 1 ..];
-                        j = arg.len;
-                        break;
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.include_type = args[i];
-                    } else {
-                        err_msg = "option '-t' requires an argument";
-                    }
-                    j = arg.len;
-                    break;
-                },
-                'x' => {
-                    if (j + 1 < arg.len) {
-                        opts.exclude_type = arg[j + 1 ..];
-                        j = arg.len;
-                        break;
-                    } else if (i + 1 < args.len) {
-                        i += 1;
-                        opts.exclude_type = args[i];
-                    } else {
-                        err_msg = "option '-x' requires an argument";
-                    }
-                    j = arg.len;
-                    break;
-                },
-                'b' => {
-                    opts.block_size = 512;
-                    opts.human_readable = false;
-                },
-                'c' => opts.total = true,
-                'g' => {
-                    opts.block_size = 1024 * 1024 * 1024;
-                    opts.human_readable = false;
-                },
-                'I' => {
-                    if (comptime is_darwin) {
-                        // macOS: -I is a boolean flag meaning "suppress inode counts"
-                        opts.suppress_inodes = true;
-                    } else {
-                        // Linux/GNU: -I is an exclude-type filter requiring an argument
-                        if (j + 1 < arg.len) {
-                            opts.exclude_type = arg[j + 1 ..];
-                            j = arg.len;
-                            break;
-                        } else if (i + 1 < args.len) {
-                            i += 1;
-                            opts.exclude_type = args[i];
-                        } else {
-                            err_msg = "option '-I' requires an argument";
-                        }
-                        j = arg.len;
-                        break;
-                    }
-                },
-                'm' => {
-                    opts.block_size = 1024 * 1024;
-                    opts.human_readable = false;
-                },
-                'Y' => {}, // no-op: don't resolve NFS paths
-                ',' => opts.thousands_grouping = true,
-                else => {
-                    err_msg = "unrecognized option";
-                    break;
-                },
+            if (parseArgs_shortOption(args, &i, arg, &j, &opts)) |msg| {
+                err_msg = msg;
+                break;
             }
         }
         if (err_msg != null) break;
@@ -346,6 +186,252 @@ fn parseArgs(allocator: Allocator, args: []const []const u8) struct { opts: DfOp
     };
 
     return .{ .opts = opts, .err = err_msg };
+}
+
+// Dispatch one long option (arg starts with "--"). Mutates opts and the
+// argv cursor i for value consumption. Returns an error string or null.
+fn parseArgs_longOption(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch indexes args slice
+    arg: []const u8,
+    opts: *DfOptions,
+) ?[]const u8 {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+    if (parseArgs_longOptionBool(arg, opts)) {
+        return null;
+    }
+    const result = parseArgs_longOptionValued(args, i, arg, opts);
+    if (result.matched) {
+        return result.err;
+    }
+    return "unrecognized option";
+}
+
+// Handle the boolean/portability long options. Returns true if arg matched.
+fn parseArgs_longOptionBool(arg: []const u8, opts: *DfOptions) bool {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[1] == '-');
+    if (std.mem.eql(u8, arg, "--help")) {
+        opts.help = true;
+    } else if (std.mem.eql(u8, arg, "--version")) {
+        opts.version = true;
+    } else if (std.mem.eql(u8, arg, "--all")) {
+        opts.all = true;
+    } else if (std.mem.eql(u8, arg, "--human-readable")) {
+        opts.human_readable = true;
+    } else if (std.mem.eql(u8, arg, "--si")) {
+        opts.si = true;
+    } else if (std.mem.eql(u8, arg, "--inodes")) {
+        opts.inodes = true;
+    } else if (std.mem.eql(u8, arg, "--local")) {
+        opts.local = true;
+    } else if (std.mem.eql(u8, arg, "--portability")) {
+        opts.portability = true;
+        opts.human_readable = false;
+        opts.display.color = .off;
+        opts.display.icons = .off;
+        opts.display.highlight = .off;
+        opts.display.theme = .none;
+    } else if (std.mem.eql(u8, arg, "--print-type")) {
+        opts.print_type = true;
+    } else if (std.mem.eql(u8, arg, "--total")) {
+        opts.total = true;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+// Handle the value-consuming long options. `matched` is false when arg is
+// not one of these options; otherwise err carries any parse error.
+fn parseArgs_longOptionValued(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch indexes args slice
+    arg: []const u8,
+    opts: *DfOptions,
+) struct { matched: bool, err: ?[]const u8 } {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(i.* < args.len);
+    if (std.mem.startsWith(u8, arg, "--block-size=")) {
+        const val = arg["--block-size=".len..];
+        opts.block_size = parseBlockSize(val) orelse
+            return .{ .matched = true, .err = "invalid --block-size argument" };
+        opts.human_readable = false;
+    } else if (std.mem.eql(u8, arg, "--block-size")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.block_size = parseBlockSize(args[i.*]) orelse
+                return .{ .matched = true, .err = "invalid --block-size argument" };
+            opts.human_readable = false;
+        } else {
+            return .{ .matched = true, .err = "option '--block-size' requires an argument" };
+        }
+    } else if (std.mem.startsWith(u8, arg, "--type=")) {
+        opts.include_type = arg["--type=".len..];
+    } else if (std.mem.eql(u8, arg, "--type")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.include_type = args[i.*];
+        } else {
+            return .{ .matched = true, .err = "option '--type' requires an argument" };
+        }
+    } else if (std.mem.startsWith(u8, arg, "--exclude-type=")) {
+        opts.exclude_type = arg["--exclude-type=".len..];
+    } else if (std.mem.eql(u8, arg, "--exclude-type")) {
+        if (i.* + 1 < args.len) {
+            i.* += 1;
+            opts.exclude_type = args[i.*];
+        } else {
+            return .{ .matched = true, .err = "option '--exclude-type' requires an argument" };
+        }
+    } else if (std.mem.startsWith(u8, arg, "--output=")) {
+        opts.output_fields = arg["--output=".len..];
+    } else if (std.mem.eql(u8, arg, "--output")) {
+        // --output without = uses default field list
+        opts.output_fields = "source,fstype,size,used,avail,pcent,target";
+    } else {
+        return .{ .matched = false, .err = null };
+    }
+    return .{ .matched = true, .err = null };
+}
+
+// Dispatch one short-option character arg[j.*]. Mutates the argv cursor i,
+// the inner cursor j, and opts. Returns an error string or null.
+fn parseArgs_shortOption(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch indexes args slice
+    arg: []const u8,
+    j: *usize, // tiger:allow:usize-arch indexes arg slice
+    opts: *DfOptions,
+) ?[]const u8 {
+    std.debug.assert(arg.len > 0);
+    std.debug.assert(j.* < arg.len);
+    if (parseArgs_shortOptionSimple(arg, j.*, opts)) |result| {
+        return result.err;
+    }
+    return parseArgs_shortOptionValued(args, i, arg, j, opts);
+}
+
+// Handle single-character boolean/block-size short options. Returns null
+// when c is a value-consuming option (handled elsewhere); otherwise the
+// result's err is set for unrecognized options.
+fn parseArgs_shortOptionSimple(
+    arg: []const u8,
+    j: usize, // tiger:allow:usize-arch indexes arg slice
+    opts: *DfOptions,
+) ?struct { err: ?[]const u8 } {
+    std.debug.assert(arg.len > 0);
+    std.debug.assert(j < arg.len);
+    switch (arg[j]) {
+        'a' => opts.all = true,
+        'h' => opts.human_readable = true,
+        'H' => opts.si = true,
+        'i' => opts.inodes = true,
+        'k' => {
+            opts.block_1k = true;
+            opts.human_readable = false;
+        },
+        'l' => opts.local = true,
+        'n' => {
+            if (comptime is_linux) {
+                return .{ .err = "unrecognized option" };
+            }
+            opts.no_sync = true;
+        },
+        'P' => {
+            opts.portability = true;
+            opts.human_readable = false;
+            opts.display.color = .off;
+            opts.display.icons = .off;
+            opts.display.highlight = .off;
+            opts.display.theme = .none;
+        },
+        'T' => opts.print_type = true,
+        'b' => {
+            opts.block_size = 512;
+            opts.human_readable = false;
+        },
+        'c' => opts.total = true,
+        'g' => {
+            opts.block_size = 1024 * 1024 * 1024;
+            opts.human_readable = false;
+        },
+        'm' => {
+            opts.block_size = 1024 * 1024;
+            opts.human_readable = false;
+        },
+        'Y' => {}, // no-op: don't resolve NFS paths
+        ',' => opts.thousands_grouping = true,
+        else => return null,
+    }
+    return .{ .err = null };
+}
+
+// Handle value-consuming short options (t, x, and Linux -I). Each arm sets
+// j to arg.len so the parent's inner loop terminates after consuming the
+// value. Returns an error string or null.
+fn parseArgs_shortOptionValued(
+    args: []const []const u8,
+    i: *usize, // tiger:allow:usize-arch indexes args slice
+    arg: []const u8,
+    j: *usize, // tiger:allow:usize-arch indexes arg slice
+    opts: *DfOptions,
+) ?[]const u8 {
+    std.debug.assert(arg.len > 0);
+    std.debug.assert(j.* < arg.len);
+    switch (arg[j.*]) {
+        't' => {
+            var err: ?[]const u8 = null;
+            if (j.* + 1 < arg.len) {
+                opts.include_type = arg[j.* + 1 ..];
+            } else if (i.* + 1 < args.len) {
+                i.* += 1;
+                opts.include_type = args[i.*];
+            } else {
+                err = "option '-t' requires an argument";
+            }
+            j.* = arg.len;
+            return err;
+        },
+        'x' => {
+            var err: ?[]const u8 = null;
+            if (j.* + 1 < arg.len) {
+                opts.exclude_type = arg[j.* + 1 ..];
+            } else if (i.* + 1 < args.len) {
+                i.* += 1;
+                opts.exclude_type = args[i.*];
+            } else {
+                err = "option '-x' requires an argument";
+            }
+            j.* = arg.len;
+            return err;
+        },
+        'I' => {
+            if (comptime is_darwin) {
+                // macOS: -I is a boolean flag meaning "suppress inode counts"
+                opts.suppress_inodes = true;
+                return null;
+            }
+            // Linux/GNU: -I is an exclude-type filter requiring an argument
+            var err: ?[]const u8 = null;
+            if (j.* + 1 < arg.len) {
+                opts.exclude_type = arg[j.* + 1 ..];
+            } else if (i.* + 1 < args.len) {
+                i.* += 1;
+                opts.exclude_type = args[i.*];
+            } else {
+                err = "option '-I' requires an argument";
+            }
+            j.* = arg.len;
+            return err;
+        },
+        else => {
+            // Reached only for the unrecognized-option case routed here from
+            // parseArgs_shortOption when the simple dispatcher returned null.
+            return "unrecognized option";
+        },
+    }
 }
 
 /// Parse a block size string like "1K", "1M", "1G", or a plain number
@@ -541,10 +627,7 @@ fn getMountedFilesystemsLinux(io: std.Io, allocator: Allocator) ![]FsInfo {
 
 fn getFilesystemForPathLinux(io: std.Io, allocator: Allocator, path: []const u8) !FsInfo {
     var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
-    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
-    @memcpy(path_buf[0..path.len], path);
-    path_buf[path.len] = 0;
-    const c_path = path_buf[0..path.len :0];
+    const c_path = try getFilesystemForPathLinux_resolveCPath(path, &path_buf);
 
     var svfs: linux_c.Statvfs = undefined;
     const ret = linux_c.statvfs(c_path, &svfs);
@@ -557,26 +640,46 @@ fn getFilesystemForPathLinux(io: std.Io, allocator: Allocator, path: []const u8)
     var best_source: []const u8 = "unknown";
     var best_mount: []const u8 = path;
     var best_fstype: []const u8 = "unknown";
-    var best_len: usize = 0;
 
     var mounts_buf: [32768]u8 = undefined;
     const content = std.Io.Dir.cwd().readFile(io, "/proc/mounts", &mounts_buf) catch {
         // Can't read mounts, return with what we have from statvfs
-        return FsInfo{
-            .source = try allocator.dupe(u8, "unknown"),
-            .fstype = try allocator.dupe(u8, "unknown"),
-            .mount_point = try allocator.dupe(u8, path),
-            .total_blocks = svfs.f_blocks,
-            .used_blocks = svfs.f_blocks -| svfs.f_bfree,
-            .avail_blocks = svfs.f_bavail,
-            .block_size = svfs.f_frsize,
-            .total_inodes = svfs.f_files,
-            .used_inodes = svfs.f_files -| svfs.f_ffree,
-            .avail_inodes = svfs.f_ffree,
-            .flags = 0,
-        };
+        return getFilesystemForPathLinux_makeInfo(allocator, svfs, "unknown", "unknown", path);
     };
 
+    getFilesystemForPathLinux_matchMount(content, path, &best_source, &best_mount, &best_fstype);
+
+    return getFilesystemForPathLinux_makeInfo(
+        allocator,
+        svfs,
+        best_source,
+        best_fstype,
+        best_mount,
+    );
+}
+
+fn getFilesystemForPathLinux_resolveCPath(path: []const u8, path_buf: []u8) ![:0]const u8 {
+    comptime std.debug.assert(std.Io.Dir.max_path_bytes > 0);
+    if (path.len > std.Io.Dir.max_path_bytes) return error.NameTooLong;
+    // Past the guard: the path fits and the caller's buffer is sized to hold
+    // the bytes plus a null terminator.
+    std.debug.assert(path.len <= std.Io.Dir.max_path_bytes);
+    std.debug.assert(path_buf.len > path.len);
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    return path_buf[0..path.len :0];
+}
+
+fn getFilesystemForPathLinux_matchMount(
+    content: []const u8,
+    path: []const u8,
+    best_source: *[]const u8,
+    best_mount: *[]const u8,
+    best_fstype: *[]const u8,
+) void {
+    std.debug.assert(path.len > 0);
+    std.debug.assert(best_mount.*.len <= path.len);
+    var best_len: usize = 0; // tiger:allow:usize-arch tracks a slice length
     var line_iter = std.mem.splitScalar(u8, content, '\n');
     while (line_iter.next()) |line| {
         if (line.len == 0) continue;
@@ -588,20 +691,31 @@ fn getFilesystemForPathLinux(io: std.Io, allocator: Allocator, path: []const u8)
 
         // Find longest matching mount point prefix
         if (std.mem.startsWith(u8, path, mnt) and mnt.len > best_len) {
-            best_source = src;
-            best_mount = mnt;
-            best_fstype = fst;
+            best_source.* = src;
+            best_mount.* = mnt;
+            best_fstype.* = fst;
             best_len = mnt.len;
         }
     }
+    std.debug.assert(best_mount.*.len <= path.len);
+}
 
+fn getFilesystemForPathLinux_makeInfo(
+    allocator: Allocator,
+    svfs: linux_c.Statvfs,
+    src: []const u8,
+    fst: []const u8,
+    mnt: []const u8,
+) !FsInfo {
+    std.debug.assert(src.len > 0);
+    std.debug.assert(fst.len > 0);
     // Bind each dupe to a local with an errdefer so a later dupe
     // failure unwinds the earlier allocations (audit G2).
-    const source = try allocator.dupe(u8, best_source);
+    const source = try allocator.dupe(u8, src);
     errdefer allocator.free(source);
-    const fstype = try allocator.dupe(u8, best_fstype);
+    const fstype = try allocator.dupe(u8, fst);
     errdefer allocator.free(fstype);
-    const mount_point = try allocator.dupe(u8, best_mount);
+    const mount_point = try allocator.dupe(u8, mnt);
     errdefer allocator.free(mount_point);
 
     return FsInfo{
@@ -1335,30 +1449,49 @@ fn applyTypeColor(s: anytype) !void {
 
 fn printHeader(stdout: *std.Io.Writer, opts: DfOptions) !void {
     if (opts.inodes) {
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                "Filesystem",
-                "Type",
-                "Inodes",
-                "IUsed",
-                "IFree",
-                "IUse%",
-                "Mounted on",
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                "Filesystem",
-                "Inodes",
-                "IUsed",
-                "IFree",
-                "IUse%",
-                "Mounted on",
-            });
-        }
-        return;
+        return printHeader_inodes(stdout, opts);
     }
 
     var size_label_buf: [32]u8 = undefined;
+    const size_label = printHeader_sizeLabel(&size_label_buf, opts);
+    const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
+
+    if (opts.display.icons == .on) {
+        try printHeader_emitIcons(stdout, opts, size_label, pct_label);
+    } else {
+        try printHeader_emitPlain(stdout, opts, size_label, pct_label);
+    }
+}
+
+fn printHeader_inodes(stdout: *std.Io.Writer, opts: DfOptions) !void {
+    std.debug.assert(opts.inodes);
+    std.debug.assert(!opts.help);
+    std.debug.assert(!opts.version);
+    if (opts.print_type) {
+        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+            "Filesystem",
+            "Type",
+            "Inodes",
+            "IUsed",
+            "IFree",
+            "IUse%",
+            "Mounted on",
+        });
+    } else {
+        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+            "Filesystem",
+            "Inodes",
+            "IUsed",
+            "IFree",
+            "IUse%",
+            "Mounted on",
+        });
+    }
+}
+
+fn printHeader_sizeLabel(buf: []u8, opts: DfOptions) []const u8 {
+    std.debug.assert(buf.len >= 16);
+    std.debug.assert(!opts.inodes);
     const size_label: []const u8 = blk: {
         if (opts.human_readable or opts.si) {
             break :blk "Size";
@@ -1368,85 +1501,80 @@ fn printHeader(stdout: *std.Io.Writer, opts: DfOptions) !void {
             if (bs == 1024) break :blk "1K-blocks";
             if (bs == 1024 * 1024) break :blk "1M-blocks";
             if (bs == 1024 * 1024 * 1024) break :blk "1G-blocks";
-            break :blk std.fmt.bufPrint(&size_label_buf, "{d}B-blocks", .{bs}) catch "blocks";
+            break :blk std.fmt.bufPrint(buf, "{d}B-blocks", .{bs}) catch "blocks";
         }
         if (opts.portability) break :blk "1024-blocks";
         break :blk "1K-blocks";
     };
-    const pct_label: []const u8 = if (opts.portability) "Capacity" else "Use%";
+    std.debug.assert(size_label.len > 0);
+    return size_label;
+}
 
-    if (opts.display.icons == .on) {
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
-                "Filesystem",
-                "Type",
-                size_label,
-                "Used",
-                "Available",
-                pct_label,
-                "Usage",
-                "Mounted on",
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
-                "Filesystem",
-                size_label,
-                "Used",
-                "Available",
-                pct_label,
-                "Usage",
-                "Mounted on",
-            });
-        }
+fn printHeader_emitIcons(
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    size_label: []const u8,
+    pct_label: []const u8,
+) !void {
+    std.debug.assert(size_label.len > 0);
+    std.debug.assert(opts.display.icons == .on);
+    if (opts.print_type) {
+        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
+            "Filesystem",
+            "Type",
+            size_label,
+            "Used",
+            "Available",
+            pct_label,
+            "Usage",
+            "Mounted on",
+        });
     } else {
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                "Filesystem",
-                "Type",
-                size_label,
-                "Used",
-                "Available",
-                pct_label,
-                "Mounted on",
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                "Filesystem",
-                size_label,
-                "Used",
-                "Available",
-                pct_label,
-                "Mounted on",
-            });
-        }
+        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s:>17} {s}\n", .{
+            "Filesystem",
+            size_label,
+            "Used",
+            "Available",
+            pct_label,
+            "Usage",
+            "Mounted on",
+        });
+    }
+}
+
+fn printHeader_emitPlain(
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    size_label: []const u8,
+    pct_label: []const u8,
+) !void {
+    std.debug.assert(size_label.len > 0);
+    std.debug.assert(opts.display.icons != .on);
+    if (opts.print_type) {
+        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+            "Filesystem",
+            "Type",
+            size_label,
+            "Used",
+            "Available",
+            pct_label,
+            "Mounted on",
+        });
+    } else {
+        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+            "Filesystem",
+            size_label,
+            "Used",
+            "Available",
+            pct_label,
+            "Mounted on",
+        });
     }
 }
 
 fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, color_mode_int: u8) !void {
     if (opts.inodes) {
-        var pct_buf: [16]u8 = undefined;
-        const pct = formatPercent(&pct_buf, fs.used_inodes, fs.total_inodes);
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
-                fs.source,
-                fs.fstype,
-                fs.total_inodes,
-                fs.used_inodes,
-                fs.avail_inodes,
-                pct,
-                fs.mount_point,
-            });
-        } else {
-            try stdout.print("{s:<15} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
-                fs.source,
-                fs.total_inodes,
-                fs.used_inodes,
-                fs.avail_inodes,
-                pct,
-                fs.mount_point,
-            });
-        }
-        return;
+        return printFsRow_inodes(stdout, &fs, opts);
     }
 
     var total_buf: [32]u8 = undefined;
@@ -1462,21 +1590,87 @@ fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, color_mode_in
     const pct_str = formatPercent(&pct_buf, fs.used_blocks, use_total);
 
     if (opts.display.color == .off) {
-        // Plain mode: no color, no bar
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                fs.source, fs.fstype, total_str, used_str, avail_str, pct_str, fs.mount_point,
-            });
-        } else {
-            try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
-                fs.source, total_str, used_str, avail_str, pct_str, fs.mount_point,
-            });
-        }
-        return;
+        return printFsRow_emitPlain(stdout, &fs, opts, total_str, used_str, avail_str, pct_str);
     }
 
     // Color and full modes: apply color to percent
     const percent = calcUsagePercent(fs.used_blocks, use_total);
+    try printFsRow_emitColored(
+        stdout,
+        color_mode_int,
+        &fs,
+        opts,
+        total_str,
+        used_str,
+        avail_str,
+        pct_str,
+        percent,
+    );
+}
+
+fn printFsRow_inodes(stdout: *std.Io.Writer, fs: *const FsInfo, opts: DfOptions) !void {
+    std.debug.assert(opts.inodes);
+    std.debug.assert(fs.source.len > 0);
+    var pct_buf: [16]u8 = undefined;
+    const pct = formatPercent(&pct_buf, fs.used_inodes, fs.total_inodes);
+    if (opts.print_type) {
+        try stdout.print("{s:<15} {s:<6} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
+            fs.source,
+            fs.fstype,
+            fs.total_inodes,
+            fs.used_inodes,
+            fs.avail_inodes,
+            pct,
+            fs.mount_point,
+        });
+    } else {
+        try stdout.print("{s:<15} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
+            fs.source,
+            fs.total_inodes,
+            fs.used_inodes,
+            fs.avail_inodes,
+            pct,
+            fs.mount_point,
+        });
+    }
+}
+
+fn printFsRow_emitPlain(
+    stdout: *std.Io.Writer,
+    fs: *const FsInfo,
+    opts: DfOptions,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+) !void {
+    std.debug.assert(opts.display.color == .off);
+    std.debug.assert(pct_str.len > 0);
+    // Plain mode: no color, no bar
+    if (opts.print_type) {
+        try stdout.print("{s:<15} {s:<6} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+            fs.source, fs.fstype, total_str, used_str, avail_str, pct_str, fs.mount_point,
+        });
+    } else {
+        try stdout.print("{s:<15} {s:>10} {s:>10} {s:>10} {s:>5} {s}\n", .{
+            fs.source, total_str, used_str, avail_str, pct_str, fs.mount_point,
+        });
+    }
+}
+
+fn printFsRow_emitColored(
+    stdout: *std.Io.Writer,
+    color_mode_int: u8,
+    fs: *const FsInfo,
+    opts: DfOptions,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+    percent: u8,
+) !void {
+    std.debug.assert(percent <= 100);
+    std.debug.assert(opts.display.color != .off);
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
 
@@ -1518,39 +1712,45 @@ fn printFsRow(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, color_mode_in
     }
 }
 
+// Multiply-accumulate block totals into byte sums (shared by printTotal and
+// printTotalDynamic). Push fors down: the parent keeps no loop of its own.
+fn printTotal_sumBytes(
+    filesystems: []const FsInfo,
+    sum_total: *u64,
+    sum_used: *u64,
+    sum_avail: *u64,
+) void {
+    std.debug.assert(sum_total.* == 0);
+    std.debug.assert(sum_used.* == 0);
+    for (filesystems) |fs| {
+        sum_total.* += fs.total_blocks * fs.block_size;
+        sum_used.* += fs.used_blocks * fs.block_size;
+        sum_avail.* += fs.avail_blocks * fs.block_size;
+    }
+}
+
+// Format one byte total into a display field (human/si/divTrunc/commas),
+// shared by printTotal and printTotalDynamic. Returns a slice into buf.
+fn printTotal_formatField(buf: []u8, bytes: u64, display_block: u64, opts: DfOptions) []const u8 {
+    std.debug.assert(display_block != 0);
+    std.debug.assert(buf.len >= 16);
+    if (opts.human_readable) return formatHumanReadable(buf, bytes, false);
+    if (opts.si) return formatHumanReadable(buf, bytes, true);
+    const val = @divTrunc(bytes + display_block - 1, display_block);
+    if (opts.thousands_grouping) return formatWithCommas(buf, val);
+    return std.fmt.bufPrint(buf, "{d}", .{val}) catch "?";
+}
+
 fn printTotal(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions, color_mode_int: u8) !void {
     if (opts.inodes) {
-        var sum_total: u64 = 0;
-        var sum_used: u64 = 0;
-        var sum_avail: u64 = 0;
-        for (filesystems) |fs| {
-            sum_total += fs.total_inodes;
-            sum_used += fs.used_inodes;
-            sum_avail += fs.avail_inodes;
-        }
-        var pct_buf: [16]u8 = undefined;
-        const pct = formatPercent(&pct_buf, sum_used, sum_total);
-        if (opts.print_type) {
-            try stdout.print("{s:<15} {s:<6} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
-                "total", "-", sum_total, sum_used, sum_avail, pct, "-",
-            });
-        } else {
-            try stdout.print("{s:<15} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
-                "total", sum_total, sum_used, sum_avail, pct, "-",
-            });
-        }
-        return;
+        return printTotal_inodes(stdout, filesystems, opts);
     }
 
     // Sum bytes across all filesystems
     var sum_total_bytes: u64 = 0;
     var sum_used_bytes: u64 = 0;
     var sum_avail_bytes: u64 = 0;
-    for (filesystems) |fs| {
-        sum_total_bytes += fs.total_blocks * fs.block_size;
-        sum_used_bytes += fs.used_blocks * fs.block_size;
-        sum_avail_bytes += fs.avail_blocks * fs.block_size;
-    }
+    printTotal_sumBytes(filesystems, &sum_total_bytes, &sum_used_bytes, &sum_avail_bytes);
 
     // Convert sums back to display blocks
     const display_block: u64 = if (opts.block_size) |bs| bs else 1024;
@@ -1560,36 +1760,9 @@ fn printTotal(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptio
     var avail_buf: [32]u8 = undefined;
     var pct_buf: [16]u8 = undefined;
 
-    const total_str = blk: {
-        if (opts.human_readable) {
-            break :blk formatHumanReadable(&total_buf, sum_total_bytes, false);
-        } else if (opts.si) {
-            break :blk formatHumanReadable(&total_buf, sum_total_bytes, true);
-        }
-        const val = @divTrunc(sum_total_bytes + display_block - 1, display_block);
-        if (opts.thousands_grouping) break :blk formatWithCommas(&total_buf, val);
-        break :blk std.fmt.bufPrint(&total_buf, "{d}", .{val}) catch "?";
-    };
-    const used_str = blk: {
-        if (opts.human_readable) {
-            break :blk formatHumanReadable(&used_buf, sum_used_bytes, false);
-        } else if (opts.si) {
-            break :blk formatHumanReadable(&used_buf, sum_used_bytes, true);
-        }
-        const val = @divTrunc(sum_used_bytes + display_block - 1, display_block);
-        if (opts.thousands_grouping) break :blk formatWithCommas(&used_buf, val);
-        break :blk std.fmt.bufPrint(&used_buf, "{d}", .{val}) catch "?";
-    };
-    const avail_str = blk: {
-        if (opts.human_readable) {
-            break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, false);
-        } else if (opts.si) {
-            break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, true);
-        }
-        const val = @divTrunc(sum_avail_bytes + display_block - 1, display_block);
-        if (opts.thousands_grouping) break :blk formatWithCommas(&avail_buf, val);
-        break :blk std.fmt.bufPrint(&avail_buf, "{d}", .{val}) catch "?";
-    };
+    const total_str = printTotal_formatField(&total_buf, sum_total_bytes, display_block, opts);
+    const used_str = printTotal_formatField(&used_buf, sum_used_bytes, display_block, opts);
+    const avail_str = printTotal_formatField(&avail_buf, sum_avail_bytes, display_block, opts);
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
     const pct_str = if (sum_use_total == 0)
         "-"
@@ -1617,6 +1790,54 @@ fn printTotal(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptio
     else
         @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
 
+    try printTotal_emitColored(
+        stdout,
+        color_mode_int,
+        opts,
+        total_str,
+        used_str,
+        avail_str,
+        pct_str,
+        percent,
+    );
+}
+
+fn printTotal_inodes(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: DfOptions) !void {
+    std.debug.assert(opts.inodes);
+    std.debug.assert(!opts.help);
+    var sum_total: u64 = 0;
+    var sum_used: u64 = 0;
+    var sum_avail: u64 = 0;
+    for (filesystems) |fs| {
+        sum_total += fs.total_inodes;
+        sum_used += fs.used_inodes;
+        sum_avail += fs.avail_inodes;
+    }
+    var pct_buf: [16]u8 = undefined;
+    const pct = formatPercent(&pct_buf, sum_used, sum_total);
+    if (opts.print_type) {
+        try stdout.print("{s:<15} {s:<6} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
+            "total", "-", sum_total, sum_used, sum_avail, pct, "-",
+        });
+    } else {
+        try stdout.print("{s:<15} {d:>10} {d:>10} {d:>10} {s:>5} {s}\n", .{
+            "total", sum_total, sum_used, sum_avail, pct, "-",
+        });
+    }
+}
+
+fn printTotal_emitColored(
+    stdout: *std.Io.Writer,
+    color_mode_int: u8,
+    opts: DfOptions,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+    percent: u8,
+) !void {
+    std.debug.assert(percent <= 100);
+    std.debug.assert(pct_str.len > 0);
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
 
@@ -1733,55 +1954,123 @@ fn printFsRowDynamic(stdout: *std.Io.Writer, fs: FsInfo, opts: DfOptions, widths
     const mount_str = smartFormatMount(&mnt_fmt_buf, fs.mount_point, widths.mount);
 
     if (s.color_mode == .none) {
-        // Plain mode
-        if (opts.display.icons == .on) {
-            const icon = getFsIcon(fs_class);
-            try stdout.writeAll(icon);
-            try stdout.writeAll(" ");
-        }
-        try padRight(stdout, source_str, widths.filesystem);
-        try stdout.writeAll("  ");
-        if (opts.print_type) {
-            try padRight(stdout, fs.fstype, widths.fs_type);
-            try stdout.writeAll("  ");
-        }
-        try padLeft(stdout, total_str, widths.size);
-        try stdout.writeAll("  ");
-        try padLeft(stdout, used_str, widths.used);
-        try stdout.writeAll("  ");
-        try padLeft(stdout, avail_str, widths.avail);
-        try stdout.writeAll("  ");
-        try padLeft(stdout, pct_str, widths.use_pct);
-        if (opts.display.icons == .on) {
-            try stdout.writeAll("  ");
-            var bar_buf: [48]u8 = undefined;
-            const bar_str = formatUsageBar(&bar_buf, percent);
-            try padRight(stdout, bar_str, widths.usage_bar);
-        }
-        try stdout.writeAll("  ");
-        try stdout.writeAll(mount_str);
-        try stdout.writeAll("\n");
-        return;
+        return printFsRowDynamic_emitPlain(
+            stdout,
+            &fs,
+            opts,
+            widths,
+            fs_class,
+            source_str,
+            mount_str,
+            total_str,
+            used_str,
+            avail_str,
+            pct_str,
+            percent,
+        );
     }
 
-    // Color mode
     // Icon
     if (opts.display.icons == .on) {
+        try printFsRowDynamic_emitIcon(stdout, s, fs_class);
+    }
+    try printFsRowDynamic_emitColored(
+        stdout,
+        s,
+        &fs,
+        opts,
+        widths,
+        fs_class,
+        source_str,
+        mount_str,
+        total_str,
+        used_str,
+        avail_str,
+        pct_str,
+        percent,
+    );
+}
+
+fn printFsRowDynamic_emitPlain(
+    stdout: *std.Io.Writer,
+    fs: *const FsInfo,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    fs_class: FsClass,
+    source_str: []const u8,
+    mount_str: []const u8,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+    percent: u8,
+) !void {
+    std.debug.assert(percent <= 100);
+    std.debug.assert(widths.filesystem > 0);
+    if (opts.display.icons == .on) {
         const icon = getFsIcon(fs_class);
-        const icon_color = common.icons.getIconColorInfo(icon);
-        if (icon_color) |ic| {
-            switch (s.color_mode) {
-                .truecolor => try s.setRgb(ic.r, ic.g, ic.b),
-                .extended => try s.set256(ic.c256),
-                .basic => try s.setColor(ic.basic),
-                .none => {},
-            }
-        }
         try stdout.writeAll(icon);
-        try s.reset();
         try stdout.writeAll(" ");
     }
+    try padRight(stdout, source_str, widths.filesystem);
+    try stdout.writeAll("  ");
+    if (opts.print_type) {
+        try padRight(stdout, fs.fstype, widths.fs_type);
+        try stdout.writeAll("  ");
+    }
+    try padLeft(stdout, total_str, widths.size);
+    try stdout.writeAll("  ");
+    try padLeft(stdout, used_str, widths.used);
+    try stdout.writeAll("  ");
+    try padLeft(stdout, avail_str, widths.avail);
+    try stdout.writeAll("  ");
+    try padLeft(stdout, pct_str, widths.use_pct);
+    if (opts.display.icons == .on) {
+        try stdout.writeAll("  ");
+        var bar_buf: [48]u8 = undefined;
+        const bar_str = formatUsageBar(&bar_buf, percent);
+        try padRight(stdout, bar_str, widths.usage_bar);
+    }
+    try stdout.writeAll("  ");
+    try stdout.writeAll(mount_str);
+    try stdout.writeAll("\n");
+}
 
+fn printFsRowDynamic_emitIcon(stdout: *std.Io.Writer, s: anytype, fs_class: FsClass) !void {
+    std.debug.assert(s.color_mode != .none);
+    std.debug.assert(@TypeOf(fs_class) == FsClass);
+    const icon = getFsIcon(fs_class);
+    const icon_color = common.icons.getIconColorInfo(icon);
+    if (icon_color) |ic| {
+        switch (s.color_mode) {
+            .truecolor => try s.setRgb(ic.r, ic.g, ic.b),
+            .extended => try s.set256(ic.c256),
+            .basic => try s.setColor(ic.basic),
+            .none => {},
+        }
+    }
+    try stdout.writeAll(icon);
+    try s.reset();
+    try stdout.writeAll(" ");
+}
+
+fn printFsRowDynamic_emitColored(
+    stdout: *std.Io.Writer,
+    s: anytype,
+    fs: *const FsInfo,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    fs_class: FsClass,
+    source_str: []const u8,
+    mount_str: []const u8,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+    percent: u8,
+) !void {
+    std.debug.assert(s.color_mode != .none);
+    std.debug.assert(percent <= 100);
     // Source name (colored by FsClass)
     try applySourceColor(s, fs_class);
     try padRight(stdout, source_str, widths.filesystem);
@@ -1828,11 +2117,7 @@ fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: 
     var sum_total_bytes: u64 = 0;
     var sum_used_bytes: u64 = 0;
     var sum_avail_bytes: u64 = 0;
-    for (filesystems) |fs| {
-        sum_total_bytes += fs.total_blocks * fs.block_size;
-        sum_used_bytes += fs.used_blocks * fs.block_size;
-        sum_avail_bytes += fs.avail_blocks * fs.block_size;
-    }
+    printTotal_sumBytes(filesystems, &sum_total_bytes, &sum_used_bytes, &sum_avail_bytes);
 
     const display_block: u64 = if (opts.block_size) |bs| bs else 1024;
 
@@ -1841,27 +2126,9 @@ fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: 
     var avail_buf: [32]u8 = undefined;
     var pct_buf: [16]u8 = undefined;
 
-    const total_str = blk: {
-        if (opts.human_readable) break :blk formatHumanReadable(&total_buf, sum_total_bytes, false);
-        if (opts.si) break :blk formatHumanReadable(&total_buf, sum_total_bytes, true);
-        const val = @divTrunc(sum_total_bytes + display_block - 1, display_block);
-        if (opts.thousands_grouping) break :blk formatWithCommas(&total_buf, val);
-        break :blk std.fmt.bufPrint(&total_buf, "{d}", .{val}) catch "?";
-    };
-    const used_str = blk: {
-        if (opts.human_readable) break :blk formatHumanReadable(&used_buf, sum_used_bytes, false);
-        if (opts.si) break :blk formatHumanReadable(&used_buf, sum_used_bytes, true);
-        const val = @divTrunc(sum_used_bytes + display_block - 1, display_block);
-        if (opts.thousands_grouping) break :blk formatWithCommas(&used_buf, val);
-        break :blk std.fmt.bufPrint(&used_buf, "{d}", .{val}) catch "?";
-    };
-    const avail_str = blk: {
-        if (opts.human_readable) break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, false);
-        if (opts.si) break :blk formatHumanReadable(&avail_buf, sum_avail_bytes, true);
-        const val = @divTrunc(sum_avail_bytes + display_block - 1, display_block);
-        if (opts.thousands_grouping) break :blk formatWithCommas(&avail_buf, val);
-        break :blk std.fmt.bufPrint(&avail_buf, "{d}", .{val}) catch "?";
-    };
+    const total_str = printTotal_formatField(&total_buf, sum_total_bytes, display_block, opts);
+    const used_str = printTotal_formatField(&used_buf, sum_used_bytes, display_block, opts);
+    const avail_str = printTotal_formatField(&avail_buf, sum_avail_bytes, display_block, opts);
     const sum_use_total = sum_used_bytes + sum_avail_bytes;
     const pct_str: []const u8 = if (sum_use_total == 0) "-" else blk: {
         const pct = @divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total);
@@ -1870,34 +2137,82 @@ fn printTotalDynamic(stdout: *std.Io.Writer, filesystems: []const FsInfo, opts: 
     const percent: u8 = if (sum_use_total == 0) 0 else @intCast(@min(@divTrunc(sum_used_bytes * 100 + sum_use_total - 1, sum_use_total), 100));
 
     if (s.color_mode == .none) {
-        if (opts.display.icons == .on) {
-            try stdout.writeAll("  "); // icon spacer
-        }
-        try padRight(stdout, "total", widths.filesystem);
-        try stdout.writeAll("  ");
-        if (opts.print_type) {
-            try padRight(stdout, "-", widths.fs_type);
-            try stdout.writeAll("  ");
-        }
-        try padLeft(stdout, total_str, widths.size);
-        try stdout.writeAll("  ");
-        try padLeft(stdout, used_str, widths.used);
-        try stdout.writeAll("  ");
-        try padLeft(stdout, avail_str, widths.avail);
-        try stdout.writeAll("  ");
-        try padLeft(stdout, pct_str, widths.use_pct);
-        if (opts.display.icons == .on) {
-            try stdout.writeAll("  ");
-            var bar_buf: [48]u8 = undefined;
-            try padRight(stdout, formatUsageBar(&bar_buf, percent), widths.usage_bar);
-        }
-        try stdout.writeAll("  ");
-        try stdout.writeAll("-");
-        try stdout.writeAll("\n");
-        return;
+        return printTotalDynamic_emitPlain(
+            stdout,
+            opts,
+            widths,
+            total_str,
+            used_str,
+            avail_str,
+            pct_str,
+            percent,
+        );
     }
 
-    // Color mode
+    try printTotalDynamic_emitColored(
+        stdout,
+        s,
+        opts,
+        widths,
+        total_str,
+        used_str,
+        avail_str,
+        pct_str,
+        percent,
+    );
+}
+
+fn printTotalDynamic_emitPlain(
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+    percent: u8,
+) !void {
+    std.debug.assert(percent <= 100);
+    std.debug.assert(widths.size > 0);
+    if (opts.display.icons == .on) {
+        try stdout.writeAll("  "); // icon spacer
+    }
+    try padRight(stdout, "total", widths.filesystem);
+    try stdout.writeAll("  ");
+    if (opts.print_type) {
+        try padRight(stdout, "-", widths.fs_type);
+        try stdout.writeAll("  ");
+    }
+    try padLeft(stdout, total_str, widths.size);
+    try stdout.writeAll("  ");
+    try padLeft(stdout, used_str, widths.used);
+    try stdout.writeAll("  ");
+    try padLeft(stdout, avail_str, widths.avail);
+    try stdout.writeAll("  ");
+    try padLeft(stdout, pct_str, widths.use_pct);
+    if (opts.display.icons == .on) {
+        try stdout.writeAll("  ");
+        var bar_buf: [48]u8 = undefined;
+        try padRight(stdout, formatUsageBar(&bar_buf, percent), widths.usage_bar);
+    }
+    try stdout.writeAll("  ");
+    try stdout.writeAll("-");
+    try stdout.writeAll("\n");
+}
+
+fn printTotalDynamic_emitColored(
+    stdout: *std.Io.Writer,
+    s: anytype,
+    opts: DfOptions,
+    widths: ColumnWidths,
+    total_str: []const u8,
+    used_str: []const u8,
+    avail_str: []const u8,
+    pct_str: []const u8,
+    percent: u8,
+) !void {
+    std.debug.assert(s.color_mode != .none);
+    std.debug.assert(pct_str.len > 0);
     if (opts.display.icons == .on) {
         try stdout.writeAll("  "); // icon spacer (no icon for total)
     }
@@ -1949,25 +2264,11 @@ pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     }
     defer allocator.free(opts.positionals);
 
-    if (opts.help) {
-        printHelp(allocator, stdout) catch {};
-        return @intFromEnum(common.ExitCode.success);
+    if (runDf_handleHelpVersion(allocator, opts, stdout)) |code| {
+        return code;
     }
 
-    if (opts.version) {
-        printVersion(stdout) catch {};
-        return @intFromEnum(common.ExitCode.success);
-    }
-
-    // Detect terminal color capability level. When display.color is on,
-    // the TTY/NO_COLOR/TERM checks have already passed, so we fall back
-    // to basic (16-color) if capability detection fails rather than
-    // disabling color entirely.
-    const color_mode_int: u8 = if (opts.display.color == .off) 0 else blk: {
-        const CM = common.style.Style(@TypeOf(stdout)).ColorMode;
-        const detected = CM.detect(allocator) catch break :blk @intFromEnum(CM.basic);
-        break :blk if (detected == .none) @intFromEnum(CM.basic) else @intFromEnum(detected);
-    };
+    const color_mode_int = runDf_resolveColorMode(allocator, opts, stdout);
 
     const S = common.style.Style(@TypeOf(stdout));
     const s = S{ .color_mode = @enumFromInt(color_mode_int), .writer = stdout };
@@ -1985,55 +2286,17 @@ pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     // Must outlive visible since visible borrows string pointers.
     var all_fs_storage: ?[]FsInfo = null;
     var display_fs_storage: ?[]FsInfo = null;
-    defer {
-        if (display_fs_storage) |dfs| {
-            if (all_fs_storage) |afs| {
-                if (dfs.ptr != afs.ptr) allocator.free(dfs);
-            }
-        }
-        if (all_fs_storage) |afs| freeFsInfoSlice(allocator, afs);
-        if (owns_fs_strings) {
-            for (visible.items) |fs| freeFsInfo(allocator, fs);
-        }
-    }
+    defer runDf_cleanup(allocator, &visible, owns_fs_strings, all_fs_storage, display_fs_storage);
 
-    if (opts.positionals.len > 0) {
-        owns_fs_strings = true;
-        for (opts.positionals) |path| {
-            const fs = getFilesystemForPath(io, allocator, path) catch {
-                common.printErrorWithProgram(allocator, stderr, prog_name, "cannot access '{s}': No such file or directory", .{path});
-                exit_code = @intFromEnum(common.ExitCode.general_error);
-                continue;
-            };
-            if (shouldIncludeFs(fs, opts)) {
-                visible.append(allocator, fs) catch {};
-            } else {
-                freeFsInfo(allocator, fs);
-            }
-        }
-    } else {
-        const all_fs = getMountedFilesystems(io, allocator) catch {
-            common.printErrorWithProgram(allocator, stderr, prog_name, "cannot read table of mounted file systems", .{});
-            return @intFromEnum(common.ExitCode.general_error);
-        };
-        all_fs_storage = all_fs;
-
-        // Smart volume grouping on macOS (non-plain mode)
-        const display_fs = blk: {
-            if (comptime is_darwin) {
-                if (opts.display.color == .on) {
-                    break :blk groupDarwinVolumes(allocator, all_fs) catch all_fs;
-                }
-            }
-            break :blk all_fs;
-        };
-        display_fs_storage = display_fs;
-
-        for (display_fs) |fs| {
-            if (shouldIncludeFs(fs, opts)) {
-                visible.append(allocator, fs) catch {};
-            }
-        }
+    const ctx = CollectContext{
+        .visible = &visible,
+        .owns_fs_strings = &owns_fs_strings,
+        .all_fs_storage = &all_fs_storage,
+        .display_fs_storage = &display_fs_storage,
+        .exit_code = &exit_code,
+    };
+    if (!runDf_collect(allocator, io, opts, stderr, ctx)) {
+        return @intFromEnum(common.ExitCode.general_error);
     }
 
     if (visible.items.len == 0 and exit_code == 0) {
@@ -2042,21 +2305,229 @@ pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
 
     // Inodes mode uses the old fixed-width rendering
     if (opts.inodes) {
-        printHeader(stdout, opts) catch return @intFromEnum(common.ExitCode.general_error);
-        for (visible.items) |fs| {
-            printFsRow(stdout, fs, opts, color_mode_int) catch {};
-        }
-        if (opts.total and visible.items.len > 0) {
-            printTotal(stdout, visible.items, opts, color_mode_int) catch {};
+        if (runDf_renderInodes(stdout, opts, color_mode_int, visible.items)) |override_code| {
+            return override_code;
         }
         return exit_code;
     }
 
-    // Two-pass rendering: compute column widths, then print
-    var widths = computeColumnWidths(visible.items, opts);
+    if (runDf_renderDynamic(allocator, stdout, opts, s, visible.items)) |override_code| {
+        return override_code;
+    }
+
+    return exit_code;
+}
+
+// Print help or version output when requested. Returns the success exit
+// code in that case, otherwise null so the caller proceeds with rendering.
+fn runDf_handleHelpVersion(allocator: Allocator, opts: DfOptions, stdout: *std.Io.Writer) ?u8 {
+    // parseArgs breaks on the first of --help/--version, so at most one is
+    // set; assert the exclusion without a compound boolean in the assert.
+    const both_set = opts.help and opts.version;
+    std.debug.assert(!both_set);
+    std.debug.assert(@intFromEnum(common.ExitCode.success) == 0);
+    if (opts.help) {
+        printHelp(allocator, stdout) catch {};
+        return @intFromEnum(common.ExitCode.success);
+    }
+    if (opts.version) {
+        printVersion(stdout) catch {};
+        return @intFromEnum(common.ExitCode.success);
+    }
+    return null;
+}
+
+// Fixed-width inodes-mode rendering: header, each row, and an optional total.
+// Returns an override exit code when the header write fails, otherwise null.
+fn runDf_renderInodes(
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    color_mode_int: u8,
+    visible_items: []const FsInfo,
+) ?u8 {
+    std.debug.assert(opts.inodes);
+    std.debug.assert(color_mode_int <= 4);
+    printHeader(stdout, opts) catch return @intFromEnum(common.ExitCode.general_error);
+    for (visible_items) |fs| {
+        printFsRow(stdout, fs, opts, color_mode_int) catch {};
+    }
+    if (opts.total and visible_items.len > 0) {
+        printTotal(stdout, visible_items, opts, color_mode_int) catch {};
+    }
+    return null;
+}
+
+// Detect terminal color capability level. When display.color is on, the
+// TTY/NO_COLOR/TERM checks have already passed, so we fall back to basic
+// (16-color) if capability detection fails rather than disabling color.
+fn runDf_resolveColorMode(allocator: Allocator, opts: DfOptions, stdout: *std.Io.Writer) u8 {
+    const CM = common.style.Style(@TypeOf(stdout)).ColorMode;
+    comptime std.debug.assert(@intFromEnum(CM.basic) <= 4);
+    const result: u8 = if (opts.display.color == .off) 0 else blk: {
+        const detected = CM.detect(allocator) catch break :blk @intFromEnum(CM.basic);
+        break :blk if (detected == .none) @intFromEnum(CM.basic) else @intFromEnum(detected);
+    };
+    std.debug.assert(result <= 4);
+    return result;
+}
+
+// Free the filesystem storage owned by runDf. display_fs_storage is freed
+// only when it is a distinct allocation from all_fs_storage; visible's own
+// FsInfo strings are freed only on the positional path (owns_fs_strings).
+fn runDf_cleanup(
+    allocator: Allocator,
+    visible: *std.ArrayListUnmanaged(FsInfo),
+    owns_fs_strings: bool,
+    all_fs_storage: ?[]FsInfo,
+    display_fs_storage: ?[]FsInfo,
+) void {
+    // The positional path owns visible's strings and never reads the mount
+    // table, so owns_fs_strings and all_fs_storage are mutually exclusive.
+    const owns_and_has_table = owns_fs_strings and all_fs_storage != null;
+    std.debug.assert(!owns_and_has_table);
+    // A display slice without a backing mount table would be unowned memory.
+    const display_without_table = display_fs_storage != null and all_fs_storage == null;
+    std.debug.assert(!display_without_table);
+    if (display_fs_storage) |dfs| {
+        if (all_fs_storage) |afs| {
+            if (dfs.ptr != afs.ptr) allocator.free(dfs);
+        }
+    }
+    if (all_fs_storage) |afs| freeFsInfoSlice(allocator, afs);
+    if (owns_fs_strings) {
+        for (visible.items) |fs| freeFsInfo(allocator, fs);
+    }
+}
+
+// Mutable state threaded through collection so the dispatcher signature
+// stays small. The parent owns every referent and its defer cleanup.
+const CollectContext = struct {
+    visible: *std.ArrayListUnmanaged(FsInfo),
+    owns_fs_strings: *bool,
+    all_fs_storage: *?[]FsInfo,
+    display_fs_storage: *?[]FsInfo,
+    exit_code: *u8,
+};
+
+// Dispatch collection: positional paths versus the mounted-filesystem table.
+// Returns false only when the mount table cannot be read.
+fn runDf_collect(
+    allocator: Allocator,
+    io: std.Io,
+    opts: DfOptions,
+    stderr: *std.Io.Writer,
+    ctx: CollectContext,
+) bool {
+    std.debug.assert(ctx.all_fs_storage.* == null);
+    std.debug.assert(!ctx.owns_fs_strings.*);
+    if (opts.positionals.len > 0) {
+        ctx.owns_fs_strings.* = true;
+        runDf_collectFromPositionals(allocator, io, opts, stderr, ctx.visible, ctx.exit_code);
+        return true;
+    }
+    return runDf_collectFromMounts(
+        allocator,
+        io,
+        opts,
+        stderr,
+        ctx.visible,
+        ctx.all_fs_storage,
+        ctx.display_fs_storage,
+    );
+}
+
+// Resolve each positional path to a filesystem and append the visible ones.
+// Sets exit_code to general_error for paths that cannot be accessed.
+fn runDf_collectFromPositionals(
+    allocator: Allocator,
+    io: std.Io,
+    opts: DfOptions,
+    stderr: *std.Io.Writer,
+    visible: *std.ArrayListUnmanaged(FsInfo),
+    exit_code: *u8,
+) void {
+    std.debug.assert(opts.positionals.len > 0);
+    std.debug.assert(exit_code.* == @intFromEnum(common.ExitCode.success));
+    for (opts.positionals) |path| {
+        const fs = getFilesystemForPath(io, allocator, path) catch {
+            common.printErrorWithProgram(
+                allocator,
+                stderr,
+                prog_name,
+                "cannot access '{s}': No such file or directory",
+                .{path},
+            );
+            exit_code.* = @intFromEnum(common.ExitCode.general_error);
+            continue;
+        };
+        if (shouldIncludeFs(fs, opts)) {
+            visible.append(allocator, fs) catch {};
+        } else {
+            freeFsInfo(allocator, fs);
+        }
+    }
+}
+
+// Enumerate mounted filesystems and append the visible ones. Returns false
+// when the mount table cannot be read so the caller emits general_error.
+fn runDf_collectFromMounts(
+    allocator: Allocator,
+    io: std.Io,
+    opts: DfOptions,
+    stderr: *std.Io.Writer,
+    visible: *std.ArrayListUnmanaged(FsInfo),
+    all_fs_storage: *?[]FsInfo,
+    display_fs_storage: *?[]FsInfo,
+) bool {
+    std.debug.assert(opts.positionals.len == 0);
+    std.debug.assert(all_fs_storage.* == null);
+    const all_fs = getMountedFilesystems(io, allocator) catch {
+        common.printErrorWithProgram(
+            allocator,
+            stderr,
+            prog_name,
+            "cannot read table of mounted file systems",
+            .{},
+        );
+        return false;
+    };
+    all_fs_storage.* = all_fs;
+
+    // Smart volume grouping on macOS (non-plain mode)
+    const display_fs = blk: {
+        if (comptime is_darwin) {
+            if (opts.display.color == .on) {
+                break :blk groupDarwinVolumes(allocator, all_fs) catch all_fs;
+            }
+        }
+        break :blk all_fs;
+    };
+    display_fs_storage.* = display_fs;
+
+    for (display_fs) |fs| {
+        if (shouldIncludeFs(fs, opts)) {
+            visible.append(allocator, fs) catch {};
+        }
+    }
+    return true;
+}
+
+// Two-pass dynamic-width rendering: compute column widths, cap to terminal,
+// then print header, each row, and an optional total. Returns an override
+// exit code when the header write fails, otherwise null.
+fn runDf_renderDynamic(
+    allocator: Allocator,
+    stdout: *std.Io.Writer,
+    opts: DfOptions,
+    s: anytype,
+    visible_items: []const FsInfo,
+) ?u8 {
+    std.debug.assert(!opts.inodes);
+    std.debug.assert(!opts.help);
+    var widths = computeColumnWidths(visible_items, opts);
 
     // Include "total" row in width computation if needed
-    if (opts.total and visible.items.len > 0) {
+    if (opts.total and visible_items.len > 0) {
         widths.filesystem = @max(widths.filesystem, 5); // "total"
     }
 
@@ -2064,14 +2535,13 @@ pub fn runDf(allocator: Allocator, io: std.Io, args: []const []const u8, stdout:
     capWidthsToTerminal(allocator, &widths, opts);
 
     printHeaderDynamic(stdout, opts, widths, s) catch return @intFromEnum(common.ExitCode.general_error);
-    for (visible.items) |fs| {
+    for (visible_items) |fs| {
         printFsRowDynamic(stdout, fs, opts, widths, s) catch {};
     }
-    if (opts.total and visible.items.len > 0) {
-        printTotalDynamic(stdout, visible.items, opts, widths, s) catch {};
+    if (opts.total and visible_items.len > 0) {
+        printTotalDynamic(stdout, visible_items, opts, widths, s) catch {};
     }
-
-    return exit_code;
+    return null;
 }
 
 pub fn main(init: std.process.Init) noreturn {
