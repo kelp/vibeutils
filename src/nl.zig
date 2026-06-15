@@ -203,16 +203,23 @@ fn parseSignedInt(s: []const u8) ?i64 {
     return std.fmt.parseInt(i64, s, 10) catch return null;
 }
 
-/// Resolve parsed arguments into options, returning error messages
-fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Allocator) !?NlOptions {
-    var opts = NlOptions{};
+/// Resolve the body/header/footer numbering-style blocks into opts.
+/// Returns false (caller returns null) when any style string is invalid.
+fn resolveOptions_styles(
+    args: *const NlArgs,
+    opts: *NlOptions,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+) !bool {
+    std.debug.assert(opts.width > 0);
+    std.debug.assert(opts.join_blank_lines >= 1);
 
     // Body numbering: -b takes precedence, --body-numbering as long form
     const body_val = args.b orelse args.body_numbering;
     if (body_val) |val| {
         opts.body_style = parseNumberingStyleFull(val, allocator) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid body numbering style: '{s}'", .{val});
-            return null;
+            return false;
         };
     }
 
@@ -221,7 +228,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
     if (header_val) |val| {
         opts.header_style = parseNumberingStyleFull(val, allocator) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid header numbering style: '{s}'", .{val});
-            return null;
+            return false;
         };
     }
 
@@ -230,16 +237,30 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
     if (footer_val) |val| {
         opts.footer_style = parseNumberingStyleFull(val, allocator) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid footer numbering style: '{s}'", .{val});
-            return null;
+            return false;
         };
     }
+
+    return true;
+}
+
+/// Resolve the number-format and number-width blocks into opts.
+/// Returns false (caller returns null) when format or width is invalid.
+fn resolveOptions_numberAndWidth(
+    args: *const NlArgs,
+    opts: *NlOptions,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+) !bool {
+    std.debug.assert(opts.width > 0);
+    std.debug.assert(opts.join_blank_lines >= 1);
 
     // Number format: -n takes precedence, --number-format as long form
     const format_val = args.n orelse args.number_format;
     if (format_val) |val| {
         opts.format = parseNumberFormat(val) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number format: '{s}'", .{val});
-            return null;
+            return false;
         };
     }
 
@@ -249,10 +270,25 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
         const w = parsePositiveInt(val);
         if (w == null or w.? == 0) {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number field width: '{s}'", .{val});
-            return null;
+            return false;
         }
         opts.width = w.?;
     }
+
+    std.debug.assert(opts.width != 0);
+    return true;
+}
+
+/// Resolve the separator/start/increment/no_renumber blocks into opts.
+/// Returns false (caller returns null) when start or increment is invalid.
+fn resolveOptions_counters(
+    args: *const NlArgs,
+    opts: *NlOptions,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+) !bool {
+    std.debug.assert(opts.width > 0);
+    std.debug.assert(opts.join_blank_lines >= 1);
 
     // Separator: -s takes precedence, --number-separator as long form
     const sep_val = args.s orelse args.number_separator;
@@ -265,7 +301,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
     if (start_val) |val| {
         opts.start = parseSignedInt(val) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid starting line number: '{s}'", .{val});
-            return null;
+            return false;
         };
     }
 
@@ -274,12 +310,26 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
     if (inc_val) |val| {
         opts.increment = parseSignedInt(val) orelse {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number increment: '{s}'", .{val});
-            return null;
+            return false;
         };
     }
 
     // No renumber: -p or --no-renumber
     opts.no_renumber = args.p or args.no_renumber;
+
+    return true;
+}
+
+/// Resolve the section-delimiter and join-blank-lines blocks into opts.
+/// Returns false (caller returns null) when either value is invalid.
+fn resolveOptions_delimiterAndJoin(
+    args: *const NlArgs,
+    opts: *NlOptions,
+    stderr_writer: *std.Io.Writer,
+    allocator: Allocator,
+) !bool {
+    std.debug.assert(opts.width > 0);
+    std.debug.assert(opts.join_blank_lines >= 1);
 
     // Section delimiter: -d takes precedence, --section-delimiter as long form
     const delim_val = args.d orelse args.section_delimiter;
@@ -292,7 +342,7 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
             opts.delimiter = .{ val[0], val[1] };
         } else {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid section delimiter: '{s}'", .{val});
-            return null;
+            return false;
         }
     }
 
@@ -302,10 +352,25 @@ fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Alloca
         const j = parsePositiveInt(val);
         if (j == null or j.? == 0) {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "invalid line number of blank lines: '{s}'", .{val});
-            return null;
+            return false;
         }
         opts.join_blank_lines = j.?;
     }
+
+    std.debug.assert(opts.join_blank_lines >= 1);
+    return true;
+}
+
+/// Resolve parsed arguments into options, returning error messages
+fn resolveOptions(args: NlArgs, stderr_writer: *std.Io.Writer, allocator: Allocator) !?NlOptions {
+    var opts = NlOptions{};
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(opts.join_blank_lines >= 1);
+
+    if (!try resolveOptions_styles(&args, &opts, stderr_writer, allocator)) return null;
+    if (!try resolveOptions_numberAndWidth(&args, &opts, stderr_writer, allocator)) return null;
+    if (!try resolveOptions_counters(&args, &opts, stderr_writer, allocator)) return null;
+    if (!try resolveOptions_delimiterAndJoin(&args, &opts, stderr_writer, allocator)) return null;
 
     return opts;
 }
@@ -476,8 +541,96 @@ fn numberLines(reader: *std.Io.Reader, writer: *std.Io.Writer, opts: NlOptions, 
     }
 }
 
+/// Apply the .all numbering style to one line: blank lines are joined by
+/// counting up to the threshold; non-blank lines are always numbered.
+fn processLine_styleAll(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    is_blank: bool,
+    opts: NlOptions,
+    state: *NlState,
+) !void {
+    std.debug.assert(opts.join_blank_lines >= 1);
+    std.debug.assert(is_blank == (line.len == 0));
+
+    if (is_blank) {
+        state.blank_count += 1;
+        if (state.blank_count >= opts.join_blank_lines) {
+            try writeNumberedLine(writer, state.line_number, line, opts);
+            state.line_number += opts.increment;
+            state.blank_count = 0;
+        } else {
+            try writeUnnumberedLine(writer, line, opts);
+        }
+    } else {
+        state.blank_count = 0;
+        try writeNumberedLine(writer, state.line_number, line, opts);
+        state.line_number += opts.increment;
+    }
+}
+
+/// Apply the .non_empty numbering style to one line: number only non-blank
+/// lines; blank lines are emitted unnumbered.
+fn processLine_styleNonEmpty(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    is_blank: bool,
+    opts: NlOptions,
+    state: *NlState,
+) !void {
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(is_blank == (line.len == 0));
+
+    if (is_blank) {
+        state.blank_count = 0;
+        try writeUnnumberedLine(writer, line, opts);
+    } else {
+        state.blank_count = 0;
+        try writeNumberedLine(writer, state.line_number, line, opts);
+        state.line_number += opts.increment;
+    }
+}
+
+/// Apply the .regex numbering style to one line: number only non-blank lines
+/// that match the compiled regex; emit everything else unnumbered.
+fn processLine_styleRegex(
+    writer: *std.Io.Writer,
+    line: []const u8,
+    is_blank: bool,
+    re: *c.regex_t,
+    opts: NlOptions,
+    state: *NlState,
+    allocator: Allocator,
+) !void {
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(is_blank == (line.len == 0));
+
+    if (is_blank) {
+        state.blank_count = 0;
+        try writeUnnumberedLine(writer, line, opts);
+    } else {
+        state.blank_count = 0;
+        // Match against the compiled regex
+        const line_z = allocator.dupeZ(u8, line) catch {
+            try writeUnnumberedLine(writer, line, opts);
+            return;
+        };
+        defer allocator.free(line_z);
+        const exec_result = c.regexec(re, line_z.ptr, 0, null, 0);
+        if (exec_result == 0) {
+            try writeNumberedLine(writer, state.line_number, line, opts);
+            state.line_number += opts.increment;
+        } else {
+            try writeUnnumberedLine(writer, line, opts);
+        }
+    }
+}
+
 /// Process a single line: check for section delimiters, apply numbering
 fn processLine(writer: *std.Io.Writer, line: []const u8, opts: NlOptions, state: *NlState, allocator: Allocator) !void {
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(opts.join_blank_lines >= 1);
+
     // Check for section delimiter (skip when delimiter is empty)
     if (!opts.delimiter_empty) {
         if (isSectionDelimiter(line, opts.delimiter)) |new_section| {
@@ -497,62 +650,84 @@ fn processLine(writer: *std.Io.Writer, line: []const u8, opts: NlOptions, state:
     const is_blank = line.len == 0;
 
     switch (style) {
-        .all => {
-            if (is_blank) {
-                state.blank_count += 1;
-                if (state.blank_count >= opts.join_blank_lines) {
-                    try writeNumberedLine(writer, state.line_number, line, opts);
-                    state.line_number += opts.increment;
-                    state.blank_count = 0;
-                } else {
-                    try writeUnnumberedLine(writer, line, opts);
-                }
-            } else {
-                state.blank_count = 0;
-                try writeNumberedLine(writer, state.line_number, line, opts);
-                state.line_number += opts.increment;
-            }
-        },
-        .non_empty => {
-            if (is_blank) {
-                state.blank_count = 0;
-                try writeUnnumberedLine(writer, line, opts);
-            } else {
-                state.blank_count = 0;
-                try writeNumberedLine(writer, state.line_number, line, opts);
-                state.line_number += opts.increment;
-            }
-        },
-        .none => {
-            try writeUnnumberedLine(writer, line, opts);
-        },
-        .regex => |re| {
-            if (is_blank) {
-                state.blank_count = 0;
-                try writeUnnumberedLine(writer, line, opts);
-            } else {
-                state.blank_count = 0;
-                // Match against the compiled regex
-                const line_z = allocator.dupeZ(u8, line) catch {
-                    try writeUnnumberedLine(writer, line, opts);
-                    return;
-                };
-                defer allocator.free(line_z);
-                const exec_result = c.regexec(re, line_z.ptr, 0, null, 0);
-                if (exec_result == 0) {
-                    try writeNumberedLine(writer, state.line_number, line, opts);
-                    state.line_number += opts.increment;
-                } else {
-                    try writeUnnumberedLine(writer, line, opts);
-                }
-            }
-        },
+        .all => try processLine_styleAll(writer, line, is_blank, opts, state),
+        .non_empty => try processLine_styleNonEmpty(writer, line, is_blank, opts, state),
+        .none => try writeUnnumberedLine(writer, line, opts),
+        .regex => |re| try processLine_styleRegex(
+            writer,
+            line,
+            is_blank,
+            re,
+            opts,
+            state,
+            allocator,
+        ),
     }
 }
 
 /// Main entry point for nl
 pub fn main(init: std.process.Init) noreturn {
     common.utilityMain(init, runNl);
+}
+
+/// Free any compiled regex patterns held by the resolved options to prevent
+/// leaks. Called from runNl's defer; mirrors the allocation in
+/// parseNumberingStyleFull (heap-allocated on Linux, allocator-backed else).
+fn runNl_freeRegexStyles(opts: NlOptions, allocator: Allocator) void {
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(opts.join_blank_lines >= 1);
+
+    inline for (.{ opts.body_style, opts.header_style, opts.footer_style }) |style| {
+        switch (style) {
+            .regex => |regex| {
+                c.regfree(regex);
+                if (comptime is_linux) {
+                    regex_c.regex_heap_free(regex);
+                } else {
+                    allocator.destroy(regex);
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+/// Number lines read from stdin into stdout. Dedups the two identical stdin
+/// code paths (no positionals, and a "-" positional).
+fn runNl_numberStdin(
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    opts: NlOptions,
+    state: *NlState,
+    allocator: Allocator,
+) !void {
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(opts.join_blank_lines >= 1);
+
+    var stdin_buffer: [8192]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
+    try numberLines(&stdin_reader.interface, stdout_writer, opts, state, allocator);
+}
+
+/// Number lines read from the named file into stdout. Open or read failures
+/// surface as errors for the caller to report; the file is always closed.
+fn runNl_numberFile(
+    io: std.Io,
+    file_path: []const u8,
+    stdout_writer: *std.Io.Writer,
+    opts: NlOptions,
+    state: *NlState,
+    allocator: Allocator,
+) !void {
+    std.debug.assert(opts.width >= 1);
+    std.debug.assert(file_path.len >= 1);
+
+    const file = try std.Io.Dir.cwd().openFile(io, file_path, .{});
+    defer file.close(io);
+
+    var file_buffer: [8192]u8 = undefined;
+    var file_reader = file.readerStreaming(io, &file_buffer);
+    try numberLines(&file_reader.interface, stdout_writer, opts, state, allocator);
 }
 
 /// Run the nl utility with given arguments
@@ -577,54 +752,34 @@ pub fn runNl(allocator: Allocator, io: std.Io, args: []const []const u8, stdout_
     } orelse {
         return @intFromEnum(common.ExitCode.misuse);
     };
-    defer {
-        // Free compiled regex patterns to prevent leaks
-        inline for (.{ opts.body_style, opts.header_style, opts.footer_style }) |style| {
-            switch (style) {
-                .regex => |regex| {
-                    c.regfree(regex);
-                    if (comptime is_linux) {
-                        regex_c.regex_heap_free(regex);
-                    } else {
-                        allocator.destroy(regex);
-                    }
-                },
-                else => {},
-            }
-        }
-    }
+    // Free compiled regex patterns to prevent leaks
+    defer runNl_freeRegexStyles(opts, allocator);
 
     var state = NlState{ .line_number = opts.start };
     var has_error = false;
 
     if (parsed_args.positionals.len == 0) {
         // Read from stdin
-        var stdin_buffer: [8192]u8 = undefined;
-        var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-        numberLines(&stdin_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
+        runNl_numberStdin(io, stdout_writer, opts, &state, allocator) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{common.posixErrorString(err)});
             has_error = true;
         };
     } else {
         for (parsed_args.positionals) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
-                var stdin_buffer: [8192]u8 = undefined;
-                var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
-                numberLines(&stdin_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
+                runNl_numberStdin(io, stdout_writer, opts, &state, allocator) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "nl", "stdin: {s}", .{common.posixErrorString(err)});
                     has_error = true;
                 };
             } else {
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    has_error = true;
-                    continue;
-                };
-                defer file.close(io);
-
-                var file_buffer: [8192]u8 = undefined;
-                var file_reader = file.readerStreaming(io, &file_buffer);
-                numberLines(&file_reader.interface, stdout_writer, opts, &state, allocator) catch |err| {
+                runNl_numberFile(
+                    io,
+                    file_path,
+                    stdout_writer,
+                    opts,
+                    &state,
+                    allocator,
+                ) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "nl", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
                     has_error = true;
                 };
