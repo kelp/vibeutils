@@ -342,6 +342,10 @@ fn executeCopyOperations(allocator: Allocator, io: std.Io, stdout_writer: *std.I
     return success;
 }
 
+/// Outcome of the pre-copy guard checks: proceed with the copy, skip it
+/// silently (not an error), or fail (error already reported).
+const CopyPrecheck = enum { proceed, skip, fail };
+
 /// Copy a single file or directory
 fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, source: []const u8, dest: []const u8, options: RuntimeOptions, hinted_overwrite: *bool, is_toplevel: bool) !bool {
     // Determine whether to follow symlinks based on mode and position
@@ -364,24 +368,88 @@ fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Write
     };
     defer allocator.free(final_dest_path);
 
+    const dest_exists = fileExists(io, final_dest_path);
+
+    const precheck = copySingleFile_precheck(
+        allocator,
+        io,
+        stderr_writer,
+        source,
+        final_dest_path,
+        source_type,
+        dest_exists,
+        options,
+    );
+    switch (precheck) {
+        .proceed => {},
+        .skip => return true,
+        .fail => return false,
+    }
+
+    copySingleFile_maybePrintOverwriteHint(
+        allocator,
+        stderr_writer,
+        source,
+        final_dest_path,
+        dest_exists,
+        options,
+        hinted_overwrite,
+    );
+
+    if (options.backup and dest_exists) {
+        if (!copySingleFile_createBackup(allocator, io, stderr_writer, final_dest_path, options)) {
+            return false;
+        }
+    }
+
+    if (options.verbose) {
+        stdout_writer.print("'{s}' -> '{s}'\n", .{ source, final_dest_path }) catch {};
+    }
+
+    return copySingleFile_dispatchByType(
+        allocator,
+        io,
+        stdout_writer,
+        stderr_writer,
+        source,
+        final_dest_path,
+        source_type,
+        follow_symlinks,
+        options,
+    );
+}
+
+/// Run the pre-copy guards in their original order: same-file, no-clobber,
+/// directory-without-recursive, and interactive overwrite. Returns whether the
+/// caller should proceed, skip, or fail; error messages are printed here.
+fn copySingleFile_precheck(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    final_dest_path: []const u8,
+    source_type: FileType,
+    dest_exists: bool,
+    options: RuntimeOptions,
+) CopyPrecheck {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(final_dest_path.len > 0);
+
     // Check for same file
     if (common.file_ops.isSameFile(io, source, final_dest_path)) {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' and '{s}' are the same file", .{ source, final_dest_path });
-        return false;
+        return .fail;
     }
-
-    // Check if destination exists
-    const dest_exists = fileExists(io, final_dest_path);
 
     // Handle no-clobber mode: skip if destination exists
     if (options.no_clobber and dest_exists) {
-        return true; // Not an error, just skip
+        return .skip; // Not an error, just skip
     }
 
     // Validate operation
     if (source_type == .directory and !options.recursive) {
         common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}' is a directory (use -r to copy recursively)", .{source});
-        return false;
+        return .fail;
     }
 
     // Handle interactive mode
@@ -391,42 +459,106 @@ fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Write
         else
             common.prompt.promptYesNo(io, stderr_writer, "cp: overwrite '{s}'? ", .{final_dest_path}) catch false;
         if (!should_proceed) {
-            return true; // User cancelled, not an error
+            return .skip; // User cancelled, not an error
         }
     }
 
-    // Print one-time overwrite hint only in interactive terminals
-    if (dest_exists and !options.interactive and !options.force and !hinted_overwrite.* and
-        std.c.isatty(std.Io.File.stderr().handle) != 0)
-    {
-        common.printHintWithProgram(allocator, stderr_writer, "cp", "use -i for interactive prompts before overwriting", .{});
-        hinted_overwrite.* = true;
-    }
+    return .proceed;
+}
 
-    // Create backup of destination if it exists and backup mode is enabled
-    if (options.backup and dest_exists) {
-        const backup_path = std.fmt.allocPrint(allocator, "{s}{s}", .{ final_dest_path, options.backup_suffix }) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create backup path: {s}", .{common.posixErrorString(err)});
-            return false;
-        };
-        defer allocator.free(backup_path);
+/// Print the one-time overwrite hint when overwriting an existing destination
+/// in an interactive terminal. No-op when the guard conditions do not hold, so
+/// callers can invoke it unconditionally.
+fn copySingleFile_maybePrintOverwriteHint(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    final_dest_path: []const u8,
+    dest_exists: bool,
+    options: RuntimeOptions,
+    hinted_overwrite: *bool,
+) void {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(final_dest_path.len > 0);
 
-        std.Io.Dir.rename(
-            std.Io.Dir.cwd(),
-            final_dest_path,
-            std.Io.Dir.cwd(),
-            backup_path,
-            io,
-        ) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "cannot create backup of '{s}': {s}", .{ final_dest_path, common.posixErrorString(err) });
-            return false;
-        };
-    }
+    if (!dest_exists) return;
+    if (options.interactive) return;
+    if (options.force) return;
+    if (hinted_overwrite.*) return;
+    if (std.c.isatty(std.Io.File.stderr().handle) == 0) return;
 
-    // Print verbose message if requested
-    if (options.verbose) {
-        stdout_writer.print("'{s}' -> '{s}'\n", .{ source, final_dest_path }) catch {};
-    }
+    common.printHintWithProgram(
+        allocator,
+        stderr_writer,
+        "cp",
+        "use -i for interactive prompts before overwriting",
+        .{},
+    );
+    hinted_overwrite.* = true;
+}
+
+/// Rename the existing destination to its backup path before overwriting.
+/// Returns true on success, false after printing the relevant error.
+fn copySingleFile_createBackup(
+    allocator: Allocator,
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    final_dest_path: []const u8,
+    options: RuntimeOptions,
+) bool {
+    std.debug.assert(options.backup);
+    std.debug.assert(final_dest_path.len > 0);
+
+    const backup_path = std.fmt.allocPrint(
+        allocator,
+        "{s}{s}",
+        .{ final_dest_path, options.backup_suffix },
+    ) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot create backup path: {s}",
+            .{common.posixErrorString(err)},
+        );
+        return false;
+    };
+    defer allocator.free(backup_path);
+
+    std.Io.Dir.rename(
+        std.Io.Dir.cwd(),
+        final_dest_path,
+        std.Io.Dir.cwd(),
+        backup_path,
+        io,
+    ) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "cp",
+            "cannot create backup of '{s}': {s}",
+            .{ final_dest_path, common.posixErrorString(err) },
+        );
+        return false;
+    };
+    return true;
+}
+
+/// Dispatch the actual copy based on source type, applying hard/symbolic link
+/// fast paths for regular files first. Returns the copy result.
+fn copySingleFile_dispatchByType(
+    allocator: Allocator,
+    io: std.Io,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    source: []const u8,
+    final_dest_path: []const u8,
+    source_type: FileType,
+    follow_symlinks: bool,
+    options: RuntimeOptions,
+) bool {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(final_dest_path.len > 0);
 
     // For regular files, handle hard link and symbolic link modes
     if (source_type == .regular_file or (source_type == .symlink and follow_symlinks)) {
@@ -447,7 +579,13 @@ fn copySingleFile(allocator: Allocator, io: std.Io, stdout_writer: *std.Io.Write
             copyRegularFile(allocator, io, stderr_writer, source, final_dest_path, options),
         .directory => copyTree(allocator, io, stdout_writer, stderr_writer, source, final_dest_path, options),
         .special => blk: {
-            common.printErrorWithProgram(allocator, stderr_writer, "cp", "'{s}': unsupported file type", .{source});
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "cp",
+                "'{s}': unsupported file type",
+                .{source},
+            );
             break :blk false;
         },
     };
