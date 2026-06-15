@@ -755,36 +755,23 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
     // If source and dest are hardlinks (same inode, different paths),
     // just unlink the source and succeed.
     if (common.file_ops.isSameFile(io, source, dest)) {
-        if (std.mem.eql(u8, source, dest)) {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "'{s}' and '{s}' are the same file", .{ source, dest });
-            return error.SameFile;
-        }
-        // Different names for the same inode (hardlink): remove the source link.
-        std.Io.Dir.cwd().deleteFile(io, source) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot remove '{s}': {}", .{ source, err });
-            return error.SameFile;
-        };
-        return;
+        return moveFile_handleSameFile(allocator, io, source, dest, stderr_writer);
     }
 
     // For no-clobber mode, check if destination exists first
     // Note: This has a small TOCTOU window, but it's the standard approach used by GNU mv
     // The alternative would require filesystem-specific atomic operations not available in POSIX
     if (options.no_clobber) {
-        if (std.Io.Dir.cwd().access(io, dest, .{})) |_| {
-            // Destination exists, skip the move
-            if (options.verbose) {
-                try stdout_writer.print("mv: not overwriting '{s}' (no-clobber mode)\n", .{dest});
-            }
-            return; // Silently skip as per GNU mv behavior
-        } else |err| switch (err) {
-            error.FileNotFound => {
-                // Destination doesn't exist, proceed with normal move
-            },
-            else => {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "error checking destination '{s}': {}", .{ dest, err });
-                return err;
-            },
+        const skip = try moveFile_checkNoClobber(
+            allocator,
+            io,
+            dest,
+            options,
+            stdout_writer,
+            stderr_writer,
+        );
+        if (skip) {
+            return; // Destination exists, skip the move
         }
     }
 
@@ -815,16 +802,134 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
 
     // Create backup of destination if it exists and backup mode is enabled
     if (options.backup and dest_exists) {
-        const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{dest});
-        defer allocator.free(backup_name);
-        safeRename(dest, backup_name) catch |backup_err| {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot create backup '{s}': {}", .{ backup_name, backup_err });
-            return backup_err;
-        };
-        if (options.verbose) {
-            try stdout_writer.print("mv: created backup '{s}'\n", .{backup_name});
-        }
+        try moveFile_createBackup(allocator, dest, options, stdout_writer, stderr_writer);
     }
+
+    // Try atomic rename first (using safeRename to handle EINVAL gracefully)
+    try moveFile_renameOrFallback(
+        allocator,
+        io,
+        source,
+        dest,
+        options,
+        stdout_writer,
+        stderr_writer,
+    );
+}
+
+/// Handle the same-file case detected by isSameFile: error on identical paths,
+/// or unlink the source for hardlinks (same inode, different paths).
+fn moveFile_handleSameFile(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    dest: []const u8,
+    stderr_writer: anytype,
+) !void {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(dest.len > 0);
+
+    if (std.mem.eql(u8, source, dest)) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "mv",
+            "'{s}' and '{s}' are the same file",
+            .{ source, dest },
+        );
+        return error.SameFile;
+    }
+    // Different names for the same inode (hardlink): remove the source link.
+    std.Io.Dir.cwd().deleteFile(io, source) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "mv",
+            "cannot remove '{s}': {}",
+            .{ source, err },
+        );
+        return error.SameFile;
+    };
+}
+
+/// In no-clobber mode, check whether the destination exists. Returns true when
+/// the move should be skipped (destination present), false to proceed.
+fn moveFile_checkNoClobber(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dest: []const u8,
+    options: MoveOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !bool {
+    std.debug.assert(dest.len > 0);
+    std.debug.assert(options.no_clobber);
+
+    if (std.Io.Dir.cwd().access(io, dest, .{})) |_| {
+        // Destination exists, skip the move
+        if (options.verbose) {
+            try stdout_writer.print("mv: not overwriting '{s}' (no-clobber mode)\n", .{dest});
+        }
+        return true; // Silently skip as per GNU mv behavior
+    } else |err| switch (err) {
+        error.FileNotFound => {
+            // Destination doesn't exist, proceed with normal move
+            return false;
+        },
+        else => {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "mv",
+                "error checking destination '{s}': {}",
+                .{ dest, err },
+            );
+            return err;
+        },
+    }
+}
+
+/// Rename the existing destination to a "~"-suffixed backup before overwriting.
+fn moveFile_createBackup(
+    allocator: std.mem.Allocator,
+    dest: []const u8,
+    options: MoveOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !void {
+    std.debug.assert(dest.len > 0);
+    std.debug.assert(options.backup);
+
+    const backup_name = try std.fmt.allocPrint(allocator, "{s}~", .{dest});
+    defer allocator.free(backup_name);
+    safeRename(dest, backup_name) catch |backup_err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            "mv",
+            "cannot create backup '{s}': {}",
+            .{ backup_name, backup_err },
+        );
+        return backup_err;
+    };
+    if (options.verbose) {
+        try stdout_writer.print("mv: created backup '{s}'\n", .{backup_name});
+    }
+}
+
+/// Attempt an atomic rename, falling back to cross-filesystem copy or
+/// force-overwrite retry depending on the error returned by rename(2).
+fn moveFile_renameOrFallback(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    dest: []const u8,
+    options: MoveOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+) !void {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(dest.len > 0);
 
     // Try atomic rename first (using safeRename to handle EINVAL gracefully)
     safeRename(source, dest) catch |err| switch (err) {
@@ -835,7 +940,13 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
         error.PathAlreadyExists => {
             // Destination exists but rename didn't overwrite (some filesystems)
             if (!options.force) {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot overwrite '{s}': File exists (use -f to force or -i for interactive)", .{dest});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "mv",
+                    "cannot overwrite '{s}': File exists (use -f to force or -i for interactive)",
+                    .{dest},
+                );
                 return error.PathAlreadyExists;
             }
 
@@ -845,17 +956,35 @@ fn moveFile(allocator: std.mem.Allocator, io: std.Io, source: []const u8, dest: 
                 return crossFilesystemMove(allocator, io, source, dest, options, stdout_writer, stderr_writer);
             };
             safeRename(source, dest) catch |retry_err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, retry_err });
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    "mv",
+                    "cannot rename '{s}' to '{s}': {}",
+                    .{ source, dest, retry_err },
+                );
                 return retry_err;
             };
         },
         error.InvalidArgument => {
             // EINVAL: typically means moving a directory into a subdirectory of itself
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot move '{s}' to a subdirectory of itself, '{s}'", .{ source, dest });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "mv",
+                "cannot move '{s}' to a subdirectory of itself, '{s}'",
+                .{ source, dest },
+            );
             return error.InvalidArgument;
         },
         else => {
-            common.printErrorWithProgram(allocator, stderr_writer, "mv", "cannot rename '{s}' to '{s}': {}", .{ source, dest, err });
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                "mv",
+                "cannot rename '{s}' to '{s}': {}",
+                .{ source, dest, err },
+            );
             return err;
         },
     };
@@ -916,9 +1045,57 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
 
     // GNU mv uses last-flag-wins for mutually exclusive -f, -i, -n.
     // Scan raw args to determine which appeared last (F38).
-    const LastOverwriteFlag = enum { none, force, interactive, no_clobber };
+    const last_overwrite_flag = run_scanLastOverwriteFlag(args);
+
+    const options = MoveOptions{
+        .interactive = last_overwrite_flag == .interactive,
+        .force = last_overwrite_flag == .force,
+        .verbose = parsed_args.verbose,
+        .no_clobber = last_overwrite_flag == .no_clobber,
+        .no_follow_symlink = parsed_args.no_follow_symlink,
+        .backup = parsed_args.backup,
+    };
+
+    var hinted_overwrite = false;
+
+    // Handle multiple sources case
+    if (files.len > 2) {
+        return run_moveMultipleSources(
+            allocator,
+            io,
+            files,
+            options,
+            stdout_writer,
+            stderr_writer,
+            &hinted_overwrite,
+        );
+    } else {
+        return run_moveSingleSource(
+            allocator,
+            io,
+            files[0],
+            files[1],
+            options,
+            stdout_writer,
+            stderr_writer,
+            &hinted_overwrite,
+        );
+    }
+}
+
+/// Last-flag-wins overwrite flag, mirroring GNU mv's handling of the mutually
+/// exclusive -f, -i, -n options.
+const LastOverwriteFlag = enum { none, force, interactive, no_clobber };
+
+/// Scan raw args for the last-appearing overwrite flag (-f/-i/-n and their long
+/// forms), stopping at the "--" separator. GNU mv uses last-flag-wins (F38).
+fn run_scanLastOverwriteFlag(args: []const []const u8) LastOverwriteFlag {
+    std.debug.assert(args.len > 0);
+
     var last_overwrite_flag = LastOverwriteFlag.none;
+    var scanned_count: u32 = 0;
     for (args) |arg| {
+        scanned_count += 1;
         if (arg.len > 1 and arg[0] == '-' and (arg.len < 3 or arg[1] != '-')) {
             // Short flag(s): -f, -i, -n, or combined like -fi
             for (arg[1..]) |ch| {
@@ -939,98 +1116,179 @@ fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stdou
             break; // Stop scanning at -- separator
         }
     }
+    std.debug.assert(scanned_count <= args.len);
+    return last_overwrite_flag;
+}
 
-    const options = MoveOptions{
-        .interactive = last_overwrite_flag == .interactive,
-        .force = last_overwrite_flag == .force,
-        .verbose = parsed_args.verbose,
-        .no_clobber = last_overwrite_flag == .no_clobber,
-        .no_follow_symlink = parsed_args.no_follow_symlink,
-        .backup = parsed_args.backup,
-    };
+/// Move every source operand into the destination directory. Continues past
+/// per-source failures, returning general_error if any move failed.
+fn run_moveMultipleSources(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    files: []const []const u8,
+    options: MoveOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+    hinted_overwrite: *bool,
+) !u8 {
+    const prog_name = "mv";
+    std.debug.assert(files.len > 2);
 
-    var hinted_overwrite = false;
+    // Multiple sources - destination must be a directory
+    const dest = files[files.len - 1];
+    std.debug.assert(dest.len > 0);
 
-    // Handle multiple sources case
-    if (files.len > 2) {
-        // Multiple sources - destination must be a directory
-        const dest = files[files.len - 1];
-        const dest_is_dir = isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
+    const dest_is_dir =
+        isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
             error.FileNotFound => {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "target '{s}' is not a directory",
+                    .{dest},
+                );
                 return @intFromEnum(common.ExitCode.general_error);
             },
             else => return err,
         };
 
-        if (!dest_is_dir) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "target '{s}' is not a directory", .{dest});
-            return @intFromEnum(common.ExitCode.general_error);
+    if (!dest_is_dir) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "target '{s}' is not a directory",
+            .{dest},
+        );
+        return @intFromEnum(common.ExitCode.general_error);
+    }
+
+    // Move each source to destination directory
+    var exit_code = common.ExitCode.success;
+    for (files[0 .. files.len - 1]) |source| {
+        const basename = std.fs.path.basename(source);
+        const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
+        defer allocator.free(full_dest);
+
+        moveFile(
+            allocator,
+            io,
+            source,
+            full_dest,
+            options,
+            stdout_writer,
+            stderr_writer,
+            hinted_overwrite,
+        ) catch {
+            exit_code = common.ExitCode.general_error;
+            continue;
+        };
+
+        if (options.verbose) {
+            try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, full_dest });
         }
+    }
+    return @intFromEnum(exit_code);
+}
 
-        // Move each source to destination directory
-        var exit_code = common.ExitCode.success;
-        for (files[0 .. files.len - 1]) |source| {
-            const basename = std.fs.path.basename(source);
-            const full_dest = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dest, basename });
-            defer allocator.free(full_dest);
+/// Move a single source to its destination: simple rename, move-into-directory,
+/// or overwrite a file, depending on what the destination is.
+fn run_moveSingleSource(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    dest: []const u8,
+    options: MoveOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+    hinted_overwrite: *bool,
+) !u8 {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(dest.len > 0);
 
-            moveFile(allocator, io, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
-                exit_code = common.ExitCode.general_error;
-                continue;
-            };
-
-            if (options.verbose) {
-                try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, full_dest });
-            }
-        }
-        return @intFromEnum(exit_code);
-    } else {
-        // Single source case: simple rename or move
-        const source = files[0];
-        const dest = files[1];
-
-        // Check if destination is a directory (respecting -h flag for symlinks)
-        const dest_is_dir = isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
+    // Check if destination is a directory (respecting -h flag for symlinks)
+    const dest_is_dir =
+        isDestDirectory(io, dest, options.no_follow_symlink) catch |err| switch (err) {
             error.FileNotFound => {
                 // Destination doesn't exist, proceed with normal rename
-                moveFile(allocator, io, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
-                    return @intFromEnum(common.ExitCode.general_error);
-                };
-
-                if (options.verbose) {
-                    try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
-                }
-                return @intFromEnum(common.ExitCode.success);
+                return run_moveSingleSource_attempt(
+                    allocator,
+                    io,
+                    source,
+                    dest,
+                    options,
+                    stdout_writer,
+                    stderr_writer,
+                    hinted_overwrite,
+                );
             },
             else => return err,
         };
 
-        // If destination is a directory, move source into it
-        if (dest_is_dir) {
-            const base_name = std.fs.path.basename(source);
-            const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
-            defer allocator.free(full_dest);
+    // If destination is a directory, move source into it
+    if (dest_is_dir) {
+        const base_name = std.fs.path.basename(source);
+        const full_dest = try std.fs.path.join(allocator, &.{ dest, base_name });
+        defer allocator.free(full_dest);
 
-            moveFile(allocator, io, source, full_dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-
-            if (options.verbose) {
-                try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, full_dest });
-            }
-        } else {
-            // Destination is a file, proceed with normal move/overwrite logic
-            moveFile(allocator, io, source, dest, options, stdout_writer, stderr_writer, &hinted_overwrite) catch {
-                return @intFromEnum(common.ExitCode.general_error);
-            };
-
-            if (options.verbose) {
-                try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
-            }
-        }
-        return @intFromEnum(common.ExitCode.success);
+        return run_moveSingleSource_attempt(
+            allocator,
+            io,
+            source,
+            full_dest,
+            options,
+            stdout_writer,
+            stderr_writer,
+            hinted_overwrite,
+        );
+    } else {
+        // Destination is a file, proceed with normal move/overwrite logic
+        return run_moveSingleSource_attempt(
+            allocator,
+            io,
+            source,
+            dest,
+            options,
+            stdout_writer,
+            stderr_writer,
+            hinted_overwrite,
+        );
     }
+}
+
+/// Perform one move attempt for the single-source case: run moveFile, map a
+/// failure to general_error, print the verbose arrow on success.
+fn run_moveSingleSource_attempt(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    dest: []const u8,
+    options: MoveOptions,
+    stdout_writer: anytype,
+    stderr_writer: anytype,
+    hinted_overwrite: *bool,
+) !u8 {
+    std.debug.assert(source.len > 0);
+    std.debug.assert(dest.len > 0);
+
+    moveFile(
+        allocator,
+        io,
+        source,
+        dest,
+        options,
+        stdout_writer,
+        stderr_writer,
+        hinted_overwrite,
+    ) catch {
+        return @intFromEnum(common.ExitCode.general_error);
+    };
+
+    if (options.verbose) {
+        try stdout_writer.print("'{s}' -> '{s}'\n", .{ source, dest });
+    }
+    return @intFromEnum(common.ExitCode.success);
 }
 
 test "mv: force overwrite existing file on same filesystem" {
