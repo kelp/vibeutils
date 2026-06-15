@@ -8,6 +8,7 @@ const common = @import("common");
 const testing = std.testing;
 
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 /// A single range (1-indexed, inclusive on both ends)
 const Range = struct {
@@ -290,151 +291,238 @@ pub fn runCut(allocator: Allocator, io: std.Io, args: []const []const u8, stdout
     }
 
     // Determine mode and validate mutual exclusivity
-    var mode_count: u8 = 0;
-    if (parsed.bytes != null) mode_count += 1;
-    if (parsed.characters != null) mode_count += 1;
-    if (parsed.fields != null) mode_count += 1;
+    const mode: CutMode = switch (runCut_resolveMode(allocator, stderr_writer, parsed)) {
+        .exit => |code| return code,
+        .mode => |m| m,
+    };
 
-    if (mode_count == 0) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "you must specify a list of bytes, characters, or fields\nTry 'cut --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    if (mode_count > 1) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "only one type of list may be specified\nTry 'cut --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    const mode: CutMode = if (parsed.bytes != null) .bytes else if (parsed.characters != null) .characters else .fields;
-
-    // -s is only valid with -f
-    if (parsed.only_delimited and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "suppressing non-delimited lines makes sense only when operating on fields\nTry 'cut --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // -d is only valid with -f
-    if (parsed.delimiter != null and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "an input delimiter may be specified only when operating on fields\nTry 'cut --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // -w is only valid with -f
-    if (parsed.whitespace_delim and mode != .fields) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "-w may only be used with -f\nTry 'cut --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
-    }
-
-    // -w and -d are mutually exclusive
-    if (parsed.whitespace_delim and parsed.delimiter != null) {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "-w and -d may not both be specified\nTry 'cut --help' for more information.", .{});
-        return @intFromEnum(common.ExitCode.misuse);
+    if (runCut_validateFlags(allocator, stderr_writer, parsed, mode)) |exit_code| {
+        return exit_code;
     }
 
     // Parse the range list
     const list_str = parsed.bytes orelse parsed.characters orelse parsed.fields.?;
     const ranges = parseRangeList(allocator, list_str) catch {
-        common.printErrorWithProgram(allocator, stderr_writer, "cut", "invalid range: '{s}'", .{list_str});
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "invalid range: '{s}'", .{list_str}); // tiger:allow:long-line
         return @intFromEnum(common.ExitCode.misuse);
     };
     defer allocator.free(ranges);
 
-    // Determine delimiter
-    const delimiter: u8 = if (parsed.delimiter) |d| blk: {
-        if (d.len == 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-        if (d.len > 1) {
-            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-        break :blk d[0];
-    } else '\t';
-
-    // Determine output delimiter
-    const output_delim: []const u8 = if (parsed.output_delimiter) |od|
-        od
-    else if (parsed.whitespace_delim)
-        " "
-    else switch (mode) {
-        .fields => &.{delimiter},
-        .bytes, .characters => "",
+    // Determine delimiters
+    const delims = switch (runCut_resolveDelimiters(allocator, stderr_writer, parsed, mode)) {
+        .exit => |code| return code,
+        .delims => |d| d,
     };
+    const delimiter = delims.delimiter;
+    // Back the default output delimiter here so its slice does not dangle.
+    const delim_storage = [1]u8{delimiter};
+    const output_delim: []const u8 = delims.output_delim orelse delim_storage[0..];
 
     const line_terminator: u8 = if (parsed.zero_terminated) 0 else '\n';
 
-    // Process files or stdin
     if (parsed.positionals.len == 0) {
         const stdin_file = std.Io.File.stdin();
-        return processFile(
-            allocator,
-            io,
-            stdin_file,
-            ranges,
-            mode,
-            delimiter,
-            output_delim,
-            parsed.only_delimited,
-            parsed.complement,
-            parsed.no_split,
-            parsed.whitespace_delim,
-            line_terminator,
-            stdout_writer,
-            stderr_writer,
-        );
+        return runCut_processSource(allocator, io, stdin_file, ranges, mode, delimiter, output_delim, parsed.only_delimited, parsed.complement, parsed.no_split, parsed.whitespace_delim, line_terminator, stdout_writer, stderr_writer); // tiger:allow:long-line
     }
 
     var has_error = false;
     for (parsed.positionals) |file_path| {
         if (std.mem.eql(u8, file_path, "-")) {
             const stdin_file = std.Io.File.stdin();
-            const result = processFile(
-                allocator,
-                io,
-                stdin_file,
-                ranges,
-                mode,
-                delimiter,
-                output_delim,
-                parsed.only_delimited,
-                parsed.complement,
-                parsed.no_split,
-                parsed.whitespace_delim,
-                line_terminator,
-                stdout_writer,
-                stderr_writer,
-            );
+            const result = runCut_processSource(allocator, io, stdin_file, ranges, mode, delimiter, output_delim, parsed.only_delimited, parsed.complement, parsed.no_split, parsed.whitespace_delim, line_terminator, stdout_writer, stderr_writer); // tiger:allow:long-line
             if (result > 0) has_error = true;
         } else {
             const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, common.posixErrorString(err) });
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", "{s}: {s}", .{ file_path, common.posixErrorString(err) }); // tiger:allow:long-line
                 has_error = true;
                 continue;
             };
             defer file.close(io);
 
-            const result = processFile(
-                allocator,
-                io,
-                file,
-                ranges,
-                mode,
-                delimiter,
-                output_delim,
-                parsed.only_delimited,
-                parsed.complement,
-                parsed.no_split,
-                parsed.whitespace_delim,
-                line_terminator,
-                stdout_writer,
-                stderr_writer,
-            );
+            const result = runCut_processSource(allocator, io, file, ranges, mode, delimiter, output_delim, parsed.only_delimited, parsed.complement, parsed.no_split, parsed.whitespace_delim, line_terminator, stdout_writer, stderr_writer); // tiger:allow:long-line
             if (result > 0) has_error = true;
         }
     }
 
     return if (has_error) @intFromEnum(common.ExitCode.general_error) else 0;
+}
+
+/// Result of mode resolution: either an early-exit code or the resolved mode.
+const RunCutModeResult = union(enum) {
+    exit: u8,
+    mode: CutMode,
+};
+
+/// Resolve the cut mode (bytes/characters/fields) and validate mutual
+/// exclusivity. Single-caller helper for runCut; keeps branching in parent.
+fn runCut_resolveMode(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    parsed: CutArgs,
+) RunCutModeResult {
+    var mode_count: u8 = 0;
+    if (parsed.bytes != null) mode_count += 1;
+    if (parsed.characters != null) mode_count += 1;
+    if (parsed.fields != null) mode_count += 1;
+    assert(mode_count <= 3);
+
+    if (mode_count == 0) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "you must specify a list of bytes, characters, or fields\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+    }
+
+    if (mode_count > 1) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "only one type of list may be specified\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+    }
+
+    assert(mode_count == 1);
+    const mode: CutMode = if (parsed.bytes != null)
+        .bytes
+    else if (parsed.characters != null)
+        .characters
+    else
+        .fields;
+    return .{ .mode = mode };
+}
+
+/// Validate flags that are only valid with field mode (-s, -d, -w) and the
+/// -w/-d mutual exclusivity. Returns a misuse exit code, or null on success.
+fn runCut_validateFlags(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    parsed: CutArgs,
+    mode: CutMode,
+) ?u8 {
+    // mode is resolved upstream: exactly one of bytes/characters/fields is set.
+    const mode_is_valid = mode == .bytes or mode == .characters or mode == .fields;
+    assert(mode_is_valid);
+    if (mode == .bytes) assert(parsed.characters == null);
+    if (mode == .characters) assert(parsed.bytes == null);
+
+    // -s is only valid with -f
+    if (parsed.only_delimited and mode != .fields) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "suppressing non-delimited lines makes sense only when operating on fields\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // -d is only valid with -f
+    if (parsed.delimiter != null and mode != .fields) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "an input delimiter may be specified only when operating on fields\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // -w is only valid with -f
+    if (parsed.whitespace_delim and mode != .fields) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "-w may only be used with -f\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    // -w and -d are mutually exclusive
+    if (parsed.whitespace_delim and parsed.delimiter != null) {
+        common.printErrorWithProgram(allocator, stderr_writer, "cut", "-w and -d may not both be specified\nTry 'cut --help' for more information.", .{}); // tiger:allow:long-line
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+
+    return null;
+}
+
+/// Resolved input/output delimiters for cut.
+///
+/// `output_delim` is null when the output delimiter defaults to the input
+/// delimiter (field mode with no explicit -o/-w). The caller materializes the
+/// single-char slice from `delimiter` in its OWN frame so the slice outlives
+/// its use; building it here would dangle a pointer into this helper's stack.
+const CutDelimiters = struct {
+    delimiter: u8,
+    output_delim: ?[]const u8,
+};
+
+/// Result of delimiter resolution: either an early-exit code or the delimiters.
+const RunCutDelimitersResult = union(enum) {
+    exit: u8,
+    delims: CutDelimiters,
+};
+
+/// Determine the input delimiter (single-char validation) and the output
+/// delimiter. Single-caller helper for runCut.
+fn runCut_resolveDelimiters(
+    allocator: Allocator,
+    stderr_writer: *std.Io.Writer,
+    parsed: CutArgs,
+    mode: CutMode,
+) RunCutDelimitersResult {
+    // A custom delimiter is only valid in field mode; validated upstream.
+    const mode_is_valid = mode == .bytes or mode == .characters or mode == .fields;
+    assert(mode_is_valid);
+    if (parsed.delimiter != null) assert(mode == .fields);
+
+    // Determine delimiter
+    const delimiter: u8 = if (parsed.delimiter) |d| blk: {
+        if (d.len == 0) {
+            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{}); // tiger:allow:long-line
+            return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+        }
+        if (d.len > 1) {
+            common.printErrorWithProgram(allocator, stderr_writer, "cut", "the delimiter must be a single character", .{}); // tiger:allow:long-line
+            return .{ .exit = @intFromEnum(common.ExitCode.misuse) };
+        }
+        break :blk d[0];
+    } else '\t';
+
+    // Determine output delimiter. null means "default to the input delimiter"
+    // (field mode, no explicit -o/-w); the caller materializes that slice from
+    // a stable frame to avoid returning a pointer into this helper's stack.
+    const output_delim: ?[]const u8 = if (parsed.output_delimiter) |od|
+        od
+    else if (parsed.whitespace_delim)
+        " "
+    else switch (mode) {
+        .fields => null,
+        .bytes, .characters => "",
+    };
+
+    return .{ .delims = .{ .delimiter = delimiter, .output_delim = output_delim } };
+}
+
+/// Thin forwarder to processFile, used at each dispatch call site so runCut
+/// stays within the function-length limit. Single-caller helper for runCut.
+fn runCut_processSource(
+    allocator: Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    ranges: []const Range,
+    mode: CutMode,
+    delimiter: u8,
+    output_delim: []const u8,
+    only_delimited: bool,
+    do_complement: bool,
+    no_split: bool,
+    whitespace_delim: bool,
+    line_terminator: u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    const mode_is_valid = mode == .bytes or mode == .characters or mode == .fields;
+    assert(mode_is_valid);
+    const terminator_is_valid = line_terminator == '\n' or line_terminator == 0;
+    assert(terminator_is_valid);
+    return processFile(
+        allocator,
+        io,
+        file,
+        ranges,
+        mode,
+        delimiter,
+        output_delim,
+        only_delimited,
+        do_complement,
+        no_split,
+        whitespace_delim,
+        line_terminator,
+        stdout_writer,
+        stderr_writer,
+    );
 }
 
 /// Process a single file/stream
@@ -473,10 +561,74 @@ fn processFile(
 
         if (eof and line_buf.items.len == 0) break;
 
-        // Process the line
-        switch (mode) {
-            .bytes, .characters => {
-                cutBytesOrChars(line_buf.items, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch |err| {
+        // Process the line; non-zero return propagates the error exit code.
+        const rc = processFile_emitLine(
+            allocator,
+            line_buf.items,
+            ranges,
+            mode,
+            delimiter,
+            output_delim,
+            only_delimited,
+            do_complement,
+            no_split,
+            whitespace_delim,
+            line_terminator,
+            stdout_writer,
+            stderr_writer,
+        );
+        if (rc != 0) return rc;
+
+        if (eof) break;
+    }
+
+    return 0;
+}
+
+/// Emit a single processed line according to mode. Single-caller helper for
+/// processFile. Returns 0 on success or ExitCode.general_error on a write
+/// failure, matching the inline returns it replaces.
+fn processFile_emitLine(
+    allocator: Allocator,
+    line: []const u8,
+    ranges: []const Range,
+    mode: CutMode,
+    delimiter: u8,
+    output_delim: []const u8,
+    only_delimited: bool,
+    do_complement: bool,
+    no_split: bool,
+    whitespace_delim: bool,
+    line_terminator: u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+) u8 {
+    const mode_is_valid = mode == .bytes or mode == .characters or mode == .fields;
+    assert(mode_is_valid);
+    const terminator_is_valid = line_terminator == '\n' or line_terminator == 0;
+    assert(terminator_is_valid);
+
+    switch (mode) {
+        .bytes, .characters => {
+            cutBytesOrChars(line, ranges, do_complement, if (mode == .bytes) no_split else false, stdout_writer) catch |err| { // tiger:allow:long-line
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)}); // tiger:allow:long-line
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+            stdout_writer.writeAll(&.{line_terminator}) catch |err| {
+                common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)}); // tiger:allow:long-line
+                return @intFromEnum(common.ExitCode.general_error);
+            };
+        },
+        .fields => {
+            if (whitespace_delim) {
+                cutFieldsWhitespace(
+                    line,
+                    ranges,
+                    do_complement,
+                    output_delim,
+                    only_delimited,
+                    stdout_writer,
+                ) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
@@ -484,13 +636,17 @@ fn processFile(
                     common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                     return @intFromEnum(common.ExitCode.general_error);
                 };
-            },
-            .fields => {
-                if (whitespace_delim) {
-                    cutFieldsWhitespace(
-                        line_buf.items,
+            } else {
+                const line_has_delim = std.mem.indexOfScalar(u8, line, delimiter) != null;
+
+                if (!line_has_delim and only_delimited) {
+                    // Skip this line
+                } else {
+                    cutFields(
+                        line,
                         ranges,
                         do_complement,
+                        delimiter,
                         output_delim,
                         only_delimited,
                         stdout_writer,
@@ -502,34 +658,9 @@ fn processFile(
                         common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
                         return @intFromEnum(common.ExitCode.general_error);
                     };
-                } else {
-                    const line_has_delim = std.mem.indexOfScalar(u8, line_buf.items, delimiter) != null;
-
-                    if (!line_has_delim and only_delimited) {
-                        // Skip this line
-                    } else {
-                        cutFields(
-                            line_buf.items,
-                            ranges,
-                            do_complement,
-                            delimiter,
-                            output_delim,
-                            only_delimited,
-                            stdout_writer,
-                        ) catch |err| {
-                            common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
-                            return @intFromEnum(common.ExitCode.general_error);
-                        };
-                        stdout_writer.writeAll(&.{line_terminator}) catch |err| {
-                            common.printErrorWithProgram(allocator, stderr_writer, "cut", "write error: {s}", .{common.posixErrorString(err)});
-                            return @intFromEnum(common.ExitCode.general_error);
-                        };
-                    }
                 }
-            },
-        }
-
-        if (eof) break;
+            }
+        },
     }
 
     return 0;
