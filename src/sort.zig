@@ -80,6 +80,9 @@ const SortOptions = struct {
     }
 };
 
+/// Result of parsing one argument: continue or signal an invalid arg
+const ParseResult = enum { ok, invalid };
+
 /// Parse sort-specific command-line arguments
 /// The standard argparse doesn't support repeated -k options or
 /// --check=quiet syntax, so we do manual parsing here.
@@ -103,205 +106,23 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
         if (arg.len > 1 and arg[0] == '-' and arg[1] == '-') {
             // Long option
             const flag = arg[2..];
-
-            if (std.mem.eql(u8, flag, "help")) {
-                opts.help = true;
-            } else if (std.mem.eql(u8, flag, "version")) {
-                opts.version = true;
-            } else if (std.mem.eql(u8, flag, "ignore-leading-blanks")) {
-                opts.global_flags.ignore_leading_blanks = true;
-            } else if (std.mem.eql(u8, flag, "dictionary-order")) {
-                opts.global_flags.dictionary_order = true;
-            } else if (std.mem.eql(u8, flag, "ignore-case")) {
-                opts.global_flags.ignore_case = true;
-            } else if (std.mem.eql(u8, flag, "general-numeric-sort")) {
-                opts.global_flags.general_numeric_sort = true;
-            } else if (std.mem.eql(u8, flag, "ignore-nonprinting")) {
-                opts.global_flags.ignore_nonprinting = true;
-            } else if (std.mem.eql(u8, flag, "numeric-sort")) {
-                opts.global_flags.numeric_sort = true;
-            } else if (std.mem.eql(u8, flag, "reverse")) {
-                opts.global_flags.reverse = true;
-            } else if (std.mem.eql(u8, flag, "human-numeric-sort")) {
-                opts.global_flags.human_numeric_sort = true;
-            } else if (std.mem.eql(u8, flag, "month-sort")) {
-                opts.global_flags.month_sort = true;
-            } else if (std.mem.eql(u8, flag, "random-sort")) {
-                opts.global_flags.random_sort = true;
-            } else if (std.mem.eql(u8, flag, "version-sort")) {
-                opts.global_flags.version_sort = true;
-            } else if (std.mem.eql(u8, flag, "merge")) {
-                opts.merge_only = true;
-            } else if (std.mem.startsWith(u8, flag, "buffer-size=")) {
-                const size_str = flag["buffer-size=".len..];
-                opts.buffer_size = parseBufferSize(size_str) orelse {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid buffer size: '{s}'", .{size_str});
-                    return null;
-                };
-            } else if (std.mem.startsWith(u8, flag, "temporary-directory=")) {
-                opts.temp_dir = flag["temporary-directory=".len..];
-            } else if (std.mem.eql(u8, flag, "unique")) {
-                opts.unique = true;
-            } else if (std.mem.eql(u8, flag, "stable")) {
-                opts.stable = true;
-            } else if (std.mem.eql(u8, flag, "zero-terminated")) {
-                opts.zero_terminated = true;
-            } else if (std.mem.eql(u8, flag, "check") or std.mem.eql(u8, flag, "check=diagnose-first")) {
-                opts.check = .diagnose_first;
-            } else if (std.mem.eql(u8, flag, "check=quiet") or std.mem.eql(u8, flag, "check=silent")) {
-                opts.check = .quiet;
-            } else if (std.mem.startsWith(u8, flag, "key=")) {
-                const keydef_str = flag[4..];
-                const key = parseKeyDef(keydef_str) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid key definition: '{s}'", .{keydef_str});
-                    return null;
-                };
-                try opts.keys.append(allocator, key);
-            } else if (std.mem.startsWith(u8, flag, "field-separator=")) {
-                const sep_str = flag["field-separator=".len..];
-                if (sep_str.len != 1) {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "multi-character field separator", .{});
-                    return null;
-                }
-                opts.field_separator = sep_str[0];
-            } else if (std.mem.startsWith(u8, flag, "output=")) {
-                opts.output_file = flag["output=".len..];
-            } else if (std.mem.startsWith(u8, flag, "batch-size=")) {
-                const val_str = flag["batch-size=".len..];
-                opts.batch_size = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid number for --batch-size: '{s}'", .{val_str});
-                    return null;
-                };
-            } else if (std.mem.startsWith(u8, flag, "compress-program=")) {
-                opts.compress_program = flag["compress-program=".len..];
-            } else if (std.mem.eql(u8, flag, "debug")) {
-                opts.debug = true;
-            } else if (std.mem.startsWith(u8, flag, "files0-from=")) {
-                opts.files0_from = flag["files0-from=".len..];
-            } else if (std.mem.startsWith(u8, flag, "parallel=")) {
-                const val_str = flag["parallel=".len..];
-                opts.parallel = std.fmt.parseInt(usize, val_str, 10) catch {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid number for --parallel: '{s}'", .{val_str});
-                    return null;
-                };
-            } else if (std.mem.startsWith(u8, flag, "random-source=")) {
-                opts.random_source = flag["random-source=".len..];
-            } else if (std.mem.eql(u8, flag, "heapsort") or
-                std.mem.eql(u8, flag, "mergesort") or
-                std.mem.eql(u8, flag, "mmap") or
-                std.mem.eql(u8, flag, "qsort") or
-                std.mem.eql(u8, flag, "radixsort"))
-            {
-                // BSD algorithm/mmap flags accepted as no-ops
-            } else {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "unrecognized option '--{s}'\nTry 'sort --help' for more information.", .{flag});
-                return null;
+            switch (try parseArgs_parseLongOption(allocator, &opts, flag, stderr_writer)) {
+                .ok => {},
+                .invalid => return null,
             }
         } else if (arg.len > 1 and arg[0] == '-') {
             // Short options
-            var j: usize = 1;
-            while (j < arg.len) : (j += 1) {
-                const c = arg[j];
-                switch (c) {
-                    'b' => opts.global_flags.ignore_leading_blanks = true,
-                    'd' => opts.global_flags.dictionary_order = true,
-                    'f' => opts.global_flags.ignore_case = true,
-                    'g' => opts.global_flags.general_numeric_sort = true,
-                    'i' => opts.global_flags.ignore_nonprinting = true,
-                    'n' => opts.global_flags.numeric_sort = true,
-                    'r' => opts.global_flags.reverse = true,
-                    'h' => opts.global_flags.human_numeric_sort = true,
-                    'M' => opts.global_flags.month_sort = true,
-                    'R' => opts.global_flags.random_sort = true,
-                    'm' => opts.merge_only = true,
-                    'S' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'S'", .{});
-                            return null;
-                        };
-                        opts.buffer_size = parseBufferSize(value) orelse {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid buffer size: '{s}'", .{value});
-                            return null;
-                        };
-                        break;
-                    },
-                    'T' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'T'", .{});
-                            return null;
-                        };
-                        opts.temp_dir = value;
-                        break;
-                    },
-                    'u' => opts.unique = true,
-                    's' => opts.stable = true,
-                    'c' => opts.check = .diagnose_first,
-                    'C' => opts.check = .quiet,
-                    'z' => opts.zero_terminated = true,
-                    'V' => opts.global_flags.version_sort = true,
-                    'k' => {
-                        // -k takes a value: rest of this arg or next arg
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'k'", .{});
-                            return null;
-                        };
-                        const key = parseKeyDef(value) catch {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid key definition: '{s}'", .{value});
-                            return null;
-                        };
-                        try opts.keys.append(allocator, key);
-                        break; // consumed rest of arg
-                    },
-                    't' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 't'", .{});
-                            return null;
-                        };
-                        if (value.len != 1) {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "multi-character tab '{s}'", .{value});
-                            return null;
-                        }
-                        opts.field_separator = value[0];
-                        break;
-                    },
-                    'o' => {
-                        const value = if (j + 1 < arg.len)
-                            arg[j + 1 ..]
-                        else if (i + 1 < args.len) blk: {
-                            i += 1;
-                            break :blk args[i];
-                        } else {
-                            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "option requires an argument -- 'o'", .{});
-                            return null;
-                        };
-                        opts.output_file = value;
-                        break;
-                    },
-                    else => {
-                        common.printErrorWithProgram(allocator, stderr_writer, prog_name, "invalid option -- '{c}'\nTry 'sort --help' for more information.", .{c});
-                        return null;
-                    },
-                }
+            const short_result = try parseArgs_parseShortOptions(
+                allocator,
+                &opts,
+                arg,
+                &i,
+                args,
+                stderr_writer,
+            );
+            switch (short_result) {
+                .ok => {},
+                .invalid => return null,
             }
         } else {
             // Positional argument (file)
@@ -310,6 +131,323 @@ fn parseArgs(allocator: Allocator, args: []const []const u8, stderr_writer: anyt
     }
 
     return opts;
+}
+
+/// Print a parse error with the program prefix and signal an invalid arg.
+/// Centralizes the repeated "print then return .invalid" idiom so each call
+/// site stays within the 100-column limit.
+fn parseArgs_invalid(
+    allocator: Allocator,
+    stderr_writer: anytype,
+    comptime fmt: []const u8,
+    args: anytype,
+) ParseResult {
+    std.debug.assert(fmt.len > 0);
+    std.debug.assert(prog_name.len > 0);
+
+    common.printErrorWithProgram(allocator, stderr_writer, prog_name, fmt, args);
+    return .invalid;
+}
+
+/// Parse a single long option (the text after the leading `--`).
+fn parseArgs_parseLongOption(
+    allocator: Allocator,
+    opts: *SortOptions,
+    flag: []const u8,
+    stderr_writer: anytype,
+) !ParseResult {
+    std.debug.assert(flag.len > 0);
+    std.debug.assert(!std.mem.startsWith(u8, flag, "--"));
+
+    if (parseArgs_parseLongOption_boolFlags(opts, flag)) {
+        return .ok;
+    }
+    return parseArgs_parseLongOption_valueFlags(allocator, opts, flag, stderr_writer);
+}
+
+/// Handle the pure-boolean / mode-setting long options. Returns true if
+/// the flag was consumed, false if the caller should try value flags.
+fn parseArgs_parseLongOption_boolFlags(opts: *SortOptions, flag: []const u8) bool {
+    std.debug.assert(flag.len > 0);
+    std.debug.assert(!std.mem.startsWith(u8, flag, "--"));
+
+    if (std.mem.eql(u8, flag, "help")) {
+        opts.help = true;
+    } else if (std.mem.eql(u8, flag, "version")) {
+        opts.version = true;
+    } else if (std.mem.eql(u8, flag, "ignore-leading-blanks")) {
+        opts.global_flags.ignore_leading_blanks = true;
+    } else if (std.mem.eql(u8, flag, "dictionary-order")) {
+        opts.global_flags.dictionary_order = true;
+    } else if (std.mem.eql(u8, flag, "ignore-case")) {
+        opts.global_flags.ignore_case = true;
+    } else if (std.mem.eql(u8, flag, "general-numeric-sort")) {
+        opts.global_flags.general_numeric_sort = true;
+    } else if (std.mem.eql(u8, flag, "ignore-nonprinting")) {
+        opts.global_flags.ignore_nonprinting = true;
+    } else if (std.mem.eql(u8, flag, "numeric-sort")) {
+        opts.global_flags.numeric_sort = true;
+    } else if (std.mem.eql(u8, flag, "reverse")) {
+        opts.global_flags.reverse = true;
+    } else if (std.mem.eql(u8, flag, "human-numeric-sort")) {
+        opts.global_flags.human_numeric_sort = true;
+    } else if (std.mem.eql(u8, flag, "month-sort")) {
+        opts.global_flags.month_sort = true;
+    } else if (std.mem.eql(u8, flag, "random-sort")) {
+        opts.global_flags.random_sort = true;
+    } else if (std.mem.eql(u8, flag, "version-sort")) {
+        opts.global_flags.version_sort = true;
+    } else if (std.mem.eql(u8, flag, "merge")) {
+        opts.merge_only = true;
+    } else if (std.mem.eql(u8, flag, "unique")) {
+        opts.unique = true;
+    } else if (std.mem.eql(u8, flag, "stable")) {
+        opts.stable = true;
+    } else if (std.mem.eql(u8, flag, "zero-terminated")) {
+        opts.zero_terminated = true;
+    } else if (std.mem.eql(u8, flag, "check") or std.mem.eql(u8, flag, "check=diagnose-first")) {
+        opts.check = .diagnose_first;
+    } else if (std.mem.eql(u8, flag, "check=quiet") or std.mem.eql(u8, flag, "check=silent")) {
+        opts.check = .quiet;
+    } else if (std.mem.eql(u8, flag, "debug")) {
+        opts.debug = true;
+    } else if (std.mem.eql(u8, flag, "heapsort") or
+        std.mem.eql(u8, flag, "mergesort") or
+        std.mem.eql(u8, flag, "mmap") or
+        std.mem.eql(u8, flag, "qsort") or
+        std.mem.eql(u8, flag, "radixsort"))
+    {
+        // BSD algorithm/mmap flags accepted as no-ops
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/// Handle the `name=value` long options, plus the unrecognized-option error.
+fn parseArgs_parseLongOption_valueFlags(
+    allocator: Allocator,
+    opts: *SortOptions,
+    flag: []const u8,
+    stderr_writer: anytype,
+) !ParseResult {
+    std.debug.assert(flag.len > 0);
+    std.debug.assert(!std.mem.startsWith(u8, flag, "--"));
+
+    if (std.mem.startsWith(u8, flag, "buffer-size=")) {
+        const size_str = flag["buffer-size=".len..];
+        opts.buffer_size = parseBufferSize(size_str) orelse
+            return parseArgs_invalid(allocator, stderr_writer, "invalid buffer size: '{s}'", .{
+                size_str,
+            });
+    } else if (std.mem.startsWith(u8, flag, "temporary-directory=")) {
+        opts.temp_dir = flag["temporary-directory=".len..];
+    } else if (std.mem.startsWith(u8, flag, "key=")) {
+        const keydef_str = flag[4..];
+        const key = parseKeyDef(keydef_str) catch
+            return parseArgs_invalid(allocator, stderr_writer, "invalid key definition: '{s}'", .{
+                keydef_str,
+            });
+        try opts.keys.append(allocator, key);
+    } else if (std.mem.startsWith(u8, flag, "field-separator=")) {
+        const sep_str = flag["field-separator=".len..];
+        if (sep_str.len != 1) {
+            return parseArgs_invalid(
+                allocator,
+                stderr_writer,
+                "multi-character field separator",
+                .{},
+            );
+        }
+        opts.field_separator = sep_str[0];
+    } else if (std.mem.startsWith(u8, flag, "output=")) {
+        opts.output_file = flag["output=".len..];
+    } else if (std.mem.startsWith(u8, flag, "batch-size=")) {
+        const val_str = flag["batch-size=".len..];
+        opts.batch_size = std.fmt.parseInt(usize, val_str, 10) catch // tiger:allow:usize-arch
+            return parseArgs_invalid(
+                allocator,
+                stderr_writer,
+                "invalid number for --batch-size: '{s}'",
+                .{val_str},
+            );
+    } else if (std.mem.startsWith(u8, flag, "compress-program=")) {
+        opts.compress_program = flag["compress-program=".len..];
+    } else if (std.mem.startsWith(u8, flag, "files0-from=")) {
+        opts.files0_from = flag["files0-from=".len..];
+    } else if (std.mem.startsWith(u8, flag, "parallel=")) {
+        const val_str = flag["parallel=".len..];
+        opts.parallel = std.fmt.parseInt(usize, val_str, 10) catch // tiger:allow:usize-arch
+            return parseArgs_invalid(
+                allocator,
+                stderr_writer,
+                "invalid number for --parallel: '{s}'",
+                .{val_str},
+            );
+    } else if (std.mem.startsWith(u8, flag, "random-source=")) {
+        opts.random_source = flag["random-source=".len..];
+    } else {
+        return parseArgs_invalid(
+            allocator,
+            stderr_writer,
+            "unrecognized option '--{s}'\nTry 'sort --help' for more information.",
+            .{flag},
+        );
+    }
+    return .ok;
+}
+
+/// Parse a clustered short-option argument (e.g. `-rn` or `-k2`).
+fn parseArgs_parseShortOptions(
+    allocator: Allocator,
+    opts: *SortOptions,
+    arg: []const u8,
+    arg_index: *usize, // tiger:allow:usize-arch indexes args slice
+    args: []const []const u8,
+    stderr_writer: anytype,
+) !ParseResult {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg[0] == '-');
+    std.debug.assert(arg[1] != '-');
+    std.debug.assert(args.len > 0);
+
+    var j: usize = 1; // tiger:allow:usize-arch indexes arg slice
+    while (j < arg.len) : (j += 1) {
+        const c = arg[j];
+        switch (c) {
+            'b' => opts.global_flags.ignore_leading_blanks = true,
+            'd' => opts.global_flags.dictionary_order = true,
+            'f' => opts.global_flags.ignore_case = true,
+            'g' => opts.global_flags.general_numeric_sort = true,
+            'i' => opts.global_flags.ignore_nonprinting = true,
+            'n' => opts.global_flags.numeric_sort = true,
+            'r' => opts.global_flags.reverse = true,
+            'h' => opts.global_flags.human_numeric_sort = true,
+            'M' => opts.global_flags.month_sort = true,
+            'R' => opts.global_flags.random_sort = true,
+            'm' => opts.merge_only = true,
+            'u' => opts.unique = true,
+            's' => opts.stable = true,
+            'c' => opts.check = .diagnose_first,
+            'C' => opts.check = .quiet,
+            'z' => opts.zero_terminated = true,
+            'V' => opts.global_flags.version_sort = true,
+            'S', 'T', 'k', 't', 'o' => {
+                const value = parseArgs_parseShortOptions_valueArg(
+                    allocator,
+                    c,
+                    arg,
+                    j,
+                    arg_index,
+                    args,
+                    stderr_writer,
+                ) orelse return .invalid;
+                const assign_result = try parseArgs_parseShortOptions_assign(
+                    allocator,
+                    opts,
+                    c,
+                    value,
+                    stderr_writer,
+                );
+                switch (assign_result) {
+                    .ok => {},
+                    .invalid => return .invalid,
+                }
+                break; // value-consuming option ends this cluster
+            },
+            else => {
+                return parseArgs_invalid(
+                    allocator,
+                    stderr_writer,
+                    "invalid option -- '{c}'\nTry 'sort --help' for more information.",
+                    .{c},
+                );
+            },
+        }
+    }
+    return .ok;
+}
+
+/// Resolve the value for a value-consuming short option: rest of this arg
+/// or the next arg. Returns null (after printing an error) when missing.
+fn parseArgs_parseShortOptions_valueArg(
+    allocator: Allocator,
+    c: u8,
+    arg: []const u8,
+    j: usize, // tiger:allow:usize-arch indexes arg slice
+    arg_index: *usize, // tiger:allow:usize-arch indexes args slice
+    args: []const []const u8,
+    stderr_writer: anytype,
+) ?[]const u8 {
+    std.debug.assert(arg.len > 1);
+    std.debug.assert(arg_index.* < args.len);
+
+    if (j + 1 < arg.len) {
+        return arg[j + 1 ..];
+    }
+    if (arg_index.* + 1 < args.len) {
+        arg_index.* += 1;
+        return args[arg_index.*];
+    }
+    common.printErrorWithProgram(
+        allocator,
+        stderr_writer,
+        prog_name,
+        "option requires an argument -- '{c}'",
+        .{c},
+    );
+    return null;
+}
+
+/// Assign a resolved value to the matching option field, validating where
+/// the original code validated. Returns .invalid (after printing an error).
+fn parseArgs_parseShortOptions_assign(
+    allocator: Allocator,
+    opts: *SortOptions,
+    c: u8,
+    value: []const u8,
+    stderr_writer: anytype,
+) !ParseResult {
+    const is_value_option = switch (c) {
+        'S', 'T', 'k', 't', 'o' => true,
+        else => false,
+    };
+    std.debug.assert(is_value_option);
+    std.debug.assert(c != '-');
+
+    switch (c) {
+        'S' => {
+            opts.buffer_size = parseBufferSize(value) orelse
+                return parseArgs_invalid(allocator, stderr_writer, "invalid buffer size: '{s}'", .{
+                    value,
+                });
+        },
+        'T' => opts.temp_dir = value,
+        'k' => {
+            const key = parseKeyDef(value) catch
+                return parseArgs_invalid(
+                    allocator,
+                    stderr_writer,
+                    "invalid key definition: '{s}'",
+                    .{value},
+                );
+            try opts.keys.append(allocator, key);
+        },
+        't' => {
+            if (value.len != 1) {
+                return parseArgs_invalid(
+                    allocator,
+                    stderr_writer,
+                    "multi-character tab '{s}'",
+                    .{value},
+                );
+            }
+            opts.field_separator = value[0];
+        },
+        'o' => opts.output_file = value,
+        else => unreachable,
+    }
+    return .ok;
 }
 
 /// Parse a KEYDEF string: F[.C][OPTS][,F[.C][OPTS]]
@@ -425,101 +563,30 @@ pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         return @intFromEnum(common.ExitCode.success);
     }
 
-    // Handle --files0-from: read input filenames from a NUL-delimited file
+    // Handle --files0-from: read input filenames from a NUL-delimited file.
     if (opts.files0_from) |f0f_path| {
-        if (opts.files.items.len > 0) {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "extra operand '{s}'\nfile operands cannot be combined with --files0-from", .{opts.files.items[0]});
-            return @intFromEnum(common.ExitCode.misuse);
-        }
-        const is_stdin = std.mem.eql(u8, f0f_path, "-");
-        const f0f_file = if (is_stdin)
-            std.Io.File.stdin()
-        else
-            std.Io.Dir.cwd().openFile(io, f0f_path, .{}) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot open '{s}' for reading: {s}", .{ f0f_path, common.posixErrorString(err) });
-                return @intFromEnum(common.ExitCode.misuse);
-            };
-        defer if (!is_stdin) f0f_file.close(io);
-        var f0f_buf: [8192]u8 = undefined;
-        var f0f_reader = f0f_file.readerStreaming(io, &f0f_buf);
-        const content = f0f_reader.interface.allocRemaining(allocator, .unlimited) catch |err| {
-            common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read '{s}': {s}", .{ f0f_path, common.posixErrorString(err) });
-            return @intFromEnum(common.ExitCode.misuse);
-        };
-        var it = std.mem.splitScalar(u8, content, 0);
-        while (it.next()) |name| {
-            if (name.len > 0) {
-                try opts.files.append(allocator, name);
-            }
+        if (try runSort_expandFiles0From(allocator, io, &opts, f0f_path, stderr_writer)) |code| {
+            return code;
         }
     }
 
     const delimiter: u8 = if (opts.zero_terminated) 0 else '\n';
+    const sort_ctx = SortContext{ .opts = &opts, .allocator = allocator };
 
-    const sort_ctx = SortContext{
-        .opts = &opts,
-        .allocator = allocator,
-    };
-
-    // For merge mode, read each file separately and merge
+    // Merge mode reads each file separately and merges sorted runs.
     if (opts.merge_only and opts.files.items.len > 1) {
-        var per_file_lines: std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
-        defer {
-            for (per_file_lines.items) |*fl| fl.deinit(allocator);
-            per_file_lines.deinit(allocator);
-        }
-        var merge_buffers: std.ArrayListUnmanaged([]const u8) = .empty;
-        defer {
-            for (merge_buffers.items) |buf| allocator.free(buf);
-            merge_buffers.deinit(allocator);
-        }
-
-        for (opts.files.items) |file_path| {
-            var file_lines: std.ArrayListUnmanaged([]const u8) = .empty;
-            if (std.mem.eql(u8, file_path, "-")) {
-                const stdin_file = std.Io.File.stdin();
-                try readLines(allocator, io, stdin_file, &file_lines, delimiter, &merge_buffers);
-            } else {
-                const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
-                    common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
-                    return @intFromEnum(common.ExitCode.misuse);
-                };
-                defer file.close(io);
-                try readLines(allocator, io, file, &file_lines, delimiter, &merge_buffers);
-            }
-            try per_file_lines.append(allocator, file_lines);
-        }
-
-        // Build slice of slices for mergeLines
-        var slices = try allocator.alloc([]const []const u8, per_file_lines.items.len);
-        defer allocator.free(slices);
-        for (per_file_lines.items, 0..) |fl, idx| {
-            slices[idx] = fl.items;
-        }
-
-        var merged = try mergeLines(allocator, slices, sort_ctx);
-        defer merged.deinit(allocator);
-
-        // Write output
-        if (opts.output_file) |out_path| {
-            const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
-                common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
-                return @intFromEnum(common.ExitCode.misuse);
-            };
-            defer out_file.close(io);
-            var out_buffer: [8192]u8 = undefined;
-            var file_writer = out_file.writerStreaming(io, &out_buffer);
-            const out_writer = &file_writer.interface;
-            try writeLines(out_writer, merged.items, &opts, delimiter);
-            out_writer.flush() catch {};
-        } else {
-            try writeLines(stdout_writer, merged.items, &opts, delimiter);
-        }
-
-        return @intFromEnum(common.ExitCode.success);
+        return runSort_runMerge(
+            allocator,
+            io,
+            &opts,
+            sort_ctx,
+            stdout_writer,
+            stderr_writer,
+            delimiter,
+        );
     }
 
-    // Read all lines from files or stdin
+    // Read all lines from files or stdin.
     var lines: std.ArrayListUnmanaged([]const u8) = .empty;
     defer lines.deinit(allocator);
     var buffers: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -528,35 +595,215 @@ pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         buffers.deinit(allocator);
     }
 
+    const read_result =
+        try runSort_readAllFiles(allocator, io, &opts, &lines, &buffers, delimiter, stderr_writer);
+    if (read_result) |code| return code;
+
+    // Check mode verifies whether the input is already sorted.
+    if (opts.check != .none) {
+        return checkSorted(allocator, lines.items, &opts, stdout_writer, stderr_writer);
+    }
+
+    std.mem.sort([]const u8, lines.items, sort_ctx, compareLinesWrapper);
+
+    const write_result = try runSort_writeOutput(
+        allocator,
+        io,
+        &opts,
+        lines.items,
+        stdout_writer,
+        stderr_writer,
+        delimiter,
+    );
+    if (write_result) |code| return code;
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Expand --files0-from: read NUL-delimited filenames into opts.files.
+/// Returns a non-null exit code to propagate, or null to continue.
+fn runSort_expandFiles0From(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *SortOptions,
+    f0f_path: []const u8,
+    stderr_writer: *std.Io.Writer,
+) !?u8 {
+    std.debug.assert(opts.files0_from != null);
+    std.debug.assert(f0f_path.ptr == opts.files0_from.?.ptr);
+
+    if (opts.files.items.len > 0) {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "extra operand '{s}'\nfile operands cannot be combined with --files0-from",
+            .{opts.files.items[0]},
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    }
+    const is_stdin = std.mem.eql(u8, f0f_path, "-");
+    const f0f_file = if (is_stdin)
+        std.Io.File.stdin()
+    else
+        std.Io.Dir.cwd().openFile(io, f0f_path, .{}) catch |err| {
+            common.printErrorWithProgram(
+                allocator,
+                stderr_writer,
+                prog_name,
+                "cannot open '{s}' for reading: {s}",
+                .{ f0f_path, common.posixErrorString(err) },
+            );
+            return @intFromEnum(common.ExitCode.misuse);
+        };
+    defer if (!is_stdin) f0f_file.close(io);
+    var f0f_buf: [8192]u8 = undefined;
+    var f0f_reader = f0f_file.readerStreaming(io, &f0f_buf);
+    const content = f0f_reader.interface.allocRemaining(allocator, .unlimited) catch |err| {
+        common.printErrorWithProgram(
+            allocator,
+            stderr_writer,
+            prog_name,
+            "cannot read '{s}': {s}",
+            .{ f0f_path, common.posixErrorString(err) },
+        );
+        return @intFromEnum(common.ExitCode.misuse);
+    };
+    var it = std.mem.splitScalar(u8, content, 0);
+    while (it.next()) |name| {
+        if (name.len > 0) {
+            try opts.files.append(allocator, name);
+        }
+    }
+    return null;
+}
+
+/// Run merge mode: read each file separately, merge, and write output.
+fn runSort_runMerge(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *SortOptions,
+    sort_ctx: SortContext,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    delimiter: u8,
+) !u8 {
+    std.debug.assert(opts.merge_only);
+    std.debug.assert(opts.files.items.len > 1);
+
+    var per_file_lines: std.ArrayListUnmanaged(std.ArrayListUnmanaged([]const u8)) = .empty;
+    defer {
+        for (per_file_lines.items) |*fl| fl.deinit(allocator);
+        per_file_lines.deinit(allocator);
+    }
+    var merge_buffers: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer {
+        for (merge_buffers.items) |buf| allocator.free(buf);
+        merge_buffers.deinit(allocator);
+    }
+
+    for (opts.files.items) |file_path| {
+        var file_lines: std.ArrayListUnmanaged([]const u8) = .empty;
+        if (std.mem.eql(u8, file_path, "-")) {
+            const stdin_file = std.Io.File.stdin();
+            try readLines(allocator, io, stdin_file, &file_lines, delimiter, &merge_buffers);
+        } else {
+            const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
+                common.printErrorWithProgram(
+                    allocator,
+                    stderr_writer,
+                    prog_name,
+                    "cannot read: {s}: {s}",
+                    .{ file_path, common.posixErrorString(err) },
+                );
+                return @intFromEnum(common.ExitCode.misuse);
+            };
+            defer file.close(io);
+            try readLines(allocator, io, file, &file_lines, delimiter, &merge_buffers);
+        }
+        try per_file_lines.append(allocator, file_lines);
+    }
+
+    // Build slice of slices for mergeLines
+    var slices = try allocator.alloc([]const []const u8, per_file_lines.items.len);
+    defer allocator.free(slices);
+    for (per_file_lines.items, 0..) |fl, idx| {
+        slices[idx] = fl.items;
+    }
+
+    var merged = try mergeLines(allocator, slices, sort_ctx);
+    defer merged.deinit(allocator);
+
+    const write_result = try runSort_writeOutput(
+        allocator,
+        io,
+        opts,
+        merged.items,
+        stdout_writer,
+        stderr_writer,
+        delimiter,
+    );
+    if (write_result) |code| {
+        return code;
+    }
+
+    return @intFromEnum(common.ExitCode.success);
+}
+
+/// Read all lines from stdin or the given files into `lines`, keeping the
+/// backing buffers alive in `buffers`. Returns a non-null exit code on a
+/// file open error, or null on success.
+fn runSort_readAllFiles(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *const SortOptions,
+    lines: *std.ArrayListUnmanaged([]const u8),
+    buffers: *std.ArrayListUnmanaged([]const u8),
+    delimiter: u8,
+    stderr_writer: *std.Io.Writer,
+) !?u8 {
+    const delimiter_valid = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_valid);
+    std.debug.assert(lines.items.len == 0);
+
     if (opts.files.items.len == 0) {
         // Read from stdin
         const stdin_file = std.Io.File.stdin();
-        try readLines(allocator, io, stdin_file, &lines, delimiter, &buffers);
+        try readLines(allocator, io, stdin_file, lines, delimiter, buffers);
     } else {
         for (opts.files.items) |file_path| {
             if (std.mem.eql(u8, file_path, "-")) {
                 const stdin_file = std.Io.File.stdin();
-                try readLines(allocator, io, stdin_file, &lines, delimiter, &buffers);
+                try readLines(allocator, io, stdin_file, lines, delimiter, buffers);
             } else {
                 const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
                     common.printErrorWithProgram(allocator, stderr_writer, prog_name, "cannot read: {s}: {s}", .{ file_path, common.posixErrorString(err) });
                     return @intFromEnum(common.ExitCode.misuse);
                 };
                 defer file.close(io);
-                try readLines(allocator, io, file, &lines, delimiter, &buffers);
+                try readLines(allocator, io, file, lines, delimiter, buffers);
             }
         }
     }
+    return null;
+}
 
-    // Check mode: verify if input is already sorted
-    if (opts.check != .none) {
-        return checkSorted(allocator, lines.items, &opts, stdout_writer, stderr_writer);
-    }
+/// Write sorted/merged lines to the output file (--output) or stdout.
+/// Returns a non-null exit code if the output file can't be created.
+fn runSort_writeOutput(
+    allocator: Allocator,
+    io: std.Io,
+    opts: *const SortOptions,
+    sorted_lines: []const []const u8,
+    stdout_writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    delimiter: u8,
+) !?u8 {
+    const delimiter_valid = delimiter == '\n' or delimiter == 0;
+    std.debug.assert(delimiter_valid);
+    const output_nonempty = opts.output_file == null or opts.output_file.?.len > 0;
+    std.debug.assert(output_nonempty);
 
-    // Sort the lines
-    std.mem.sort([]const u8, lines.items, sort_ctx, compareLinesWrapper);
-
-    // Determine output target
     if (opts.output_file) |out_path| {
         const out_file = std.Io.Dir.cwd().createFile(io, out_path, .{ .truncate = true }) catch |err| {
             common.printErrorWithProgram(allocator, stderr_writer, prog_name, "open failed: {s}: {s}", .{ out_path, common.posixErrorString(err) });
@@ -566,13 +813,12 @@ pub fn runSort(allocator: Allocator, io: std.Io, args: []const []const u8, stdou
         var out_buffer: [8192]u8 = undefined;
         var file_writer = out_file.writerStreaming(io, &out_buffer);
         const out_writer = &file_writer.interface;
-        try writeLines(out_writer, lines.items, &opts, delimiter);
+        try writeLines(out_writer, sorted_lines, opts, delimiter);
         out_writer.flush() catch {};
     } else {
-        try writeLines(stdout_writer, lines.items, &opts, delimiter);
+        try writeLines(stdout_writer, sorted_lines, opts, delimiter);
     }
-
-    return @intFromEnum(common.ExitCode.success);
+    return null;
 }
 
 /// Read lines from a file into the lines list.
