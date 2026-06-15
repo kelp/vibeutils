@@ -36,39 +36,14 @@ pub fn collectFilteredEntries(
     // GNU ls includes "." and ".." as the first two entries.
     // The directory iterator doesn't yield these, so add them manually.
     if (options.all and !options.almost_all) {
-        const dot = try allocator.dupe(u8, ".");
-        errdefer allocator.free(dot);
-        try entries.append(allocator, Entry{
-            .name = dot,
-            .kind = .directory,
-        });
-
-        const dotdot = try allocator.dupe(u8, "..");
-        errdefer allocator.free(dotdot);
-        try entries.append(allocator, Entry{
-            .name = dotdot,
-            .kind = .directory,
-        });
+        try collectFilteredEntries_appendDotEntries(allocator, &entries);
     }
 
     // Collect entries
     var iter = dir.iterate();
     while (try iter.next(io)) |entry| {
-        // Apply filtering
-        if (!filter.shouldInclude(entry.name)) {
+        if (collectFilteredEntries_shouldSkip(filter, options, entry.name)) {
             continue;
-        }
-
-        // -B: skip backup files ending with ~
-        if (options.hide_backups and entry.name.len > 0 and entry.name[entry.name.len - 1] == '~') {
-            continue;
-        }
-
-        // -I PATTERN: skip entries matching glob pattern
-        if (options.ignore_pattern) |pattern| {
-            if (glob.globMatch(pattern, entry.name)) {
-                continue;
-            }
         }
 
         const name_copy = try allocator.dupe(u8, entry.name);
@@ -83,6 +58,52 @@ pub fn collectFilteredEntries(
     }
 
     return entries;
+}
+
+/// Append the "." and ".." directory entries (for -a without -A).
+fn collectFilteredEntries_appendDotEntries(
+    allocator: std.mem.Allocator,
+    entries: *std.ArrayList(Entry),
+) !void {
+    std.debug.assert(entries.items.len == 0);
+    std.debug.assert(@TypeOf(entries.*) == std.ArrayList(Entry));
+    const dot = try allocator.dupe(u8, ".");
+    errdefer allocator.free(dot);
+    try entries.append(allocator, Entry{
+        .name = dot,
+        .kind = .directory,
+    });
+
+    const dotdot = try allocator.dupe(u8, "..");
+    errdefer allocator.free(dotdot);
+    try entries.append(allocator, Entry{
+        .name = dotdot,
+        .kind = .directory,
+    });
+}
+
+/// Decide whether a directory entry should be skipped during collection.
+/// Replicates the original short-circuit order: include filter, then -B
+/// backup suffix, then -I glob pattern.
+fn collectFilteredEntries_shouldSkip(
+    filter: common.directory.EntryFilter,
+    options: LsOptions,
+    name: []const u8,
+) bool {
+    std.debug.assert(name.len > 0);
+    std.debug.assert(@TypeOf(options.hide_backups) == bool);
+    // Apply filtering
+    if (!filter.shouldInclude(name)) return true;
+
+    // -B: skip backup files ending with ~
+    if (options.hide_backups and name.len > 0 and name[name.len - 1] == '~') return true;
+
+    // -I PATTERN: skip entries matching glob pattern
+    if (options.ignore_pattern) |pattern| {
+        if (glob.globMatch(pattern, name)) return true;
+    }
+
+    return false;
 }
 
 /// Check if entries need metadata enhancement

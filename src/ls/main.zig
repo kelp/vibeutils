@@ -155,6 +155,13 @@ pub fn runLs(
     return lsMain(io, stdout, stderr, parsed, allocator);
 }
 
+/// Resolved color, icon, and time-style modes derived from args + env.
+const ResolvedModes = struct {
+    color_mode: ColorMode,
+    icon_mode: common.icons.IconMode,
+    time_style: TimeStyle,
+};
+
 /// Core ls functionality.
 /// Returns exit code: 0 for success, 2 for serious errors (e.g. nonexistent path)
 fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, args: LsArgs, allocator: std.mem.Allocator) !u8 {
@@ -179,6 +186,43 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     // Resolve display config from environment and terminal state
     const display_config = common.display_config.DisplayConfig.resolve(allocator);
 
+    // Build the consolidated options struct from args + resolved config.
+    const options = lsMain_buildOptions(io, stderr_writer, args, allocator, display_config);
+
+    // Initialize GitContext once if git status is requested
+    const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
+    var git_context: ?types.GitContext = null;
+    if (options.show_git_status) {
+        git_context = types.GitContext.init(allocator, io, ".");
+        if (git_context) |*ctx| {
+            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", git_explicit_always);
+        }
+    }
+    defer if (git_context) |*ctx| ctx.deinit();
+
+    const had_error = try lsMain_listOperands(
+        io,
+        args.positionals,
+        writer,
+        stderr_writer,
+        options,
+        allocator,
+        if (git_context) |*ctx| ctx else null,
+    );
+
+    return if (had_error) 2 else 0;
+}
+
+/// Resolve ls-specific color/icon modes and time style from args + config.
+fn lsMain_buildOptions_resolveModes(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+    display_config: common.display_config.DisplayConfig,
+    allocator: std.mem.Allocator,
+) ResolvedModes {
+    std.debug.assert(args.help == false);
+    std.debug.assert(args.version == false);
     // Map resolved display config to ls-specific color/icon modes.
     var color_mode: ColorMode = if (display_config.color == .on) .always else .never;
     var icon_mode: common.icons.IconMode = blk: {
@@ -190,7 +234,14 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     // Explicit CLI flags override everything
     if (args.color) |color_arg| {
         const parsed = types.parseColorMode(color_arg) catch {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--color'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{color_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--color'\n" ++
+                    "Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'",
+                .{color_arg},
+            );
         };
         color_mode = parsed;
     }
@@ -200,24 +251,70 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
     }
     if (args.icons) |icons_arg| {
         icon_mode = std.meta.stringToEnum(common.icons.IconMode, icons_arg) orelse {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--icons'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{icons_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--icons'\n" ++
+                    "Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'",
+                .{icons_arg},
+            );
         };
     }
 
+    lsMain_buildOptions_validateGit(io, stderr_writer, args);
+
+    const time_style = lsMain_buildOptions_resolveTimeStyle(io, stderr_writer, args);
+
+    return ResolvedModes{
+        .color_mode = color_mode,
+        .icon_mode = icon_mode,
+        .time_style = time_style,
+    };
+}
+
+/// Validate the --git argument, exiting fatally on an invalid value.
+fn lsMain_buildOptions_validateGit(io: std.Io, stderr_writer: *std.Io.Writer, args: LsArgs) void {
+    std.debug.assert(args.help == false);
+    std.debug.assert(args.version == false);
     if (args.git) |git_arg| {
         if (!std.mem.eql(u8, git_arg, "always") and
             !std.mem.eql(u8, git_arg, "auto") and
             !std.mem.eql(u8, git_arg, "never"))
         {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--git'\nValid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'", .{git_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--git'\n" ++
+                    "Valid arguments are:\n  - 'always'\n  - 'auto'\n  - 'never'",
+                .{git_arg},
+            );
         }
     }
+}
 
+/// Resolve the time style from --time-style, -h, and -T, exiting on error.
+fn lsMain_buildOptions_resolveTimeStyle(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+) TimeStyle {
+    std.debug.assert(args.help == false);
+    std.debug.assert(args.version == false);
     // Parse time style
     var time_style = TimeStyle.default;
     if (args.time_style) |time_style_arg| {
         time_style = types.parseTimeStyle(time_style_arg) catch {
-            common.fatalWithWriter(io, stderr_writer, "ls", "invalid argument '{s}' for '--time-style'\nValid arguments are:\n  - 'default'\n  - 'relative'\n  - 'iso'\n  - 'long-iso'", .{time_style_arg});
+            common.fatalWithWriter(
+                io,
+                stderr_writer,
+                "ls",
+                "invalid argument '{s}' for '--time-style'\n" ++
+                    "Valid arguments are:\n  - 'default'\n  - 'relative'\n" ++
+                    "  - 'iso'\n  - 'long-iso'",
+                .{time_style_arg},
+            );
         };
     } else if (args.human_readable) {
         time_style = .relative;
@@ -228,11 +325,30 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
         time_style = .full;
     }
 
+    return time_style;
+}
+
+/// Build the consolidated LsOptions from parsed args + resolved config.
+fn lsMain_buildOptions(
+    io: std.Io,
+    stderr_writer: *std.Io.Writer,
+    args: LsArgs,
+    allocator: std.mem.Allocator,
+    display_config: common.display_config.DisplayConfig,
+) LsOptions {
+    const modes = lsMain_buildOptions_resolveModes(
+        io,
+        stderr_writer,
+        args,
+        display_config,
+        allocator,
+    );
+
     // Detect terminal status for icons and colors
     const is_terminal = std.c.isatty(std.Io.File.stdout().handle) != 0;
 
     // Create options struct by consolidating all parsed arguments
-    const options = LsOptions{
+    return LsOptions{
         .all = args.all or args.no_sort,
         .almost_all = args.almost_all,
         .long_format = args.long_format or args.omit_owner or args.omit_group or args.numeric_ids,
@@ -249,13 +365,13 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
         .non_printable_as_question = args.non_printable_as_question,
         .omit_owner = args.omit_owner,
         .omit_group = args.omit_group,
-        .color_mode = color_mode,
+        .color_mode = modes.color_mode,
         .group_directories_first = args.group_directories_first,
         .show_inodes = args.show_inodes,
         .numeric_ids = args.numeric_ids,
         .comma_format = args.comma_format,
-        .icon_mode = icon_mode,
-        .time_style = time_style,
+        .icon_mode = modes.icon_mode,
+        .time_style = modes.time_style,
         .show_git_status = resolveGitMode(io, args.git, display_config),
         .is_terminal = is_terminal,
         .no_sort = args.no_sort or args.unsorted,
@@ -276,73 +392,77 @@ fn lsMain(io: std.Io, writer: *std.Io.Writer, stderr_writer: *std.Io.Writer, arg
         .thousands_grouping = args.thousands_grouping,
         .terminal_width = args.output_width,
     };
+}
 
-    // Initialize GitContext once if git status is requested
-    const git_explicit_always = args.git != null and std.mem.eql(u8, args.git.?, "always");
-    var git_context: ?types.GitContext = null;
-    if (options.show_git_status) {
-        git_context = types.GitContext.init(allocator, io, ".");
-        if (git_context) |*ctx| {
-            ctx.reportInitializationIssues(allocator, stderr_writer, "ls", git_explicit_always);
-        }
-    }
-    defer if (git_context) |*ctx| ctx.deinit();
-
-    // Access positionals (the paths to list)
-    const paths = args.positionals;
+/// List all path operands, returning whether any listing error occurred.
+/// Mirrors GNU separation: file operands first (no headers), then
+/// directory operands with "dir:" headers.
+fn lsMain_listOperands(
+    io: std.Io,
+    paths: []const []const u8,
+    writer: *std.Io.Writer,
+    stderr_writer: *std.Io.Writer,
+    options: LsOptions,
+    allocator: std.mem.Allocator,
+    git_context: ?*types.GitContext,
+) !bool {
+    std.debug.assert(@TypeOf(options.all) == bool);
+    std.debug.assert(@TypeOf(options.directory) == bool);
     var had_error = false;
 
     if (paths.len == 0) {
         // No paths specified, list current directory
-        try listDirectory(io, ".", writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null);
+        try listDirectory(io, ".", writer, stderr_writer, options, allocator, git_context);
+        return had_error;
     } else if (paths.len == 1) {
         // Single path: no headers needed
-        listDirectory(io, paths[0], writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
+        listDirectory(io, paths[0], writer, stderr_writer, options, allocator, git_context) catch {
             had_error = true;
         };
-    } else {
-        // Multiple operands: GNU-style separation.
-        // 1. List file operands first (no headers).
-        // 2. List directory operands with "dir:" headers.
-        var file_count: usize = 0;
+        return had_error;
+    }
 
-        for (paths) |path| {
-            const stat = common.file.FileInfo.stat(io, path) catch continue;
-            if (stat.kind != .directory) {
-                file_count += 1;
-            }
-        }
+    // Multiple operands: GNU-style separation.
+    // 1. List file operands first (no headers).
+    // 2. List directory operands with "dir:" headers.
+    var file_count: u64 = 0;
 
-        // First pass: list file operands (no headers)
-        for (paths) |path| {
-            const stat = common.file.FileInfo.stat(io, path) catch continue;
-            if (stat.kind != .directory) {
-                listDirectory(io, path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
-                    had_error = true;
-                };
-            }
-        }
-
-        // Second pass: list directory operands with headers
-        var dir_idx: usize = 0;
-        for (paths) |path| {
-            const is_dir = blk: {
-                const stat = common.file.FileInfo.stat(io, path) catch break :blk true;
-                break :blk stat.kind == .directory;
-            };
-            if (!is_dir) continue;
-
-            // Blank line separator between sections
-            if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
-            try writer.print("{s}:\n", .{path});
-            listDirectory(io, path, writer, stderr_writer, options, allocator, if (git_context) |*ctx| ctx else null) catch {
-                had_error = true;
-            };
-            dir_idx += 1;
+    for (paths) |path| {
+        const stat = common.file.FileInfo.stat(io, path) catch continue;
+        if (stat.kind != .directory) {
+            file_count += 1;
         }
     }
 
-    return if (had_error) 2 else 0;
+    // First pass: list file operands (no headers)
+    for (paths) |path| {
+        const stat = common.file.FileInfo.stat(io, path) catch continue;
+        if (stat.kind != .directory) {
+            listDirectory(io, path, writer, stderr_writer, options, allocator, git_context) catch {
+                had_error = true;
+            };
+        }
+    }
+
+    // Second pass: list directory operands with headers
+    var dir_idx: u64 = 0;
+    for (paths) |path| {
+        const is_dir = blk: {
+            const stat = common.file.FileInfo.stat(io, path) catch break :blk true;
+            break :blk stat.kind == .directory;
+        };
+        if (!is_dir) continue;
+
+        // Blank line separator between sections
+        if (file_count > 0 or dir_idx > 0) try writer.writeAll("\n");
+        try writer.print("{s}:\n", .{path});
+        listDirectory(io, path, writer, stderr_writer, options, allocator, git_context) catch {
+            had_error = true;
+        };
+        dir_idx += 1;
+    }
+
+    return had_error;
 }
 
 /// Print help message with usage examples

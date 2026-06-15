@@ -204,45 +204,59 @@ fn escapeName(name: []const u8, buf: []u8) []const u8 {
     return buf[0..out];
 }
 
-/// Print entry name with optional icon, color and file type indicator
-pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: LsOptions) !void {
-    const show_icons = common.icons.shouldShowIcons(options.icon_mode, options.is_terminal);
-    const show_git_status = options.show_git_status;
+/// Write the git status indicator (with color) before an entry name.
+fn printEntryName_writeGitIndicator(entry: Entry, writer: anytype, style: anytype) !void {
+    std.debug.assert(entry.git_status != .not_in_repo);
+    std.debug.assert(entry.name.len > 0);
+    const git_indicator = entry.git_status.getIndicator();
+    if (getGitStatusColorInfo(entry.git_status)) |gc| {
+        switch (style.color_mode) {
+            .truecolor => try style.setRgb(gc.r, gc.g, gc.b),
+            .extended => try style.set256(gc.c256),
+            .basic => try style.setColor(gc.basic),
+            .none => {},
+        }
+        try writer.print("{s} ", .{git_indicator});
+        if (style.color_mode != .none) try style.reset();
+    } else {
+        try writer.print("{s} ", .{git_indicator});
+    }
+}
 
-    // Print Git status indicator if enabled
-    if (show_git_status and entry.git_status != .not_in_repo) {
-        const git_indicator = entry.git_status.getIndicator();
-        if (getGitStatusColorInfo(entry.git_status)) |gc| {
-            switch (style.color_mode) {
-                .truecolor => try style.setRgb(gc.r, gc.g, gc.b),
-                .extended => try style.set256(gc.c256),
-                .basic => try style.setColor(gc.basic),
-                .none => {},
-            }
-            try writer.print("{s} ", .{git_indicator});
-            if (style.color_mode != .none) try style.reset();
-        } else {
-            try writer.print("{s} ", .{git_indicator});
+/// Write the file-type icon (with color) before an entry name.
+fn printEntryName_writeIcon(entry: Entry, writer: anytype, style: anytype) !void {
+    std.debug.assert(entry.name.len > 0);
+    std.debug.assert(@TypeOf(entry.kind) == std.Io.File.Kind);
+    const theme = common.icons.IconTheme{};
+    const icon = common.icons.getIcon(
+        &theme,
+        entry.name,
+        entry.kind == .directory,
+        entry.kind == .sym_link,
+        isExecutable(entry),
+    );
+    const icon_color = common.icons.getIconColorInfo(icon);
+    if (icon_color) |c| {
+        switch (style.color_mode) {
+            .truecolor => try style.setRgb(c.r, c.g, c.b),
+            .extended => try style.set256(c.c256),
+            .basic => try style.setColor(c.basic),
+            .none => {},
         }
     }
+    try writer.print("{s} ", .{icon});
+    if (icon_color != null and style.color_mode != .none) try style.reset();
+}
 
-    // Print icon if enabled
-    if (show_icons) {
-        const theme = common.icons.IconTheme{};
-        const icon = common.icons.getIcon(&theme, entry.name, entry.kind == .directory, entry.kind == .sym_link, isExecutable(entry));
-        const icon_color = common.icons.getIconColorInfo(icon);
-        if (icon_color) |c| {
-            switch (style.color_mode) {
-                .truecolor => try style.setRgb(c.r, c.g, c.b),
-                .extended => try style.set256(c.c256),
-                .basic => try style.setColor(c.basic),
-                .none => {},
-            }
-        }
-        try writer.print("{s} ", .{icon});
-        if (icon_color != null and style.color_mode != .none) try style.reset();
-    }
-
+/// Write the entry name with file-type color and -b/-q transformations.
+fn printEntryName_writeName(
+    entry: Entry,
+    writer: anytype,
+    style: anytype,
+    options: LsOptions,
+) !void {
+    std.debug.assert(entry.name.len > 0);
+    std.debug.assert(@TypeOf(options.escape_non_printable) == bool);
     const color = getFileColor(entry);
     if (style.color_mode != .none) {
         try style.setColor(color);
@@ -265,6 +279,25 @@ pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: Ls
     if (style.color_mode != .none) {
         try style.reset();
     }
+}
+
+/// Print entry name with optional icon, color and file type indicator
+pub fn printEntryName(entry: Entry, writer: anytype, style: anytype, options: LsOptions) !void {
+    const show_icons = common.icons.shouldShowIcons(options.icon_mode, options.is_terminal);
+    const show_git_status = options.show_git_status;
+
+    // Print Git status indicator if enabled
+    if (show_git_status and entry.git_status != .not_in_repo) {
+        try printEntryName_writeGitIndicator(entry, writer, style);
+    }
+
+    // Print icon if enabled
+    if (show_icons) {
+        try printEntryName_writeIcon(entry, writer, style);
+    }
+
+    // Print the colored name (with -b/-q transformations applied)
+    try printEntryName_writeName(entry, writer, style, options);
 
     // -F: full file type indicators (/ * @ | =)
     if (options.file_type_indicators) {
