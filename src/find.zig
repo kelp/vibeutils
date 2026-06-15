@@ -1768,6 +1768,27 @@ const BatchContext = struct {
 // Expression evaluation
 // ============================================================================
 
+// Frame kinds for the explicit work stack that replaces evaluate()'s former
+// call-stack recursion. Each variant mirrors a return address the recursive
+// version relied on: `eval` visits a node, the others are continuations that
+// consume a pending boolean result off the value stack.
+const FrameKind = enum { eval, not_result, and_right, or_right };
+const Frame = union(FrameKind) {
+    // Visit this node: leaves produce a value, operators push continuations.
+    eval: *const Expression,
+    // Pop one value, invert it, push the result. -not never short-circuits.
+    not_result: void,
+    // Pop the left value; if false push false (right suppressed), else eval right.
+    and_right: *const Expression,
+    // Pop the left value; if true push true (right suppressed), else eval right.
+    or_right: *const Expression,
+};
+
+// Evaluate the expression tree for one path using an explicit, heap-backed work
+// stack instead of call-stack recursion, so deeply-nested expressions (e.g.
+// 20000 implicitly-ANDed primaries) do not overflow the thread stack. Visit
+// order, short-circuiting, side-effect order, and out-params stay identical to
+// the former recursive evaluator; only the and/or/not arms became stack-driven.
 fn evaluate(
     io: std.Io,
     expr: *const Expression,
@@ -1784,6 +1805,193 @@ fn evaluate(
     pruned: *bool,
     batch_ctx: ?*BatchContext,
 ) bool {
+    var work_stack: std.ArrayListUnmanaged(Frame) = .empty;
+    defer work_stack.deinit(allocator);
+    var value_stack: std.ArrayListUnmanaged(bool) = .empty;
+    defer value_stack.deinit(allocator);
+
+    // On allocation failure we cannot finish evaluating; surface it via
+    // had_error and report the node as non-matching, mirroring how the leaf
+    // arms treat their own OOM. Callers only observe had_error and pruned.
+    const ctx: EvalContext = .{
+        .io = io,
+        .path = path,
+        .basename = basename,
+        .stat_buf = stat_buf,
+        .kind = kind,
+        .now = now,
+        .depth = depth,
+        .allocator = allocator,
+        .had_error = had_error,
+        .pruned = pruned,
+        .batch_ctx = batch_ctx,
+    };
+    evaluateLoop(&ctx, &work_stack, &value_stack, expr, stdout, stderr) catch {
+        had_error.* = true;
+        return false;
+    };
+
+    assert(work_stack.items.len == 0);
+    assert(value_stack.items.len == 1);
+    return value_stack.items[0];
+}
+
+// Bound the work stack so the loop is visibly finite per Tiger Style; (1<<20)
+// frames comfortably cover any expression a user can construct.
+const evaluate_work_bound: usize = 1 << 20;
+
+// The per-path inputs shared by every frame, bundled so the stack driver stays
+// under the 70-line limit and the boolean-operator handling reads as one loop.
+const EvalContext = struct {
+    io: std.Io,
+    path: []const u8,
+    basename: []const u8,
+    stat_buf: StatInfo,
+    kind: FileType,
+    now: i64,
+    depth: u32,
+    allocator: Allocator,
+    had_error: *bool,
+    pruned: *bool,
+    batch_ctx: ?*BatchContext,
+};
+
+// Drive the explicit work stack to completion. Returns error.OutOfMemory if a
+// stack push fails; evaluate() maps that to had_error and a non-match.
+fn evaluateLoop(
+    ctx: *const EvalContext,
+    work_stack: *std.ArrayListUnmanaged(Frame),
+    value_stack: *std.ArrayListUnmanaged(bool),
+    expr: *const Expression,
+    stdout: anytype,
+    stderr: anytype,
+) error{OutOfMemory}!void {
+    const allocator = ctx.allocator;
+    try evaluatePush(work_stack, allocator, .{ .eval = expr });
+    while (work_stack.items.len > 0) {
+        // The while-condition guarantees a frame; state it so the invariant
+        // the loop body relies on is explicit, not just implied.
+        assert(work_stack.items.len > 0);
+        switch (work_stack.pop().?) {
+            .eval => |node| switch (node.tag) {
+                .and_expr => {
+                    const pair = node.data.binary;
+                    try evaluatePush(work_stack, allocator, .{ .and_right = pair.right });
+                    try evaluatePush(work_stack, allocator, .{ .eval = pair.left });
+                },
+                .or_expr => {
+                    const pair = node.data.binary;
+                    try evaluatePush(work_stack, allocator, .{ .or_right = pair.right });
+                    try evaluatePush(work_stack, allocator, .{ .eval = pair.left });
+                },
+                .not_expr => {
+                    try evaluatePush(work_stack, allocator, .{ .not_result = {} });
+                    try evaluatePush(work_stack, allocator, .{ .eval = node.data.unary });
+                },
+                else => {
+                    const result = evaluateLeafCtx(ctx, node, stdout, stderr);
+                    try value_stack.append(allocator, result);
+                },
+            },
+            // -not never short-circuits: invert the single child's result. The
+            // child's eval frame always ran first, so a value must be pending.
+            .not_result => {
+                assert(value_stack.items.len > 0);
+                try value_stack.append(allocator, !value_stack.pop().?);
+            },
+            // Short-circuit: a false left suppresses the right child's side
+            // effects, so push false instead of scheduling eval(right). The
+            // left operand's eval frame always ran first, so its value is here.
+            .and_right => |right| {
+                assert(value_stack.items.len > 0);
+                if (value_stack.pop().?) {
+                    try evaluatePush(work_stack, allocator, .{ .eval = right });
+                } else {
+                    try value_stack.append(allocator, false);
+                }
+            },
+            // Short-circuit: a true left suppresses the right child's side
+            // effects, so push true instead of scheduling eval(right). The left
+            // operand's eval frame always ran first, so its value is here.
+            .or_right => |right| {
+                assert(value_stack.items.len > 0);
+                if (value_stack.pop().?) {
+                    try value_stack.append(allocator, true);
+                } else {
+                    try evaluatePush(work_stack, allocator, .{ .eval = right });
+                }
+            },
+        }
+    }
+    // The driver leaves the work stack drained and exactly one result pending.
+    assert(work_stack.items.len == 0);
+    assert(value_stack.items.len >= 1);
+}
+
+// Append one frame to the work stack, asserting the Tiger Style bound first.
+fn evaluatePush(
+    work_stack: *std.ArrayListUnmanaged(Frame),
+    allocator: Allocator,
+    frame: Frame,
+) error{OutOfMemory}!void {
+    assert(work_stack.items.len < evaluate_work_bound);
+    try work_stack.append(allocator, frame);
+    assert(work_stack.items.len <= evaluate_work_bound);
+}
+
+// Unpack the bundled per-path context and evaluate one leaf node. Keeps the
+// driver loop's call site within the 100-column limit while preserving the
+// exact leaf semantics (side effects, had_error, pruned, batch_ctx).
+fn evaluateLeafCtx(
+    ctx: *const EvalContext,
+    node: *const Expression,
+    stdout: anytype,
+    stderr: anytype,
+) bool {
+    assert(node.tag != .and_expr);
+    assert(node.tag != .or_expr);
+    return evaluateLeaf(
+        ctx.io,
+        node,
+        ctx.path,
+        ctx.basename,
+        ctx.stat_buf,
+        ctx.kind,
+        ctx.now,
+        ctx.depth,
+        ctx.allocator,
+        stdout,
+        stderr,
+        ctx.had_error,
+        ctx.pruned,
+        ctx.batch_ctx,
+    );
+}
+
+// Evaluate a single leaf (non and/or/not) node of the expression tree. Carries
+// all the order-sensitive side effects (-print, -exec, -delete, -prune, ...)
+// and writes through had_error / pruned / batch_ctx exactly as before; the
+// driver in evaluate() never reaches the boolean-operator tags here.
+fn evaluateLeaf(
+    io: std.Io,
+    expr: *const Expression,
+    path: []const u8,
+    basename: []const u8,
+    stat_buf: StatInfo,
+    kind: FileType,
+    now: i64,
+    depth: u32,
+    allocator: Allocator,
+    stdout: anytype,
+    stderr: anytype,
+    had_error: *bool,
+    pruned: *bool,
+    batch_ctx: ?*BatchContext,
+) bool {
+    // Boolean operators are handled by the evaluate() driver, never here.
+    assert(expr.tag != .and_expr);
+    assert(expr.tag != .or_expr);
+    assert(expr.tag != .not_expr);
     switch (expr.tag) {
         .true_expr => return true,
         .name => return glob.globMatch(expr.data.pattern, basename),
@@ -1989,19 +2197,8 @@ fn evaluate(
             }
             return true;
         },
-        .and_expr => {
-            const left_result = evaluate(io, expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
-            if (!left_result) return false;
-            return evaluate(io, expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
-        },
-        .or_expr => {
-            const left_result = evaluate(io, expr.data.binary.left, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
-            if (left_result) return true;
-            return evaluate(io, expr.data.binary.right, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
-        },
-        .not_expr => {
-            return !evaluate(io, expr.data.unary, path, basename, stat_buf, kind, now, depth, allocator, stdout, stderr, had_error, pruned, batch_ctx);
-        },
+        // Boolean operators are driven by evaluate()'s work stack, never here.
+        .and_expr, .or_expr, .not_expr => unreachable,
         .prune => {
             pruned.* = true;
             return true;
